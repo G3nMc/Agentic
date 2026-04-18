@@ -1,0 +1,6 @@
+# Local Orchestrator dependencies.
+# Installed automatically from the Flutter UI (Settings -> Install dependencies)
+# which runs:  python orchestrator.py --install-deps
+
+huggingface-hub>=0.19.0
+pydantic>=2.0.0

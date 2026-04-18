@@ -1,0 +1,204 @@
+import 'dart:async';
+import 'dart:io';
+
+import 'package:flutter/foundation.dart';
+import 'package:path/path.dart' as p;
+import 'package:path_provider/path_provider.dart';
+import 'package:sqflite_common_ffi/sqflite_ffi.dart';
+
+class AppDatabase {
+  AppDatabase._();
+
+  static final AppDatabase instance = AppDatabase._();
+
+  static const String _dbName = "hf_chat.db";
+  static const int _dbVersion = 3;
+
+  Database? _db;
+  Completer<Database>? _opening;
+
+  // Must be called once at app start-up to pick the correct sqflite backend.
+  static void configurePlatform() {
+    if (kIsWeb) {
+      // Web is currently not supported by this build; fallback would require
+      // sqflite_common_ffi_web. The rest of the app still runs, but DB ops
+      // will throw until web support is added.
+      return;
+    }
+    if (Platform.isWindows || Platform.isLinux || Platform.isMacOS) {
+      sqfliteFfiInit();
+      databaseFactory = databaseFactoryFfi;
+    }
+  }
+
+  Future<Database> get database async {
+    if (_db != null) return _db!;
+    if (_opening != null) return _opening!.future;
+
+    _opening = Completer<Database>();
+    try {
+      final db = await _openDatabase();
+      _db = db;
+      _opening!.complete(db);
+    } catch (e, st) {
+      _opening!.completeError(e, st);
+      _opening = null;
+      rethrow;
+    }
+    return _db!;
+  }
+
+  Future<Database> _openDatabase() async {
+    final docsDir = await getApplicationDocumentsDirectory();
+    final appDir = Directory(p.join(docsDir.path, "hf_chat_flutter"));
+    if (!await appDir.exists()) {
+      await appDir.create(recursive: true);
+    }
+    final path = p.join(appDir.path, _dbName);
+
+    return databaseFactory.openDatabase(
+      path,
+      options: OpenDatabaseOptions(
+        version: _dbVersion,
+        onCreate: _onCreate,
+        onUpgrade: _onUpgrade,
+        onConfigure: _onConfigure,
+      ),
+    );
+  }
+
+  Future<void> _onConfigure(Database db) async {
+    await db.execute("PRAGMA foreign_keys = ON;");
+  }
+
+  Future<void> _onCreate(Database db, int version) async {
+    final batch = db.batch();
+
+    // Key/value application settings (HF token, selected model, etc.).
+    batch.execute('''
+      CREATE TABLE settings (
+        key TEXT PRIMARY KEY,
+        value TEXT
+      );
+    ''');
+
+    // Saved HF model IDs for quick switching.
+    batch.execute('''
+      CREATE TABLE models (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        is_favorite INTEGER NOT NULL DEFAULT 0,
+        created_at INTEGER NOT NULL
+      );
+    ''');
+
+    // Conversations metadata.
+    batch.execute('''
+      CREATE TABLE conversations (
+        id TEXT PRIMARY KEY,
+        title TEXT NOT NULL,
+        model_id TEXT,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
+      );
+    ''');
+
+    batch.execute('''
+      CREATE INDEX idx_conversations_updated_at
+      ON conversations(updated_at DESC);
+    ''');
+
+    // Individual chat messages.
+    batch.execute('''
+      CREATE TABLE messages (
+        id TEXT PRIMARY KEY,
+        conversation_id TEXT NOT NULL,
+        role TEXT NOT NULL,
+        content TEXT NOT NULL,
+        created_at INTEGER NOT NULL,
+        FOREIGN KEY (conversation_id)
+          REFERENCES conversations(id)
+          ON DELETE CASCADE
+      );
+    ''');
+
+    batch.execute('''
+      CREATE INDEX idx_messages_conversation
+      ON messages(conversation_id, created_at ASC);
+    ''');
+
+    // Backend settings (remote API vs local server)
+    batch.execute('''
+      CREATE TABLE backend_settings (
+        id TEXT PRIMARY KEY,
+        value TEXT
+      );
+    ''');
+
+    // Local server configurations per model
+    batch.execute('''
+      CREATE TABLE local_server_configs (
+        model_id TEXT PRIMARY KEY,
+        python_code TEXT NOT NULL,
+        host TEXT NOT NULL DEFAULT 'localhost',
+        port INTEGER NOT NULL DEFAULT 5000,
+        is_enabled INTEGER NOT NULL DEFAULT 1,
+        created_at INTEGER NOT NULL
+      );
+    ''');
+
+    // Agent credentials (HF token and local API key)
+    batch.execute('''
+      CREATE TABLE agent_credentials (
+        id TEXT PRIMARY KEY,
+        hf_token TEXT,
+        local_key TEXT,
+        updated_at INTEGER
+      );
+    ''');
+
+    await batch.commit(noResult: true);
+  }
+
+  Future<void> _onUpgrade(Database db, int oldVersion, int newVersion) async {
+    if (oldVersion < 2) {
+      // Migrate to v2: add backend settings and local server configs
+      await db.execute('''
+        CREATE TABLE IF NOT EXISTS backend_settings (
+          id TEXT PRIMARY KEY,
+          value TEXT
+        )
+      ''');
+
+      await db.execute('''
+        CREATE TABLE IF NOT EXISTS local_server_configs (
+          model_id TEXT PRIMARY KEY,
+          python_code TEXT NOT NULL,
+          host TEXT NOT NULL DEFAULT 'localhost',
+          port INTEGER NOT NULL DEFAULT 5000,
+          is_enabled INTEGER NOT NULL DEFAULT 1,
+          created_at INTEGER NOT NULL
+        )
+      ''');
+    }
+    if (oldVersion < 3) {
+      // Migrate to v3: add agent credentials
+      await db.execute('''
+        CREATE TABLE IF NOT EXISTS agent_credentials (
+          id TEXT PRIMARY KEY,
+          hf_token TEXT,
+          local_key TEXT,
+          updated_at INTEGER
+        )
+      ''');
+    }
+  }
+
+  Future<void> close() async {
+    final db = _db;
+    if (db != null) {
+      await db.close();
+      _db = null;
+    }
+  }
+}

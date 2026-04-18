@@ -1,0 +1,42 @@
+name: hf_chat_flutter
+description: Minimal Claude-style chat client for Hugging Face Router API.
+publish_to: "none"
+version: 1.0.0+1
+
+environment:
+  sdk: ">=3.3.0 <4.0.0"
+  flutter: ">=3.19.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+  # HTTP client
+  dio: ^5.4.3+1
+
+  # Local database
+  sqflite: ^2.3.3+1
+  sqflite_common_ffi: ^2.3.3
+  path: ^1.9.0
+  path_provider: ^2.1.3
+
+  # UUID for conversation/message IDs
+  uuid: ^4.4.0
+
+  # Markdown rendering for AI answers
+  flutter_markdown: ^0.7.3
+
+  # Syntax highlighting for code blocks
+  flutter_highlight: ^0.7.0
+  highlight: ^0.7.0
+
+  # Clipboard is built-in via services, no extra dep needed
+  cupertino_icons: ^1.0.6
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^4.0.0
+
+flutter:
+  uses-material-design: true

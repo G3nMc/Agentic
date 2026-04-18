@@ -1,0 +1,22 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(flutter create *)",
+      "Bash(flutter pub *)",
+      "Bash(cat)",
+      "Read(//tmp/**)",
+      "Bash(flutter analyze *)",
+      "Bash(timeout 3 python agent_orchestrator.py --hf-token test --local-key test)",
+      "Bash(python -c \"import ast; ast.parse\\(open\\('bin/orchestrator.py', encoding='utf-8'\\).read\\(\\)\\); print\\('orchestrator.py: OK'\\)\")",
+      "Read(//c/Program Files/flutter/**)",
+      "Read(//c/src/flutter/**)",
+      "Bash(python -c \"import ast; ast.parse\\(open\\('bin/orchestrator.py', encoding='utf-8'\\).read\\(\\)\\); print\\('OK'\\)\")",
+      "Bash(python bin/orchestrator.py --help)",
+      "Bash(python bin/orchestrator.py --install-deps)",
+      "Bash(python bin/orchestrator.py --hf-token dummy --interactive)",
+      "Bash(python -c \"import ast; ast.parse\\(open\\('bin/orchestrator.py', encoding='utf-8'\\).read\\(\\)\\); print\\('orchestrator.py OK'\\)\")",
+      "Bash(python -c ' *)",
+      "Bash(python)"
+    ]
+  }
+}
