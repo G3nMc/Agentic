@@ -1,0 +1,356 @@
+import 'dart:async';
+import 'dart:convert';
+import 'dart:io';
+
+import 'package:dio/dio.dart';
+
+import '../data/models/message.dart';
+
+/// Thin wrapper around Ollama's native REST API (http://localhost:11434).
+///
+/// Ollama binary exposes these endpoints out-of-the-box, so we don't need
+/// the `ollama` Python library at all — Dart + Dio is enough for chat,
+/// listing installed models, and pulling new ones.
+///
+/// API reference: https://github.com/ollama/ollama/blob/main/docs/api.md
+class OllamaService {
+  OllamaService._();
+
+  static final OllamaService instance = OllamaService._();
+
+  /// Default Ollama daemon address.
+  static const String defaultBaseUrl = 'http://localhost:11434';
+
+  final Dio _dio = Dio();
+
+  String _normalise(String base) {
+    var b = base.trim();
+    if (b.isEmpty) b = defaultBaseUrl;
+    if (b.endsWith('/')) b = b.substring(0, b.length - 1);
+    return b;
+  }
+
+  /// Returns Dio request headers. When [apiKey] is non-empty an
+  /// `Authorization: Bearer <key>` header is added so the same code works
+  /// against local Ollama (no key) and cloud endpoints like
+  /// https://api.ollama.ai that require a Bearer token.
+  ///
+  /// Falls back to the `OLLAMA_API_KEY` environment variable when the
+  /// caller passes no key — this lets users who have the env var set
+  /// (locally or via the Settings "Set as env variable" button) work
+  /// without also filling in the Settings field.
+  Map<String, String> _headers({String? apiKey}) {
+    final h = <String, String>{'Content-Type': 'application/json'};
+    final k = (apiKey ?? '').trim().isNotEmpty
+        ? apiKey!.trim()
+        : (Platform.environment['OLLAMA_API_KEY'] ?? '').trim();
+    if (k.isNotEmpty) h['Authorization'] = 'Bearer $k';
+    return h;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Health check
+  // ---------------------------------------------------------------------------
+
+  /// Returns true if the daemon/cloud endpoint is answering at [baseUrl].
+  Future<bool> isServerReachable({String? baseUrl, String? apiKey}) async {
+    final url = _normalise(baseUrl ?? defaultBaseUrl);
+    try {
+      final resp = await _dio.get(
+        '$url/api/tags',
+        options: Options(
+          headers: _headers(apiKey: apiKey),
+          receiveTimeout: const Duration(seconds: 5),
+          sendTimeout: const Duration(seconds: 5),
+        ),
+      );
+      return resp.statusCode == 200;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Model listing
+  // ---------------------------------------------------------------------------
+
+  /// List available models from the daemon or cloud endpoint.
+  Future<List<String>> listInstalledModels({
+    String? baseUrl,
+    String? apiKey,
+  }) async {
+    final url = _normalise(baseUrl ?? defaultBaseUrl);
+    final resp = await _dio.get(
+      '$url/api/tags',
+      options: Options(
+        headers: _headers(apiKey: apiKey),
+        receiveTimeout: const Duration(seconds: 10),
+      ),
+    );
+    if (resp.statusCode != 200) {
+      throw Exception('Ollama /api/tags returned ${resp.statusCode}');
+    }
+    final models = resp.data?['models'] as List? ?? const [];
+    return models
+        .map((m) => (m is Map ? m['name'] : null) as String?)
+        .whereType<String>()
+        .toList();
+  }
+
+  // ---------------------------------------------------------------------------
+  // Pull (download) a model — streams progress JSON lines
+  // ---------------------------------------------------------------------------
+
+  /// Download [modelName] (e.g. `llama3`, `qwen2.5-coder:7b`).
+  /// [onProgress] is invoked for every progress line ollama streams back,
+  /// which typically looks like
+  ///   `{"status":"downloading digest","digest":"sha256:…","total":…,"completed":…}`
+  /// Completes when the model is fully downloaded (server closes the stream).
+  Future<void> pullModel(
+    String modelName, {
+    String? baseUrl,
+    String? apiKey,
+    void Function(String line)? onProgress,
+  }) async {
+    final url = _normalise(baseUrl ?? defaultBaseUrl);
+    final resp = await _dio.post<ResponseBody>(
+      '$url/api/pull',
+      data: jsonEncode({'name': modelName, 'stream': true}),
+      options: Options(
+        responseType: ResponseType.stream,
+        headers: _headers(apiKey: apiKey),
+        // No total timeout — large models can take many minutes.
+        receiveTimeout: Duration.zero,
+        sendTimeout: const Duration(seconds: 30),
+      ),
+    );
+    if (resp.statusCode != 200) {
+      throw Exception('Ollama /api/pull returned ${resp.statusCode}');
+    }
+
+    final data = resp.data;
+    if (data == null) return;
+
+    // Buffer partial chunks — a line may span two network reads.
+    final buffer = StringBuffer();
+    await for (final chunk in data.stream) {
+      buffer.write(utf8.decode(chunk, allowMalformed: true));
+      final raw = buffer.toString();
+      final lines = raw.split('\n');
+      // Keep the last (possibly incomplete) segment for the next iteration.
+      buffer.clear();
+      buffer.write(lines.removeLast());
+      for (final line in lines) {
+        final trimmed = line.trim();
+        if (trimmed.isEmpty) continue;
+        onProgress?.call(trimmed);
+        // Fail fast if server reports an error status.
+        try {
+          final obj = jsonDecode(trimmed);
+          if (obj is Map && obj['error'] is String) {
+            throw Exception('Ollama pull error: ${obj['error']}');
+          }
+        } catch (e) {
+          // Not JSON — just forward as-is; already sent to onProgress.
+          if (e is Exception && e.toString().contains('Ollama pull error')) {
+            rethrow;
+          }
+        }
+      }
+    }
+    // Flush any final line left in the buffer.
+    final tail = buffer.toString().trim();
+    if (tail.isNotEmpty) onProgress?.call(tail);
+  }
+
+  // ---------------------------------------------------------------------------
+  // Chat
+  // ---------------------------------------------------------------------------
+
+  /// Send the [history] to Ollama and return the assistant's full reply.
+  /// Non-streaming for simplicity — the existing UI waits on a single string.
+  Future<String> sendChat({
+    required String modelId,
+    required List<ChatMessage> history,
+    String? baseUrl,
+    String? apiKey,
+    double temperature = 0.7,
+    int? numPredict,
+    // Default 4096. Several models (phi3:mini, llama3.2) ship a Modelfile
+    // with num_ctx=128K; honouring that blows up KV-cache allocation to
+    // tens of GiB and triggers "model requires 50 GiB" errors even on
+    // 2-3 GB models. 4096 is ample for chat and keeps the cache <1 GiB.
+    int numCtx = 4096,
+  }) async {
+    final url = _normalise(baseUrl ?? defaultBaseUrl);
+    final messages = history
+        .map((m) => {
+              'role': _roleToApi(m.role),
+              'content': m.content,
+            })
+        .toList();
+
+    final options = <String, Object?>{
+      'temperature': temperature,
+      'num_ctx': numCtx,
+    };
+    if (numPredict != null) options['num_predict'] = numPredict;
+
+    try {
+      final resp = await _dio.post(
+        '$url/api/chat',
+        data: {
+          'model': modelId,
+          'messages': messages,
+          'stream': false,
+          'options': options,
+        },
+        options: Options(
+          headers: _headers(apiKey: apiKey),
+          receiveTimeout: const Duration(minutes: 10),
+          sendTimeout: const Duration(minutes: 1),
+          // Don't let Dio throw on 4xx/5xx — we want to extract Ollama's
+          // own `{"error":"model 'foo' not found, try pulling it first"}`
+          // body so the exception we raise is actually useful.
+          validateStatus: (_) => true,
+        ),
+      );
+      if (resp.statusCode != 200) {
+        final data = resp.data;
+        String errMsg;
+        if (data is Map && data['error'] is String) {
+          errMsg = data['error'] as String;
+        } else {
+          errMsg = '$data';
+        }
+        final lower = errMsg.toLowerCase();
+        String hint = '';
+        if (lower.contains('requires more system memory') ||
+            lower.contains('not enough memory') ||
+            lower.contains('out of memory') ||
+            (lower.contains('memory') && lower.contains('gib'))) {
+          // User picked a model too big for their RAM — give tiered advice
+          // based on how much RAM Ollama reported as available.
+          hint = _lowMemoryHint(errMsg);
+        } else if (lower.contains('not found') ||
+            lower.contains('no such model') ||
+            lower.contains('try pulling')) {
+          // Fetch the installed list so the user knows what tags are valid.
+          try {
+            final installed = await listInstalledModels(baseUrl: baseUrl);
+            hint = installed.isEmpty
+                ? '\n→ No models are installed yet. Open Settings → 🦙 Ollama '
+                    'and click "Pull" (e.g. `llama3:latest`).'
+                : '\n→ "$modelId" is not installed. '
+                    'Installed: ${installed.join(", ")}. '
+                    'Pick one of those in Settings, or pull the exact tag.';
+          } catch (_) {
+            hint = '\n→ Model "$modelId" is not installed. Pull it from '
+                'Settings → 🦙 Ollama.';
+          }
+        }
+        throw Exception(
+          'Ollama /api/chat returned ${resp.statusCode}: $errMsg$hint',
+        );
+      }
+      final content = resp.data?['message']?['content'] as String?;
+      if (content == null) {
+        throw Exception('Ollama response missing message.content: ${resp.data}');
+      }
+      return content;
+    } on DioException catch (e) {
+      // Most common case: daemon isn't running.
+      if (e.type == DioExceptionType.connectionError) {
+        throw Exception(
+          'Cannot reach Ollama at $url. Start the daemon from Settings '
+          '("Start Ollama server") or run `ollama serve` in a terminal.',
+        );
+      }
+      throw Exception('Ollama error: ${e.message}');
+    }
+  }
+
+  /// Build an actionable hint for the "model requires more system memory than
+  /// is available" failure. Picks the right recommendation tier based on how
+  /// much RAM Ollama reported as available. Mirrors the helper in
+  /// [LocalLlmService] so users on either Ollama code path get the same
+  /// guidance.
+  ///
+  /// The OOM number Ollama reports is (weights + KV cache). KV cache scales
+  /// with `num_ctx`, and several popular Modelfiles (phi3:mini, llama3.2)
+  /// default to 128K context — which can cost 30-50 GiB of cache alone,
+  /// even on a 2-3 GB model. We now cap `num_ctx` to 4096, so seeing this
+  /// error after the fix usually means the weights themselves don't fit.
+  String _lowMemoryHint(String serverMsg) {
+    final m = RegExp(
+      r'available \(([\d.]+)\s*gib\)',
+      caseSensitive: false,
+    ).firstMatch(serverMsg);
+    final availableGib = m == null ? null : double.tryParse(m.group(1)!);
+
+    final requiredM = RegExp(
+      r'requires more system memory \(([\d.]+)\s*gib\)',
+      caseSensitive: false,
+    ).firstMatch(serverMsg);
+    final requiredGib =
+        requiredM == null ? null : double.tryParse(requiredM.group(1)!);
+
+    // If Ollama says a 2-3 GB model "requires 50 GiB", that's almost
+    // certainly a giant context window being honoured from the Modelfile.
+    // Warn the user up front before the generic recommendation list.
+    final looksLikeCtxExplosion =
+        requiredGib != null && requiredGib >= 15;
+
+    String fitsList;
+    if (availableGib == null) {
+      fitsList = '`tinyllama` (~0.6 GB), `qwen2.5:0.5b`, `gemma:2b` (~1.7 GB), '
+          '`llama3.2:1b` (~1.3 GB).';
+    } else if (availableGib < 2) {
+      fitsList = '`tinyllama` (~0.6 GB), `qwen2.5:0.5b` (~0.4 GB). '
+          'Even 2B models will be tight.';
+    } else if (availableGib < 4) {
+      fitsList = '`tinyllama`, `qwen2.5:0.5b`, `qwen2.5:1.5b`, '
+          '`llama3.2:1b`, `gemma:2b` (~1.7 GB).';
+    } else if (availableGib < 6) {
+      fitsList = '`llama3.2:3b` (~2 GB), `gemma:2b`, `qwen2.5:1.5b`, '
+          '`qwen2.5-coder:1.5b`, `tinyllama`.';
+    } else if (availableGib < 10) {
+      fitsList = '`llama3.2:3b`, `phi3:mini` (~2.3 GB), `mistral:7b` (~4 GB), '
+          '`qwen2.5:7b` (~4.7 GB), `qwen2.5-coder:7b`.';
+    } else {
+      fitsList = '`llama3:8b`, `qwen2.5:7b`, `qwen2.5-coder:7b`, '
+          '`mistral:7b`, `gemma:7b`.';
+    }
+
+    final availPart = availableGib == null
+        ? ''
+        : ' You have ${availableGib.toStringAsFixed(1)} GiB free.';
+    final reqPart = requiredGib == null
+        ? ''
+        : ' Ollama asked for ${requiredGib.toStringAsFixed(1)} GiB.';
+
+    final ctxNote = looksLikeCtxExplosion
+        ? '\n→ That number is suspiciously large — it usually means the '
+            "model's Modelfile defaults to a huge context window (phi3:mini "
+            'and llama3.2 default to 128K). The app now caps context at '
+            '4096 tokens, so just retry. If the error comes back, the '
+            'weights themselves are too big and you need a smaller model.'
+        : '';
+
+    return '$ctxNote\n→ Model too big for this machine.$availPart$reqPart '
+        'Rule of thumb: pick a model whose size is less than your free RAM. '
+        'Models that should fit: $fitsList '
+        'Open Settings → 🦙 Ollama → Pull, and use one of those tags.';
+  }
+
+  String _roleToApi(MessageRole r) {
+    switch (r) {
+      case MessageRole.user:
+        return 'user';
+      case MessageRole.assistant:
+        return 'assistant';
+      case MessageRole.system:
+        return 'system';
+    }
+  }
+}

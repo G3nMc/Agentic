@@ -2,6 +2,22 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
+// Inactivity timeout: if the orchestrator emits no output on stdout OR
+// stderr for this long, we assume it's wedged and give up. Activity
+// (including `[orch] Model reply …` heartbeats from Python) resets it.
+const Duration _kOrchestratorInactivityTimeout = Duration(minutes: 3);
+
+// Absolute ceiling: even if the orchestrator keeps heart-beating, refuse to
+// wait longer than this for a single prompt. Prevents runaway tool chains.
+const Duration _kOrchestratorAbsoluteTimeout = Duration(minutes: 20);
+
+/// Which model backend the orchestrator subprocess should use.
+///
+/// The orchestrator's tool protocol is backend-agnostic; this only decides
+/// who actually runs inference. [huggingface] hits the HF router (needs a
+/// token), [ollama] hits a local Ollama daemon (needs the daemon running).
+enum OrchestratorBackend { huggingface, ollama, groq }
+
 /// Manages the lifecycle of the local Python orchestrator subprocess that
 /// bridges the Flutter UI with remote Hugging Face models + local tools.
 ///
@@ -21,7 +37,33 @@ class OrchestratorManager {
   Process? _process;
   bool _isRunning = false;
   bool _isReady = false;
+  OrchestratorBackend _currentBackend = OrchestratorBackend.huggingface;
   final StringBuffer _stderrBuffer = StringBuffer();
+
+  // ── Live log stream ────────────────────────────────────────────────────────
+  // A broadcast StreamController so multiple widgets can subscribe
+  // simultaneously without causing "already subscribed" errors.
+  final StreamController<String> _logController =
+      StreamController<String>.broadcast();
+
+  /// Live stream of orchestrator log lines (stderr of the subprocess).
+  /// Each event is a single trimmed line such as
+  ///   "[orch] Groq streaming 'llama-3.3-70b-versatile' (42 chars)..."
+  Stream<String> get logStream => _logController.stream;
+
+  /// Rolling in-memory buffer of the most recent [_kMaxLogLines] lines.
+  /// Useful for widgets that appear after the process has already emitted
+  /// output (they can populate themselves from this list on first build).
+  static const int _kMaxLogLines = 200;
+  final List<String> _logLines = [];
+  List<String> get logLines => List.unmodifiable(_logLines);
+
+  void _appendLog(String line) {
+    _stderrBuffer.writeln(line);
+    _logLines.add(line);
+    if (_logLines.length > _kMaxLogLines) _logLines.removeAt(0);
+    if (!_logController.isClosed) _logController.add(line);
+  }
 
   // Completes when the orchestrator prints `__READY__` on stdout.
   Completer<void>? _readyCompleter;
@@ -36,8 +78,14 @@ class OrchestratorManager {
   StreamSubscription<String>? _stdoutSub;
   StreamSubscription<String>? _stderrSub;
 
+  // Inactivity watchdog for the currently active request.
+  Timer? _inactivityTimer;
+  DateTime? _requestStartedAt;
+  String? _sessionKey;
+
   bool get isRunning => _isRunning;
   bool get isReady => _isReady;
+  OrchestratorBackend get currentBackend => _currentBackend;
   String get stderrLog => _stderrBuffer.toString();
 
   /// Platform-appropriate Python executable. Windows ships with `python`;
@@ -106,31 +154,84 @@ class OrchestratorManager {
 
   /// Start the orchestrator subprocess. Returns false if it was already
   /// running or if launch failed.
+  ///
+  /// For [OrchestratorBackend.huggingface] (default), [hfToken] is required.
+  /// For [OrchestratorBackend.ollama], [hfToken] is ignored and [modelId]
+  /// must be an Ollama tag (e.g. `qwen2.5-coder:7b`). Optional
+  /// [ollamaBaseUrl] / [ollamaNumCtx] are forwarded to the Python side.
   Future<bool> start({
-    required String hfToken,
+    String? hfToken,
     String? modelId,
     String? workingDirectory,
+    OrchestratorBackend backend = OrchestratorBackend.huggingface,
+    String? ollamaBaseUrl,
+    int? ollamaNumCtx,
+    double? temperature,
+    int? maxTokens,
+    String? ollamaApiKey,
+    String? groqApiKey,
   }) async {
     if (_isRunning) return false;
 
     final script = orchestratorScript;
     if (!script.existsSync()) {
-      _stderrBuffer.writeln('orchestrator.py not found at ${script.path}');
+      _appendLog('orchestrator.py not found at ${script.path}');
+      return false;
+    }
+
+    if (backend == OrchestratorBackend.huggingface &&
+        (hfToken == null || hfToken.isEmpty)) {
+      _appendLog(
+        'HF orchestrator backend requires a token but none was provided.',
+      );
+      return false;
+    }
+    if (backend == OrchestratorBackend.groq &&
+        (groqApiKey == null || groqApiKey.isEmpty)) {
+      _appendLog(
+        'Groq orchestrator backend requires an API key but none was provided.',
+      );
       return false;
     }
 
     try {
       _stderrBuffer.clear();
+      _logLines.clear();
       _readyCompleter = Completer<void>();
 
       final args = <String>[
         script.path,
-        '--hf-token', hfToken,
         '--interactive',
         '--base-path', workingDirectory ?? baseDirectory.path,
       ];
+      switch (backend) {
+        case OrchestratorBackend.huggingface:
+          args.addAll(['--backend', 'huggingface', '--hf-token', hfToken!]);
+          break;
+        case OrchestratorBackend.ollama:
+          args.addAll(['--backend', 'ollama']);
+          if (ollamaBaseUrl != null && ollamaBaseUrl.isNotEmpty) {
+            args.addAll(['--ollama-base-url', ollamaBaseUrl]);
+          }
+          if (ollamaNumCtx != null) {
+            args.addAll(['--ollama-num-ctx', '$ollamaNumCtx']);
+          }
+          break;
+        case OrchestratorBackend.groq:
+          args.addAll(['--backend', 'groq', '--groq-api-key', groqApiKey!]);
+          break;
+      }
       if (modelId != null && modelId.isNotEmpty) {
         args.addAll(['--model', modelId]);
+      }
+      if (temperature != null) {
+        args.addAll(['--temperature', temperature.toString()]);
+      }
+      if (maxTokens != null) {
+        args.addAll(['--max-tokens', maxTokens.toString()]);
+      }
+      if (ollamaApiKey != null && ollamaApiKey.isNotEmpty) {
+        args.addAll(['--ollama-api-key', ollamaApiKey]);
       }
 
       _process = await Process.start(
@@ -147,7 +248,12 @@ class OrchestratorManager {
       _stderrSub = _process!.stderr
           .transform(utf8.decoder)
           .transform(const LineSplitter())
-          .listen((line) => _stderrBuffer.writeln(line));
+          .listen((line) {
+        _appendLog(line);
+        // stderr activity (e.g. `[orch] Model reply (iter 0) …`) counts as
+        // a heartbeat — the subprocess is alive and making progress.
+        _bumpInactivityTimer();
+      });
 
       // Wait up to 30s for the `__READY__` handshake. If the Python side
       // is missing dependencies it will exit with code 2 — we detect that
@@ -156,24 +262,45 @@ class OrchestratorManager {
 
       _isRunning = true;
       _isReady = true;
+      _currentBackend = backend;
       return true;
     } catch (e) {
-      _stderrBuffer.writeln('start() failed: $e');
+      _appendLog('start() failed: $e');
       await _cleanup();
       return false;
     }
   }
 
   /// Send a prompt to the orchestrator and await the full response.
-  /// [newSession] resets the orchestrator's conversation history.
-  Future<String> sendPrompt(String prompt, {bool newSession = false}) {
+  ///
+  /// [sessionKey] identifies the visible chat conversation. When it changes,
+  /// the Python side is reset and optionally re-seeded with [seedHistory] so
+  /// switching chats does not leak hidden state across conversations.
+  Future<String> sendPrompt(
+    String prompt, {
+    bool newSession = false,
+    String? sessionKey,
+    List<Map<String, String>> seedHistory = const [],
+  }) {
     // Serialize requests so multiple callers don't interleave on stdin.
-    final next = _chain.then((_) => _sendPromptInternal(prompt, newSession));
+    final next = _chain.then(
+      (_) => _sendPromptInternal(
+        prompt,
+        newSession,
+        sessionKey: sessionKey,
+        seedHistory: seedHistory,
+      ),
+    );
     _chain = next.catchError((_) => '');
     return next;
   }
 
-  Future<String> _sendPromptInternal(String prompt, bool newSession) async {
+  Future<String> _sendPromptInternal(
+    String prompt,
+    bool newSession, {
+    String? sessionKey,
+    List<Map<String, String>> seedHistory = const [],
+  }) async {
     if (!_isRunning || _process == null) {
       return 'Error: Orchestrator not running. Start it from Settings first.';
     }
@@ -181,10 +308,23 @@ class OrchestratorManager {
       return 'Error: Orchestrator not ready yet.';
     }
 
+    final shouldResetSession =
+        newSession || (sessionKey != null && sessionKey != _sessionKey);
+    if (shouldResetSession) {
+      _sessionKey = sessionKey;
+    }
+
     _activeCompleter = Completer<String>();
     _activeLines.clear();
+    _requestStartedAt = DateTime.now();
+    _bumpInactivityTimer();
 
-    final request = jsonEncode({'prompt': prompt, 'new_session': newSession});
+    final request = jsonEncode({
+      'prompt': prompt,
+      'new_session': shouldResetSession,
+      if (seedHistory.isNotEmpty) 'history': seedHistory,
+      if (sessionKey != null && sessionKey.isNotEmpty) 'session_key': sessionKey,
+    });
     try {
       _process!.stdin.writeln(request);
       await _process!.stdin.flush();
@@ -192,16 +332,44 @@ class OrchestratorManager {
       return 'Error: Failed to write to orchestrator stdin: $e';
     }
 
-    // 5-minute timeout for long-running tool chains.
+    // Inactivity-based timeout: the request is only cancelled if neither
+    // stdout nor stderr has produced a line for `_kOrchestratorInactivityTimeout`,
+    // capped by `_kOrchestratorAbsoluteTimeout`. Long-but-progressing tool
+    // chains keep extending the deadline via `_bumpInactivityTimer`.
     try {
       return await _activeCompleter!.future.timeout(
-        const Duration(minutes: 5),
-        onTimeout: () => 'Timeout: orchestrator did not respond within 5 minutes.',
+        _kOrchestratorAbsoluteTimeout,
+        onTimeout: () =>
+            'Timeout: orchestrator exceeded the absolute ceiling of '
+            '${_kOrchestratorAbsoluteTimeout.inMinutes} minutes.',
       );
     } finally {
       _activeCompleter = null;
       _activeLines.clear();
+      _cancelInactivityTimer();
+      _requestStartedAt = null;
     }
+  }
+
+  void _bumpInactivityTimer() {
+    if (_activeCompleter == null) return;
+    _inactivityTimer?.cancel();
+    _inactivityTimer = Timer(_kOrchestratorInactivityTimeout, () {
+      if (_activeCompleter == null || _activeCompleter!.isCompleted) return;
+      final waited = _requestStartedAt == null
+          ? 'unknown'
+          : '${DateTime.now().difference(_requestStartedAt!).inSeconds}s';
+      _activeCompleter!.complete(
+        'Timeout: orchestrator was silent for '
+        '${_kOrchestratorInactivityTimeout.inMinutes} minutes '
+        '(total wait $waited). Check the orchestrator log.',
+      );
+    });
+  }
+
+  void _cancelInactivityTimer() {
+    _inactivityTimer?.cancel();
+    _inactivityTimer = null;
   }
 
   void _onStdoutLine(String line) {
@@ -212,6 +380,9 @@ class OrchestratorManager {
     }
 
     if (_activeCompleter == null) return; // Stray line; ignore.
+
+    // Any stdout line during an active request is progress → reset watchdog.
+    _bumpInactivityTimer();
 
     if (line.trim() == '__RESPONSE_END__') {
       final joined = _activeLines.join('\n').trim();
@@ -238,7 +409,7 @@ class OrchestratorManager {
   }
 
   void _onStreamError(Object error) {
-    _stderrBuffer.writeln('stdout stream error: $error');
+    _appendLog('stdout stream error: $error');
     if (_activeCompleter != null && !_activeCompleter!.isCompleted) {
       _activeCompleter!.completeError(error);
     }
@@ -250,6 +421,8 @@ class OrchestratorManager {
   void _onProcessExited() {
     _isRunning = false;
     _isReady = false;
+    _sessionKey = null;
+    _cancelInactivityTimer();
     if (_readyCompleter != null && !_readyCompleter!.isCompleted) {
       _readyCompleter!.completeError(
         StateError('Orchestrator process exited before signalling ready. '
@@ -279,6 +452,7 @@ class OrchestratorManager {
     _process = null;
     _isRunning = false;
     _isReady = false;
+    _sessionKey = null;
   }
 
   bool checkHealthy() => _isRunning && _isReady && _process != null;

@@ -20,6 +20,9 @@ dependencies:
   path: ^1.9.0
   path_provider: ^2.1.3
 
+  # Secure Storage
+  flutter_secure_storage: ^9.0.0
+
   # UUID for conversation/message IDs
   uuid: ^4.4.0
 
@@ -29,6 +32,9 @@ dependencies:
   # Syntax highlighting for code blocks
   flutter_highlight: ^0.7.0
   highlight: ^0.7.0
+
+  # File picker for selecting project folders
+  file_picker: ^8.0.0
 
   # Clipboard is built-in via services, no extra dep needed
   cupertino_icons: ^1.0.6

@@ -1,6 +1,7 @@
 import 'package:sqflite/sqflite.dart';
 
 import '../database/app_database.dart';
+import '../../services/secure_storage_service.dart';
 
 class SettingsRepository {
   SettingsRepository._();
@@ -10,6 +11,7 @@ class SettingsRepository {
   static const String keyHfToken = "hf_token";
   static const String keySelectedModelId = "selected_model_id";
 
+  /// Generic methods for non-sensitive settings still using the DB
   Future<String?> get(String key) async {
     final db = await AppDatabase.instance.database;
     final rows = await db.query(
@@ -37,9 +39,11 @@ class SettingsRepository {
     await db.delete("settings", where: "key = ?", whereArgs: [key]);
   }
 
-  Future<String?> getHfToken() => get(keyHfToken);
-  Future<void> setHfToken(String token) => set(keyHfToken, token);
+  // --- Secure Storage Delegations ---
 
-  Future<String?> getSelectedModelId() => get(keySelectedModelId);
-  Future<void> setSelectedModelId(String modelId) => set(keySelectedModelId, modelId);
+  Future<String?> getHfToken() => SecureStorageService.instance.getToken();
+  Future<void> setHfToken(String token) => SecureStorageService.instance.saveToken(token);
+
+  Future<String?> getSelectedModelId() => SecureStorageService.instance.getModelId();
+  Future<void> setSelectedModelId(String modelId) => SecureStorageService.instance.saveModelId(modelId);
 }

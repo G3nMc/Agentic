@@ -21,22 +21,34 @@ class MessageBubble extends StatelessWidget {
       child: ConstrainedBox(
         constraints: const BoxConstraints(maxWidth: 720),
         child: Container(
-          margin: const EdgeInsets.symmetric(vertical: 6),
+          margin: const EdgeInsets.symmetric(vertical: 8, horizontal: 12),
           padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
           decoration: BoxDecoration(
             color: _isUser ? AppTheme.userBubble : AppTheme.aiBubble,
             border: Border.all(
               color: _isUser ? Colors.transparent : AppTheme.border,
             ),
-            borderRadius: BorderRadius.circular(12),
+            borderRadius: BorderRadius.only(
+              topLeft: Radius.circular(_isUser ? 16 : 4),
+              topRight: Radius.circular(_isUser ? 4 : 16),
+              bottomLeft: Radius.circular(_isUser ? 16 : 4),
+              bottomRight: Radius.circular(_isUser ? 4 : 16),
+            ),
+            boxShadow: [
+              BoxShadow(
+                color: Colors.black.withOpacity(0.05),
+                blurRadius: 4,
+                offset: const Offset(0, 2),
+              ),
+            ],
           ),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               _buildRoleLabel(),
-              const SizedBox(height: 4),
+              const SizedBox(height: 6),
               _buildContent(context),
-              const SizedBox(height: 4),
+              const SizedBox(height: 6),
               _buildActions(context),
             ],
           ),
@@ -50,9 +62,9 @@ class MessageBubble extends StatelessWidget {
       _isUser ? "You" : "Assistant",
       style: const TextStyle(
         fontSize: 11,
-        fontWeight: FontWeight.w600,
+        fontWeight: FontWeight.w700,
         color: AppTheme.textMuted,
-        letterSpacing: 0.2,
+        letterSpacing: 0.5,
       ),
     );
   }

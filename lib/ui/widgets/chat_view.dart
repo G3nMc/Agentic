@@ -22,6 +22,7 @@ import '../../statemanagement/state_manager.dart';
 import 'chat_input.dart';
 import 'message_bubble.dart';
 import 'model_switcher.dart';
+import 'orchestrator_log_panel.dart';
 import 'quick_server_panel.dart';
 import 'sidebar.dart';
 
@@ -121,6 +122,10 @@ class _ChatViewState extends StateManager<ChatView> {
     final token = agentCreds?.hfToken ?? await SettingsRepository.instance.getHfToken();
 
     final serverUrl = await BackendSettingsRepository.instance.getLocalServerUrl();
+    final ollamaBaseUrl = await BackendSettingsRepository.instance.getOllamaBaseUrl();
+    final ollamaModel = await BackendSettingsRepository.instance.getOllamaModel();
+    final ollamaPythonBridgeUrl =
+        await BackendSettingsRepository.instance.getOllamaPythonBridgeUrl();
 
     // Validate based on selected backend.
     if (backend == LlmBackend.huggingFace || backend == LlmBackend.orchestrator) {
@@ -133,9 +138,29 @@ class _ChatViewState extends StateManager<ChatView> {
         setState(() => _sendError = "Configure local server URL in Settings first.");
         return;
       }
+    } else if (backend == LlmBackend.ollama ||
+        backend == LlmBackend.ollamaPython ||
+        backend == LlmBackend.ollamaOrchestrator) {
+      final resolvedModel =
+          (conv.modelId != null && conv.modelId!.trim().isNotEmpty)
+              ? conv.modelId!
+              : ollamaModel;
+      if (resolvedModel == null || resolvedModel.trim().isEmpty) {
+        setState(() => _sendError =
+            "Select an Ollama model in Settings before sending a message.");
+        return;
+      }
     }
 
-    final modelId = conv.modelId ?? ApiConstants.defaultModelId;
+    final modelId = switch (backend) {
+      LlmBackend.ollama ||
+      LlmBackend.ollamaPython ||
+      LlmBackend.ollamaOrchestrator =>
+        (conv.modelId != null && conv.modelId!.trim().isNotEmpty)
+            ? conv.modelId!
+            : (ollamaModel ?? ''),
+      _ => conv.modelId ?? ApiConstants.defaultModelId,
+    };
 
     // Persist and append user message.
     final now = DateTime.now().millisecondsSinceEpoch;
@@ -173,7 +198,11 @@ class _ChatViewState extends StateManager<ChatView> {
         token: token ?? "",
         modelId: modelId,
         history: history,
+        conversationId: conv.id,
         localServerUrl: serverUrl,
+        ollamaBaseUrl: ollamaBaseUrl,
+        ollamaModelId: modelId,
+        ollamaPythonBridgeUrl: ollamaPythonBridgeUrl,
       );
 
       final assistantMsg = ChatMessage(
@@ -271,7 +300,11 @@ class _ChatViewState extends StateManager<ChatView> {
     return FutureBuilder<LlmBackend>(
       future: BackendSettingsRepository.instance.getActiveBackend(),
       builder: (ctx, backendSnapshot) {
-        final showServerPanel = backendSnapshot.data == LlmBackend.local;
+        final backend = backendSnapshot.data;
+        final showServerPanel = backend == LlmBackend.local;
+        final showOrchestratorLog = backend == LlmBackend.orchestrator ||
+            backend == LlmBackend.ollamaOrchestrator ||
+            backend == LlmBackend.groqOrchestrator;
 
         return Column(
           children: [
@@ -283,6 +316,7 @@ class _ChatViewState extends StateManager<ChatView> {
               ),
             Expanded(child: _buildMessagesList()),
             if (_sendError != null) _buildErrorBar(),
+            if (showOrchestratorLog) const OrchestratorLogPanel(),
             ChatInput(
               enabled: !_sending,
               sending: _sending,
@@ -417,7 +451,117 @@ class _ChatViewState extends StateManager<ChatView> {
   }
 
   Future<void> _startOrchestrator() async {
+    return _startOrchestratorForActiveBackend();
+  }
+
+  Future<void> _startOrchestratorForActiveBackend() async {
     try {
+      final backend = await BackendSettingsRepository.instance.getActiveBackend();
+      final ollamaModel = await BackendSettingsRepository.instance.getOllamaModel();
+      final ollamaBaseUrl =
+          await BackendSettingsRepository.instance.getOllamaBaseUrl();
+
+      String? token;
+      String? groqApiKey;
+      OrchestratorBackend desiredBackend;
+      String? modelId;
+
+      if (backend == LlmBackend.ollamaOrchestrator) {
+        desiredBackend = OrchestratorBackend.ollama;
+        modelId = ollamaModel;
+        if (modelId == null || modelId.isEmpty) {
+          if (!mounted) return;
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text("Select an Ollama model in Settings first"),
+            ),
+          );
+          return;
+        }
+      } else if (backend == LlmBackend.groqOrchestrator) {
+        desiredBackend = OrchestratorBackend.groq;
+        groqApiKey = await BackendSettingsRepository.instance.getGroqApiKey();
+        modelId = await BackendSettingsRepository.instance.getGroqModel();
+        if (groqApiKey == null || groqApiKey.isEmpty) {
+          if (!mounted) return;
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text("Configure Groq API key in Settings first"),
+            ),
+          );
+          return;
+        }
+      } else {
+        desiredBackend = OrchestratorBackend.huggingface;
+        final creds = await AgentCredentialsRepository.instance.getCredentials();
+        token = creds?.hfToken;
+        modelId = _conversation?.modelId;
+        if (token == null || token.isEmpty) {
+          if (!mounted) return;
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text("Configure HF token in Settings first"),
+            ),
+          );
+          return;
+        }
+      }
+
+      if (OrchestratorManager.instance.isRunning &&
+          OrchestratorManager.instance.currentBackend != desiredBackend) {
+        await OrchestratorManager.instance.stop();
+      }
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            desiredBackend == OrchestratorBackend.ollama
+                ? "Starting Ollama orchestrator..."
+                : desiredBackend == OrchestratorBackend.groq
+                    ? "Starting Groq orchestrator..."
+                    : "Starting orchestrator...",
+          ),
+          duration: const Duration(seconds: 1),
+        ),
+      );
+
+      final started = await OrchestratorManager.instance.start(
+        hfToken: token,
+        modelId: modelId,
+        backend: desiredBackend,
+        ollamaBaseUrl: ollamaBaseUrl,
+        groqApiKey: groqApiKey,
+      );
+
+      if (!mounted) return;
+
+      if (started) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(switch (desiredBackend) {
+              OrchestratorBackend.ollama => "Ollama orchestrator active",
+              OrchestratorBackend.groq => "Groq orchestrator active",
+              _ => "Orchestrator active",
+            }),
+            backgroundColor: const Color.fromARGB(255, 76, 175, 80),
+          ),
+        );
+        setState(() {});
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(switch (desiredBackend) {
+              OrchestratorBackend.ollama => "Failed to start Ollama orchestrator",
+              OrchestratorBackend.groq => "Failed to start Groq orchestrator",
+              _ => "Failed to start orchestrator",
+            }),
+            backgroundColor: AppTheme.danger,
+          ),
+        );
+      }
+      return;
+
+      /*
       // Get HF token from credentials database
       final creds = await AgentCredentialsRepository.instance.getCredentials();
       final token = creds?.hfToken;
@@ -462,6 +606,7 @@ class _ChatViewState extends StateManager<ChatView> {
           ),
         );
       }
+      */
     } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(

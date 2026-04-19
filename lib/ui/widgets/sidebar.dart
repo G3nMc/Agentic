@@ -4,8 +4,11 @@ import 'package:uuid/uuid.dart';
 import '../../core/constants/api_constants.dart';
 import '../../core/theme/app_theme.dart';
 import '../../data/models/conversation.dart';
+import '../../data/repositories/backend_settings_repository.dart';
 import '../../data/repositories/conversation_repository.dart';
 import '../../data/repositories/settings_repository.dart';
+import '../../services/groq_service.dart';
+import '../../services/llm_service.dart';
 import '../../statemanagement/method_data.dart';
 import '../../statemanagement/method_listener.dart';
 import '../../statemanagement/state_manager.dart';
@@ -56,9 +59,21 @@ class _SidebarState extends StateManager<Sidebar> {
   Future<void> _newChat() async {
     final now = DateTime.now().millisecondsSinceEpoch;
     final id = const Uuid().v4();
-    final selectedModel =
-        (await SettingsRepository.instance.getSelectedModelId()) ??
-            ApiConstants.defaultModelId;
+    final backend = await BackendSettingsRepository.instance.getActiveBackend();
+    final selectedModel = switch (backend) {
+      LlmBackend.ollama ||
+      LlmBackend.ollamaPython ||
+      LlmBackend.ollamaOrchestrator =>
+        await BackendSettingsRepository.instance.getOllamaModel(),
+      // For Groq backends use the saved Groq model so the new conversation
+      // is initialised with the correct model ID from the start.
+      LlmBackend.groq ||
+      LlmBackend.groqOrchestrator =>
+        await BackendSettingsRepository.instance.getGroqModel() ??
+            GroqService.fallbackModels.first,
+      _ => (await SettingsRepository.instance.getSelectedModelId()) ??
+          ApiConstants.defaultModelId,
+    };
 
     final conversation = Conversation(
       id: id,
@@ -312,9 +327,18 @@ class _SidebarConversationTile extends StatefulWidget {
 
 class _SidebarConversationTileState extends State<_SidebarConversationTile> {
   bool _hover = false;
+  // When the popup menu is open, the cursor moves off the tile into the
+  // overlay, which fires `MouseRegion.onExit` → `_hover = false`. If we
+  // relied purely on `_hover || isActive` to render the PopupMenuButton,
+  // the button would unmount while the menu is open, which Flutter treats
+  // as a cancel and closes the menu before the user can click "Delete".
+  // Tracking `_menuOpen` pins the button in the tree for the menu's
+  // lifetime, so the Rename / Delete actions fire for non-active tiles too.
+  bool _menuOpen = false;
 
   @override
   Widget build(BuildContext context) {
+    final showActions = _hover || widget.isActive || _menuOpen;
     return MouseRegion(
       onEnter: (_) => setState(() => _hover = true),
       onExit: (_) => setState(() => _hover = false),
@@ -344,13 +368,20 @@ class _SidebarConversationTileState extends State<_SidebarConversationTile> {
                   ),
                 ),
               ),
-              if (_hover || widget.isActive)
+              if (showActions)
                 PopupMenuButton<String>(
                   tooltip: "More",
                   icon: const Icon(Icons.more_horiz, size: 16, color: AppTheme.textSecondary),
                   splashRadius: 14,
                   padding: EdgeInsets.zero,
+                  onOpened: () {
+                    if (mounted) setState(() => _menuOpen = true);
+                  },
+                  onCanceled: () {
+                    if (mounted) setState(() => _menuOpen = false);
+                  },
                   onSelected: (value) {
+                    if (mounted) setState(() => _menuOpen = false);
                     if (value == "rename") widget.onRename();
                     if (value == "delete") widget.onDelete();
                   },
