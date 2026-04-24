@@ -22,17 +22,20 @@ class BackendSettingsRepository {
   static const String _kGroqModel = "groq_model";
   static const String _kGroqTemperature = "groq_temperature";
   static const String _kGroqMaxTokens = "groq_max_tokens";
+  static const String _kGroqTpmLimit = "groq_tpm_limit";
 
   static const String _kGeminiApiKey = "gemini_api_key";
   static const String _kGeminiModel = "gemini_model";
   static const String _kGeminiTemperature = "gemini_temperature";
   static const String _kGeminiMaxTokens = "gemini_max_tokens";
   static const String _kGeminiModels = "gemini_models";
+  static const String _kGeminiTpmLimit = "gemini_tpm_limit";
 
   static const String _kOpenRouterApiKey = "openrouter_api_key";
   static const String _kOpenRouterModel = "openrouter_model";
   static const String _kOpenRouterTemperature = "openrouter_temperature";
   static const String _kOpenRouterMaxTokens = "openrouter_max_tokens";
+  static const String _kOpenRouterTpmLimit = "openrouter_tpm_limit";
 
   // /api/generate backend (custom Ollama-compatible endpoint)
   static const String _kGenerateBaseUrl = "generate_base_url";
@@ -279,6 +282,15 @@ class BackendSettingsRepository {
   Future<void> setGroqMaxTokens(int v) =>
       _writeString(_kGroqMaxTokens, v.toString());
 
+  /// Tokens-per-minute rate limit for Groq (0 = unlimited). Applied when
+  /// the orchestrator wraps the backend in its rate-limited decorator.
+  Future<int> getGroqTpmLimit() async {
+    final v = await _readString(_kGroqTpmLimit);
+    return int.tryParse(v ?? '') ?? 0;
+  }
+  Future<void> setGroqTpmLimit(int v) =>
+      _writeString(_kGroqTpmLimit, v.toString());
+
   // ---------------------------------------------------------------------------
   // Gemini settings
   // ---------------------------------------------------------------------------
@@ -303,6 +315,13 @@ class BackendSettingsRepository {
   }
   Future<void> setGeminiMaxTokens(int v) =>
       _writeString(_kGeminiMaxTokens, v.toString());
+
+  Future<int> getGeminiTpmLimit() async {
+    final v = await _readString(_kGeminiTpmLimit);
+    return int.tryParse(v ?? '') ?? 0;
+  }
+  Future<void> setGeminiTpmLimit(int v) =>
+      _writeString(_kGeminiTpmLimit, v.toString());
 
   Future<List<String>> getGeminiModels() async {
     final raw = await _readString(_kGeminiModels);
@@ -344,6 +363,13 @@ class BackendSettingsRepository {
   }
   Future<void> setOpenRouterMaxTokens(int v) =>
       _writeString(_kOpenRouterMaxTokens, v.toString());
+
+  Future<int> getOpenRouterTpmLimit() async {
+    final v = await _readString(_kOpenRouterTpmLimit);
+    return int.tryParse(v ?? '') ?? 0;
+  }
+  Future<void> setOpenRouterTpmLimit(int v) =>
+      _writeString(_kOpenRouterTpmLimit, v.toString());
 
   // ---------------------------------------------------------------------------
   // /api/generate backend settings

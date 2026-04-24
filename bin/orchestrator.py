@@ -29,6 +29,7 @@ Usage:
 """
 
 import argparse
+import collections
 import dataclasses
 import enum
 import io
@@ -1040,6 +1041,196 @@ class ModelBackend:
             tools: Optional[List[Dict[str, Any]]] = None,
     ) -> Tuple[str, str]:
         raise NotImplementedError
+
+
+# ============================================================================
+# RATE LIMITING
+# ============================================================================
+#
+# Cloud backends (Groq free tier in particular) enforce a per-minute token
+# quota that is small enough (6-8k TPM) to clip even one medium conversation.
+# The orchestrator used to surface the 413 straight to the user; now we
+# optionally wrap any backend in a TokenBucket that:
+#   - Sleeps before the next call when the rolling-60s usage plus the
+#     estimated cost of this call would exceed the limit.
+#   - Auto-trims the oldest non-system messages when a single request is
+#     larger than the entire per-minute budget (otherwise no amount of
+#     waiting would ever let it through).
+#   - Self-corrects the estimator on 413 by reading Groq's "Requested N"
+#     field out of the error body.
+#
+# Keyed by (backend-label, model-id) so the same orchestrator process can
+# share limits across sessions but not across unrelated models.
+
+def _estimate_tokens(messages, max_tokens: int) -> int:
+    """Cheap prompt-size estimate: chars/4 is within ~15% of the real
+    tokenizer for English/code and avoids a tiktoken dependency. Adds the
+    reply budget so we reserve for the response, not just the prompt."""
+    total_chars = 0
+    for m in messages or []:
+        c = m.get("content")
+        if isinstance(c, str):
+            total_chars += len(c)
+        elif isinstance(c, list):
+            for part in c:
+                if isinstance(part, dict):
+                    total_chars += len(str(part.get("text", "")))
+    # +10 per message as overhead for role tokens and separators.
+    overhead = 10 * len(messages or [])
+    return (total_chars // 4) + overhead + max_tokens
+
+
+class TokenBucket:
+    """Sliding 60-second window of (timestamp, tokens_used) entries."""
+
+    WINDOW_SECONDS = 60.0
+    # Use 95% of the nominal limit as the effective budget — the estimator
+    # is imperfect and Groq counts a bit more than chars/4 suggests.
+    SAFETY_FACTOR = 0.95
+
+    def __init__(self, tpm_limit: int):
+        self.tpm_limit = int(tpm_limit)
+        self._entries: "collections.deque[Tuple[float, int]]" = collections.deque()
+
+    def _effective_limit(self) -> int:
+        return int(self.tpm_limit * self.SAFETY_FACTOR)
+
+    def _expire(self, now: float) -> None:
+        cutoff = now - self.WINDOW_SECONDS
+        while self._entries and self._entries[0][0] < cutoff:
+            self._entries.popleft()
+
+    def used_in_window(self) -> int:
+        now = time.time()
+        self._expire(now)
+        return sum(t for _, t in self._entries)
+
+    def wait_for_budget(self, estimated_tokens: int) -> float:
+        """Block until there is room for `estimated_tokens`. Returns the
+        total seconds slept. Does NOT reserve — call `record` after the
+        request actually completes."""
+        if self.tpm_limit <= 0:
+            return 0.0
+        slept_total = 0.0
+        while True:
+            now = time.time()
+            self._expire(now)
+            used = sum(t for _, t in self._entries)
+            if used + estimated_tokens <= self._effective_limit():
+                return slept_total
+            # Wait just past the moment the oldest entry expires.
+            oldest_ts = self._entries[0][0]
+            sleep_s = max(0.1, (oldest_ts + self.WINDOW_SECONDS) - now + 0.05)
+            # Cap single sleep so the user gets a heartbeat line.
+            sleep_s = min(sleep_s, 5.0)
+            print(
+                f"[orch] TPM limit: {used}/{self._effective_limit()} used, "
+                f"need {estimated_tokens} — sleeping {sleep_s:.1f}s.",
+                file=sys.stderr,
+                flush=True,
+            )
+            time.sleep(sleep_s)
+            slept_total += sleep_s
+
+    def record(self, tokens_used: int) -> None:
+        if self.tpm_limit <= 0 or tokens_used <= 0:
+            return
+        self._entries.append((time.time(), int(tokens_used)))
+
+
+class RateLimitedBackend(ModelBackend):
+    """Decorator that gates calls to an inner backend with a TokenBucket.
+    Also auto-trims oversize histories and retries once on 413."""
+
+    def __init__(self, inner: ModelBackend, tpm_limit: int, label: str = ""):
+        self.inner = inner
+        self.bucket = TokenBucket(tpm_limit)
+        self.label = label or inner.__class__.__name__
+        # Expose common attributes so callers that introspect still work.
+        self.model_id = getattr(inner, "model_id", "")
+
+    def __getattr__(self, name):
+        # Pass-through for health_check and any other backend-specific
+        # methods the orchestrator setup calls.
+        return getattr(self.inner, name)
+
+    def chat(self, messages, max_tokens, temperature, tools=None):
+        if self.bucket.tpm_limit <= 0:
+            return self.inner.chat(messages, max_tokens, temperature, tools)
+
+        estimated = _estimate_tokens(messages, max_tokens)
+        limit = self.bucket._effective_limit()
+
+        # Single request bigger than the whole per-minute budget: no amount
+        # of waiting helps. Auto-trim the oldest non-system messages and
+        # retry. If it still won't fit after trimming to just the system
+        # prompt + last user turn, surface a clear error.
+        if estimated > limit:
+            messages = self._trim_to_fit(messages, max_tokens, limit)
+            estimated = _estimate_tokens(messages, max_tokens)
+            if estimated > limit:
+                raise RuntimeError(
+                    f"Single request ({estimated} est. tokens) exceeds the "
+                    f"TPM limit of {self.bucket.tpm_limit} even after "
+                    f"trimming history. Lower max_tokens, raise TPM in "
+                    f"Settings, or pick a model with a larger quota."
+                )
+            print(
+                f"[orch] Auto-trimmed history to fit TPM budget "
+                f"({estimated}/{limit}).",
+                file=sys.stderr,
+                flush=True,
+            )
+
+        self.bucket.wait_for_budget(estimated)
+
+        try:
+            content, finish_reason = self.inner.chat(
+                messages, max_tokens, temperature, tools
+            )
+        except Exception as e:
+            # Groq / OpenAI-style 413: the body contains "Requested N". Use
+            # that to bump the estimator by recording the real cost so the
+            # next call waits the right amount, then re-raise.
+            requested = self._parse_requested_tokens(str(e))
+            if requested:
+                self.bucket.record(requested)
+                print(
+                    f"[orch] 413 rate-limit: server reported "
+                    f"{requested} tokens; charged the bucket.",
+                    file=sys.stderr,
+                    flush=True,
+                )
+            raise
+
+        # Record actual usage if the inner backend surfaced it as an
+        # attribute (backends set `self.last_usage_tokens` when known),
+        # otherwise fall back to the estimate.
+        actual = getattr(self.inner, "last_usage_tokens", 0) or estimated
+        self.bucket.record(actual)
+        return content, finish_reason
+
+    @staticmethod
+    def _parse_requested_tokens(err_msg: str) -> int:
+        m = re.search(r"Requested\s+(\d+)", err_msg)
+        return int(m.group(1)) if m else 0
+
+    @staticmethod
+    def _trim_to_fit(messages, max_tokens: int, limit: int) -> List[Dict[str, Any]]:
+        """Drop the oldest non-system messages until the estimate fits.
+        Keeps the system prompt (index 0 if role=system) and the most
+        recent user turn."""
+        if not messages:
+            return messages
+        kept = list(messages)
+        # Always keep system prompt if present at [0].
+        head: List[Dict[str, Any]] = []
+        if kept and kept[0].get("role") == "system":
+            head = [kept.pop(0)]
+        # Drop from the front (oldest) until it fits or only 1 msg left.
+        while len(kept) > 1 and _estimate_tokens(head + kept, max_tokens) > limit:
+            kept.pop(0)
+        return head + kept
 
 
 class HFBackend(ModelBackend):
@@ -2657,6 +2848,17 @@ def main():
              "(phi3) can push a single iteration over a minute.",
     )
     parser.add_argument(
+        "--tpm-limit",
+        type=int,
+        default=0,
+        help="Tokens-per-minute cap for the selected backend. 0 = unlimited "
+             "(default). When >0, the orchestrator wraps the backend in a "
+             "sliding-window rate limiter that sleeps before oversize calls "
+             "and auto-trims history when a single request exceeds the "
+             "budget. Use the free-tier TPM from your provider dashboard "
+             "(Groq free: 6000-8000 depending on model).",
+    )
+    parser.add_argument(
         "--groq-api-key",
         default="",
         help="Groq Cloud API key (required when --backend=groq). "
@@ -2816,6 +3018,16 @@ def main():
         print(
             f"[orch] Using Ollama backend at {args.ollama_base_url} "
             f"(num_ctx={args.ollama_num_ctx})",
+            file=sys.stderr,
+        )
+
+    if args.tpm_limit and args.tpm_limit > 0:
+        backend = RateLimitedBackend(
+            backend, tpm_limit=args.tpm_limit, label=args.backend
+        )
+        print(
+            f"[orch] TPM rate limiter active: {args.tpm_limit} tokens/min "
+            f"(effective {int(args.tpm_limit * 0.95)}).",
             file=sys.stderr,
         )
 

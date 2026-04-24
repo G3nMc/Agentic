@@ -93,6 +93,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
   double _groqTemperature = BackendSettingsRepository.defaultGroqTemperature;
   final TextEditingController _groqMaxTokensController = TextEditingController();
   Timer? _groqMaxTokensSaveTimer;
+  final TextEditingController _groqTpmLimitController = TextEditingController();
+  Timer? _groqTpmLimitSaveTimer;
 
   // Gemini settings
   List<String> _geminiModels = List<String>.from(
@@ -107,6 +109,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
   double _geminiTemperature = BackendSettingsRepository.defaultGeminiTemperature;
   final TextEditingController _geminiMaxTokensController = TextEditingController();
   Timer? _geminiMaxTokensSaveTimer;
+  final TextEditingController _geminiTpmLimitController = TextEditingController();
+  Timer? _geminiTpmLimitSaveTimer;
 
   // OpenRouter settings
   final TextEditingController _openRouterApiKeyController = TextEditingController();
@@ -118,6 +122,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
   double _openRouterTemperature = BackendSettingsRepository.defaultOpenRouterTemperature;
   final TextEditingController _openRouterMaxTokensController = TextEditingController();
   Timer? _openRouterMaxTokensSaveTimer;
+  final TextEditingController _openRouterTpmLimitController = TextEditingController();
+  Timer? _openRouterTpmLimitSaveTimer;
 
   // /api/generate backend settings
   final TextEditingController _generateBaseUrlController = TextEditingController();
@@ -193,17 +199,23 @@ class _SettingsScreenState extends State<SettingsScreen> {
     _ollamaNumCtxController.dispose();
     _groqApiKeySaveTimer?.cancel();
     _groqMaxTokensSaveTimer?.cancel();
+    _groqTpmLimitSaveTimer?.cancel();
     _groqApiKeyController.dispose();
     _groqMaxTokensController.dispose();
+    _groqTpmLimitController.dispose();
     _geminiApiKeySaveTimer?.cancel();
     _geminiMaxTokensSaveTimer?.cancel();
+    _geminiTpmLimitSaveTimer?.cancel();
     _geminiApiKeyController.dispose();
     _geminiNewModelController.dispose();
     _geminiMaxTokensController.dispose();
+    _geminiTpmLimitController.dispose();
     _openRouterApiKeySaveTimer?.cancel();
     _openRouterMaxTokensSaveTimer?.cancel();
+    _openRouterTpmLimitSaveTimer?.cancel();
     _openRouterApiKeyController.dispose();
     _openRouterMaxTokensController.dispose();
+    _openRouterTpmLimitController.dispose();
     _generateBaseUrlSaveTimer?.cancel();
     _generateModelSaveTimer?.cancel();
     _generateBaseUrlController.dispose();
@@ -286,6 +298,16 @@ class _SettingsScreenState extends State<SettingsScreen> {
     });
   }
 
+  void _scheduleGroqTpmLimitSave(String value) {
+    _groqTpmLimitSaveTimer?.cancel();
+    _groqTpmLimitSaveTimer = Timer(const Duration(milliseconds: 600), () async {
+      final v = int.tryParse(value.trim()) ?? 0;
+      // 0 is a valid value (= unlimited); just clamp negatives to 0.
+      await BackendSettingsRepository.instance
+          .setGroqTpmLimit(v < 0 ? 0 : v);
+    });
+  }
+
   void _scheduleGroqApiKeySave(String value) {
     _groqApiKeySaveTimer?.cancel();
     _groqApiKeySaveTimer = Timer(const Duration(milliseconds: 600), () async {
@@ -328,6 +350,25 @@ class _SettingsScreenState extends State<SettingsScreen> {
       if (v != null && v > 0) {
         await BackendSettingsRepository.instance.setOpenRouterMaxTokens(v);
       }
+    });
+  }
+
+  void _scheduleGeminiTpmLimitSave(String value) {
+    _geminiTpmLimitSaveTimer?.cancel();
+    _geminiTpmLimitSaveTimer = Timer(const Duration(milliseconds: 600), () async {
+      final v = int.tryParse(value.trim()) ?? 0;
+      await BackendSettingsRepository.instance
+          .setGeminiTpmLimit(v < 0 ? 0 : v);
+    });
+  }
+
+  void _scheduleOpenRouterTpmLimitSave(String value) {
+    _openRouterTpmLimitSaveTimer?.cancel();
+    _openRouterTpmLimitSaveTimer =
+        Timer(const Duration(milliseconds: 600), () async {
+      final v = int.tryParse(value.trim()) ?? 0;
+      await BackendSettingsRepository.instance
+          .setOpenRouterTpmLimit(v < 0 ? 0 : v);
     });
   }
 
@@ -483,6 +524,24 @@ class _SettingsScreenState extends State<SettingsScreen> {
             ),
             onChanged: _scheduleGroqMaxTokensSave,
           ),
+          const SizedBox(height: 12),
+
+          // Tokens-per-minute rate limit (orchestrator side)
+          TextField(
+            controller: _groqTpmLimitController,
+            keyboardType: TextInputType.number,
+            decoration: const InputDecoration(
+              labelText: 'TPM limit (0 = unlimited)',
+              hintText: '0',
+              helperText:
+                  'Tokens-per-minute cap for the orchestrator. Free tier '
+                  'Groq models typically allow 6000–8000 TPM. When set, the '
+                  'orchestrator queues oversize requests and auto-trims '
+                  'history that would exceed the minute budget.',
+              suffixText: 'TPM',
+            ),
+            onChanged: _scheduleGroqTpmLimitSave,
+          ),
         ],
       ),
     );
@@ -610,6 +669,18 @@ class _SettingsScreenState extends State<SettingsScreen> {
               suffixText: 'tokens',
             ),
             onChanged: _scheduleOpenRouterMaxTokensSave,
+          ),
+          const SizedBox(height: 16),
+          TextField(
+            controller: _openRouterTpmLimitController,
+            keyboardType: TextInputType.number,
+            decoration: const InputDecoration(
+              labelText: 'TPM limit (0 = unlimited)',
+              hintText: '0',
+              helperText: 'Tokens-per-minute cap applied by the orchestrator. Set to stay under the provider/free-tier limit.',
+              suffixText: 'TPM',
+            ),
+            onChanged: _scheduleOpenRouterTpmLimitSave,
           ),
         ],
       ),
@@ -806,6 +877,18 @@ class _SettingsScreenState extends State<SettingsScreen> {
               suffixText: 'tokens',
             ),
             onChanged: _scheduleGeminiMaxTokensSave,
+          ),
+          const SizedBox(height: 16),
+          TextField(
+            controller: _geminiTpmLimitController,
+            keyboardType: TextInputType.number,
+            decoration: const InputDecoration(
+              labelText: 'TPM limit (0 = unlimited)',
+              hintText: '0',
+              helperText: 'Tokens-per-minute cap applied by the orchestrator. Set to stay under the provider/free-tier limit.',
+              suffixText: 'TPM',
+            ),
+            onChanged: _scheduleGeminiTpmLimitSave,
           ),
           const SizedBox(height: 16),
           Align(
@@ -1084,15 +1167,18 @@ class _SettingsScreenState extends State<SettingsScreen> {
     final groqModel = await BackendSettingsRepository.instance.getGroqModel();
     final groqTemperature = await BackendSettingsRepository.instance.getGroqTemperature();
     final groqMaxTokens = await BackendSettingsRepository.instance.getGroqMaxTokens();
+    final groqTpmLimit = await BackendSettingsRepository.instance.getGroqTpmLimit();
     final geminiApiKey = await BackendSettingsRepository.instance.getGeminiApiKey();
     final geminiModel = await BackendSettingsRepository.instance.getGeminiModel();
     final geminiModels = await BackendSettingsRepository.instance.getGeminiModels();
     final geminiTemperature = await BackendSettingsRepository.instance.getGeminiTemperature();
     final geminiMaxTokens = await BackendSettingsRepository.instance.getGeminiMaxTokens();
+    final geminiTpmLimit = await BackendSettingsRepository.instance.getGeminiTpmLimit();
     final openRouterApiKey = await BackendSettingsRepository.instance.getOpenRouterApiKey();
     final openRouterModel = await BackendSettingsRepository.instance.getOpenRouterModel();
     final openRouterTemperature = await BackendSettingsRepository.instance.getOpenRouterTemperature();
     final openRouterMaxTokens = await BackendSettingsRepository.instance.getOpenRouterMaxTokens();
+    final openRouterTpmLimit = await BackendSettingsRepository.instance.getOpenRouterTpmLimit();
     final genBaseUrl = await BackendSettingsRepository.instance.getGenerateBaseUrl();
     final genModel = await BackendSettingsRepository.instance.getGenerateModel();
     final genApiKey = await BackendSettingsRepository.instance.getGenerateApiKey();
@@ -1123,15 +1209,18 @@ class _SettingsScreenState extends State<SettingsScreen> {
       _groqSelectedModel = groqModel ?? GroqService.fallbackModels.first;
       _groqTemperature = groqTemperature;
       _groqMaxTokensController.text = groqMaxTokens.toString();
+      _groqTpmLimitController.text = groqTpmLimit.toString();
       _geminiApiKeyController.text = geminiApiKey ?? '';
       _geminiModels = geminiModels;
       _geminiSelectedModel = (geminiModel == null || geminiModel.trim().isEmpty) ? BackendSettingsRepository.defaultGeminiModel : geminiModel.trim();
       _geminiTemperature = geminiTemperature;
       _geminiMaxTokensController.text = geminiMaxTokens.toString();
+      _geminiTpmLimitController.text = geminiTpmLimit.toString();
       _openRouterApiKeyController.text = openRouterApiKey ?? '';
       _openRouterSelectedModel = openRouterModel ?? OpenRouterService.fallbackModels.first;
       _openRouterTemperature = openRouterTemperature;
       _openRouterMaxTokensController.text = openRouterMaxTokens.toString();
+      _openRouterTpmLimitController.text = openRouterTpmLimit.toString();
       _generateBaseUrlController.text = genBaseUrl ?? OllamaGenerateService.defaultBaseUrl;
       _generateModelController.text = genModel ?? '';
       _generateApiKeyController.text = genApiKey ?? '';
