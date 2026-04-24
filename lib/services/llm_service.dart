@@ -282,6 +282,7 @@ class LlmService {
             : (savedModel.isNotEmpty ? savedModel : modelId);
         final temperature = await settings.getGroqTemperature();
         final maxTokens = await settings.getGroqMaxTokens();
+        final tpmLimit = await settings.getGroqTpmLimit();
 
         if (OrchestratorManager.instance.isRunning &&
             OrchestratorManager.instance.currentBackend !=
@@ -295,6 +296,7 @@ class LlmService {
             groqApiKey: groqKey,
             temperature: temperature,
             maxTokens: maxTokens,
+            tpmLimit: tpmLimit,
           );
 
           // If startup failed because the `groq` Python package is missing
@@ -317,6 +319,7 @@ class LlmService {
                   groqApiKey: groqKey,
                   temperature: temperature,
                   maxTokens: maxTokens,
+                  tpmLimit: tpmLimit,
                 );
               }
             }
@@ -345,6 +348,7 @@ class LlmService {
         final geminiModel = resolveGeminiModel(modelId, savedGeminiModel);
         final temperature = await settings.getGeminiTemperature();
         final maxTokens = await settings.getGeminiMaxTokens();
+        final tpmLimit = await settings.getGeminiTpmLimit();
 
         if (OrchestratorManager.instance.isRunning &&
             OrchestratorManager.instance.currentBackend !=
@@ -358,6 +362,7 @@ class LlmService {
             geminiApiKey: geminiKey,
             temperature: temperature,
             maxTokens: maxTokens,
+            tpmLimit: tpmLimit,
           );
 
           if (!started) {
@@ -376,6 +381,7 @@ class LlmService {
                   geminiApiKey: geminiKey,
                   temperature: temperature,
                   maxTokens: maxTokens,
+                  tpmLimit: tpmLimit,
                 );
               }
             }
@@ -420,6 +426,7 @@ class LlmService {
         final orModel = resolveOpenRouterModel(modelId, orSavedModel);
         final orTemperature = await orSettings.getOpenRouterTemperature();
         final orMaxTokens = await orSettings.getOpenRouterMaxTokens();
+        final orTpmLimit = await orSettings.getOpenRouterTpmLimit();
 
         if (OrchestratorManager.instance.isRunning &&
             OrchestratorManager.instance.currentBackend !=
@@ -433,6 +440,7 @@ class LlmService {
             openRouterApiKey: orKey,
             temperature: orTemperature,
             maxTokens: orMaxTokens,
+            tpmLimit: orTpmLimit,
           );
 
           // Auto-install deps on first run (openrouter uses stdlib only,
@@ -453,6 +461,7 @@ class LlmService {
                   openRouterApiKey: orKey,
                   temperature: orTemperature,
                   maxTokens: orMaxTokens,
+                  tpmLimit: orTpmLimit,
                 );
               }
             }

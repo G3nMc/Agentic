@@ -216,6 +216,7 @@ class OrchestratorManager {
     String? groqApiKey,
     String? geminiApiKey,
     String? openRouterApiKey,
+    int? tpmLimit,
   }) async {
     if (_isRunning) return false;
 
@@ -310,6 +311,9 @@ class OrchestratorManager {
       }
       if (ollamaApiKey != null && ollamaApiKey.isNotEmpty) {
         args.addAll(['--ollama-api-key', ollamaApiKey]);
+      }
+      if (tpmLimit != null && tpmLimit > 0) {
+        args.addAll(['--tpm-limit', tpmLimit.toString()]);
       }
 
       _process = await Process.start(
