@@ -323,7 +323,7 @@ class _SendButton extends StatelessWidget {
               width: 48,
               height: 48,
               alignment: Alignment.center,
-              child: const Icon(Icons.stop_rounded, size: 18, color: Colors.white),
+              child: const Icon(Icons.stop_outlined, size: 30, color: Colors.grey),
             ),
           ),
         ),

@@ -73,7 +73,14 @@
       "PowerShell(Get-ChildItem -Path \"C:\\\\Users\\\\Gentian\" -Filter \"flutter.bat\" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 5 FullName; Get-ChildItem -Path \"C:\\\\flutter\", \"C:\\\\src\\\\flutter\", \"$env:LOCALAPPDATA\\\\flutter\", \"$env:USERPROFILE\\\\flutter\" -Filter \"flutter.bat\" -ErrorAction SilentlyContinue | Select-Object FullName)",
       "WebFetch(domain:docs.ollama.com)",
       "Bash(awk '/^[a-zA-Z]/' \"C:\\\\Users\\\\Gentian\\\\AsPro\\\\AI\\\\hf_chat_flutter\\\\lib\\\\ui\\\\screens\\\\settings_screen.dart\")",
-      "WebFetch(domain:openrouter.ai)"
+      "WebFetch(domain:openrouter.ai)",
+      "Bash(python -c \"import sys,json; d=json.load\\(sys.stdin\\); print\\('models:', [m['name'] for m in d.get\\('models', []\\)]\\)\")",
+      "Bash(timeout 120 python bin/orchestrator.py --backend ollama --model phi3:mini --interactive)",
+      "Bash(flutter test *)",
+      "Bash(git add *)",
+      "Bash(git commit -m ' *)",
+      "Bash(git checkout *)",
+      "Bash(git merge *)"
     ]
   }
 }
