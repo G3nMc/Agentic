@@ -3,7 +3,10 @@
 ///
 /// The rule is:
 ///   - Use `modelId` (from the conversation, set by the model switcher) when it
-///     is non-empty AND does not contain '/' (HF model IDs always contain '/').
+///     is non-empty AND does not contain ':' (HuggingFace model IDs carry a
+///     `:provider` suffix like `Qwen/...:hyperbolic`; Groq's own IDs — even
+///     the newer slashed ones like `openai/gpt-oss-120b` or `qwen/qwen3-32b`
+///     — never use ':').
 ///   - Fall back to `savedModel` (from BackendSettingsRepository) otherwise.
 ///   - If both are empty, use whatever non-empty value exists.
 library;
@@ -14,7 +17,7 @@ import 'package:flutter_test/flutter_test.dart';
 /// Keeping it as a standalone function makes the test self-contained and
 /// ensures the tests stay valid even if the service is refactored.
 String resolveGroqModel(String modelId, String savedModel) {
-  if (modelId.isNotEmpty && !modelId.contains('/')) {
+  if (modelId.isNotEmpty && !modelId.contains(':')) {
     return modelId;
   }
   return savedModel.isNotEmpty ? savedModel : modelId;
@@ -29,13 +32,22 @@ void main() {
       );
     });
 
-    test('falls back to savedModel when modelId contains "/" (HF model ID)', () {
+    test('falls back to savedModel when modelId is a HF id (":provider" suffix)', () {
       expect(
         resolveGroqModel(
-          'HuggingFaceH4/zephyr-7b-beta',
+          'Qwen/Qwen3-Coder-480B-A35B-Instruct:hyperbolic',
           'llama-3.3-70b-versatile',
         ),
         equals('llama-3.3-70b-versatile'),
+      );
+    });
+
+    test('uses slashed Groq model id (e.g. openai/gpt-oss-120b)', () {
+      // Regression: earlier logic wrongly rejected any '/' as a HF id, so
+      // picking gpt-oss-120b in the UI silently fell through to savedModel.
+      expect(
+        resolveGroqModel('openai/gpt-oss-120b', 'qwen/qwen3-32b'),
+        equals('openai/gpt-oss-120b'),
       );
     });
 
@@ -60,11 +72,11 @@ void main() {
       );
     });
 
-    test('returns modelId even if savedModel is empty and modelId has slash', () {
+    test('returns modelId when savedModel is empty and modelId has ":provider"', () {
       // Edge case: nothing useful in savedModel, so return the only value we have.
       expect(
-        resolveGroqModel('some/hf-model', ''),
-        equals('some/hf-model'),
+        resolveGroqModel('some-model:hf-inference', ''),
+        equals('some-model:hf-inference'),
       );
     });
 
