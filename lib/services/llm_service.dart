@@ -254,10 +254,12 @@ class LlmService {
         final groqKey = await settings.getGroqApiKey() ?? '';
         final savedModel = await settings.getGroqModel() ?? '';
         // Prefer the per-conversation model (set via the chat-header model
-        // switcher).  HuggingFace model IDs contain '/' — if modelId looks
-        // like one of those it means the conversation was created before the
-        // Groq backend was configured, so fall back to the saved setting.
-        final groqModel = (modelId.isNotEmpty && !modelId.contains('/'))
+        // switcher). HuggingFace model IDs are tagged with a `:provider`
+        // suffix (e.g. `Qwen/...:hyperbolic`) — a stale HF id leaking into
+        // the Groq call is the only case we want to reject. Groq's own
+        // newer models use `provider/model` format (openai/gpt-oss-120b,
+        // qwen/qwen3-32b), so a `/` check would wrongly reject them.
+        final groqModel = (modelId.isNotEmpty && !modelId.contains(':'))
             ? modelId
             : (savedModel.isNotEmpty ? savedModel : modelId);
         final temperature = await settings.getGroqTemperature();
@@ -275,7 +277,7 @@ class LlmService {
         final groqKey = await settings.getGroqApiKey() ?? '';
         final savedModel = await settings.getGroqModel() ?? '';
         // Same preference as the plain groq case above.
-        final groqModel = (modelId.isNotEmpty && !modelId.contains('/'))
+        final groqModel = (modelId.isNotEmpty && !modelId.contains(':'))
             ? modelId
             : (savedModel.isNotEmpty ? savedModel : modelId);
         final temperature = await settings.getGroqTemperature();
