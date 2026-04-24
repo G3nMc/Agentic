@@ -1980,6 +1980,11 @@ class Orchestrator:
                     f"[orch] Malformed tool call detected (retry {malformed_tool_retries}).",
                     file=sys.stderr,
                 )
+                print(
+                    f"[orch] Unparseable reply (first 500 chars): "
+                    f"{text_clean[:500]!r}",
+                    file=sys.stderr,
+                )
                 self.conversation_history.append({
                     "role": "user",
                     "content": (
@@ -2118,6 +2123,50 @@ class Orchestrator:
             if '"tool"' in text or "'tool'" in text:
                 return True
         return False
+
+    # Matches the hybrid JSON-inside-XML pattern some models emit, e.g.:
+    #   {"tool":"run_command"><parameters>{"command":"..."}}
+    # Captures: (1) tool name, (2) parameters JSON body.
+    _HYBRID_RE = re.compile(
+        r'["\']?(?:tool|name)["\']?\s*["\':=]\s*["\']([a-zA-Z_][\w\-]*)["\']'
+        r'[^<{]*?<\s*parameters\s*>?\s*(\{.*?\})',
+        re.DOTALL | re.IGNORECASE,
+    )
+
+    @classmethod
+    def _repair_hybrid_tool_call(cls, text: str) -> Optional[str]:
+        """
+        Repair the common malformed pattern where a model mixes JSON and XML:
+            {"tool":"NAME"><parameters>{"key":"val"}}
+            {"tool":"NAME"}<parameters>{"key":"val"}</parameters>
+        Returns a valid JSON string ``{"tool":"NAME","parameters":{...}}`` or
+        None if no repair could be made.
+        """
+        if not text or "<parameters" not in text.lower():
+            return None
+        m = cls._HYBRID_RE.search(text)
+        if not m:
+            return None
+        name = m.group(1)
+        params_raw = m.group(2)
+        # Balance braces — the regex is non-greedy so it may under-count.
+        depth = 0
+        end = -1
+        for i, ch in enumerate(params_raw):
+            if ch == "{":
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+                if depth == 0:
+                    end = i + 1
+                    break
+        if end > 0:
+            params_raw = params_raw[:end]
+        try:
+            params_obj = json.loads(params_raw)
+        except json.JSONDecodeError:
+            return None
+        return json.dumps({"tool": name, "parameters": params_obj})
 
     @staticmethod
     def _looks_like_malformed_tool_call(text: str) -> bool:
@@ -2272,8 +2321,28 @@ class Orchestrator:
         # 1. Preferred: <tool>…</tool> — the tag boundaries are explicit, so
         #    we can grab the full body and let _extract_json_objects find the
         #    outermost object (handles nested braces in `parameters`).
-        for m in re.finditer(r"<tool[^>]*>(.*?)</tool>", response, re.DOTALL):
-            candidates.extend(Orchestrator._extract_json_objects(m.group(1)))
+        #    Also match <tool_call> (Qwen/Hermes/Llama 3.1) and <function_call>
+        #    (older OpenAI-style) since different model families use different tags.
+        _tag_re = re.compile(
+            r"<(tool|tool_call|function_call)[^>]*>(.*?)</\1>",
+            re.DOTALL | re.IGNORECASE,
+        )
+        for m in _tag_re.finditer(response):
+            body = m.group(2)
+            candidates.extend(Orchestrator._extract_json_objects(body))
+            # Repair: some models emit a hybrid like
+            #   {"tool":"X"><parameters>{...}}
+            # where <parameters> is an XML tag embedded inside JSON. Convert
+            # the XML wrapper into a proper JSON key so the object parses.
+            repaired = Orchestrator._repair_hybrid_tool_call(body)
+            if repaired:
+                candidates.append(repaired)
+
+        # 1b. Free-text hybrid (no wrapping tag).
+        if "<parameters>" in response.lower():
+            repaired_all = Orchestrator._repair_hybrid_tool_call(response)
+            if repaired_all:
+                candidates.append(repaired_all)
 
         # 2. ```json { … } ``` fences (some coder models love these).
         for m in re.finditer(r"```(?:json|tool)?\s*(\{.*?\})\s*```", response, re.DOTALL):
@@ -2334,9 +2403,23 @@ class Orchestrator:
 
         candidates: List[str] = []
 
-        # 1. Preferred: <tool>…</tool>
-        for m in re.finditer(r"<tool[^>]*>(.*?)</tool>", response, re.DOTALL):
-            candidates.extend(Orchestrator._extract_json_objects(m.group(1)))
+        # 1. Preferred: <tool>…</tool>, plus <tool_call> / <function_call>.
+        _tag_re = re.compile(
+            r"<(tool|tool_call|function_call)[^>]*>(.*?)</\1>",
+            re.DOTALL | re.IGNORECASE,
+        )
+        for m in _tag_re.finditer(response):
+            body = m.group(2)
+            candidates.extend(Orchestrator._extract_json_objects(body))
+            repaired = Orchestrator._repair_hybrid_tool_call(body)
+            if repaired:
+                candidates.append(repaired)
+
+        # 1b. Free-text hybrid (no wrapping tag) — repair whole response.
+        if "<parameters>" in response.lower():
+            repaired_all = Orchestrator._repair_hybrid_tool_call(response)
+            if repaired_all:
+                candidates.append(repaired_all)
 
         # 2. ```json { … } ``` fences
         for m in re.finditer(r"```(?:json|tool)?\s*(\{.*?\})\s*```", response, re.DOTALL):
