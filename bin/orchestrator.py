@@ -1936,9 +1936,9 @@ class Orchestrator:
             except Exception as e:
                 return f"Model error: {e}"
 
-            preview = (text or "").replace("\n", " ")[:200]
-            print(f"[orch] Model reply (iter {iteration}, finish={finish_reason}): "
-                  f"{preview!r}", file=sys.stderr)
+            preview = (text or "").replace("\n", " ")[:800]
+            print(f"[orch] Model reply (iter {iteration}, finish={finish_reason}, "
+                  f"len={len(text or '')}): {preview!r}", file=sys.stderr)
 
             # Strip <tool_call> blocks before storing in history — they waste
             # context and confuse the tool parser.  The raw `text` (with
@@ -2443,7 +2443,11 @@ class Orchestrator:
                         json.dumps({"tool": m.group(1), "parameters": _pargs})
                     )
 
-        results = []
+        results: List[Tuple[str, Dict[str, Any]]] = []
+        # Dedup: section 3 (free-text JSON scan) will re-pick up the same
+        # object already captured inside a <tool> tag in section 1. Use a
+        # set of (name, canonical-params-json) keys to drop repeats.
+        seen: set = set()
         for raw in candidates:
             for cleaned in Orchestrator._json_variants(raw):
                 try:
@@ -2460,7 +2464,10 @@ class Orchestrator:
                     except json.JSONDecodeError:
                         params = {}
                 if isinstance(name, str) and isinstance(params, dict):
-                    results.append((name, params))
+                    key = (name, json.dumps(params, sort_keys=True))
+                    if key not in seen:
+                        seen.add(key)
+                        results.append((name, params))
                     break
         return results
 
