@@ -28,26 +28,25 @@ Usage:
   python orchestrator.py --hf-token YOUR_TOKEN --model MODEL_ID
 """
 
-import argparse
-import dataclasses
-import enum
-import io
-import json
-import logging
 import os
-import re
-import subprocess
 import sys
+import json
+import argparse
+import subprocess
+import io
+import re
 import time
-from pathlib import Path
 from typing import List, Dict, Any, Callable, Optional, Tuple, Iterable
+from pathlib import Path
 
 sys.dont_write_bytecode = True
+
 
 # Force UTF-8 so emojis/non-ASCII don't crash on Windows consoles.
 if sys.platform == "win32" and sys.stdout.encoding != "utf-8":
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", newline="\n")
     sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8", newline="\n")
+
 
 REQUIRED_PACKAGES = {
     "huggingface_hub": "huggingface-hub>=0.19.0",
@@ -62,162 +61,9 @@ BACKEND_REQUIRED_MODULES = {
     "ollama": ("ollama",),
     "groq": ("groq",),
     "gemini": ("google.genai",),
-    # OpenRouter uses only stdlib (urllib) — no extra pip package needed.
-    "openrouter": (),
 }
 
 RESPONSE_SENTINEL = "__RESPONSE_END__"
-
-
-# ============================================================================
-# SECURITY & RELIABILITY PRIMITIVES
-# ============================================================================
-
-class CircuitState(enum.Enum):
-    """States for the circuit-breaker pattern."""
-    CLOSED    = "closed"     # Normal: requests go through.
-    OPEN      = "open"       # Failing: requests are rejected immediately.
-    HALF_OPEN = "half_open"  # Recovery probe: one request allowed through.
-
-
-class CircuitBreaker:
-    """
-    Classic circuit-breaker for wrapping unreliable operations.
-
-    Transitions:
-      CLOSED  -> OPEN      when consecutive failures reach failure_threshold
-      OPEN    -> HALF_OPEN after recovery_timeout seconds
-      HALF_OPEN -> CLOSED  on success; back to OPEN on failure
-    """
-
-    def __init__(self, name: str = "unnamed", failure_threshold: int = 5,
-                 recovery_timeout: float = 60.0):
-        self.name = name
-        self.failure_threshold = failure_threshold
-        self.recovery_timeout = recovery_timeout
-        self.state = CircuitState.CLOSED
-        self.failure_count = 0
-        self.last_failure_time: Optional[float] = None
-
-    def allow_request(self) -> bool:
-        """Return True when the caller should proceed with the operation."""
-        if self.state == CircuitState.CLOSED:
-            return True
-        if self.state == CircuitState.OPEN:
-            if (self.last_failure_time is not None
-                    and time.time() - self.last_failure_time > self.recovery_timeout):
-                self.state = CircuitState.HALF_OPEN
-                print(f"[circuit-breaker:{self.name}] HALF-OPEN: testing recovery.",
-                      file=sys.stderr, flush=True)
-                return True
-            return False
-        # HALF_OPEN: let one probe through
-        return True
-
-    def record_success(self):
-        """Call after a successful operation."""
-        if self.state != CircuitState.CLOSED:
-            print(f"[circuit-breaker:{self.name}] CLOSED (recovered).",
-                  file=sys.stderr, flush=True)
-        self.failure_count = 0
-        self.state = CircuitState.CLOSED
-
-    def record_failure(self):
-        """Call after a failed operation."""
-        self.failure_count += 1
-        self.last_failure_time = time.time()
-        if self.failure_count >= self.failure_threshold:
-            if self.state != CircuitState.OPEN:
-                print(
-                    f"[circuit-breaker:{self.name}] OPEN after "
-                    f"{self.failure_count} consecutive failures.",
-                    file=sys.stderr, flush=True,
-                )
-            self.state = CircuitState.OPEN
-
-
-@dataclasses.dataclass
-class SecurityConfig:
-    """
-    Operational policy applied by ToolRegistry.
-
-    sandbox_mode         -- when True, run_command is completely disabled
-                           and write/delete operations are blocked.
-                           Default: False — the agent operates with full
-                           freedom inside base_path; git is the safety net.
-    max_file_size_bytes  -- hard cap on content written by write_file /
-                           append_file. 0 means no limit (default).
-    enable_audit_log     -- when True, every tool call is appended to
-                           audit_log_path with timestamp, tool name,
-                           sanitized parameters, and result status.
-    audit_log_path       -- destination file for audit entries.
-    command_blocklist    -- substrings that must never appear in a
-                           run_command call (case-insensitive match).
-                           Default: empty — no commands are blocked.
-    """
-    sandbox_mode: bool = False
-    max_file_size_bytes: int = 0          # 0 = no limit
-    enable_audit_log: bool = True
-    audit_log_path: str = "orchestrator_audit.log"
-    command_blocklist: tuple = dataclasses.field(default_factory=tuple)  # empty = no restrictions
-
-
-def _sanitize_params_for_log(tool_name: str, params: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    Remove or truncate large / sensitive parameter values before audit logging.
-    The `content` field of write_file / append_file can be megabytes long and
-    may contain secrets — replace it with a byte-count placeholder.
-    """
-    if not params:
-        return params
-    sanitized = dict(params)
-    for key in ("content", "old_content", "new_content"):
-        if key in sanitized:
-            val = sanitized[key]
-            if isinstance(val, str):
-                sanitized[key] = f"<{len(val.encode('utf-8'))} bytes>"
-            else:
-                sanitized[key] = "<non-string>"
-    return sanitized
-
-
-def _setup_audit_logger(config: SecurityConfig) -> Optional[logging.Logger]:
-    """
-    Create (or reuse) a dedicated file logger for tool-call audit records.
-    Returns None when audit logging is disabled in the config.
-    """
-    if not config.enable_audit_log:
-        return None
-    logger_name = f"orchestrator.audit.{config.audit_log_path}"
-    logger = logging.getLogger(logger_name)
-    if not logger.handlers:
-        try:
-            handler = logging.FileHandler(config.audit_log_path, encoding="utf-8")
-            handler.setFormatter(
-                logging.Formatter("%(asctime)s %(message)s", datefmt="%Y-%m-%dT%H:%M:%S")
-            )
-            logger.addHandler(handler)
-            logger.setLevel(logging.INFO)
-            logger.propagate = False
-        except OSError as e:
-            print(f"[audit] Cannot open audit log '{config.audit_log_path}': {e}",
-                  file=sys.stderr)
-            return None
-    return logger
-
-
-def _audit_log(logger: Optional[logging.Logger], tool_name: str,
-               params: Dict[str, Any], result: str):
-    """Append one structured line to the audit log."""
-    if logger is None:
-        return
-    sanitized = _sanitize_params_for_log(tool_name, params)
-    try:
-        result_obj = json.loads(result)
-        status = result_obj.get("status", "unknown")
-    except Exception:
-        status = "unknown"
-    logger.info("TOOL=%s PARAMS=%s STATUS=%s", tool_name, json.dumps(sanitized), status)
 
 
 # ============================================================================
@@ -257,7 +103,7 @@ def install_dependencies(verbose: bool = True) -> bool:
         if verbose:
             print(f"[deps] pip install {package} ...", file=sys.stderr)
         result = subprocess.run(
-            [sys.executable, "-m", "pip", "install", "--user", package],
+            [sys.executable, "-m", "pip", "install", package],
             capture_output=True,
             text=True,
         )
@@ -286,8 +132,8 @@ def _import_runtime():
 
 # Forward declarations (populated by _import_runtime when needed).
 InferenceClient = None  # type: ignore
-BaseModel = object  # type: ignore
-Field = None  # type: ignore
+BaseModel = object       # type: ignore
+Field = None             # type: ignore
 
 
 # ============================================================================
@@ -299,12 +145,8 @@ class ToolRegistry:
     Manages the tools the AI can call. Paths are confined to `base_path`.
     """
 
-    def __init__(self, base_path: str = ".", security_config: Optional[SecurityConfig] = None):
+    def __init__(self, base_path: str = "."):
         self.base_path = Path(base_path).resolve()
-        self.security_config: SecurityConfig = security_config or SecurityConfig()
-        self._audit_logger = _setup_audit_logger(self.security_config)
-        # Per-tool circuit breakers: track consecutive failures on each tool.
-        self._tool_circuit_breakers: Dict[str, CircuitBreaker] = {}
         self.tools: Dict[str, Callable] = {}
         self.definitions: List[Dict[str, Any]] = []
         self._register_tools()
@@ -329,24 +171,14 @@ class ToolRegistry:
                 fp = self._resolve_path(path)
                 if not fp.exists():
                     return json.dumps({"status": "error", "message": f"File not found: {path}"})
-                content = fp.read_text(encoding="utf-8", errors="replace")
+                content = fp.read_text(encoding="utf-8")
                 return json.dumps({"status": "success", "path": path, "content": content, "size": len(content)})
             except Exception as e:
                 return json.dumps({"status": "error", "message": str(e)})
 
         def write_file(path: str, content: str) -> str:
             try:
-                if self.security_config.sandbox_mode:
-                    return json.dumps({"status": "error",
-                                       "message": "write_file is disabled in sandbox mode."})
                 fp = self._resolve_path(path)
-                size_bytes = len(content.encode("utf-8"))
-                limit = self.security_config.max_file_size_bytes
-                if limit > 0 and size_bytes > limit:
-                    limit_mb = limit / (1024 * 1024)
-                    return json.dumps({"status": "error",
-                                       "message": (f"Content too large: {size_bytes:,} bytes "
-                                                   f"exceeds the {limit_mb:.0f} MB limit.")})
                 fp.parent.mkdir(parents=True, exist_ok=True)
                 fp.write_text(content, encoding="utf-8")
                 return json.dumps({"status": "success", "message": f"File written: {path}", "size": len(content)})
@@ -355,22 +187,7 @@ class ToolRegistry:
 
         def append_file(path: str, content: str) -> str:
             try:
-                if self.security_config.sandbox_mode:
-                    return json.dumps({"status": "error",
-                                       "message": "append_file is disabled in sandbox mode."})
                 fp = self._resolve_path(path)
-                # Check new chunk size AND existing file size combined.
-                chunk_bytes = len(content.encode("utf-8"))
-                limit = self.security_config.max_file_size_bytes
-                if limit > 0:
-                    existing_bytes = fp.stat().st_size if fp.exists() else 0
-                    total_bytes = existing_bytes + chunk_bytes
-                    if total_bytes > limit:
-                        limit_mb = limit / (1024 * 1024)
-                        return json.dumps({"status": "error",
-                                           "message": (f"Cannot append: resulting file size "
-                                                       f"({total_bytes:,} bytes) would exceed "
-                                                       f"the {limit_mb:.0f} MB limit.")})
                 with open(fp, "a", encoding="utf-8") as f:
                     f.write(content)
                 return json.dumps({"status": "success", "message": f"Appended to: {path}"})
@@ -379,9 +196,6 @@ class ToolRegistry:
 
         def delete_file(path: str) -> str:
             try:
-                if self.security_config.sandbox_mode:
-                    return json.dumps({"status": "error",
-                                       "message": "delete_file is disabled in sandbox mode."})
                 fp = self._resolve_path(path)
                 if not fp.exists():
                     return json.dumps({"status": "error", "message": f"File not found: {path}"})
@@ -392,18 +206,6 @@ class ToolRegistry:
 
         def run_command(command: str, timeout: int = 120) -> str:
             try:
-                if self.security_config.sandbox_mode:
-                    return json.dumps({"status": "error",
-                                       "message": "run_command is disabled in sandbox mode."})
-                # Blocklist check: reject commands containing dangerous substrings.
-                cmd_lower = command.lower().strip()
-                for blocked in self.security_config.command_blocklist:
-                    if blocked.lower() in cmd_lower:
-                        return json.dumps({
-                            "status": "error",
-                            "message": (f"Command blocked by security policy "
-                                        f"(matches forbidden pattern: '{blocked}')."),
-                        })
                 result = subprocess.run(
                     command, shell=True, capture_output=True, text=True,
                     timeout=timeout, cwd=str(self.base_path),
@@ -425,7 +227,7 @@ class ToolRegistry:
                 ["git"] + args,
                 capture_output=True, text=True,
                 timeout=timeout, cwd=str(self.base_path),
-            )
+                )
 
         def git_status() -> str:
             try:
@@ -483,6 +285,7 @@ class ToolRegistry:
 
         def list_files_recursive(path: str = ".", max_depth: int = 3) -> str:
             """Recursively list directory tree up to max_depth levels."""
+            import fnmatch as _fnmatch
             SKIP = {".git", "__pycache__", ".dart_tool", "build", "node_modules", ".gradle"}
             try:
                 target = self._resolve_path(path)
@@ -910,48 +713,14 @@ class ToolRegistry:
 
     def execute(self, tool_name: str, parameters: Dict[str, Any]) -> str:
         if tool_name not in self.tools:
-            result = json.dumps({"status": "error", "message": f"Unknown tool: {tool_name}"})
-            _audit_log(self._audit_logger, tool_name, parameters or {}, result)
-            return result
-
-        # Per-tool circuit breaker: skip execution when the breaker is OPEN.
-        cb = self._tool_circuit_breakers.setdefault(
-            tool_name, CircuitBreaker(name=f"tool:{tool_name}", failure_threshold=5, recovery_timeout=30.0)
-        )
-        if not cb.allow_request():
-            result = json.dumps({
-                "status": "error",
-                "message": (f"Tool '{tool_name}' is temporarily disabled by circuit breaker "
-                            f"(too many consecutive failures). Will retry after "
-                            f"{cb.recovery_timeout:.0f}s."),
-            })
-            _audit_log(self._audit_logger, tool_name, parameters or {}, result)
-            return result
-
+            return json.dumps({"status": "error", "message": f"Unknown tool: {tool_name}"})
         try:
             safe_params = self._relativise(parameters or {})
-            result = self.tools[tool_name](**(safe_params))
-            # Track success/failure for the per-tool circuit breaker.
-            try:
-                result_obj = json.loads(result)
-                if result_obj.get("status") == "error":
-                    cb.record_failure()
-                else:
-                    cb.record_success()
-            except Exception:
-                cb.record_success()
-            _audit_log(self._audit_logger, tool_name, safe_params, result)
-            return result
+            return self.tools[tool_name](**(safe_params))
         except TypeError as e:
-            err = json.dumps({"status": "error", "message": f"Invalid parameters: {e}"})
-            cb.record_failure()
-            _audit_log(self._audit_logger, tool_name, parameters or {}, err)
-            return err
+            return json.dumps({"status": "error", "message": f"Invalid parameters: {e}"})
         except Exception as e:
-            err = json.dumps({"status": "error", "message": str(e)})
-            cb.record_failure()
-            _audit_log(self._audit_logger, tool_name, parameters or {}, err)
-            return err
+            return json.dumps({"status": "error", "message": str(e)})
 
     def get_system_prompt(self) -> str:
         """
@@ -1175,14 +944,6 @@ class OllamaBackend(ModelBackend):
                 "\n-> Prompt exceeded the model's context window. "
                 "Start a new chat to clear history."
             )
-        if "internal server error" in low:
-            return (
-                "\n-> Ollama returned a generic 500. For cloud-tagged models "
-                "(':<size>-cloud') make sure you're signed in via "
-                "`ollama signin`, and that the model supports the features "
-                "being requested (some cloud models don't accept tools or "
-                "custom num_ctx)."
-            )
         return ""
 
     def chat(self, messages, max_tokens, temperature, tools=None):
@@ -1213,26 +974,15 @@ class OllamaBackend(ModelBackend):
             # Skip tools= for models that are known not to support it.
             effective_tools = None if self._tools_unsupported else tools
 
-            # Ollama Cloud models (tagged ':<size>-cloud', e.g.
-            # 'mistral-large-3:675b-cloud') are served by Ollama's hosted
-            # inference and reject the local-only `options` payload with
-            # a bare HTTP 500. For those, only pass `temperature` and skip
-            # num_ctx/num_predict entirely.
-            is_cloud_model = self.model_id.endswith("-cloud") or "-cloud:" in self.model_id
-            if is_cloud_model:
-                chat_options: Dict[str, Any] = {"temperature": temperature}
-            else:
-                chat_options = {
-                    "temperature": temperature,
-                    "num_predict": max_tokens,
-                    "num_ctx": self.num_ctx,
-                }
-
             chat_kwargs: Dict[str, Any] = dict(
                 model=self.model_id,
                 messages=messages,
                 stream=True,
-                options=chat_options,
+                options={
+                    "temperature": temperature,
+                    "num_predict": max_tokens,
+                    "num_ctx": self.num_ctx,
+                },
             )
             if effective_tools:
                 chat_kwargs["tools"] = effective_tools
@@ -1613,138 +1363,6 @@ class GeminiBackend(ModelBackend):
 
 
 # ============================================================================
-# OPENROUTER BACKEND
-# ============================================================================
-
-class OpenRouterBackend(ModelBackend):
-    """
-    OpenRouter backend via the OpenAI-compatible REST API.
-
-    OpenRouter routes requests to dozens of providers (OpenAI, Anthropic,
-    Google, Meta, Mistral, …) using a single unified API endpoint. The model
-    ID follows the provider/name convention, e.g. 'openai/gpt-4o',
-    'anthropic/claude-3.5-sonnet', 'meta-llama/llama-3.1-70b-instruct'.
-
-    No extra pip dependency — the implementation uses only stdlib urllib so
-    it works out of the box on any Python 3.8+ installation.
-
-    API docs:  https://openrouter.ai/docs
-    Key:       https://openrouter.ai/keys
-    """
-
-    DEFAULT_BASE_URL = "https://openrouter.ai/api/v1"
-
-    def __init__(self, api_key: str, model_id: str,
-                 base_url: str = DEFAULT_BASE_URL):
-        if not api_key:
-            raise RuntimeError(
-                "OpenRouter backend requires --openrouter-api-key. "
-                "Get one free at https://openrouter.ai/keys."
-            )
-        if not model_id:
-            raise RuntimeError(
-                "OpenRouter backend requires --model "
-                "(e.g. 'openai/gpt-4o' or 'meta-llama/llama-3.1-70b-instruct')."
-            )
-        self.api_key = api_key
-        self.model_id = model_id
-        self.base_url = base_url.rstrip("/")
-
-    def chat(self, messages, max_tokens, temperature, tools=None):
-        import urllib.request as _req
-        import urllib.error as _err
-
-        payload: Dict[str, Any] = {
-            "model": self.model_id,
-            "messages": messages,
-            "max_tokens": max_tokens,
-            "temperature": temperature,
-        }
-        # OpenRouter supports native tool calling (OpenAI function-calling format).
-        if tools:
-            payload["tools"] = tools
-
-        raw = json.dumps(payload).encode("utf-8")
-        request = _req.Request(
-            f"{self.base_url}/chat/completions",
-            data=raw,
-            headers={
-                "Authorization": f"Bearer {self.api_key}",
-                "Content-Type": "application/json",
-                # Recommended by OpenRouter for usage tracking / leaderboard.
-                "HTTP-Referer": "https://github.com/hf-chat-flutter",
-                "X-Title": "HF Chat Flutter Orchestrator",
-            },
-            method="POST",
-        )
-
-        print(
-            f"[orch] OpenRouter request '{self.model_id}' "
-            f"({len(messages)} msgs, tools={bool(tools)})...",
-            file=sys.stderr,
-            flush=True,
-        )
-
-        try:
-            with _req.urlopen(request, timeout=120) as resp:
-                body = resp.read().decode("utf-8")
-        except _err.HTTPError as e:
-            body_err = e.read().decode("utf-8", errors="replace")
-            raise RuntimeError(
-                f"OpenRouter HTTP {e.code}: {body_err[:400]}"
-            ) from e
-        except Exception as e:
-            raise RuntimeError(f"OpenRouter error: {e}") from e
-
-        try:
-            data = json.loads(body)
-        except json.JSONDecodeError as exc:
-            raise RuntimeError(
-                f"OpenRouter: invalid JSON response: {body[:200]}"
-            ) from exc
-
-        choices = data.get("choices") or []
-        if not choices:
-            # Surface OpenRouter-level error messages (quota, bad model, etc.)
-            error = data.get("error") or {}
-            msg = error.get("message") or str(data)
-            raise RuntimeError(f"OpenRouter returned no choices: {msg[:400]}")
-
-        choice = choices[0]
-        message = choice.get("message") or {}
-        finish_reason = choice.get("finish_reason") or ""
-
-        # Native tool calls (OpenAI function-calling format) -> <tool> tags.
-        tool_calls = message.get("tool_calls") or []
-        if tool_calls:
-            tag_lines: List[str] = []
-            for tc in tool_calls:
-                fn = tc.get("function") or {}
-                name = fn.get("name")
-                args = fn.get("arguments") or "{}"
-                if isinstance(args, str):
-                    try:
-                        args = json.loads(args)
-                    except json.JSONDecodeError:
-                        args = {}
-                if not name:
-                    continue
-                tag_lines.append(
-                    f'<tool>{json.dumps({"tool": name, "parameters": args})}</tool>'
-                )
-                print(
-                    f"[orch] OpenRouter native tool_call -> {name}({args})",
-                    file=sys.stderr,
-                    flush=True,
-                )
-            if tag_lines:
-                return "\n".join(tag_lines), finish_reason
-
-        content = message.get("content") or ""
-        return content.strip(), finish_reason
-
-
-# ============================================================================
 # ORCHESTRATOR
 # ============================================================================
 
@@ -1755,18 +1373,11 @@ class Orchestrator:
             base_path: str = ".",
             temperature: float = 0.2,
             max_tokens: int = 2048,
-            security_config: Optional[SecurityConfig] = None,
     ):
         self.backend = backend
         # Expose model_id for logging/diagnostics; both backends carry one.
         self.model_id = getattr(backend, "model_id", "(unknown)")
-        self.tool_registry = ToolRegistry(base_path=base_path,
-                                          security_config=security_config)
-        # Model-level circuit breaker: open after 5 consecutive API failures,
-        # probe again after 60 s so a temporary outage doesn't loop forever.
-        self._model_circuit_breaker = CircuitBreaker(
-            name=f"model:{self.model_id}", failure_threshold=5, recovery_timeout=60.0
-        )
+        self.tool_registry = ToolRegistry(base_path=base_path)
         self.conversation_history: List[Dict[str, Any]] = []
         # Generation knobs. Exposed as CLI flags so the Flutter UI can
         # let users tune them per-backend without editing Python.
@@ -1812,7 +1423,7 @@ class Orchestrator:
     # Hard cap on individual message length. Tool results (list_files, search, etc.)
     # can be thousands of chars; keeping them verbatim in history bloats every
     # subsequent request. 1500 chars ≈ 375 tokens — enough to preserve context.
-    _MAX_MSG_CHARS = 10000
+    _MAX_MSG_CHARS = 5000
 
     def _trim_history(self):
         """
@@ -1960,15 +1571,13 @@ class Orchestrator:
                     if is_last_chance:
                         follow_up = (
                             f"Tool `{name}` returned:\n{result}\n\n"
-                            "[INTERNAL: FINAL ANSWER REQUIRED. Do NOT call any more tools. "
-                            "Write only your plain-text answer to the user now. "
-                            "Do NOT echo this instruction back to the user.]"
+                            "FINAL ANSWER REQUIRED. Do NOT call any more tools. "
+                            "Write only your plain-text answer to the user now."
                         )
                     else:
                         follow_up = (
                             f"Tool `{name}` returned:\n{result}\n\n"
-                            "[INTERNAL: Continue. Either call another tool or give the final answer. "
-                            "Do NOT echo this instruction back to the user.]"
+                            "Continue. Either call another tool or give the final answer."
                         )
                     self.conversation_history.append({"role": "user", "content": follow_up})
                 continue
@@ -2181,15 +1790,6 @@ class Orchestrator:
         the truncation detector handles the rare case where we need more,
         by asking the model to break large writes into append_file chunks.
         """
-        # Model circuit breaker: fast-fail when the backend is consistently broken.
-        if not self._model_circuit_breaker.allow_request():
-            raise RuntimeError(
-                f"Model circuit breaker is OPEN for '{self.model_id}'. "
-                f"Too many consecutive failures — will auto-retry after "
-                f"{self._model_circuit_breaker.recovery_timeout:.0f}s. "
-                f"Check your API key, quota, or network connectivity."
-            )
-
         last_exc: Optional[BaseException] = None
         # attempt 0 = immediate; attempts 1..N = after waiting backoffs[i-1]
         for attempt in range(len(self._RETRY_BACKOFFS) + 1):
@@ -2203,26 +1803,21 @@ class Orchestrator:
                 )
                 time.sleep(wait_s)
             try:
-                result = self.backend.chat(
+                return self.backend.chat(
                     messages=self.conversation_history,
                     max_tokens=self.max_tokens,
                     temperature=self.temperature,
                     tools=self.tool_registry.definitions,
                 )
-                # Successful call: reset the circuit breaker failure count.
-                self._model_circuit_breaker.record_success()
-                return result
             except Exception as e:  # noqa: BLE001 - broad by design
                 last_exc = e
                 if not self._is_retryable_error(e):
                     # Auth errors, malformed input, Ollama connection refused,
-                    # etc. Don't retry — but still count as a failure.
-                    self._model_circuit_breaker.record_failure()
+                    # etc. Don't retry.
                     raise
                 # else: fall through to next backoff
 
-        # Exhausted all retries. Record the failure and surface a clear message.
-        self._model_circuit_breaker.record_failure()
+        # Exhausted all retries. Surface a clear, user-actionable message.
         raise RuntimeError(
             f"Model backend kept returning a rate-limit / transient error "
             f"after {len(self._RETRY_BACKOFFS) + 1} attempts. "
@@ -2322,6 +1917,7 @@ class Orchestrator:
                 if isinstance(name, str) and isinstance(params, dict):
                     return name, params
         return None
+
 
     @staticmethod
     def _parse_all_tag_tool_calls(response: str, tool_defs=None) -> List[Tuple[str, Dict[str, Any]]]:
@@ -2505,16 +2101,14 @@ def main():
     )
     parser.add_argument(
         "--backend",
-        choices=["huggingface", "ollama", "groq", "gemini", "openrouter"],
+        choices=["huggingface", "ollama", "groq", "gemini"],
         default="huggingface",
         help=(
             "Which model backend to use. `huggingface` (default) talks to "
             "the HF Inference router; `ollama` talks to a local/cloud Ollama "
             "daemon; `groq` talks to Groq Cloud (needs --groq-api-key); "
             "`gemini` talks to Google AI Studio / Gemini Cloud (needs "
-            "--gemini-api-key); `openrouter` routes through OpenRouter to "
-            "any supported provider (needs --openrouter-api-key). "
-            "All backends use the same tool protocol."
+            "--gemini-api-key). All use the same tool protocol."
         ),
     )
     parser.add_argument("--hf-token",
@@ -2561,7 +2155,7 @@ def main():
     parser.add_argument(
         "--max-tokens",
         type=int,
-        default=8192 * 2,
+        default=2048,
         help="Hard cap on generated tokens per model call. Covers any tool "
              "call + typical file writes. Raising past ~4096 on a 3B model "
              "(phi3) can push a single iteration over a minute.",
@@ -2578,47 +2172,12 @@ def main():
         help="Google AI Studio API key (required when --backend=gemini). "
              "Get one free at https://aistudio.google.com/app/apikey.",
     )
-    parser.add_argument(
-        "--openrouter-api-key",
-        default="",
-        help="OpenRouter API key (required when --backend=openrouter). "
-             "Get one free at https://openrouter.ai/keys.",
-    )
     parser.add_argument("--interactive", action="store_true",
                         help="Interactive mode (JSON-per-line protocol)")
     parser.add_argument("--install-deps", action="store_true",
                         help="Install required Python packages and exit")
     parser.add_argument("--base-path", default=".",
                         help="Base path that tools are allowed to touch")
-    parser.add_argument(
-        "--sandbox",
-        action="store_true",
-        help=(
-            "Enable sandbox mode: run_command, write_file, append_file, and "
-            "delete_file are all disabled. The model can only read and search "
-            "files. Useful for safe code-review sessions."
-        ),
-    )
-    parser.add_argument(
-        "--audit-log",
-        default="orchestrator_audit.log",
-        metavar="PATH",
-        help=(
-            "Path to the audit log file. Every tool call is appended with a "
-            "timestamp, tool name, sanitized parameters, and result status. "
-            "Default: orchestrator_audit.log. Pass an empty string to disable."
-        ),
-    )
-    parser.add_argument(
-        "--max-file-size-mb",
-        type=float,
-        default=10.0,
-        metavar="MB",
-        help=(
-            "Maximum file size (in MB) that write_file / append_file will "
-            "accept. Requests exceeding this limit are rejected. Default: 10."
-        ),
-    )
 
     args = parser.parse_args()
 
@@ -2688,23 +2247,6 @@ def main():
             sys.exit(2)
         backend = GroqBackend(api_key=groq_key, model_id=args.model)
         print(f"[orch] Using Groq backend, model={args.model}", file=sys.stderr)
-    elif args.backend == "openrouter":
-        openrouter_key = (
-            args.openrouter_api_key
-            or os.environ.get("OPENROUTER_API_KEY", "")
-        )
-        if not openrouter_key:
-            print(
-                "[orch] --openrouter-api-key (or OPENROUTER_API_KEY env var) "
-                "is required for --backend=openrouter.",
-                file=sys.stderr,
-            )
-            sys.exit(2)
-        backend = OpenRouterBackend(
-            api_key=openrouter_key,
-            model_id=args.model,
-        )
-        print(f"[orch] Using OpenRouter backend, model={args.model}", file=sys.stderr)
     else:  # ollama
         missing = check_dependencies(BACKEND_REQUIRED_MODULES["ollama"])
         if missing:
@@ -2735,26 +2277,11 @@ def main():
         file=sys.stderr,
     )
 
-    audit_log_path = (args.audit_log or "").strip()
-    security_config = SecurityConfig(
-        sandbox_mode=args.sandbox,
-        max_file_size_bytes=int(args.max_file_size_mb * 1024 * 1024),
-        enable_audit_log=bool(audit_log_path),
-        audit_log_path=audit_log_path or "orchestrator_audit.log",
-    )
-    if args.sandbox:
-        print("[orch] SANDBOX MODE: write/delete/run_command are disabled.",
-              file=sys.stderr)
-    if security_config.enable_audit_log:
-        print(f"[orch] Audit logging enabled -> {security_config.audit_log_path}",
-              file=sys.stderr)
-
     orchestrator = Orchestrator(
         backend=backend,
         base_path=args.base_path,
         temperature=args.temperature,
         max_tokens=args.max_tokens,
-        security_config=security_config,
     )
 
     if args.interactive:

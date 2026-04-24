@@ -40,6 +40,9 @@ void main() {
         'ollamaOrchestrator': LlmBackend.ollamaOrchestrator,
         'groq': LlmBackend.groq,
         'groqOrchestrator': LlmBackend.groqOrchestrator,
+        'geminiOrchestrator': LlmBackend.geminiOrchestrator,
+        'openRouter': LlmBackend.openRouter,
+        'ollamaGenerate': LlmBackend.ollamaGenerate,
       };
       for (final entry in cases.entries) {
         expect(
@@ -60,6 +63,33 @@ void main() {
 
     test('default Groq max tokens is positive', () {
       expect(BackendSettingsRepository.defaultGroqMaxTokens, greaterThan(0));
+    });
+
+    test('default Gemini temperature is in valid range', () {
+      const t = BackendSettingsRepository.defaultGeminiTemperature;
+      expect(t, greaterThanOrEqualTo(0.0));
+      expect(t, lessThanOrEqualTo(2.0));
+    });
+
+    test('default Gemini max tokens is positive', () {
+      expect(BackendSettingsRepository.defaultGeminiMaxTokens, greaterThan(0));
+    });
+
+    test('default Gemini model is non-empty', () {
+      expect(BackendSettingsRepository.defaultGeminiModel, isNotEmpty);
+    });
+
+    test('default OpenRouter temperature is in valid range', () {
+      const t = BackendSettingsRepository.defaultOpenRouterTemperature;
+      expect(t, greaterThanOrEqualTo(0.0));
+      expect(t, lessThanOrEqualTo(2.0));
+    });
+
+    test('default OpenRouter max tokens is positive', () {
+      expect(
+        BackendSettingsRepository.defaultOpenRouterMaxTokens,
+        greaterThan(0),
+      );
     });
 
     test('default Ollama temperature is in valid range', () {

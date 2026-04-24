@@ -12,7 +12,7 @@ class AppDatabase {
   static final AppDatabase instance = AppDatabase._();
 
   static const String _dbName = "hf_chat.db";
-  static const int _dbVersion = 3;
+  static const int _dbVersion = 4;
 
   Database? _db;
   Completer<Database>? _opening;
@@ -98,6 +98,7 @@ class AppDatabase {
         id TEXT PRIMARY KEY,
         title TEXT NOT NULL,
         model_id TEXT,
+        backend TEXT,
         created_at INTEGER NOT NULL,
         updated_at INTEGER NOT NULL
       );
@@ -191,6 +192,52 @@ class AppDatabase {
           updated_at INTEGER
         )
       ''');
+    }
+    if (oldVersion < 4) {
+      // Migrate to v4: associate each conversation with its LLM backend.
+      await db.execute('ALTER TABLE conversations ADD COLUMN backend TEXT');
+
+      // Back-fill existing rows with the currently active backend so the
+      // user does not lose access to them when the sidebar starts
+      // filtering. Non-orchestrator backends are coerced to their
+      // orchestrator equivalent because the UI no longer exposes direct
+      // variants.
+      String defaultBackend = 'orchestrator';
+      final rows = await db.query(
+        'backend_settings',
+        where: 'id = ?',
+        whereArgs: ['active_backend'],
+        limit: 1,
+      );
+      if (rows.isNotEmpty) {
+        final stored = (rows.first['value'] as String?) ?? '';
+        final name = stored.contains('.') ? stored.split('.').last : stored;
+        defaultBackend = _coerceToOrchestratorName(name);
+      }
+      await db.update(
+        'conversations',
+        {'backend': defaultBackend},
+        where: 'backend IS NULL',
+      );
+    }
+  }
+
+  String _coerceToOrchestratorName(String name) {
+    switch (name) {
+      case 'huggingFace':
+      case 'local':
+      case '':
+        return 'orchestrator';
+      case 'ollama':
+      case 'ollamaPython':
+      case 'ollamaGenerate':
+        return 'ollamaOrchestrator';
+      case 'groq':
+        return 'groqOrchestrator';
+      case 'openRouter':
+        return 'openRouterOrchestrator';
+      default:
+        return name; // already an orchestrator variant
     }
   }
 

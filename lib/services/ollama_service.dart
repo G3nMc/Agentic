@@ -98,6 +98,35 @@ class OllamaService {
   }
 
   // ---------------------------------------------------------------------------
+  // Delete an installed model
+  // ---------------------------------------------------------------------------
+
+  /// Remove [modelName] (e.g. `llama3:latest`) from the Ollama daemon.
+  /// Uses `DELETE /api/delete` with `{"name": "<model>"}` body.
+  Future<void> deleteModel(
+    String modelName, {
+    String? baseUrl,
+    String? apiKey,
+  }) async {
+    final url = _normalise(baseUrl ?? defaultBaseUrl);
+    final resp = await _dio.delete(
+      '$url/api/delete',
+      data: {'name': modelName},
+      options: Options(
+        headers: _headers(apiKey: apiKey),
+        receiveTimeout: const Duration(seconds: 30),
+        sendTimeout: const Duration(seconds: 10),
+        validateStatus: (_) => true,
+      ),
+    );
+    if (resp.statusCode != 200) {
+      final data = resp.data;
+      final err = (data is Map && data['error'] is String) ? data['error'] : '$data';
+      throw Exception('Ollama /api/delete returned ${resp.statusCode}: $err');
+    }
+  }
+
+  // ---------------------------------------------------------------------------
   // Pull (download) a model — streams progress JSON lines
   // ---------------------------------------------------------------------------
 

@@ -3,35 +3,37 @@ import 'package:flutter/material.dart';
 class AppTheme {
   AppTheme._();
 
-  // Claude-inspired minimal palette.
-  static const Color bgPrimary = Color(0xFFFAFAF7);
-  static const Color bgSecondary = Color(0xFFF0EFEA);
-  static const Color bgSidebar = Color(0xFFF5F4EF);
-  static const Color border = Color(0xFFE5E3DC);
-  static const Color textPrimary = Color(0xFF1F1E1B);
-  static const Color textSecondary = Color(0xFF6B6A64);
-  static const Color textMuted = Color(0xFF9A9890);
-  static const Color accent = Color(0xFFB5643B);
-  static const Color accentHover = Color(0xFF9B5431);
-  static const Color userBubble = Color(0xFFEDEBE3);
-  static const Color aiBubble = Color(0xFFFAFAF7);
-  static const Color codeBg = Color(0xFF1F1E1B);
-  static const Color codeText = Color(0xFFF0EFEA);
-  static const Color danger = Color(0xFFB4413A);
+  // Developer Dark Theme Palette
+  static const Color bgPrimary = Color(0xFF121212);
+  static const Color bgSecondary = Color(0xFF1E1E1E);
+  static const Color bgSidebar = Color(0xFF181818);
+  static const Color border = Color(0xFF333333);
+  static const Color textPrimary = Color(0xFFE1E1E1);
+  static const Color textSecondary = Color(0xFFB0B0B0);
+  static const Color textMuted = Color(0xFF757575);
+  static const Color accent = Color(0xFFB95A50);
+  static const Color accentMarrone = Color(0xFFD25A50);
+  static const Color accentDarkMarrone = Color(0xFF783C32);
+  static const Color accentHover = Color(0xFFD7B7FD);
+  static const Color userBubble = Color(0xFF2C2C2C);
+  static const Color aiBubble = Color(0xFF1E1E1E);
+  static const Color codeBg = Color(0xFF000000);
+  static const Color codeText = Color(0xFFD4D4D4);
+  static const Color danger = Color(0xFFCF6679);
 
-  static ThemeData lightTheme() {
+  static ThemeData darkTheme() {
     const baseFont = "SystemFont";
 
     return ThemeData(
       useMaterial3: true,
-      brightness: Brightness.light,
+      brightness: Brightness.dark,
       scaffoldBackgroundColor: bgPrimary,
       fontFamily: baseFont,
-      colorScheme: const ColorScheme.light(
+      colorScheme: const ColorScheme.dark(
         primary: accent,
-        onPrimary: Colors.white,
+        onPrimary: Colors.black,
         secondary: textSecondary,
-        onSecondary: Colors.white,
+        onSecondary: Colors.black,
         surface: bgPrimary,
         onSurface: textPrimary,
         error: danger,
@@ -50,7 +52,7 @@ class AppTheme {
       iconTheme: const IconThemeData(color: textSecondary, size: 20),
       inputDecorationTheme: InputDecorationTheme(
         filled: true,
-        fillColor: Colors.white,
+        fillColor: bgSecondary,
         contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
         border: OutlineInputBorder(
           borderRadius: BorderRadius.circular(10),
@@ -69,7 +71,7 @@ class AppTheme {
       elevatedButtonTheme: ElevatedButtonThemeData(
         style: ElevatedButton.styleFrom(
           backgroundColor: accent,
-          foregroundColor: Colors.white,
+          foregroundColor: Colors.black,
           elevation: 0,
           padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
           shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
@@ -93,13 +95,13 @@ class AppTheme {
         ),
       ),
       dialogTheme: DialogThemeData(
-        backgroundColor: bgPrimary,
+        backgroundColor: bgSecondary,
         elevation: 2,
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
       ),
       snackBarTheme: const SnackBarThemeData(
-        backgroundColor: textPrimary,
-        contentTextStyle: TextStyle(color: Colors.white, fontSize: 14),
+        backgroundColor: bgSecondary,
+        contentTextStyle: TextStyle(color: textPrimary, fontSize: 14),
         behavior: SnackBarBehavior.floating,
       ),
     );

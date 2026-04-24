@@ -6,6 +6,7 @@ import '../../data/repositories/model_repository.dart';
 import '../../services/groq_service.dart';
 import '../../services/llm_service.dart';
 import '../../services/ollama_service.dart';
+import '../../services/openrouter_service.dart';
 
 class ModelSwitcher extends StatefulWidget {
   final String selectedModelId;
@@ -24,17 +25,11 @@ class ModelSwitcher extends StatefulWidget {
 class _ModelSwitcherState extends State<ModelSwitcher> with WidgetsBindingObserver {
   List<_ModelChoice> _choices = [];
   bool _loading = true;
+
   // Shown as a text field below the dropdown when either the list is
   // empty (endpoint returned nothing) or the user clicks "Enter manually".
   bool _showManualInput = false;
   final TextEditingController _manualController = TextEditingController();
-
-  // True when the active backend has its own model API (Ollama, Groq).
-  // For these backends the "Enter cloud model name…" button is hidden —
-  // users should pick from the list returned by the backend, not type
-  // a name manually.  The button stays for HuggingFace/local where
-  // discovering models happens outside this widget.
-  bool _backendHasApiModelList = false;
 
   @override
   void initState() {
@@ -61,20 +56,14 @@ class _ModelSwitcherState extends State<ModelSwitcher> with WidgetsBindingObserv
     final backend = await BackendSettingsRepository.instance.getActiveBackend();
 
     // --- Ollama backends: fetch installed models from the daemon ---
-    if (backend == LlmBackend.ollama ||
-        backend == LlmBackend.ollamaPython ||
-        backend == LlmBackend.ollamaOrchestrator) {
-      final ollamaUrl =
-          await BackendSettingsRepository.instance.getOllamaBaseUrl();
-      final apiKey =
-          await BackendSettingsRepository.instance.getOllamaApiKey();
+    if (backend == LlmBackend.ollama || backend == LlmBackend.ollamaPython || backend == LlmBackend.ollamaOrchestrator) {
+      final ollamaUrl = await BackendSettingsRepository.instance.getOllamaBaseUrl();
+      final apiKey = await BackendSettingsRepository.instance.getOllamaApiKey();
       List<String> models = const [];
       try {
-        final reachable = await OllamaService.instance
-            .isServerReachable(baseUrl: ollamaUrl, apiKey: apiKey);
+        final reachable = await OllamaService.instance.isServerReachable(baseUrl: ollamaUrl, apiKey: apiKey);
         if (reachable) {
-          models = await OllamaService.instance
-              .listInstalledModels(baseUrl: ollamaUrl, apiKey: apiKey);
+          models = await OllamaService.instance.listInstalledModels(baseUrl: ollamaUrl, apiKey: apiKey);
         }
       } catch (_) {
         models = const [];
@@ -87,7 +76,6 @@ class _ModelSwitcherState extends State<ModelSwitcher> with WidgetsBindingObserv
       setState(() {
         _choices = models.map((m) => _ModelChoice(id: m, label: m)).toList();
         _showManualInput = showManual;
-        _backendHasApiModelList = true; // Ollama has its own model list
         _loading = false;
       });
       return;
@@ -95,8 +83,7 @@ class _ModelSwitcherState extends State<ModelSwitcher> with WidgetsBindingObserv
 
     // --- Groq / Groq Orchestrator: fetch model list from Groq API ---
     if (backend == LlmBackend.groq || backend == LlmBackend.groqOrchestrator) {
-      final apiKey =
-          await BackendSettingsRepository.instance.getGroqApiKey() ?? '';
+      final apiKey = await BackendSettingsRepository.instance.getGroqApiKey() ?? '';
       List<String> models = GroqService.fallbackModels;
       if (apiKey.isNotEmpty) {
         try {
@@ -111,16 +98,13 @@ class _ModelSwitcherState extends State<ModelSwitcher> with WidgetsBindingObserv
       // the `tools` parameter is sent and produce unreliable results with the
       // text-based fallback.
       if (backend == LlmBackend.groqOrchestrator) {
-        final capable = models
-            .where((m) => GroqService.supportsToolCalling(m))
-            .toList();
+        final capable = models.where((m) => GroqService.supportsToolCalling(m)).toList();
         // Always keep at least one model available even if the heuristic
         // is wrong or the API returned only reasoning models.
         if (capable.isNotEmpty) models = capable;
       }
 
-      final saved =
-          await BackendSettingsRepository.instance.getGroqModel() ?? '';
+      final saved = await BackendSettingsRepository.instance.getGroqModel() ?? '';
       if (!mounted) return;
       setState(() {
         _choices = models
@@ -132,17 +116,80 @@ class _ModelSwitcherState extends State<ModelSwitcher> with WidgetsBindingObserv
                   supportsTools: GroqService.supportsToolCalling(m),
                 ))
             .toList();
-        _backendHasApiModelList = true; // Groq has its own model list
         _showManualInput = false;
         // Pre-select the model saved in settings.
-        if (saved.isNotEmpty &&
-            !models.contains(saved) &&
-            _manualController.text.isEmpty) {
+        if (saved.isNotEmpty && !models.contains(saved) && _manualController.text.isEmpty) {
           _manualController.text = saved;
           _showManualInput = true;
         }
         _loading = false;
       });
+      return;
+    }
+
+    // --- OpenRouter Orchestrator: show only the model picked in Settings. ---
+    // The orchestrator is pinned to one OpenRouter model at startup, so
+    // per-chat switching doesn't apply — surface a single-entry dropdown.
+    if (backend == LlmBackend.openRouterOrchestrator) {
+      final saved = await BackendSettingsRepository.instance.getOpenRouterModel() ?? '';
+      final pinned = saved.isNotEmpty ? saved : OpenRouterService.fallbackModels.first;
+      if (!mounted) return;
+      setState(() {
+        _choices = [_ModelChoice(id: pinned, label: pinned)];
+        _showManualInput = false;
+        _loading = false;
+      });
+      return;
+    }
+
+    // --- OpenRouter (Direct): fetch model list from OpenRouter API ---
+    if (backend == LlmBackend.openRouter) {
+      final apiKey = await BackendSettingsRepository.instance.getOpenRouterApiKey() ?? '';
+      final saved = await BackendSettingsRepository.instance.getOpenRouterModel() ?? '';
+      List<String> models = OpenRouterService.fallbackModels;
+      if (apiKey.isNotEmpty) {
+        try {
+          models = await OpenRouterService.instance.listModels(apiKey);
+        } catch (_) {
+          models = OpenRouterService.fallbackModels;
+        }
+      }
+
+      final current = resolveOpenRouterModel(widget.selectedModelId, saved);
+      final showManual = current.isNotEmpty && !models.contains(current);
+      if (showManual && _manualController.text.isEmpty) {
+        _manualController.text = current;
+      }
+      if (showManual) {
+        models = [current, ...models.where((m) => m != current)];
+      }
+
+      if (!mounted) return;
+      setState(() {
+        _choices = models.map((m) => _ModelChoice(id: m, label: m)).toList();
+        _showManualInput = showManual || models.isEmpty;
+        _loading = false;
+      });
+      return;
+    }
+
+    // --- Gemini Orchestrator: show the user-managed Gemini models list. ---
+    if (backend == LlmBackend.geminiOrchestrator) {
+      final models = await BackendSettingsRepository.instance.getGeminiModels();
+      final saved = await BackendSettingsRepository.instance.getGeminiModel() ?? '';
+      final list = models.isEmpty
+          ? List<String>.from(BackendSettingsRepository.defaultGeminiModels)
+          : models;
+      final current = saved.isNotEmpty ? saved : list.first;
+      if (!mounted) return;
+      setState(() {
+        _choices = list.map((m) => _ModelChoice(id: m, label: m)).toList();
+        _showManualInput = false;
+        _loading = false;
+      });
+      if (current != widget.selectedModelId) {
+        widget.onChanged(current);
+      }
       return;
     }
 
@@ -172,29 +219,7 @@ class _ModelSwitcherState extends State<ModelSwitcher> with WidgetsBindingObserv
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           // Dropdown — only shown when the endpoint returned models.
-          if (_choices.isNotEmpty) ...[
-            _buildDropdown(),
-            // "Enter cloud model name…" is only useful for HuggingFace /
-            // local backends where models aren't fetched from an API.
-            // For Groq and Ollama (which have their own model lists) this
-            // button is hidden so the UI shows exactly one selector.
-            if (!_showManualInput && !_backendHasApiModelList)
-              Align(
-                alignment: Alignment.centerRight,
-                child: TextButton(
-                  style: TextButton.styleFrom(
-                    padding: const EdgeInsets.symmetric(horizontal: 4),
-                    minimumSize: Size.zero,
-                    tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                  ),
-                  onPressed: () => setState(() => _showManualInput = true),
-                  child: const Text(
-                    'Enter cloud model name…',
-                    style: TextStyle(fontSize: 11.5),
-                  ),
-                ),
-              ),
-          ],
+          if (_choices.isNotEmpty) _buildDropdown(),
 
           // Manual text input — shown when no models listed (endpoint
           // returned nothing) or the user explicitly requested it.
@@ -209,12 +234,11 @@ class _ModelSwitcherState extends State<ModelSwitcher> with WidgetsBindingObserv
 
   Widget _buildDropdown() {
     final ids = _choices.map((m) => m.id).toSet();
-    final current = ids.contains(widget.selectedModelId)
-        ? widget.selectedModelId
-        : (ids.isNotEmpty ? ids.first : widget.selectedModelId);
+    final current = ids.contains(widget.selectedModelId) ? widget.selectedModelId : (ids.isNotEmpty ? ids.first : widget.selectedModelId);
     return Container(
+      height: 48,
       decoration: BoxDecoration(
-        border: Border.all(color: AppTheme.border),
+        border: Border.all(color: AppTheme.accentDarkMarrone),
         borderRadius: BorderRadius.circular(8),
       ),
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
@@ -224,44 +248,71 @@ class _ModelSwitcherState extends State<ModelSwitcher> with WidgetsBindingObserv
           hint: const Text(
             'Select model',
             style: TextStyle(fontSize: 13, color: AppTheme.textSecondary),
+            overflow: TextOverflow.ellipsis,
           ),
           isDense: true,
+          isExpanded: true,
           style: const TextStyle(fontSize: 13, color: AppTheme.textPrimary),
           icon: const Icon(Icons.keyboard_arrow_down, size: 16),
+          selectedItemBuilder: (context) => _choices
+              .map(
+                (m) => Align(
+                  alignment: Alignment.centerLeft,
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Flexible(
+                        child: Text(
+                          m.label,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(fontSize: 13),
+                        ),
+                      ),
+                      if (!m.supportsTools) ...[
+                        const SizedBox(width: 4),
+                        const Icon(
+                          Icons.warning_amber_rounded,
+                          size: 14,
+                          color: Colors.orange,
+                        ),
+                      ],
+                    ],
+                  ),
+                ),
+              )
+              .toList(),
           items: _choices
               .map(
                 (m) => DropdownMenuItem<String>(
                   value: m.id,
-                  child: ConstrainedBox(
-                    constraints: const BoxConstraints(maxWidth: 320),
-                    child: m.supportsTools
-                        ? Text(
-                            m.label,
-                            overflow: TextOverflow.ellipsis,
-                            style: const TextStyle(fontSize: 13),
-                          )
-                        : Row(
-                            children: [
-                              Expanded(
-                                child: Text(
-                                  m.label,
-                                  overflow: TextOverflow.ellipsis,
-                                  style: const TextStyle(fontSize: 13),
-                                ),
+                  child: m.supportsTools
+                      ? Text(
+                          m.label,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(fontSize: 13),
+                        )
+                      : Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Flexible(
+                              child: Text(
+                                m.label,
+                                overflow: TextOverflow.ellipsis,
+                                style: const TextStyle(fontSize: 13),
                               ),
-                              const Tooltip(
-                                message:
-                                    'Reasoning model — no tool calling.\n'
-                                    'Use with plain Groq backend only.',
-                                child: Icon(
-                                  Icons.warning_amber_rounded,
-                                  size: 14,
-                                  color: Colors.orange,
-                                ),
+                            ),
+                            const SizedBox(width: 4),
+                            const Tooltip(
+                              message: 'Reasoning model — no tool calling.\n'
+                                  'Use with plain Groq backend only.',
+                              child: Icon(
+                                Icons.warning_amber_rounded,
+                                size: 14,
+                                color: Colors.orange,
                               ),
-                            ],
-                          ),
-                  ),
+                            ),
+                          ],
+                        ),
                 ),
               )
               .toList(),
@@ -285,10 +336,8 @@ class _ModelSwitcherState extends State<ModelSwitcher> with WidgetsBindingObserv
             style: const TextStyle(fontSize: 13),
             decoration: InputDecoration(
               hintText: 'e.g. gemma4:27b-it-qat-q4_K_M or gemma4:31b-cloud',
-              hintStyle: const TextStyle(
-                  fontSize: 12, color: AppTheme.textSecondary),
-              contentPadding:
-                  const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+              hintStyle: const TextStyle(fontSize: 12, color: AppTheme.textSecondary),
+              contentPadding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
               border: OutlineInputBorder(
                 borderRadius: BorderRadius.circular(8),
               ),
@@ -310,15 +359,6 @@ class _ModelSwitcherState extends State<ModelSwitcher> with WidgetsBindingObserv
             },
           ),
         ),
-        const SizedBox(width: 6),
-        IconButton(
-          icon: const Icon(Icons.check_circle_outline, size: 20),
-          tooltip: 'Use this model',
-          onPressed: () {
-            final trimmed = _manualController.text.trim();
-            if (trimmed.isNotEmpty) widget.onChanged(trimmed);
-          },
-        ),
       ],
     );
   }
@@ -327,6 +367,7 @@ class _ModelSwitcherState extends State<ModelSwitcher> with WidgetsBindingObserv
 class _ModelChoice {
   final String id;
   final String label;
+
   /// True when the model supports the Groq native tool-calling API.
   /// Defaults to true for non-Groq backends where it is irrelevant.
   final bool supportsTools;

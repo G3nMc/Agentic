@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import '../../core/theme/app_theme.dart';
 import '../../services/orchestrator_manager.dart';
@@ -62,8 +63,7 @@ class _OrchestratorLogPanelState extends State<OrchestratorLogPanel> {
   @override
   Widget build(BuildContext context) {
     // Don't render if the orchestrator isn't running and we have no lines yet.
-    final hasContent =
-        _lines.isNotEmpty || OrchestratorManager.instance.isRunning;
+    final hasContent = _lines.isNotEmpty || OrchestratorManager.instance.isRunning;
     if (!hasContent) return const SizedBox.shrink();
 
     return Container(
@@ -79,12 +79,10 @@ class _OrchestratorLogPanelState extends State<OrchestratorLogPanel> {
         children: [
           // ── Header bar ──────────────────────────────────────────────────
           InkWell(
-            borderRadius:
-                const BorderRadius.vertical(top: Radius.circular(8)),
+            borderRadius: const BorderRadius.vertical(top: Radius.circular(8)),
             onTap: () => setState(() => _expanded = !_expanded),
             child: Padding(
-              padding:
-                  const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
               child: Row(
                 children: [
                   // Status dot
@@ -94,16 +92,12 @@ class _OrchestratorLogPanelState extends State<OrchestratorLogPanel> {
                     height: 7,
                     decoration: BoxDecoration(
                       shape: BoxShape.circle,
-                      color: OrchestratorManager.instance.isRunning
-                          ? Colors.greenAccent
-                          : Colors.grey,
+                      color: OrchestratorManager.instance.isRunning ? Colors.greenAccent : Colors.grey,
                     ),
                   ),
                   const SizedBox(width: 6),
                   Text(
-                    OrchestratorManager.instance.isRunning
-                        ? 'Orchestrator log'
-                        : 'Orchestrator log (stopped)',
+                    OrchestratorManager.instance.isRunning ? 'Orchestrator log' : 'Orchestrator log (stopped)',
                     style: const TextStyle(
                       fontSize: 11,
                       color: Color(0xFFCDD6F4),
@@ -111,6 +105,24 @@ class _OrchestratorLogPanelState extends State<OrchestratorLogPanel> {
                     ),
                   ),
                   const Spacer(),
+                  // Copy-all button
+                  if (_lines.isNotEmpty)
+                    Tooltip(
+                      message: 'Copy all log lines',
+                      child: InkWell(
+                        borderRadius: BorderRadius.circular(4),
+                        onTap: _copyAll,
+                        child: const Padding(
+                          padding: EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                          child: Icon(
+                            Icons.copy_all_outlined,
+                            size: 14,
+                            color: Color(0xFF6C7086),
+                          ),
+                        ),
+                      ),
+                    ),
+                  const SizedBox(width: 4),
                   // Clear button
                   if (_lines.isNotEmpty)
                     InkWell(
@@ -129,9 +141,7 @@ class _OrchestratorLogPanelState extends State<OrchestratorLogPanel> {
                     ),
                   const SizedBox(width: 4),
                   Icon(
-                    _expanded
-                        ? Icons.keyboard_arrow_down
-                        : Icons.keyboard_arrow_up,
+                    _expanded ? Icons.keyboard_arrow_down : Icons.keyboard_arrow_up,
                     size: 14,
                     color: const Color(0xFF6C7086),
                   ),
@@ -156,25 +166,39 @@ class _OrchestratorLogPanelState extends State<OrchestratorLogPanel> {
                       ),
                     ),
                   )
-                : ListView.builder(
-                    controller: _scroll,
-                    padding: const EdgeInsets.fromLTRB(10, 0, 10, 6),
-                    itemCount: _lines.length,
-                    itemBuilder: (_, i) {
-                      final line = _lines[i];
-                      return Text(
-                        line,
-                        style: TextStyle(
-                          fontSize: 11,
-                          fontFamily: 'monospace',
-                          color: _lineColor(line),
-                          height: 1.4,
-                        ),
-                      );
-                    },
+                : SelectionArea(
+                    child: ListView.builder(
+                      controller: _scroll,
+                      padding: const EdgeInsets.fromLTRB(10, 0, 10, 6),
+                      itemCount: _lines.length,
+                      itemBuilder: (_, i) {
+                        final line = _lines[i];
+                        return Text(
+                          line,
+                          style: TextStyle(
+                            fontSize: 11,
+                            fontFamily: 'monospace',
+                            color: _lineColor(line),
+                            height: 1.4,
+                          ),
+                        );
+                      },
+                    ),
                   ),
           ),
         ],
+      ),
+    );
+  }
+
+  Future<void> _copyAll() async {
+    if (_lines.isEmpty) return;
+    await Clipboard.setData(ClipboardData(text: _lines.join('\n')));
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text('Copied ${_lines.length} log lines to clipboard'),
+        duration: const Duration(milliseconds: 1200),
       ),
     );
   }

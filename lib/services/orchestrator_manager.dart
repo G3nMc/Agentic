@@ -4,8 +4,10 @@ import 'dart:io';
 
 // Inactivity timeout: if the orchestrator emits no output on stdout OR
 // stderr for this long, we assume it's wedged and give up. Activity
-// (including `[orch] Model reply …` heartbeats from Python) resets it.
-const Duration _kOrchestratorInactivityTimeout = Duration(minutes: 3);
+// (including per-chunk heartbeat lines from the Python streaming loops)
+// resets it. 10 min gives slow local models (phi3:mini on CPU) enough
+// headroom while still catching a truly wedged process.
+const Duration _kOrchestratorInactivityTimeout = Duration(minutes: 10);
 
 // Absolute ceiling: even if the orchestrator keeps heart-beating, refuse to
 // wait longer than this for a single prompt. Prevents runaway tool chains.
@@ -15,8 +17,10 @@ const Duration _kOrchestratorAbsoluteTimeout = Duration(minutes: 20);
 ///
 /// The orchestrator's tool protocol is backend-agnostic; this only decides
 /// who actually runs inference. [huggingface] hits the HF router (needs a
-/// token), [ollama] hits a local Ollama daemon (needs the daemon running).
-enum OrchestratorBackend { huggingface, ollama, groq }
+/// token), [ollama] hits a local Ollama daemon (needs the daemon running),
+/// [groq] hits Groq Cloud, [gemini] hits Google AI Studio / Gemini Cloud,
+/// and [openrouter] routes to any supported provider via OpenRouter.
+enum OrchestratorBackend { huggingface, ollama, groq, gemini, openrouter }
 
 /// Manages the lifecycle of the local Python orchestrator subprocess that
 /// bridges the Flutter UI with remote Hugging Face models + local tools.
@@ -60,6 +64,11 @@ class OrchestratorManager {
 
   void _appendLog(String line) {
     _stderrBuffer.writeln(line);
+    // Empty lines are pure heartbeat signals from the Python streaming loop.
+    // They still bump the inactivity watchdog (the listener calls
+    // _bumpInactivityTimer unconditionally) but we don't show them in the
+    // visible log so they don't scroll meaningful output off screen.
+    if (line.trim().isEmpty) return;
     _logLines.add(line);
     if (_logLines.length > _kMaxLogLines) _logLines.removeAt(0);
     if (!_logController.isClosed) _logController.add(line);
@@ -152,12 +161,47 @@ class OrchestratorManager {
     }
   }
 
+  /// Install a single Python package via `python -m pip install <package>`.
+  Future<bool> installPackage(
+    String packageName, {
+    void Function(String line)? onLine,
+  }) async {
+    onLine?.call('Running: $pythonExecutable -m pip install --user $packageName');
+    try {
+      final proc = await Process.start(
+        pythonExecutable,
+        ['-m', 'pip', 'install', '--user', packageName],
+      );
+
+      final stdoutDone = proc.stdout
+          .transform(utf8.decoder)
+          .transform(const LineSplitter())
+          .listen((l) => onLine?.call(l))
+          .asFuture<void>();
+      final stderrDone = proc.stderr
+          .transform(utf8.decoder)
+          .transform(const LineSplitter())
+          .listen((l) => onLine?.call(l))
+          .asFuture<void>();
+
+      final exitCode = await proc.exitCode;
+      await Future.wait([stdoutDone, stderrDone]);
+      onLine?.call('Exit code: $exitCode');
+      return exitCode == 0;
+    } catch (e) {
+      onLine?.call('ERROR: $e');
+      return false;
+    }
+  }
+
   /// Start the orchestrator subprocess. Returns false if it was already
   /// running or if launch failed.
   ///
   /// For [OrchestratorBackend.huggingface] (default), [hfToken] is required.
   /// For [OrchestratorBackend.ollama], [hfToken] is ignored and [modelId]
-  /// must be an Ollama tag (e.g. `qwen2.5-coder:7b`). Optional
+  /// must be an Ollama tag (e.g. `qwen2.5-coder:7b`). For
+  /// [OrchestratorBackend.gemini], pass a Gemini model (e.g.
+  /// `gemini-2.5-flash`) and a Google AI Studio key. Optional
   /// [ollamaBaseUrl] / [ollamaNumCtx] are forwarded to the Python side.
   Future<bool> start({
     String? hfToken,
@@ -170,6 +214,8 @@ class OrchestratorManager {
     int? maxTokens,
     String? ollamaApiKey,
     String? groqApiKey,
+    String? geminiApiKey,
+    String? openRouterApiKey,
   }) async {
     if (_isRunning) return false;
 
@@ -186,10 +232,32 @@ class OrchestratorManager {
       );
       return false;
     }
+    final envGroqKey = Platform.environment['GROQ_API_KEY'] ?? '';
     if (backend == OrchestratorBackend.groq &&
-        (groqApiKey == null || groqApiKey.isEmpty)) {
+        (groqApiKey == null || groqApiKey.isEmpty) &&
+        envGroqKey.isEmpty) {
       _appendLog(
         'Groq orchestrator backend requires an API key but none was provided.',
+      );
+      return false;
+    }
+    final envGeminiKey = Platform.environment['GOOGLE_API_KEY'] ??
+        Platform.environment['GEMINI_API_KEY'] ??
+        '';
+    if (backend == OrchestratorBackend.gemini &&
+        (geminiApiKey == null || geminiApiKey.isEmpty) &&
+        envGeminiKey.isEmpty) {
+      _appendLog(
+        'Gemini orchestrator backend requires an API key but none was provided.',
+      );
+      return false;
+    }
+    final envOpenRouterKey = Platform.environment['OPENROUTER_API_KEY'] ?? '';
+    if (backend == OrchestratorBackend.openrouter &&
+        (openRouterApiKey == null || openRouterApiKey.isEmpty) &&
+        envOpenRouterKey.isEmpty) {
+      _appendLog(
+        'OpenRouter orchestrator backend requires an API key but none was provided.',
       );
       return false;
     }
@@ -219,6 +287,16 @@ class OrchestratorManager {
           break;
         case OrchestratorBackend.groq:
           args.addAll(['--backend', 'groq', '--groq-api-key', groqApiKey!]);
+          break;
+        case OrchestratorBackend.gemini:
+          args.addAll(['--backend', 'gemini', '--gemini-api-key', geminiApiKey!]);
+          break;
+        case OrchestratorBackend.openrouter:
+          args.addAll([
+            '--backend', 'openrouter',
+            '--openrouter-api-key',
+            openRouterApiKey ?? envOpenRouterKey,
+          ]);
           break;
       }
       if (modelId != null && modelId.isNotEmpty) {

@@ -18,6 +18,28 @@ class ConversationRepository {
     return rows.map(Conversation.fromMap).toList();
   }
 
+  Future<List<Conversation>> listByBackend(String backend) async {
+    final db = await AppDatabase.instance.database;
+    final rows = await db.query(
+      "conversations",
+      where: "backend = ?",
+      whereArgs: [backend],
+      orderBy: "updated_at DESC",
+    );
+    return rows.map(Conversation.fromMap).toList();
+  }
+
+  Future<void> updateBackend(String id, String backend) async {
+    final db = await AppDatabase.instance.database;
+    final now = DateTime.now().millisecondsSinceEpoch;
+    await db.update(
+      "conversations",
+      {"backend": backend, "updated_at": now},
+      where: "id = ?",
+      whereArgs: [id],
+    );
+  }
+
   Future<Conversation?> getById(String id) async {
     final db = await AppDatabase.instance.database;
     final rows = await db.query(

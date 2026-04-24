@@ -1,10 +1,14 @@
+import 'dart:io';
+
 import '../data/models/message.dart';
 import '../data/repositories/backend_settings_repository.dart';
 import 'groq_service.dart';
 import 'huggingface_service.dart';
 import 'local_llm_service.dart';
+import 'ollama_generate_service.dart';
 import 'ollama_python_manager.dart';
 import 'ollama_service.dart';
+import 'openrouter_service.dart';
 import 'orchestrator_manager.dart';
 // ChatMessage.role is a MessageRole enum, not a String — imported above.
 
@@ -24,6 +28,44 @@ enum LlmBackend {
   // Groq Cloud routed through the local orchestrator so Groq models
   // can use filesystem tools (read/write files, git, run commands).
   groqOrchestrator,
+  // Gemini routed through the local orchestrator for filesystem tools.
+  geminiOrchestrator,
+  // OpenRouter direct chat-completions backend.
+  openRouter,
+  // OpenRouter routed through the local orchestrator for filesystem tools.
+  // Uses the same API key and model as the direct openRouter backend.
+  openRouterOrchestrator,
+  // Direct /api/generate endpoint (Ollama-compatible).
+  // Supports custom ports (e.g. localhost:12345), raw prompt templating,
+  // and the `think` parameter for native reasoning output.
+  // No native tool support — use ollamaOrchestrator for file/code tasks.
+  ollamaGenerate,
+}
+
+String resolveGeminiModel(String modelId, String savedModel) {
+  if (modelId.isNotEmpty && !modelId.contains('/')) {
+    return modelId;
+  }
+  if (savedModel.isNotEmpty) {
+    return savedModel;
+  }
+  return BackendSettingsRepository.defaultGeminiModel;
+}
+
+bool looksLikeOpenRouterModel(String modelId) {
+  final trimmed = modelId.trim();
+  if (trimmed.isEmpty || trimmed.contains(':')) return false;
+  return RegExp(r'^[a-z0-9._-]+/[a-z0-9._-]+$').hasMatch(trimmed);
+}
+
+String resolveOpenRouterModel(String modelId, String savedModel) {
+  if (looksLikeOpenRouterModel(modelId)) {
+    return modelId.trim();
+  }
+  if (savedModel.isNotEmpty) {
+    return savedModel;
+  }
+  return modelId;
 }
 
 class LlmService {
@@ -34,7 +76,7 @@ class LlmService {
   /// Unified interface to send chat using either remote or local backend
   Future<String> sendChat({
     required LlmBackend backend,
-    required String token, // HF token (ignored for local/orchestrator/ollama)
+    required String token, // HF token (ignored for local/orchestrator/ollama/gemini)
     required String modelId,
     required List<ChatMessage> history,
     String? conversationId,
@@ -293,6 +335,169 @@ class LlmService {
           sessionKey: conversationId,
           seedHistory: _seedHistoryForOrchestrator(history),
         );
+
+      case LlmBackend.geminiOrchestrator:
+        final settings = BackendSettingsRepository.instance;
+        final geminiKey = await settings.getGeminiApiKey() ?? '';
+        final savedGeminiModel = await settings.getGeminiModel() ?? '';
+        final geminiModel = resolveGeminiModel(modelId, savedGeminiModel);
+        final temperature = await settings.getGeminiTemperature();
+        final maxTokens = await settings.getGeminiMaxTokens();
+
+        if (OrchestratorManager.instance.isRunning &&
+            OrchestratorManager.instance.currentBackend !=
+                OrchestratorBackend.gemini) {
+          await OrchestratorManager.instance.stop();
+        }
+        if (!OrchestratorManager.instance.isRunning) {
+          bool started = await OrchestratorManager.instance.start(
+            modelId: geminiModel,
+            backend: OrchestratorBackend.gemini,
+            geminiApiKey: geminiKey,
+            temperature: temperature,
+            maxTokens: maxTokens,
+          );
+
+          if (!started) {
+            final log = OrchestratorManager.instance.stderrLog;
+            final isMissingDep =
+                log.contains('Missing dependency') ||
+                log.contains('ModuleNotFoundError') ||
+                log.contains('No module named');
+            if (isMissingDep) {
+              final installed =
+                  await OrchestratorManager.instance.installDependencies();
+              if (installed) {
+                started = await OrchestratorManager.instance.start(
+                  modelId: geminiModel,
+                  backend: OrchestratorBackend.gemini,
+                  geminiApiKey: geminiKey,
+                  temperature: temperature,
+                  maxTokens: maxTokens,
+                );
+              }
+            }
+          }
+
+          if (!started) {
+            throw Exception(
+              'Failed to start Gemini orchestrator. Check that Python and the '
+              '`google-genai` package are installed (Settings -> Install Dependencies). '
+              'stderr: ${OrchestratorManager.instance.stderrLog}',
+            );
+          }
+        }
+
+        final lastUser = _lastUserMessage(history);
+        if (lastUser == null) throw Exception('No user message to send.');
+        return OrchestratorManager.instance.sendPrompt(
+          lastUser,
+          sessionKey: conversationId,
+          seedHistory: _seedHistoryForOrchestrator(history),
+        );
+
+      case LlmBackend.openRouter:
+        final settings = BackendSettingsRepository.instance;
+        final openRouterKey = await settings.getOpenRouterApiKey() ?? '';
+        final savedModel = await settings.getOpenRouterModel() ?? '';
+        final openRouterModel = resolveOpenRouterModel(modelId, savedModel);
+        final temperature = await settings.getOpenRouterTemperature();
+        final maxTokens = await settings.getOpenRouterMaxTokens();
+        return OpenRouterService.instance.sendChat(
+          apiKey: openRouterKey,
+          modelId: openRouterModel,
+          history: history,
+          temperature: temperature,
+          maxTokens: maxTokens,
+        );
+
+      case LlmBackend.openRouterOrchestrator:
+        final orSettings = BackendSettingsRepository.instance;
+        final orKey = await orSettings.getOpenRouterApiKey() ?? '';
+        final orSavedModel = await orSettings.getOpenRouterModel() ?? '';
+        final orModel = resolveOpenRouterModel(modelId, orSavedModel);
+        final orTemperature = await orSettings.getOpenRouterTemperature();
+        final orMaxTokens = await orSettings.getOpenRouterMaxTokens();
+
+        if (OrchestratorManager.instance.isRunning &&
+            OrchestratorManager.instance.currentBackend !=
+                OrchestratorBackend.openrouter) {
+          await OrchestratorManager.instance.stop();
+        }
+        if (!OrchestratorManager.instance.isRunning) {
+          bool started = await OrchestratorManager.instance.start(
+            modelId: orModel,
+            backend: OrchestratorBackend.openrouter,
+            openRouterApiKey: orKey,
+            temperature: orTemperature,
+            maxTokens: orMaxTokens,
+          );
+
+          // Auto-install deps on first run (openrouter uses stdlib only,
+          // but other orchestrator deps like pydantic may still be missing).
+          if (!started) {
+            final log = OrchestratorManager.instance.stderrLog;
+            final isMissingDep =
+                log.contains('Missing dependency') ||
+                log.contains('ModuleNotFoundError') ||
+                log.contains('No module named');
+            if (isMissingDep) {
+              final installed =
+                  await OrchestratorManager.instance.installDependencies();
+              if (installed) {
+                started = await OrchestratorManager.instance.start(
+                  modelId: orModel,
+                  backend: OrchestratorBackend.openrouter,
+                  openRouterApiKey: orKey,
+                  temperature: orTemperature,
+                  maxTokens: orMaxTokens,
+                );
+              }
+            }
+          }
+
+          if (!started) {
+            throw Exception(
+              'Failed to start OpenRouter orchestrator. Check that Python is '
+              'installed and your OpenRouter API key is set in Settings. '
+              'stderr: ${OrchestratorManager.instance.stderrLog}',
+            );
+          }
+        }
+        final lastUser = _lastUserMessage(history);
+        if (lastUser == null) throw Exception('No user message to send.');
+        return OrchestratorManager.instance.sendPrompt(
+          lastUser,
+          sessionKey: conversationId,
+          seedHistory: _seedHistoryForOrchestrator(history),
+        );
+
+      case LlmBackend.ollamaGenerate:
+        final settings = BackendSettingsRepository.instance;
+        final genBaseUrl = await settings.getGenerateBaseUrl() ?? '';
+        final genModel = await settings.getGenerateModel() ?? '';
+        final genTemp = await settings.getGenerateTemperature();
+        final genNumPredict = await settings.getGenerateNumPredict();
+        final genNumCtx = await settings.getGenerateNumCtx();
+        final genApiKey = await settings.getGenerateApiKey() ?? '';
+        final genThinking = await settings.getGenerateThinking();
+
+        final resolvedModel = genModel.isNotEmpty ? genModel : modelId;
+        if (resolvedModel.isEmpty) {
+          throw Exception(
+            'Ollama Generate: no model set. Enter a model name in Settings.',
+          );
+        }
+        return OllamaGenerateService.instance.sendChat(
+          modelId: resolvedModel,
+          history: history,
+          baseUrl: genBaseUrl.isNotEmpty ? genBaseUrl : null,
+          apiKey: genApiKey.isNotEmpty ? genApiKey : null,
+          temperature: genTemp,
+          numPredict: genNumPredict,
+          numCtx: genNumCtx,
+          enableThinking: genThinking,
+        );
     }
   }
 
@@ -360,7 +565,28 @@ class LlmService {
       case LlmBackend.groq:
       case LlmBackend.groqOrchestrator:
         final key = await BackendSettingsRepository.instance.getGroqApiKey();
-        return key != null && key.trim().isNotEmpty;
+        final envKey = Platform.environment['GROQ_API_KEY'] ?? '';
+        return (key != null && key.trim().isNotEmpty) || envKey.isNotEmpty;
+
+      case LlmBackend.geminiOrchestrator:
+        final key = await BackendSettingsRepository.instance.getGeminiApiKey();
+        final envKey = Platform.environment['GOOGLE_API_KEY'] ??
+            Platform.environment['GEMINI_API_KEY'] ??
+            '';
+        return (key != null && key.trim().isNotEmpty) || envKey.isNotEmpty;
+
+      case LlmBackend.openRouter:
+      case LlmBackend.openRouterOrchestrator:
+        final key =
+            await BackendSettingsRepository.instance.getOpenRouterApiKey();
+        final envKey = Platform.environment['OPENROUTER_API_KEY'] ?? '';
+        return (key != null && key.trim().isNotEmpty) || envKey.isNotEmpty;
+
+      case LlmBackend.ollamaGenerate:
+        final url = await BackendSettingsRepository.instance.getGenerateBaseUrl();
+        return OllamaGenerateService.instance.isServerReachable(
+          baseUrl: url,
+        );
     }
   }
 

@@ -1,10 +1,13 @@
-import 'package:your_app/data/repositories/model_repository.dart';
-import 'package:your_app/data/repositories/settings_repository.dart';
-import 'package:your_app/core/constants/api_constants.dart';
-import 'package:your_app/data/models/hf_model.dart';
+
+
+import '../core/constants/api_constants.dart';
+import '../data/models/hf_model.dart';
+import '../data/repositories/model_repository.dart';
+import '../data/repositories/settings_repository.dart';
 
 Future<void> seedDefaults() async {
   try {
+
     final selected = await SettingsRepository.instance.getSelectedModelId();
     if (selected == null || selected.isEmpty) {
       await SettingsRepository.instance

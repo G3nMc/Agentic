@@ -23,8 +23,44 @@ class BackendSettingsRepository {
   static const String _kGroqTemperature = "groq_temperature";
   static const String _kGroqMaxTokens = "groq_max_tokens";
 
+  static const String _kGeminiApiKey = "gemini_api_key";
+  static const String _kGeminiModel = "gemini_model";
+  static const String _kGeminiTemperature = "gemini_temperature";
+  static const String _kGeminiMaxTokens = "gemini_max_tokens";
+  static const String _kGeminiModels = "gemini_models";
+
+  static const String _kOpenRouterApiKey = "openrouter_api_key";
+  static const String _kOpenRouterModel = "openrouter_model";
+  static const String _kOpenRouterTemperature = "openrouter_temperature";
+  static const String _kOpenRouterMaxTokens = "openrouter_max_tokens";
+
+  // /api/generate backend (custom Ollama-compatible endpoint)
+  static const String _kGenerateBaseUrl = "generate_base_url";
+  static const String _kGenerateModel = "generate_model";
+  static const String _kGenerateTemperature = "generate_temperature";
+  static const String _kGenerateNumPredict = "generate_num_predict";
+  static const String _kGenerateNumCtx = "generate_num_ctx";
+  static const String _kGenerateApiKey = "generate_api_key";
+  static const String _kGenerateThinking = "generate_thinking";
+
+  static const double defaultGenerateTemperature = 0.7;
+  static const int defaultGenerateNumPredict = 2048;
+  static const int defaultGenerateNumCtx = 4096;
+
   static const double defaultGroqTemperature = 0.7;
   static const int defaultGroqMaxTokens = 4096;
+
+  static const String defaultGeminiModel = "gemini-2.5-flash";
+  static const double defaultGeminiTemperature = 0.2;
+  static const int defaultGeminiMaxTokens = 2048;
+  static const List<String> defaultGeminiModels = [
+    'gemini-2.5-flash',
+    'gemini-2.5-pro',
+    'gemini-2.5-flash-lite',
+  ];
+
+  static const double defaultOpenRouterTemperature = 0.7;
+  static const int defaultOpenRouterMaxTokens = 4096;
 
   // Defaults kept in sync with bin/orchestrator.py. Small enough for
   // phi3:mini to stay responsive but big enough for real coding tasks.
@@ -40,9 +76,36 @@ class BackendSettingsRepository {
       whereArgs: [_kActive],
       limit: 1,
     );
-    if (rows.isEmpty) return LlmBackend.huggingFace;
+    if (rows.isEmpty) return LlmBackend.orchestrator;
     final stored = (rows.first["value"] as String?) ?? "";
-    return parseBackend(stored);
+    // Non-orchestrator backends are no longer exposed in the UI —
+    // coerce them to their closest orchestrator equivalent so an
+    // existing stored value doesn't break the dropdown.
+    return _toOrchestratorVariant(parseBackend(stored));
+  }
+
+  /// Map direct backends to their orchestrator-backed equivalent.
+  /// Orchestrator variants are passed through unchanged.
+  LlmBackend _toOrchestratorVariant(LlmBackend b) {
+    switch (b) {
+      case LlmBackend.huggingFace:
+      case LlmBackend.local:
+        return LlmBackend.orchestrator;
+      case LlmBackend.ollama:
+      case LlmBackend.ollamaPython:
+      case LlmBackend.ollamaGenerate:
+        return LlmBackend.ollamaOrchestrator;
+      case LlmBackend.groq:
+        return LlmBackend.groqOrchestrator;
+      case LlmBackend.openRouter:
+        return LlmBackend.openRouterOrchestrator;
+      case LlmBackend.orchestrator:
+      case LlmBackend.ollamaOrchestrator:
+      case LlmBackend.groqOrchestrator:
+      case LlmBackend.geminiOrchestrator:
+      case LlmBackend.openRouterOrchestrator:
+        return b;
+    }
   }
 
   /// Parse the stored enum string back to an `LlmBackend`.
@@ -68,6 +131,14 @@ class BackendSettingsRepository {
         return LlmBackend.groq;
       case 'groqOrchestrator':
         return LlmBackend.groqOrchestrator;
+      case 'geminiOrchestrator':
+        return LlmBackend.geminiOrchestrator;
+      case 'openRouter':
+        return LlmBackend.openRouter;
+      case 'openRouterOrchestrator':
+        return LlmBackend.openRouterOrchestrator;
+      case 'ollamaGenerate':
+        return LlmBackend.ollamaGenerate;
       case 'huggingFace':
       default:
         return LlmBackend.huggingFace;
@@ -207,6 +278,116 @@ class BackendSettingsRepository {
   }
   Future<void> setGroqMaxTokens(int v) =>
       _writeString(_kGroqMaxTokens, v.toString());
+
+  // ---------------------------------------------------------------------------
+  // Gemini settings
+  // ---------------------------------------------------------------------------
+
+  Future<String?> getGeminiApiKey() => _readString(_kGeminiApiKey);
+  Future<void> setGeminiApiKey(String key) => _writeString(_kGeminiApiKey, key);
+
+  Future<String?> getGeminiModel() => _readString(_kGeminiModel);
+  Future<void> setGeminiModel(String model) =>
+      _writeString(_kGeminiModel, model);
+
+  Future<double> getGeminiTemperature() async {
+    final v = await _readString(_kGeminiTemperature);
+    return double.tryParse(v ?? '') ?? defaultGeminiTemperature;
+  }
+  Future<void> setGeminiTemperature(double v) =>
+      _writeString(_kGeminiTemperature, v.toString());
+
+  Future<int> getGeminiMaxTokens() async {
+    final v = await _readString(_kGeminiMaxTokens);
+    return int.tryParse(v ?? '') ?? defaultGeminiMaxTokens;
+  }
+  Future<void> setGeminiMaxTokens(int v) =>
+      _writeString(_kGeminiMaxTokens, v.toString());
+
+  Future<List<String>> getGeminiModels() async {
+    final raw = await _readString(_kGeminiModels);
+    if (raw == null || raw.trim().isEmpty) {
+      return List<String>.from(defaultGeminiModels);
+    }
+    return raw
+        .split('\n')
+        .map((s) => s.trim())
+        .where((s) => s.isNotEmpty)
+        .toList();
+  }
+
+  Future<void> setGeminiModels(List<String> models) =>
+      _writeString(_kGeminiModels, models.join('\n'));
+
+  // ---------------------------------------------------------------------------
+  // OpenRouter settings
+  // ---------------------------------------------------------------------------
+
+  Future<String?> getOpenRouterApiKey() => _readString(_kOpenRouterApiKey);
+  Future<void> setOpenRouterApiKey(String key) =>
+      _writeString(_kOpenRouterApiKey, key);
+
+  Future<String?> getOpenRouterModel() => _readString(_kOpenRouterModel);
+  Future<void> setOpenRouterModel(String model) =>
+      _writeString(_kOpenRouterModel, model);
+
+  Future<double> getOpenRouterTemperature() async {
+    final v = await _readString(_kOpenRouterTemperature);
+    return double.tryParse(v ?? '') ?? defaultOpenRouterTemperature;
+  }
+  Future<void> setOpenRouterTemperature(double v) =>
+      _writeString(_kOpenRouterTemperature, v.toString());
+
+  Future<int> getOpenRouterMaxTokens() async {
+    final v = await _readString(_kOpenRouterMaxTokens);
+    return int.tryParse(v ?? '') ?? defaultOpenRouterMaxTokens;
+  }
+  Future<void> setOpenRouterMaxTokens(int v) =>
+      _writeString(_kOpenRouterMaxTokens, v.toString());
+
+  // ---------------------------------------------------------------------------
+  // /api/generate backend settings
+  // ---------------------------------------------------------------------------
+
+  Future<String?> getGenerateBaseUrl() => _readString(_kGenerateBaseUrl);
+  Future<void> setGenerateBaseUrl(String url) =>
+      _writeString(_kGenerateBaseUrl, url);
+
+  Future<String?> getGenerateModel() => _readString(_kGenerateModel);
+  Future<void> setGenerateModel(String model) =>
+      _writeString(_kGenerateModel, model);
+
+  Future<double> getGenerateTemperature() async {
+    final v = await _readString(_kGenerateTemperature);
+    return double.tryParse(v ?? '') ?? defaultGenerateTemperature;
+  }
+  Future<void> setGenerateTemperature(double v) =>
+      _writeString(_kGenerateTemperature, v.toString());
+
+  Future<int> getGenerateNumPredict() async {
+    final v = await _readString(_kGenerateNumPredict);
+    return int.tryParse(v ?? '') ?? defaultGenerateNumPredict;
+  }
+  Future<void> setGenerateNumPredict(int v) =>
+      _writeString(_kGenerateNumPredict, v.toString());
+
+  Future<int> getGenerateNumCtx() async {
+    final v = await _readString(_kGenerateNumCtx);
+    return int.tryParse(v ?? '') ?? defaultGenerateNumCtx;
+  }
+  Future<void> setGenerateNumCtx(int v) =>
+      _writeString(_kGenerateNumCtx, v.toString());
+
+  Future<String?> getGenerateApiKey() => _readString(_kGenerateApiKey);
+  Future<void> setGenerateApiKey(String key) =>
+      _writeString(_kGenerateApiKey, key);
+
+  Future<bool> getGenerateThinking() async {
+    final v = await _readString(_kGenerateThinking);
+    return v == 'true';
+  }
+  Future<void> setGenerateThinking(bool enabled) =>
+      _writeString(_kGenerateThinking, enabled.toString());
 
   Future<String?> _readString(String key) async {
     final db = await AppDatabase.instance.database;

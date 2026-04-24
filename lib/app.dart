@@ -9,9 +9,9 @@ class HfChatApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: "HF Chat",
+      title: "AI Chat",
       debugShowCheckedModeBanner: false,
-      theme: AppTheme.lightTheme(),
+      theme: AppTheme.darkTheme(),
       home: const HomeScreen(),
     );
   }

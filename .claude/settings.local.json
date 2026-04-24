@@ -68,7 +68,12 @@
       "Bash(\"/c/Users/Gentian/AppData/Local/Flutter/bin/flutter\" test *)",
       "Bash(grep -v \"^$\")",
       "Bash(/c/Users/Gentian/AppData/Local/Flutter/bin/flutter analyze *)",
-      "Bash(/c/Users/Gentian/AppData/Local/Flutter/bin/flutter test *)"
+      "Bash(/c/Users/Gentian/AppData/Local/Flutter/bin/flutter test *)",
+      "Bash(dart analyze *)",
+      "PowerShell(Get-ChildItem -Path \"C:\\\\Users\\\\Gentian\" -Filter \"flutter.bat\" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 5 FullName; Get-ChildItem -Path \"C:\\\\flutter\", \"C:\\\\src\\\\flutter\", \"$env:LOCALAPPDATA\\\\flutter\", \"$env:USERPROFILE\\\\flutter\" -Filter \"flutter.bat\" -ErrorAction SilentlyContinue | Select-Object FullName)",
+      "WebFetch(domain:docs.ollama.com)",
+      "Bash(awk '/^[a-zA-Z]/' \"C:\\\\Users\\\\Gentian\\\\AsPro\\\\AI\\\\hf_chat_flutter\\\\lib\\\\ui\\\\screens\\\\settings_screen.dart\")",
+      "WebFetch(domain:openrouter.ai)"
     ]
   }
 }

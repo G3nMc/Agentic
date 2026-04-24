@@ -11,9 +11,7 @@ class CodeBlockBuilder extends MarkdownElementBuilder {
   @override
   Widget? visitElementAfter(md.Element element, TextStyle? preferredStyle) {
     // Inline code: render default.
-    final isInline = element.tag == "code" &&
-        (element.attributes["class"] == null ||
-            element.attributes["class"]!.isEmpty);
+    final isInline = element.tag == "code" && (element.attributes["class"] == null || element.attributes["class"]!.isEmpty);
 
     final text = element.textContent;
 
@@ -22,8 +20,8 @@ class CodeBlockBuilder extends MarkdownElementBuilder {
         text: TextSpan(
           text: text,
           style: const TextStyle(
+            backgroundColor: AppTheme.accentDarkMarrone,
             fontFamily: "monospace",
-            backgroundColor: Color(0xFFEFECE5),
             color: AppTheme.textPrimary,
             fontSize: 13.5,
           ),

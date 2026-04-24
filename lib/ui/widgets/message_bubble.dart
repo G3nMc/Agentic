@@ -7,10 +7,20 @@ import '../../core/theme/app_theme.dart';
 import '../../data/models/message.dart';
 import 'code_block.dart';
 
+/// Matches every <think>…</think> block, including multi-line content.
+final _thinkPattern = RegExp(
+  r'<think>(.*?)</think>',
+  dotAll: true,
+  caseSensitive: false,
+);
+
 class MessageBubble extends StatelessWidget {
   final ChatMessage message;
 
-  const MessageBubble({super.key, required this.message});
+  /// Called when the user taps "Resend" on a user bubble. Null = hidden.
+  final VoidCallback? onResend;
+
+  const MessageBubble({super.key, required this.message, this.onResend});
 
   bool get _isUser => message.role == MessageRole.user;
 
@@ -26,6 +36,7 @@ class MessageBubble extends StatelessWidget {
           decoration: BoxDecoration(
             color: _isUser ? AppTheme.userBubble : AppTheme.aiBubble,
             border: Border.all(
+              width: 0.5,
               color: _isUser ? Colors.transparent : AppTheme.border,
             ),
             borderRadius: BorderRadius.only(
@@ -34,13 +45,13 @@ class MessageBubble extends StatelessWidget {
               bottomLeft: Radius.circular(_isUser ? 16 : 4),
               bottomRight: Radius.circular(_isUser ? 4 : 16),
             ),
-            boxShadow: [
-              BoxShadow(
-                color: Colors.black.withOpacity(0.05),
-                blurRadius: 4,
-                offset: const Offset(0, 2),
-              ),
-            ],
+            // boxShadow: [
+            //   BoxShadow(
+            //     color: AppTheme.accent,
+            //     blurRadius: 10,
+            //     offset: const Offset(0, 1),
+            //   ),
+            // ],
           ),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
@@ -80,8 +91,30 @@ class MessageBubble extends StatelessWidget {
         ),
       );
     }
+
+    // Extract any <think>…</think> blocks so we can render them as a
+    // collapsible "Reasoning" section above the main answer.
+    final thinkMatches = _thinkPattern.allMatches(message.content).toList();
+    if (thinkMatches.isEmpty) {
+      return _buildMarkdown(message.content, context);
+    }
+
+    final thinking = thinkMatches.map((m) => m.group(1)!.trim()).where((s) => s.isNotEmpty).join('\n\n---\n\n');
+    final answer = message.content.replaceAll(_thinkPattern, '').trim();
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        if (thinking.isNotEmpty) _ReasoningBlock(content: thinking),
+        if (thinking.isNotEmpty && answer.isNotEmpty) const SizedBox(height: 10),
+        if (answer.isNotEmpty) _buildMarkdown(answer, context),
+      ],
+    );
+  }
+
+  Widget _buildMarkdown(String data, BuildContext context) {
     return MarkdownBody(
-      data: message.content,
+      data: data,
       selectable: true,
       softLineBreak: true,
       extensionSet: md.ExtensionSet.gitHubWeb,
@@ -98,6 +131,12 @@ class MessageBubble extends StatelessWidget {
         child: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
+            if (_isUser && onResend != null)
+              _ActionIcon(
+                tooltip: "Resend message",
+                icon: Icons.replay_rounded,
+                onTap: onResend!,
+              ),
             _ActionIcon(
               tooltip: "Copy message",
               icon: Icons.copy,
@@ -133,7 +172,6 @@ class MessageBubble extends StatelessWidget {
       listBullet: base.bodyMedium?.copyWith(color: AppTheme.textPrimary),
       code: const TextStyle(
         fontFamily: "monospace",
-        backgroundColor: Color(0xFFEFECE5),
         color: AppTheme.textPrimary,
         fontSize: 13.5,
       ),
@@ -141,10 +179,10 @@ class MessageBubble extends StatelessWidget {
         color: AppTheme.codeBg,
         borderRadius: BorderRadius.circular(8),
       ),
-      blockquote: TextStyle(color: AppTheme.textSecondary),
-      blockquoteDecoration: BoxDecoration(
+      blockquote: const TextStyle(color: AppTheme.textSecondary),
+      blockquoteDecoration: const BoxDecoration(
         color: AppTheme.bgSecondary,
-        border: const Border(
+        border: Border(
           left: BorderSide(color: AppTheme.border, width: 3),
         ),
       ),
@@ -152,6 +190,99 @@ class MessageBubble extends StatelessWidget {
     );
   }
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Collapsible reasoning block
+// ─────────────────────────────────────────────────────────────────────────────
+
+class _ReasoningBlock extends StatefulWidget {
+  final String content;
+  const _ReasoningBlock({required this.content});
+
+  @override
+  State<_ReasoningBlock> createState() => _ReasoningBlockState();
+}
+
+class _ReasoningBlockState extends State<_ReasoningBlock> {
+  bool _expanded = false;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      decoration: BoxDecoration(
+        color: AppTheme.bgSecondary,
+        border: Border.all(color: AppTheme.border),
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          // ── Header row (always visible) ──────────────────────────────────
+          InkWell(
+            borderRadius: BorderRadius.circular(8),
+            onTap: () => setState(() => _expanded = !_expanded),
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
+              child: Row(
+                children: [
+                  const Icon(
+                    Icons.psychology_outlined,
+                    size: 14,
+                    color: AppTheme.textMuted,
+                  ),
+                  const SizedBox(width: 6),
+                  const Text(
+                    'Reasoning',
+                    style: TextStyle(
+                      fontSize: 12,
+                      fontWeight: FontWeight.w600,
+                      color: AppTheme.textSecondary,
+                      letterSpacing: 0.3,
+                    ),
+                  ),
+                  const SizedBox(width: 6),
+                  Text(
+                    _expanded ? 'hide' : 'show',
+                    style: const TextStyle(
+                      fontSize: 11,
+                      color: AppTheme.textMuted,
+                    ),
+                  ),
+                  const Spacer(),
+                  Icon(
+                    _expanded ? Icons.keyboard_arrow_up : Icons.keyboard_arrow_down,
+                    size: 14,
+                    color: AppTheme.textMuted,
+                  ),
+                ],
+              ),
+            ),
+          ),
+          // ── Expanded content ─────────────────────────────────────────────
+          if (_expanded) ...[
+            const Divider(height: 1, color: AppTheme.border),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(12, 10, 12, 12),
+              child: SelectableText(
+                widget.content,
+                style: const TextStyle(
+                  fontSize: 12.5,
+                  color: AppTheme.textSecondary,
+                  height: 1.55,
+                  fontFamily: 'monospace',
+                ),
+              ),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Generic action icon (copy, resend, …)
+// ─────────────────────────────────────────────────────────────────────────────
 
 class _ActionIcon extends StatefulWidget {
   final IconData icon;

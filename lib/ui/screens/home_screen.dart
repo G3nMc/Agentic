@@ -19,7 +19,7 @@ class _HomeScreenState extends StateManager<HomeScreen> {
   String? _activeConversationId;
 
   // Sidebar width on desktop.
-  static const double _sidebarWidth = 280;
+  static const double _sidebarWidth = 300;
 
   @override
   void initState() {

@@ -2,6 +2,7 @@ class Conversation {
   final String id;
   final String title;
   final String? modelId;
+  final String? backend;
   final int createdAt;
   final int updatedAt;
 
@@ -9,6 +10,7 @@ class Conversation {
     required this.id,
     required this.title,
     this.modelId,
+    this.backend,
     required this.createdAt,
     required this.updatedAt,
   });
@@ -18,6 +20,7 @@ class Conversation {
       id: map["id"] as String,
       title: map["title"] as String,
       modelId: map["model_id"] as String?,
+      backend: map["backend"] as String?,
       createdAt: (map["created_at"] as int?) ?? 0,
       updatedAt: (map["updated_at"] as int?) ?? 0,
     );
@@ -28,6 +31,7 @@ class Conversation {
       "id": id,
       "title": title,
       "model_id": modelId,
+      "backend": backend,
       "created_at": createdAt,
       "updated_at": updatedAt,
     };
@@ -37,6 +41,7 @@ class Conversation {
     String? id,
     String? title,
     String? modelId,
+    String? backend,
     int? createdAt,
     int? updatedAt,
   }) {
@@ -44,6 +49,7 @@ class Conversation {
       id: id ?? this.id,
       title: title ?? this.title,
       modelId: modelId ?? this.modelId,
+      backend: backend ?? this.backend,
       createdAt: createdAt ?? this.createdAt,
       updatedAt: updatedAt ?? this.updatedAt,
     );

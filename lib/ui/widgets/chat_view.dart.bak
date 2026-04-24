@@ -56,7 +56,6 @@ class _ChatViewState extends StateManager<ChatView> with WidgetsBindingObserver 
   bool _loading = false;
   bool _sending = false;
   String? _sendError;
-  double _currentScroll = 0.0;
 
   /// Active backend — loaded once and cached so build() never needs a
   /// FutureBuilder (which tears down child widgets on every setState).
@@ -73,22 +72,7 @@ class _ChatViewState extends StateManager<ChatView> with WidgetsBindingObserver 
     WidgetsBinding.instance.addObserver(this);
     _loadConversation();
     _refreshActiveBackend();
-
-    _scrollController.addListener(() {
-      if (!_scrollController.hasClients) return;
-      setState(() {
-        _currentScroll = _scrollController.offset;
-      });
-    });
   }
-
-  // @override
-  // void initState() {
-  //   super.initState();
-  //   WidgetsBinding.instance.addObserver(this);
-  //   _loadConversation();
-  //   _refreshActiveBackend();
-  // }
 
   @override
   void didUpdateWidget(ChatView oldWidget) {
@@ -476,42 +460,25 @@ class _ChatViewState extends StateManager<ChatView> with WidgetsBindingObserver 
               )),
           const SizedBox(width: 12),
           // Local server button (only for local backend)
-          if (_activeBackend == LlmBackend.local)
-            Builder(
-              builder: (ctx) {
-                final modelId = conv.modelId ?? ApiConstants.defaultModelId;
-                final isRunning = LocalServerManager.instance.isServerRunning(modelId);
-                return IconButton(
-                  tooltip: isRunning ? "Server running" : "Start local server",
-                  icon: Icon(
-                    isRunning ? Icons.cloud_done : Icons.cloud_upload_outlined,
-                    size: 16,
-                    color: isRunning ? AppTheme.accentMarrone : AppTheme.textSecondary,
-                  ),
-                  onPressed: isRunning ? null : () => _startLocalServer(modelId),
-                );
-              },
-            ),
-
-          // FutureBuilder<LlmBackend>(
-          //   future: BackendSettingsRepository.instance.getActiveBackend(),
-          //   builder: (ctx, backendSnapshot) {
-          //     if (backendSnapshot.data != LlmBackend.local) {
-          //       return const SizedBox.shrink();
-          //     }
-          //     final modelId = conv.modelId ?? ApiConstants.defaultModelId;
-          //     final isRunning = LocalServerManager.instance.isServerRunning(modelId);
-          //     return IconButton(
-          //       tooltip: isRunning ? "Server running" : "Start local server",
-          //       icon: Icon(
-          //         isRunning ? Icons.cloud_done : Icons.cloud_upload_outlined,
-          //         size: 16,
-          //         color: isRunning ? AppTheme.accentMarrone : AppTheme.textSecondary,
-          //       ),
-          //       onPressed: isRunning ? null : () => _startLocalServer(modelId),
-          //     );
-          //   },
-          // ),
+          FutureBuilder<LlmBackend>(
+            future: BackendSettingsRepository.instance.getActiveBackend(),
+            builder: (ctx, backendSnapshot) {
+              if (backendSnapshot.data != LlmBackend.local) {
+                return const SizedBox.shrink();
+              }
+              final modelId = conv.modelId ?? ApiConstants.defaultModelId;
+              final isRunning = LocalServerManager.instance.isServerRunning(modelId);
+              return IconButton(
+                tooltip: isRunning ? "Server running" : "Start local server",
+                icon: Icon(
+                  isRunning ? Icons.cloud_done : Icons.cloud_upload_outlined,
+                  size: 16,
+                  color: isRunning ? AppTheme.accentMarrone : AppTheme.textSecondary,
+                ),
+                onPressed: isRunning ? null : () => _startLocalServer(modelId),
+              );
+            },
+          ),
         ],
       ),
     );
@@ -520,10 +487,8 @@ class _ChatViewState extends StateManager<ChatView> with WidgetsBindingObserver 
   Future<void> _startLocalServer(String modelId) async {
     try {
       final config = await LocalServerConfigRepository.instance.getByModelId(modelId);
-
-      if (!mounted) return;
-
       if (config == null) {
+        if (!mounted) return;
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
             content: Text("No configuration found. Configure the server in Settings > Model > Configure Local Server"),
@@ -540,20 +505,16 @@ class _ChatViewState extends StateManager<ChatView> with WidgetsBindingObserver 
       );
 
       final serverUrl = await LocalServerManager.instance.startServer(config);
-
       if (!mounted) return;
-
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text("✓ Server running at $serverUrl"),
           backgroundColor: AppTheme.accentMarrone,
         ),
       );
-
       setState(() {});
     } catch (e) {
       if (!mounted) return;
-
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text("Error: $e"),
@@ -562,46 +523,6 @@ class _ChatViewState extends StateManager<ChatView> with WidgetsBindingObserver 
       );
     }
   }
-
-  // Future<void> _startLocalServer(String modelId) async {
-  //   try {
-  //     final config = await LocalServerConfigRepository.instance.getByModelId(modelId);
-  //     if (config == null) {
-  //       if (!mounted) return;
-  //       ScaffoldMessenger.of(context).showSnackBar(
-  //         const SnackBar(
-  //           content: Text("No configuration found. Configure the server in Settings > Model > Configure Local Server"),
-  //         ),
-  //       );
-  //       return;
-  //     }
-  //
-  //     ScaffoldMessenger.of(context).showSnackBar(
-  //       const SnackBar(
-  //         content: Text("Starting server..."),
-  //         duration: Duration(seconds: 1),
-  //       ),
-  //     );
-  //
-  //     final serverUrl = await LocalServerManager.instance.startServer(config);
-  //     if (!mounted) return;
-  //     ScaffoldMessenger.of(context).showSnackBar(
-  //       SnackBar(
-  //         content: Text("✓ Server running at $serverUrl"),
-  //         backgroundColor: AppTheme.accentMarrone,
-  //       ),
-  //     );
-  //     setState(() {});
-  //   } catch (e) {
-  //     if (!mounted) return;
-  //     ScaffoldMessenger.of(context).showSnackBar(
-  //       SnackBar(
-  //         content: Text("Error: $e"),
-  //         backgroundColor: AppTheme.danger,
-  //       ),
-  //     );
-  //   }
-  // }
 
   Future<void> _startOrchestrator() async {
     return _startOrchestratorForActiveBackend();
@@ -638,8 +559,6 @@ class _ChatViewState extends StateManager<ChatView> with WidgetsBindingObserver 
       final ollamaModel = await BackendSettingsRepository.instance.getOllamaModel();
       final ollamaBaseUrl = await BackendSettingsRepository.instance.getOllamaBaseUrl();
 
-      if (!mounted) return;
-
       String? token;
       String? groqApiKey;
       OrchestratorBackend desiredBackend;
@@ -648,51 +567,48 @@ class _ChatViewState extends StateManager<ChatView> with WidgetsBindingObserver 
       if (backend == LlmBackend.ollamaOrchestrator) {
         desiredBackend = OrchestratorBackend.ollama;
         modelId = ollamaModel;
-
         if (modelId == null || modelId.isEmpty) {
+          if (!mounted) return;
           ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text("Select an Ollama model in Settings first")),
+            const SnackBar(
+              content: Text("Select an Ollama model in Settings first"),
+            ),
           );
           return;
         }
       } else if (backend == LlmBackend.groqOrchestrator) {
         desiredBackend = OrchestratorBackend.groq;
-
         groqApiKey = await BackendSettingsRepository.instance.getGroqApiKey();
         modelId = await BackendSettingsRepository.instance.getGroqModel();
-
-        if (!mounted) return;
-
         if (groqApiKey == null || groqApiKey.isEmpty) {
+          if (!mounted) return;
           ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text("Configure Groq API key in Settings first")),
+            const SnackBar(
+              content: Text("Configure Groq API key in Settings first"),
+            ),
           );
           return;
         }
       } else {
         desiredBackend = OrchestratorBackend.huggingface;
-
         final creds = await AgentCredentialsRepository.instance.getCredentials();
-        if (!mounted) return;
-
         token = creds?.hfToken;
         modelId = _conversation?.modelId;
-
         if (token == null || token.isEmpty) {
+          if (!mounted) return;
           ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text("Configure HF token in Settings first")),
+            const SnackBar(
+              content: Text("Configure HF token in Settings first"),
+            ),
           );
           return;
         }
       }
 
-      // Stop existing orchestrator if backend changed
       if (OrchestratorManager.instance.isRunning && OrchestratorManager.instance.currentBackend != desiredBackend) {
         await OrchestratorManager.instance.stop();
-        if (!mounted) return;
       }
 
-      // Start message
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text(
@@ -719,13 +635,11 @@ class _ChatViewState extends StateManager<ChatView> with WidgetsBindingObserver 
       if (started) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text(
-              switch (desiredBackend) {
-                OrchestratorBackend.ollama => "Ollama orchestrator active",
-                OrchestratorBackend.groq => "Groq orchestrator active",
-                _ => "Orchestrator active",
-              },
-            ),
+            content: Text(switch (desiredBackend) {
+              OrchestratorBackend.ollama => "Ollama orchestrator active",
+              OrchestratorBackend.groq => "Groq orchestrator active",
+              _ => "Orchestrator active",
+            }),
             backgroundColor: const Color.fromARGB(255, 76, 175, 80),
           ),
         );
@@ -733,20 +647,18 @@ class _ChatViewState extends StateManager<ChatView> with WidgetsBindingObserver 
       } else {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text(
-              switch (desiredBackend) {
-                OrchestratorBackend.ollama => "Failed to start Ollama orchestrator",
-                OrchestratorBackend.groq => "Failed to start Groq orchestrator",
-                _ => "Failed to start orchestrator",
-              },
-            ),
+            content: Text(switch (desiredBackend) {
+              OrchestratorBackend.ollama => "Failed to start Ollama orchestrator",
+              OrchestratorBackend.groq => "Failed to start Groq orchestrator",
+              _ => "Failed to start orchestrator",
+            }),
             backgroundColor: AppTheme.danger,
           ),
         );
       }
+      return;
     } catch (e) {
       if (!mounted) return;
-
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text("Error: $e"),
@@ -755,121 +667,6 @@ class _ChatViewState extends StateManager<ChatView> with WidgetsBindingObserver 
       );
     }
   }
-
-  // Future<void> _startOrchestratorForActiveBackend() async {
-  //   try {
-  //     final backend = await BackendSettingsRepository.instance.getActiveBackend();
-  //     final ollamaModel = await BackendSettingsRepository.instance.getOllamaModel();
-  //     final ollamaBaseUrl = await BackendSettingsRepository.instance.getOllamaBaseUrl();
-  //
-  //     String? token;
-  //     String? groqApiKey;
-  //     OrchestratorBackend desiredBackend;
-  //     String? modelId;
-  //
-  //     if (backend == LlmBackend.ollamaOrchestrator) {
-  //       desiredBackend = OrchestratorBackend.ollama;
-  //       modelId = ollamaModel;
-  //       if (modelId == null || modelId.isEmpty) {
-  //         if (!mounted) return;
-  //         ScaffoldMessenger.of(context).showSnackBar(
-  //           const SnackBar(
-  //             content: Text("Select an Ollama model in Settings first"),
-  //           ),
-  //         );
-  //         return;
-  //       }
-  //     } else if (backend == LlmBackend.groqOrchestrator) {
-  //       desiredBackend = OrchestratorBackend.groq;
-  //       groqApiKey = await BackendSettingsRepository.instance.getGroqApiKey();
-  //       modelId = await BackendSettingsRepository.instance.getGroqModel();
-  //       if (groqApiKey == null || groqApiKey.isEmpty) {
-  //         if (!mounted) return;
-  //         ScaffoldMessenger.of(context).showSnackBar(
-  //           const SnackBar(
-  //             content: Text("Configure Groq API key in Settings first"),
-  //           ),
-  //         );
-  //         return;
-  //       }
-  //     } else {
-  //       desiredBackend = OrchestratorBackend.huggingface;
-  //       final creds = await AgentCredentialsRepository.instance.getCredentials();
-  //       token = creds?.hfToken;
-  //       modelId = _conversation?.modelId;
-  //       if (token == null || token.isEmpty) {
-  //         if (!mounted) return;
-  //         ScaffoldMessenger.of(context).showSnackBar(
-  //           const SnackBar(
-  //             content: Text("Configure HF token in Settings first"),
-  //           ),
-  //         );
-  //         return;
-  //       }
-  //     }
-  //
-  //     if (OrchestratorManager.instance.isRunning && OrchestratorManager.instance.currentBackend != desiredBackend) {
-  //       await OrchestratorManager.instance.stop();
-  //     }
-  //
-  //     ScaffoldMessenger.of(context).showSnackBar(
-  //       SnackBar(
-  //         content: Text(
-  //           desiredBackend == OrchestratorBackend.ollama
-  //               ? "Starting Ollama orchestrator..."
-  //               : desiredBackend == OrchestratorBackend.groq
-  //                   ? "Starting Groq orchestrator..."
-  //                   : "Starting orchestrator...",
-  //         ),
-  //         duration: const Duration(seconds: 1),
-  //       ),
-  //     );
-  //
-  //     final started = await OrchestratorManager.instance.start(
-  //       hfToken: token,
-  //       modelId: modelId,
-  //       backend: desiredBackend,
-  //       ollamaBaseUrl: ollamaBaseUrl,
-  //       groqApiKey: groqApiKey,
-  //     );
-  //
-  //     if (!mounted) return;
-  //
-  //     if (started) {
-  //       ScaffoldMessenger.of(context).showSnackBar(
-  //         SnackBar(
-  //           content: Text(switch (desiredBackend) {
-  //             OrchestratorBackend.ollama => "Ollama orchestrator active",
-  //             OrchestratorBackend.groq => "Groq orchestrator active",
-  //             _ => "Orchestrator active",
-  //           }),
-  //           backgroundColor: const Color.fromARGB(255, 76, 175, 80),
-  //         ),
-  //       );
-  //       setState(() {});
-  //     } else {
-  //       ScaffoldMessenger.of(context).showSnackBar(
-  //         SnackBar(
-  //           content: Text(switch (desiredBackend) {
-  //             OrchestratorBackend.ollama => "Failed to start Ollama orchestrator",
-  //             OrchestratorBackend.groq => "Failed to start Groq orchestrator",
-  //             _ => "Failed to start orchestrator",
-  //           }),
-  //           backgroundColor: AppTheme.danger,
-  //         ),
-  //       );
-  //     }
-  //     return;
-  //   } catch (e) {
-  //     if (!mounted) return;
-  //     ScaffoldMessenger.of(context).showSnackBar(
-  //       SnackBar(
-  //         content: Text("Error: $e"),
-  //         backgroundColor: AppTheme.danger,
-  //       ),
-  //     );
-  //   }
-  // }
 
   Widget _buildMessagesList() {
     if (_messages.isEmpty) {
@@ -919,7 +716,7 @@ class _ChatViewState extends StateManager<ChatView> with WidgetsBindingObserver 
   Widget _buildErrorBar() {
     return Container(
       width: double.infinity,
-      color: AppTheme.danger.withAlpha(200),
+      color: AppTheme.danger.withOpacity(0.08),
       padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
       child: Row(
         children: [
@@ -961,42 +758,80 @@ class _ChatViewState extends StateManager<ChatView> with WidgetsBindingObserver 
   }
 
   Widget _buildScrollToBottomButton() {
-    if (!_scrollController.hasClients) {
-      return const SizedBox.shrink();
-    }
+    return StreamBuilder<double>(
+      stream: _scrollController.positionChanged,
+      builder: (context, snapshot) {
+        final scrollPosition = snapshot.data ?? 0.0;
+        final maxScroll = _scrollController.position.maxScrollExtent;
+        final showButton = maxScroll > 0 && scrollPosition < maxScroll - 100;
 
-    final maxScroll = _scrollController.position.maxScrollExtent;
-    final showButton = maxScroll > 0 && _currentScroll < maxScroll - 100;
+        if (!showButton) {
+          return const SizedBox.shrink();
+        }
 
-    if (!showButton) {
-      return const SizedBox.shrink();
-    }
-
-    return Container(
-      padding: const EdgeInsets.only(left: 20),
-      alignment: AlignmentGeometry.bottomCenter,
-      child: Material(
-        color: Colors.transparent,
-        borderRadius: BorderRadius.circular(20),
-        child: InkWell(
-          borderRadius: BorderRadius.circular(20),
-          onTap: _scrollToBottom,
-          child: Container(
-            width: 40,
-            height: 40,
-            alignment: Alignment.center,
-            decoration: BoxDecoration(
-              border: Border.all(color: AppTheme.accentDarkMarrone, width: 1),
-              borderRadius: BorderRadius.circular(20),
-            ),
-            child: const Icon(
-              Icons.keyboard_arrow_down_rounded,
-              size: 30,
+        return Padding(
+          padding: const EdgeInsets.only(bottom: 8),
+          child: Center(
+            child: Material(
               color: AppTheme.accent,
+              borderRadius: BorderRadius.circular(8),
+              child: InkWell(
+                borderRadius: BorderRadius.circular(8),
+                onTap: _scrollToBottom,
+                child: Container(
+                  width: 40,
+                  height: 40,
+                  alignment: Alignment.center,
+                  child: const Icon(
+                    Icons.keyboard_arrow_down_rounded,
+                    size: 20,
+                    color: Colors.white,
+                  ),
+                ),
+              ),
             ),
           ),
-        ),
-      ),
+        );
+      },
+    );
+  }
+
+  Widget _buildScrollToBottomButton() {
+    return StreamBuilder<double>(
+      stream: _scrollController.positionChanged,
+      builder: (context, snapshot) {
+        final scrollPosition = snapshot.data ?? 0.0;
+        final maxScroll = _scrollController.position.maxScrollExtent;
+        final showButton = maxScroll > 0 && scrollPosition < maxScroll - 100;
+
+        if (!showButton) {
+          return const SizedBox.shrink();
+        }
+
+        return Padding(
+          padding: const EdgeInsets.only(bottom: 8),
+          child: Center(
+            child: Material(
+              color: AppTheme.accent,
+              borderRadius: BorderRadius.circular(8),
+              child: InkWell(
+                borderRadius: BorderRadius.circular(8),
+                onTap: _scrollToBottom,
+                child: Container(
+                  width: 40,
+                  height: 40,
+                  alignment: Alignment.center,
+                  child: const Icon(
+                    Icons.keyboard_arrow_down_rounded,
+                    size: 20,
+                    color: Colors.white,
+                  ),
+                ),
+              ),
+            ),
+          ),
+        );
+      },
     );
   }
 

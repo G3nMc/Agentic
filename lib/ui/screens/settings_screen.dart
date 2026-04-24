@@ -4,6 +4,7 @@ import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:path_provider/path_provider.dart';
 
 import '../../core/constants/api_constants.dart';
 import '../../core/theme/app_theme.dart';
@@ -15,9 +16,11 @@ import '../../data/repositories/model_repository.dart';
 import '../../data/repositories/settings_repository.dart';
 import '../../services/groq_service.dart';
 import '../../services/llm_service.dart';
+import '../../services/ollama_generate_service.dart';
 import '../../services/ollama_manager.dart';
 import '../../services/ollama_python_manager.dart';
 import '../../services/ollama_service.dart';
+import '../../services/openrouter_service.dart';
 import '../../services/orchestrator_manager.dart';
 import '../widgets/local_server_config_widget.dart';
 
@@ -42,6 +45,13 @@ class _SettingsScreenState extends State<SettingsScreen> {
   LlmBackend _activeBackend = LlmBackend.huggingFace;
   String? _localServerUrl;
 
+  // Settings side-nav: 0 = Model Settings, 1 = Orchestrator
+  int _settingsSection = 0;
+
+  // Orchestrator log persistence
+  List<String> _persistedLog = [];
+  File? _logFile;
+
   // Orchestrator control state (only relevant when LlmBackend.orchestrator).
   bool _orchestratorBusy = false;
   final List<String> _orchestratorLog = [];
@@ -58,8 +68,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   bool _ollamaServerUp = false;
   List<String> _ollamaInstalledModels = const [];
   String? _ollamaSelectedModel;
-  final TextEditingController _ollamaPythonUrlController =
-      TextEditingController();
+  final TextEditingController _ollamaPythonUrlController = TextEditingController();
   bool _ollamaPythonBusy = false;
   final List<String> _ollamaPythonLog = [];
   String? _pythonVersion;
@@ -71,10 +80,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
   double _ollamaTemperature = BackendSettingsRepository.defaultOllamaTemperature;
   int _ollamaNumPredict = BackendSettingsRepository.defaultOllamaNumPredict;
   int _ollamaNumCtxValue = BackendSettingsRepository.defaultOllamaNumCtx;
-  final TextEditingController _ollamaNumPredictController =
-      TextEditingController();
-  final TextEditingController _ollamaNumCtxController =
-      TextEditingController();
+  final TextEditingController _ollamaNumPredictController = TextEditingController();
+  final TextEditingController _ollamaNumCtxController = TextEditingController();
 
   // Groq settings
   final TextEditingController _groqApiKeyController = TextEditingController();
@@ -87,6 +94,43 @@ class _SettingsScreenState extends State<SettingsScreen> {
   final TextEditingController _groqMaxTokensController = TextEditingController();
   Timer? _groqMaxTokensSaveTimer;
 
+  // Gemini settings
+  List<String> _geminiModels = List<String>.from(
+    BackendSettingsRepository.defaultGeminiModels,
+  );
+  final TextEditingController _geminiNewModelController =
+      TextEditingController();
+  final TextEditingController _geminiApiKeyController = TextEditingController();
+  bool _geminiApiKeyVisible = false;
+  Timer? _geminiApiKeySaveTimer;
+  String? _geminiSelectedModel;
+  double _geminiTemperature = BackendSettingsRepository.defaultGeminiTemperature;
+  final TextEditingController _geminiMaxTokensController = TextEditingController();
+  Timer? _geminiMaxTokensSaveTimer;
+
+  // OpenRouter settings
+  final TextEditingController _openRouterApiKeyController = TextEditingController();
+  bool _openRouterApiKeyVisible = false;
+  Timer? _openRouterApiKeySaveTimer;
+  List<String> _openRouterModels = OpenRouterService.fallbackModels;
+  String? _openRouterSelectedModel;
+  bool _openRouterLoadingModels = false;
+  double _openRouterTemperature = BackendSettingsRepository.defaultOpenRouterTemperature;
+  final TextEditingController _openRouterMaxTokensController = TextEditingController();
+  Timer? _openRouterMaxTokensSaveTimer;
+
+  // /api/generate backend settings
+  final TextEditingController _generateBaseUrlController = TextEditingController();
+  final TextEditingController _generateModelController = TextEditingController();
+  final TextEditingController _generateApiKeyController = TextEditingController();
+  final TextEditingController _generateNumPredictController = TextEditingController();
+  final TextEditingController _generateNumCtxController = TextEditingController();
+  bool _generateApiKeyVisible = false;
+  double _generateTemperature = BackendSettingsRepository.defaultGenerateTemperature;
+  bool _generateThinking = false;
+  Timer? _generateBaseUrlSaveTimer;
+  Timer? _generateModelSaveTimer;
+
   // Debounce timers for auto-saving fields as the user types.
   Timer? _tokenSaveTimer;
   Timer? _agentTokenSaveTimer;
@@ -96,10 +140,35 @@ class _SettingsScreenState extends State<SettingsScreen> {
   Timer? _ollamaNumPredictSaveTimer;
   Timer? _ollamaNumCtxSaveTimer;
 
+  List<TextSpan> _buildModelTextSpans(String modelId) {
+    const baseStyle = TextStyle(fontSize: 13, color: AppTheme.textPrimary);
+    if (!modelId.contains(':free')) {
+      return [TextSpan(text: modelId, style: baseStyle)];
+    }
+    final parts = modelId.split(':free');
+    final spans = <TextSpan>[];
+    for (int i = 0; i < parts.length; i++) {
+      spans.add(TextSpan(text: parts[i], style: baseStyle));
+      if (i < parts.length - 1) {
+        spans.add(TextSpan(
+          text: ':free',
+          style: const TextStyle(
+            fontSize: 13,
+            color: Colors.white,
+            fontWeight: FontWeight.bold,
+            backgroundColor: AppTheme.accentMarrone,
+          ),
+        ));
+      }
+    }
+    return spans;
+  }
+
   @override
   void initState() {
     super.initState();
     _load();
+    _initLogFile();
   }
 
   @override
@@ -126,7 +195,49 @@ class _SettingsScreenState extends State<SettingsScreen> {
     _groqMaxTokensSaveTimer?.cancel();
     _groqApiKeyController.dispose();
     _groqMaxTokensController.dispose();
+    _geminiApiKeySaveTimer?.cancel();
+    _geminiMaxTokensSaveTimer?.cancel();
+    _geminiApiKeyController.dispose();
+    _geminiNewModelController.dispose();
+    _geminiMaxTokensController.dispose();
+    _openRouterApiKeySaveTimer?.cancel();
+    _openRouterMaxTokensSaveTimer?.cancel();
+    _openRouterApiKeyController.dispose();
+    _openRouterMaxTokensController.dispose();
+    _generateBaseUrlSaveTimer?.cancel();
+    _generateModelSaveTimer?.cancel();
+    _generateBaseUrlController.dispose();
+    _generateModelController.dispose();
+    _generateApiKeyController.dispose();
+    _generateNumPredictController.dispose();
+    _generateNumCtxController.dispose();
     super.dispose();
+  }
+
+  // ---- Orchestrator log file (rolling 2 000-line buffer) --------------------
+
+  Future<void> _initLogFile() async {
+    try {
+      final dir = await getApplicationDocumentsDirectory();
+      _logFile = File('${dir.path}/orchestrator_log.txt');
+      if (await _logFile!.exists()) {
+        final lines = await _logFile!.readAsLines();
+        if (mounted) setState(() => _persistedLog = List<String>.from(lines));
+      }
+    } catch (_) {}
+  }
+
+  Future<void> _appendToLogFile(String line) async {
+    if (_logFile == null) return;
+    try {
+      await _logFile!.writeAsString('$line\n', mode: FileMode.append);
+      var lines = await _logFile!.readAsLines();
+      if (lines.length > 2000) {
+        lines = lines.sublist(lines.length - 2000);
+        await _logFile!.writeAsString('${lines.join('\n')}\n');
+      }
+      if (mounted) setState(() => _persistedLog = List<String>.from(lines));
+    } catch (_) {}
   }
 
   // ---- Debounced auto-save handlers -----------------------------------------
@@ -143,8 +254,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     _agentTokenSaveTimer = Timer(const Duration(milliseconds: 400), () async {
       final v = value.trim();
       if (v.isEmpty) return;
-      await AgentCredentialsRepository.instance
-          .saveCredentials(AgentCredentials(hfToken: v));
+      await AgentCredentialsRepository.instance.saveCredentials(AgentCredentials(hfToken: v));
     });
   }
 
@@ -185,6 +295,42 @@ class _SettingsScreenState extends State<SettingsScreen> {
     });
   }
 
+  void _scheduleGeminiApiKeySave(String value) {
+    _geminiApiKeySaveTimer?.cancel();
+    _geminiApiKeySaveTimer = Timer(const Duration(milliseconds: 600), () async {
+      await BackendSettingsRepository.instance.setGeminiApiKey(value.trim());
+    });
+  }
+
+  void _scheduleGeminiMaxTokensSave(String value) {
+    _geminiMaxTokensSaveTimer?.cancel();
+    _geminiMaxTokensSaveTimer = Timer(const Duration(milliseconds: 600), () async {
+      final v = int.tryParse(value.trim());
+      if (v != null && v > 0) {
+        await BackendSettingsRepository.instance.setGeminiMaxTokens(v);
+      }
+    });
+  }
+
+  void _scheduleOpenRouterApiKeySave(String value) {
+    _openRouterApiKeySaveTimer?.cancel();
+    _openRouterApiKeySaveTimer = Timer(const Duration(milliseconds: 600), () async {
+      final trimmed = value.trim();
+      await BackendSettingsRepository.instance.setOpenRouterApiKey(trimmed);
+      await _refreshOpenRouterModels(trimmed);
+    });
+  }
+
+  void _scheduleOpenRouterMaxTokensSave(String value) {
+    _openRouterMaxTokensSaveTimer?.cancel();
+    _openRouterMaxTokensSaveTimer = Timer(const Duration(milliseconds: 600), () async {
+      final v = int.tryParse(value.trim());
+      if (v != null && v > 0) {
+        await BackendSettingsRepository.instance.setOpenRouterMaxTokens(v);
+      }
+    });
+  }
+
   Future<void> _refreshGroqModels(String apiKey) async {
     if (!mounted) return;
     setState(() => _groqLoadingModels = true);
@@ -197,8 +343,32 @@ class _SettingsScreenState extends State<SettingsScreen> {
       }
       _groqLoadingModels = false;
     });
-    await BackendSettingsRepository.instance
-        .setGroqModel(_groqSelectedModel ?? models.first);
+    await BackendSettingsRepository.instance.setGroqModel(_groqSelectedModel ?? models.first);
+  }
+
+  Future<void> _refreshOpenRouterModels(String apiKey) async {
+    if (!mounted) return;
+    setState(() => _openRouterLoadingModels = true);
+
+    List<String> models = OpenRouterService.fallbackModels;
+    if (apiKey.trim().isNotEmpty) {
+      models = await OpenRouterService.instance.listModels(apiKey);
+    }
+
+    final selected = _openRouterSelectedModel?.trim() ?? '';
+    if (selected.isNotEmpty && !models.contains(selected)) {
+      models = [selected, ...models];
+    }
+
+    final nextSelected = models.contains(_openRouterSelectedModel) ? (_openRouterSelectedModel ?? models.first) : models.first;
+
+    if (!mounted) return;
+    setState(() {
+      _openRouterModels = models;
+      _openRouterSelectedModel = nextSelected;
+      _openRouterLoadingModels = false;
+    });
+    await BackendSettingsRepository.instance.setOpenRouterModel(nextSelected);
   }
 
   Widget _groqControlPanel() {
@@ -222,8 +392,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   _groqApiKeyVisible ? Icons.visibility_off : Icons.visibility,
                   size: 18,
                 ),
-                onPressed: () =>
-                    setState(() => _groqApiKeyVisible = !_groqApiKeyVisible),
+                onPressed: () => setState(() => _groqApiKeyVisible = !_groqApiKeyVisible),
               ),
             ),
             onChanged: _scheduleGroqApiKeySave,
@@ -240,21 +409,17 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     ? const LinearProgressIndicator()
                     : DropdownButton<String>(
                         isExpanded: true,
-                        value: _groqModels.contains(_groqSelectedModel)
-                            ? _groqSelectedModel
-                            : _groqModels.first,
+                        value: _groqModels.contains(_groqSelectedModel) ? _groqSelectedModel : _groqModels.first,
                         items: _groqModels
                             .map((m) => DropdownMenuItem(
                                   value: m,
-                                  child: Text(m,
-                                      style: const TextStyle(fontSize: 13)),
+                                  child: Text(m, style: const TextStyle(fontSize: 13)),
                                 ))
                             .toList(),
                         onChanged: (v) async {
                           if (v == null) return;
                           setState(() => _groqSelectedModel = v);
-                          await BackendSettingsRepository.instance
-                              .setGroqModel(v);
+                          await BackendSettingsRepository.instance.setGroqModel(v);
                         },
                       ),
               ),
@@ -262,10 +427,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
               IconButton(
                 icon: const Icon(Icons.refresh, size: 18),
                 tooltip: 'Refresh model list',
-                onPressed: _groqApiKeyController.text.trim().isNotEmpty
-                    ? () => _refreshGroqModels(
-                        _groqApiKeyController.text.trim())
-                    : null,
+                onPressed: _groqApiKeyController.text.trim().isNotEmpty ? () => _refreshGroqModels(_groqApiKeyController.text.trim()) : null,
               ),
             ],
           ),
@@ -287,8 +449,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   label: _groqTemperature.toStringAsFixed(2),
                   onChanged: (v) async {
                     setState(() => _groqTemperature = v);
-                    await BackendSettingsRepository.instance
-                        .setGroqTemperature(v);
+                    await BackendSettingsRepository.instance.setGroqTemperature(v);
                   },
                 ),
               ),
@@ -316,8 +477,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
             decoration: const InputDecoration(
               labelText: 'Max completion tokens',
               hintText: '4096',
-              helperText:
-                  'Maximum tokens in the response. Groq models support up to '
+              helperText: 'Maximum tokens in the response. Groq models support up to '
                   '8192–32768 depending on the model.',
               suffixText: 'tokens',
             ),
@@ -328,10 +488,510 @@ class _SettingsScreenState extends State<SettingsScreen> {
     );
   }
 
+  List<String> _openRouterModelOptions() {
+    return _openRouterModels;
+  }
+
+  Widget _openRouterControlPanel() {
+    final modelOptions = _openRouterModelOptions();
+    final selectedModel = modelOptions.contains(_openRouterSelectedModel) ? _openRouterSelectedModel : modelOptions.first;
+
+    return _section(
+      title: 'OpenRouter',
+      subtitle: 'OpenAI-compatible routing across providers like OpenAI, '
+          'Anthropic, Google, and more. Use provider-prefixed model IDs '
+          'such as `openai/gpt-5-mini`.',
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          TextField(
+            controller: _openRouterApiKeyController,
+            obscureText: !_openRouterApiKeyVisible,
+            decoration: InputDecoration(
+              labelText: 'OpenRouter API Key',
+              hintText: 'sk-or-v1-...',
+              helperText: 'Create one at openrouter.ai/keys',
+              suffixIcon: IconButton(
+                icon: Icon(
+                  _openRouterApiKeyVisible ? Icons.visibility_off : Icons.visibility,
+                  size: 18,
+                ),
+                onPressed: () => setState(
+                  () => _openRouterApiKeyVisible = !_openRouterApiKeyVisible,
+                ),
+              ),
+            ),
+            onChanged: _scheduleOpenRouterApiKeySave,
+          ),
+          const SizedBox(height: 16),
+          Row(
+            children: [
+              const Text('Model', style: TextStyle(fontSize: 13)),
+              const SizedBox(width: 12),
+              Expanded(
+                child: _openRouterLoadingModels
+                    ? const LinearProgressIndicator()
+                    : DropdownButton<String>(
+                        isExpanded: true,
+                        value: selectedModel,
+                        items: modelOptions
+                            .map(
+                              (m) => DropdownMenuItem<String>(
+                                value: m,
+                                child: RichText(
+                                  text: TextSpan(
+                                    children: _buildModelTextSpans(m),
+                                  ),
+                                ),
+                              ),
+                            )
+                            .toList(),
+                        onChanged: (v) async {
+                          if (v == null) return;
+                          setState(() => _openRouterSelectedModel = v);
+                          await BackendSettingsRepository.instance.setOpenRouterModel(v);
+                        },
+                      ),
+              ),
+              const SizedBox(width: 8),
+              IconButton(
+                icon: const Icon(Icons.refresh, size: 18),
+                tooltip: 'Refresh model list',
+                onPressed: () => _refreshOpenRouterModels(
+                  _openRouterApiKeyController.text.trim(),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          Text(
+            'Need a model not shown here? Use the chat-header model picker to '
+            'type any valid OpenRouter model ID manually.',
+            style: TextStyle(fontSize: 11, color: Colors.grey[600]),
+          ),
+          const SizedBox(height: 20),
+          Row(
+            children: [
+              const SizedBox(
+                width: 110,
+                child: Text('Temperature', style: TextStyle(fontSize: 13)),
+              ),
+              Expanded(
+                child: Slider(
+                  value: _openRouterTemperature,
+                  min: 0.0,
+                  max: 2.0,
+                  divisions: 40,
+                  label: _openRouterTemperature.toStringAsFixed(2),
+                  onChanged: (v) async {
+                    setState(() => _openRouterTemperature = v);
+                    await BackendSettingsRepository.instance.setOpenRouterTemperature(v);
+                  },
+                ),
+              ),
+              SizedBox(
+                width: 38,
+                child: Text(
+                  _openRouterTemperature.toStringAsFixed(2),
+                  style: const TextStyle(fontSize: 12),
+                  textAlign: TextAlign.right,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 16),
+          TextField(
+            controller: _openRouterMaxTokensController,
+            keyboardType: TextInputType.number,
+            decoration: const InputDecoration(
+              labelText: 'Max completion tokens',
+              hintText: '4096',
+              helperText: 'OpenRouter uses `max_tokens` for the completion budget.',
+              suffixText: 'tokens',
+            ),
+            onChanged: _scheduleOpenRouterMaxTokensSave,
+          ),
+        ],
+      ),
+    );
+  }
+
+  List<String> _geminiModelOptions() {
+    final models = <String>[..._geminiModels];
+    final selected = _geminiSelectedModel?.trim() ?? '';
+    if (selected.isNotEmpty && !models.contains(selected)) {
+      models.insert(0, selected);
+    }
+    return models;
+  }
+
+  Future<void> _addGeminiModel() async {
+    final id = _geminiNewModelController.text.trim();
+    if (id.isEmpty) return;
+    if (_geminiModels.contains(id)) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Model already in list')),
+      );
+      return;
+    }
+    final updated = [..._geminiModels, id];
+    await BackendSettingsRepository.instance.setGeminiModels(updated);
+    if (!mounted) return;
+    setState(() {
+      _geminiModels = updated;
+      _geminiNewModelController.clear();
+    });
+  }
+
+  Future<void> _removeGeminiModel(String id) async {
+    if (!_geminiModels.contains(id)) return;
+    final updated = _geminiModels.where((m) => m != id).toList();
+    if (updated.isEmpty) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Keep at least one model')),
+      );
+      return;
+    }
+    await BackendSettingsRepository.instance.setGeminiModels(updated);
+    String? newSelected = _geminiSelectedModel;
+    if (newSelected == id) {
+      newSelected = updated.first;
+      await BackendSettingsRepository.instance.setGeminiModel(newSelected);
+    }
+    if (!mounted) return;
+    setState(() {
+      _geminiModels = updated;
+      _geminiSelectedModel = newSelected;
+    });
+  }
+
+  Widget _geminiControlPanel() {
+    final modelOptions = _geminiModelOptions();
+    final selectedModel = modelOptions.contains(_geminiSelectedModel) ? _geminiSelectedModel : modelOptions.first;
+
+    return _section(
+      title: '✨ Gemini Cloud',
+      subtitle: 'Google AI Studio key, Gemini model selector, temperature, '
+          'and max tokens. Use this as the overflow agent when Claude is '
+          'rate-limited.',
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          TextField(
+            controller: _geminiApiKeyController,
+            obscureText: !_geminiApiKeyVisible,
+            decoration: InputDecoration(
+              labelText: 'Gemini API Key',
+              hintText: 'AIza...',
+              helperText: 'Free key from Google AI Studio.',
+              suffixIcon: IconButton(
+                icon: Icon(
+                  _geminiApiKeyVisible ? Icons.visibility_off : Icons.visibility,
+                  size: 18,
+                ),
+                onPressed: () => setState(
+                  () => _geminiApiKeyVisible = !_geminiApiKeyVisible,
+                ),
+              ),
+            ),
+            onChanged: _scheduleGeminiApiKeySave,
+          ),
+          const SizedBox(height: 16),
+          Row(
+            children: [
+              const Text('Model', style: TextStyle(fontSize: 13)),
+              const SizedBox(width: 12),
+              Expanded(
+                child: DropdownButton<String>(
+                  isExpanded: true,
+                  value: selectedModel,
+                  items: modelOptions
+                      .map(
+                        (m) => DropdownMenuItem<String>(
+                          value: m,
+                          child: Text(m, style: const TextStyle(fontSize: 13)),
+                        ),
+                      )
+                      .toList(),
+                  onChanged: (v) async {
+                    if (v == null) return;
+                    setState(() => _geminiSelectedModel = v);
+                    await BackendSettingsRepository.instance.setGeminiModel(v);
+                  },
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          Row(
+            children: [
+              Expanded(
+                child: TextField(
+                  controller: _geminiNewModelController,
+                  decoration: const InputDecoration(
+                    isDense: true,
+                    labelText: 'Add model id',
+                    hintText: 'e.g. gemini-2.0-flash',
+                  ),
+                  onSubmitted: (_) => _addGeminiModel(),
+                ),
+              ),
+              const SizedBox(width: 8),
+              IconButton(
+                tooltip: 'Add',
+                icon: const Icon(Icons.add, size: 20),
+                onPressed: _addGeminiModel,
+              ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          Wrap(
+            spacing: 6,
+            runSpacing: 6,
+            children: _geminiModels
+                .map(
+                  (m) => InputChip(
+                    label: Text(m, style: const TextStyle(fontSize: 12)),
+                    onDeleted: () => _removeGeminiModel(m),
+                    deleteIconColor: AppTheme.danger,
+                  ),
+                )
+                .toList(),
+          ),
+          const SizedBox(height: 20),
+          Row(
+            children: [
+              const SizedBox(
+                width: 110,
+                child: Text('Temperature', style: TextStyle(fontSize: 13)),
+              ),
+              Expanded(
+                child: Slider(
+                  value: _geminiTemperature,
+                  min: 0.0,
+                  max: 2.0,
+                  divisions: 40,
+                  label: _geminiTemperature.toStringAsFixed(2),
+                  onChanged: (v) async {
+                    setState(() => _geminiTemperature = v);
+                    await BackendSettingsRepository.instance.setGeminiTemperature(v);
+                  },
+                ),
+              ),
+              SizedBox(
+                width: 38,
+                child: Text(
+                  _geminiTemperature.toStringAsFixed(2),
+                  style: const TextStyle(fontSize: 12),
+                  textAlign: TextAlign.right,
+                ),
+              ),
+            ],
+          ),
+          Text(
+            'Lower = more deterministic tool calls. Higher = more varied. '
+            'For agent work, 0.1-0.3 is usually the sweet spot.',
+            style: TextStyle(fontSize: 11, color: Colors.grey[600]),
+          ),
+          const SizedBox(height: 16),
+          TextField(
+            controller: _geminiMaxTokensController,
+            keyboardType: TextInputType.number,
+            decoration: const InputDecoration(
+              labelText: 'Max output tokens',
+              hintText: '2048',
+              helperText: 'Maximum tokens the model can emit in one call.',
+              suffixText: 'tokens',
+            ),
+            onChanged: _scheduleGeminiMaxTokensSave,
+          ),
+          const SizedBox(height: 16),
+          Align(
+            alignment: Alignment.centerLeft,
+            child: OutlinedButton.icon(
+              onPressed: _orchestratorBusy ? null : _installGeminiDeps,
+              icon: const Icon(Icons.download_outlined, size: 18),
+              label: const Text('Install google-genai'),
+            ),
+          ),
+          Text(
+            'Runs: $pythonExecutableLabel -m pip install --user google-genai',
+            style: TextStyle(fontSize: 11, color: Colors.grey[600]),
+          ),
+        ],
+      ),
+    );
+  }
+
+  String get pythonExecutableLabel => OrchestratorManager.pythonExecutable;
+
+  Widget _generateControlPanel() {
+    return _section(
+      title: '🦙 Ollama /api/generate',
+      subtitle: 'Direct connection to any Ollama-compatible /api/generate endpoint. '
+          'Enter a custom port (e.g. localhost:12345) and model name. '
+          'Supports native thinking output for reasoning models.',
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          // Base URL
+          TextField(
+            controller: _generateBaseUrlController,
+            decoration: const InputDecoration(
+              labelText: 'Server URL',
+              hintText: 'http://localhost:11434',
+              helperText: 'Address of the /api/generate server. '
+                  'Include port if non-default, e.g. http://localhost:12345',
+            ),
+            onChanged: (v) {
+              _generateBaseUrlSaveTimer?.cancel();
+              _generateBaseUrlSaveTimer = Timer(
+                const Duration(milliseconds: 600),
+                () => BackendSettingsRepository.instance.setGenerateBaseUrl(v.trim()),
+              );
+            },
+          ),
+          const SizedBox(height: 12),
+
+          // Model name
+          TextField(
+            controller: _generateModelController,
+            decoration: const InputDecoration(
+              labelText: 'Model',
+              hintText: 'e.g. llama3:latest, qwq:32b, deepseek-r1:8b',
+              helperText: 'Exact model tag as installed in Ollama.',
+            ),
+            onChanged: (v) {
+              _generateModelSaveTimer?.cancel();
+              _generateModelSaveTimer = Timer(
+                const Duration(milliseconds: 600),
+                () => BackendSettingsRepository.instance.setGenerateModel(v.trim()),
+              );
+            },
+          ),
+          const SizedBox(height: 16),
+
+          // API key (optional)
+          TextField(
+            controller: _generateApiKeyController,
+            obscureText: !_generateApiKeyVisible,
+            decoration: InputDecoration(
+              labelText: 'API Key (optional)',
+              hintText: 'Leave empty for local Ollama',
+              helperText: 'Bearer token for cloud-hosted Ollama-compatible APIs.',
+              suffixIcon: IconButton(
+                icon: Icon(
+                  _generateApiKeyVisible ? Icons.visibility_off : Icons.visibility,
+                  size: 18,
+                ),
+                onPressed: () => setState(
+                  () => _generateApiKeyVisible = !_generateApiKeyVisible,
+                ),
+              ),
+            ),
+            onChanged: (v) => BackendSettingsRepository.instance.setGenerateApiKey(v.trim()),
+          ),
+          const SizedBox(height: 20),
+
+          // Temperature
+          Row(
+            children: [
+              const SizedBox(
+                width: 110,
+                child: Text('Temperature', style: TextStyle(fontSize: 13)),
+              ),
+              Expanded(
+                child: Slider(
+                  value: _generateTemperature,
+                  min: 0.0,
+                  max: 2.0,
+                  divisions: 40,
+                  label: _generateTemperature.toStringAsFixed(2),
+                  onChanged: (v) async {
+                    setState(() => _generateTemperature = v);
+                    await BackendSettingsRepository.instance.setGenerateTemperature(v);
+                  },
+                ),
+              ),
+              SizedBox(
+                width: 38,
+                child: Text(
+                  _generateTemperature.toStringAsFixed(2),
+                  style: const TextStyle(fontSize: 12),
+                  textAlign: TextAlign.right,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 12),
+
+          // num_predict
+          TextField(
+            controller: _generateNumPredictController,
+            keyboardType: TextInputType.number,
+            decoration: const InputDecoration(
+              labelText: 'Max tokens (num_predict)',
+              hintText: '2048',
+              suffixText: 'tokens',
+            ),
+            onChanged: (v) async {
+              final n = int.tryParse(v.trim());
+              if (n != null && n > 0) {
+                await BackendSettingsRepository.instance.setGenerateNumPredict(n);
+              }
+            },
+          ),
+          const SizedBox(height: 12),
+
+          // num_ctx
+          TextField(
+            controller: _generateNumCtxController,
+            keyboardType: TextInputType.number,
+            decoration: const InputDecoration(
+              labelText: 'Context window (num_ctx)',
+              hintText: '4096',
+              helperText: 'Tokens the model can "see". Higher = more memory. '
+                  '4096 is safe for most hardware.',
+              suffixText: 'tokens',
+            ),
+            onChanged: (v) async {
+              final n = int.tryParse(v.trim());
+              if (n != null && n > 0) {
+                await BackendSettingsRepository.instance.setGenerateNumCtx(n);
+              }
+            },
+          ),
+          const SizedBox(height: 16),
+
+          // Thinking toggle
+          SwitchListTile(
+            contentPadding: EdgeInsets.zero,
+            title: const Text(
+              'Enable thinking (think: true)',
+              style: TextStyle(fontSize: 13),
+            ),
+            subtitle: const Text(
+              'Passes "think": true to the API. Supported by deepseek-r1, qwq, '
+              'and other reasoning models. The UI renders the reasoning as a '
+              'collapsible "Reasoning" block.',
+              style: TextStyle(fontSize: 11),
+            ),
+            value: _generateThinking,
+            onChanged: (v) async {
+              setState(() => _generateThinking = v);
+              await BackendSettingsRepository.instance.setGenerateThinking(v);
+            },
+          ),
+        ],
+      ),
+    );
+  }
+
   void _scheduleOllamaApiKeySave(String value) {
     _ollamaApiKeySaveTimer?.cancel();
-    _ollamaApiKeySaveTimer =
-        Timer(const Duration(milliseconds: 600), () async {
+    _ollamaApiKeySaveTimer = Timer(const Duration(milliseconds: 600), () async {
       await BackendSettingsRepository.instance.setOllamaApiKey(value.trim());
     });
   }
@@ -367,9 +1027,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
         '$home/.profile',
       ];
       final rc = candidates.map((p) => File(p)).firstWhere(
-        (f) => f.existsSync(),
-        orElse: () => File(candidates.first),
-      );
+            (f) => f.existsSync(),
+            orElse: () => File(candidates.first),
+          );
       final line = '\nexport OLLAMA_API_KEY="$key"';
       final existing = rc.existsSync() ? rc.readAsStringSync() : '';
       if (existing.contains('OLLAMA_API_KEY=')) {
@@ -390,9 +1050,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
         SnackBar(content: Text('Failed to set env var: $errorMsg')),
       );
     } else {
-      final where = Platform.isWindows
-          ? 'user environment (restart apps to pick it up)'
-          : '~/.zshrc / ~/.bashrc (re-open terminal to pick it up)';
+      final where = Platform.isWindows ? 'user environment (restart apps to pick it up)' : '~/.zshrc / ~/.bashrc (re-open terminal to pick it up)';
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('OLLAMA_API_KEY saved to $where')),
       );
@@ -401,8 +1059,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   void _scheduleOllamaPythonUrlSave(String value) {
     _ollamaPythonUrlSaveTimer?.cancel();
-    _ollamaPythonUrlSaveTimer =
-        Timer(const Duration(milliseconds: 400), () async {
+    _ollamaPythonUrlSaveTimer = Timer(const Duration(milliseconds: 400), () async {
       final v = value.trim();
       if (v.isEmpty) return;
       await BackendSettingsRepository.instance.setOllamaPythonBridgeUrl(v);
@@ -418,24 +1075,31 @@ class _SettingsScreenState extends State<SettingsScreen> {
     final agentCreds = await AgentCredentialsRepository.instance.getCredentials();
     final ollamaUrl = await BackendSettingsRepository.instance.getOllamaBaseUrl();
     final ollamaModel = await BackendSettingsRepository.instance.getOllamaModel();
-    final ollamaPythonBridgeUrl =
-        await BackendSettingsRepository.instance.getOllamaPythonBridgeUrl();
-    final ollamaTemperature =
-        await BackendSettingsRepository.instance.getOllamaTemperature();
-    final ollamaNumPredict =
-        await BackendSettingsRepository.instance.getOllamaNumPredict();
-    final ollamaNumCtx =
-        await BackendSettingsRepository.instance.getOllamaNumCtx();
-    final ollamaApiKey =
-        await BackendSettingsRepository.instance.getOllamaApiKey();
-    final groqApiKey =
-        await BackendSettingsRepository.instance.getGroqApiKey();
-    final groqModel =
-        await BackendSettingsRepository.instance.getGroqModel();
-    final groqTemperature =
-        await BackendSettingsRepository.instance.getGroqTemperature();
-    final groqMaxTokens =
-        await BackendSettingsRepository.instance.getGroqMaxTokens();
+    final ollamaPythonBridgeUrl = await BackendSettingsRepository.instance.getOllamaPythonBridgeUrl();
+    final ollamaTemperature = await BackendSettingsRepository.instance.getOllamaTemperature();
+    final ollamaNumPredict = await BackendSettingsRepository.instance.getOllamaNumPredict();
+    final ollamaNumCtx = await BackendSettingsRepository.instance.getOllamaNumCtx();
+    final ollamaApiKey = await BackendSettingsRepository.instance.getOllamaApiKey();
+    final groqApiKey = await BackendSettingsRepository.instance.getGroqApiKey();
+    final groqModel = await BackendSettingsRepository.instance.getGroqModel();
+    final groqTemperature = await BackendSettingsRepository.instance.getGroqTemperature();
+    final groqMaxTokens = await BackendSettingsRepository.instance.getGroqMaxTokens();
+    final geminiApiKey = await BackendSettingsRepository.instance.getGeminiApiKey();
+    final geminiModel = await BackendSettingsRepository.instance.getGeminiModel();
+    final geminiModels = await BackendSettingsRepository.instance.getGeminiModels();
+    final geminiTemperature = await BackendSettingsRepository.instance.getGeminiTemperature();
+    final geminiMaxTokens = await BackendSettingsRepository.instance.getGeminiMaxTokens();
+    final openRouterApiKey = await BackendSettingsRepository.instance.getOpenRouterApiKey();
+    final openRouterModel = await BackendSettingsRepository.instance.getOpenRouterModel();
+    final openRouterTemperature = await BackendSettingsRepository.instance.getOpenRouterTemperature();
+    final openRouterMaxTokens = await BackendSettingsRepository.instance.getOpenRouterMaxTokens();
+    final genBaseUrl = await BackendSettingsRepository.instance.getGenerateBaseUrl();
+    final genModel = await BackendSettingsRepository.instance.getGenerateModel();
+    final genApiKey = await BackendSettingsRepository.instance.getGenerateApiKey();
+    final genTemperature = await BackendSettingsRepository.instance.getGenerateTemperature();
+    final genNumPredict = await BackendSettingsRepository.instance.getGenerateNumPredict();
+    final genNumCtx = await BackendSettingsRepository.instance.getGenerateNumCtx();
+    final genThinking = await BackendSettingsRepository.instance.getGenerateThinking();
 
     if (!mounted) return;
     setState(() {
@@ -448,8 +1112,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
       _localServerUrlController.text = serverUrl ?? "";
       _ollamaUrlController.text = ollamaUrl ?? OllamaService.defaultBaseUrl;
       _ollamaSelectedModel = ollamaModel;
-      _ollamaPythonUrlController.text =
-          ollamaPythonBridgeUrl ?? OllamaPythonManager.defaultBridgeUrl;
+      _ollamaPythonUrlController.text = ollamaPythonBridgeUrl ?? OllamaPythonManager.defaultBridgeUrl;
       _ollamaTemperature = ollamaTemperature;
       _ollamaNumPredict = ollamaNumPredict;
       _ollamaNumCtxValue = ollamaNumCtx;
@@ -460,12 +1123,26 @@ class _SettingsScreenState extends State<SettingsScreen> {
       _groqSelectedModel = groqModel ?? GroqService.fallbackModels.first;
       _groqTemperature = groqTemperature;
       _groqMaxTokensController.text = groqMaxTokens.toString();
+      _geminiApiKeyController.text = geminiApiKey ?? '';
+      _geminiModels = geminiModels;
+      _geminiSelectedModel = (geminiModel == null || geminiModel.trim().isEmpty) ? BackendSettingsRepository.defaultGeminiModel : geminiModel.trim();
+      _geminiTemperature = geminiTemperature;
+      _geminiMaxTokensController.text = geminiMaxTokens.toString();
+      _openRouterApiKeyController.text = openRouterApiKey ?? '';
+      _openRouterSelectedModel = openRouterModel ?? OpenRouterService.fallbackModels.first;
+      _openRouterTemperature = openRouterTemperature;
+      _openRouterMaxTokensController.text = openRouterMaxTokens.toString();
+      _generateBaseUrlController.text = genBaseUrl ?? OllamaGenerateService.defaultBaseUrl;
+      _generateModelController.text = genModel ?? '';
+      _generateApiKeyController.text = genApiKey ?? '';
+      _generateTemperature = genTemperature;
+      _generateNumPredictController.text = genNumPredict.toString();
+      _generateNumCtxController.text = genNumCtx.toString();
+      _generateThinking = genThinking;
       _loading = false;
     });
 
-    if (backend == LlmBackend.ollama ||
-        backend == LlmBackend.ollamaPython ||
-        backend == LlmBackend.ollamaOrchestrator) {
+    if (backend == LlmBackend.ollama || backend == LlmBackend.ollamaPython || backend == LlmBackend.ollamaOrchestrator) {
       // ignore: unawaited_futures
       _refreshOllamaStatus();
     }
@@ -473,10 +1150,13 @@ class _SettingsScreenState extends State<SettingsScreen> {
       // ignore: unawaited_futures
       _refreshOllamaPythonStatus();
     }
-    if ((backend == LlmBackend.groq || backend == LlmBackend.groqOrchestrator) &&
-        (groqApiKey ?? '').isNotEmpty) {
+    if ((backend == LlmBackend.groq || backend == LlmBackend.groqOrchestrator) && (groqApiKey ?? '').isNotEmpty) {
       // ignore: unawaited_futures
       _refreshGroqModels(groqApiKey!);
+    }
+    if (backend == LlmBackend.openRouter) {
+      // ignore: unawaited_futures
+      _refreshOpenRouterModels(openRouterApiKey ?? '');
     }
   }
 
@@ -516,8 +1196,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   Future<void> _deleteModel(HfModel m) async {
     await ModelRepository.instance.delete(m.id);
     if (_selectedModelId == m.id) {
-      await SettingsRepository.instance
-          .setSelectedModelId(ApiConstants.defaultModelId);
+      await SettingsRepository.instance.setSelectedModelId(ApiConstants.defaultModelId);
       _selectedModelId = ApiConstants.defaultModelId;
     }
     await _load();
@@ -575,12 +1254,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
         content: Text(
-          isAvailable
-              ? "✓ Server is reachable"
-              : "✗ Server not reachable. Check URL and ensure server is running.",
+          isAvailable ? "✓ Server is reachable" : "✗ Server not reachable. Check URL and ensure server is running.",
         ),
         duration: const Duration(seconds: 2),
-        backgroundColor: isAvailable ? Colors.green[700] : AppTheme.danger,
+        backgroundColor: isAvailable ? AppTheme.accentMarrone : AppTheme.danger,
       ),
     );
   }
@@ -589,11 +1266,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
     if (!mounted) return;
     setState(() {
       _orchestratorLog.add(line);
-      // Keep the buffer reasonable.
       if (_orchestratorLog.length > 500) {
         _orchestratorLog.removeRange(0, _orchestratorLog.length - 500);
       }
     });
+    _appendToLogFile(line);
   }
 
   Future<void> _installOrchestratorDeps() async {
@@ -612,16 +1289,36 @@ class _SettingsScreenState extends State<SettingsScreen> {
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
         content: Text(ok ? '✓ Dependencies installed' : '✗ Install failed — see log'),
-        backgroundColor: ok ? Colors.green[700] : AppTheme.danger,
+        backgroundColor: ok ? AppTheme.accentMarrone : AppTheme.danger,
+      ),
+    );
+  }
+
+  Future<void> _installGeminiDeps() async {
+    if (_orchestratorBusy) return;
+    setState(() {
+      _orchestratorBusy = true;
+      _orchestratorLog.clear();
+    });
+    _appendLog('Installing google-genai...');
+    final ok = await OrchestratorManager.instance.installPackage(
+      'google-genai',
+      onLine: _appendLog,
+    );
+    _appendLog(ok ? '✓ google-genai installed.' : '✗ Installation failed.');
+    if (!mounted) return;
+    setState(() => _orchestratorBusy = false);
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(ok ? '✓ google-genai installed' : '✗ Install failed — see log'),
+        backgroundColor: ok ? AppTheme.accentMarrone : AppTheme.danger,
       ),
     );
   }
 
   Future<void> _startOrchestrator() async {
     if (_orchestratorBusy) return;
-    if (OrchestratorManager.instance.isRunning &&
-        OrchestratorManager.instance.currentBackend ==
-            OrchestratorBackend.huggingface) {
+    if (OrchestratorManager.instance.isRunning && OrchestratorManager.instance.currentBackend == OrchestratorBackend.huggingface) {
       return;
     }
 
@@ -633,12 +1330,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
       return;
     }
     // Persist it in case the user hasn't pressed Save.
-    await AgentCredentialsRepository.instance
-        .saveCredentials(AgentCredentials(hfToken: token));
+    await AgentCredentialsRepository.instance.saveCredentials(AgentCredentials(hfToken: token));
 
-    if (OrchestratorManager.instance.isRunning &&
-        OrchestratorManager.instance.currentBackend !=
-            OrchestratorBackend.huggingface) {
+    if (OrchestratorManager.instance.isRunning && OrchestratorManager.instance.currentBackend != OrchestratorBackend.huggingface) {
       await OrchestratorManager.instance.stop();
     }
 
@@ -662,10 +1356,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
     setState(() => _orchestratorBusy = false);
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
-        content: Text(started
-            ? '✓ Orchestrator running'
-            : '✗ Failed to start — check log'),
-        backgroundColor: started ? Colors.green[700] : AppTheme.danger,
+        content: Text(started ? '✓ Orchestrator running' : '✗ Failed to start — check log'),
+        backgroundColor: started ? AppTheme.accentMarrone : AppTheme.danger,
       ),
     );
   }
@@ -683,7 +1375,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
   Future<void> _startGroqOrchestrator() async {
     if (_orchestratorBusy) return;
     final apiKey = _groqApiKeyController.text.trim();
-    if (apiKey.isEmpty) {
+    final envGroqKey = Platform.environment['GROQ_API_KEY'] ?? '';
+    if (apiKey.isEmpty && envGroqKey.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Save the Groq API key first.')),
       );
@@ -691,8 +1384,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     }
     final model = _groqSelectedModel ?? GroqService.fallbackModels.first;
 
-    if (OrchestratorManager.instance.isRunning &&
-        OrchestratorManager.instance.currentBackend != OrchestratorBackend.groq) {
+    if (OrchestratorManager.instance.isRunning && OrchestratorManager.instance.currentBackend != OrchestratorBackend.groq) {
       await OrchestratorManager.instance.stop();
     }
 
@@ -703,9 +1395,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     _appendLog('Starting Groq orchestrator (model: $model)…');
 
     final temperature = _groqTemperature;
-    final maxTokens =
-        int.tryParse(_groqMaxTokensController.text.trim()) ??
-            BackendSettingsRepository.defaultGroqMaxTokens;
+    final maxTokens = int.tryParse(_groqMaxTokensController.text.trim()) ?? BackendSettingsRepository.defaultGroqMaxTokens;
 
     final started = await OrchestratorManager.instance.start(
       backend: OrchestratorBackend.groq,
@@ -720,17 +1410,59 @@ class _SettingsScreenState extends State<SettingsScreen> {
         _appendLog(l);
       }
     }
-    _appendLog(started
-        ? '✓ Groq orchestrator running.'
-        : '✗ Failed to start Groq orchestrator.');
+    _appendLog(started ? '✓ Groq orchestrator running.' : '✗ Failed to start Groq orchestrator.');
     if (!mounted) return;
     setState(() => _orchestratorBusy = false);
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
-        content: Text(started
-            ? '✓ Groq orchestrator running'
-            : '✗ Failed to start — check log'),
-        backgroundColor: started ? Colors.green[700] : AppTheme.danger,
+        content: Text(started ? '✓ Groq orchestrator running' : '✗ Failed to start — check log'),
+        backgroundColor: started ? AppTheme.accentMarrone : AppTheme.danger,
+      ),
+    );
+  }
+
+  Future<void> _startGeminiOrchestrator() async {
+    if (_orchestratorBusy) return;
+    final apiKey = _geminiApiKeyController.text.trim();
+    final envGeminiKey = Platform.environment['GOOGLE_API_KEY'] ?? Platform.environment['GEMINI_API_KEY'] ?? '';
+    if (apiKey.isEmpty && envGeminiKey.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Save the Gemini API key first.')),
+      );
+      return;
+    }
+    final model = (_geminiSelectedModel != null && _geminiSelectedModel!.trim().isNotEmpty) ? _geminiSelectedModel!.trim() : BackendSettingsRepository.defaultGeminiModel;
+
+    if (OrchestratorManager.instance.isRunning && OrchestratorManager.instance.currentBackend != OrchestratorBackend.gemini) {
+      await OrchestratorManager.instance.stop();
+    }
+
+    setState(() {
+      _orchestratorBusy = true;
+      _orchestratorLog.clear();
+    });
+    _appendLog('Starting Gemini orchestrator (model: $model)…');
+
+    final started = await OrchestratorManager.instance.start(
+      backend: OrchestratorBackend.gemini,
+      modelId: model,
+      geminiApiKey: apiKey,
+      temperature: _geminiTemperature,
+      maxTokens: int.tryParse(_geminiMaxTokensController.text.trim()) ?? BackendSettingsRepository.defaultGeminiMaxTokens,
+    );
+    final stderr = OrchestratorManager.instance.stderrLog;
+    if (stderr.isNotEmpty) {
+      for (final l in const LineSplitter().convert(stderr)) {
+        _appendLog(l);
+      }
+    }
+    _appendLog(started ? '✓ Gemini orchestrator running.' : '✗ Failed to start Gemini orchestrator.');
+    if (!mounted) return;
+    setState(() => _orchestratorBusy = false);
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(started ? '✓ Gemini orchestrator running' : '✗ Failed to start — check log'),
+        backgroundColor: started ? AppTheme.accentMarrone : AppTheme.danger,
       ),
     );
   }
@@ -747,9 +1479,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
       return;
     }
 
-    if (OrchestratorManager.instance.isRunning &&
-        OrchestratorManager.instance.currentBackend !=
-            OrchestratorBackend.ollama) {
+    if (OrchestratorManager.instance.isRunning && OrchestratorManager.instance.currentBackend != OrchestratorBackend.ollama) {
       await OrchestratorManager.instance.stop();
     }
 
@@ -773,17 +1503,13 @@ class _SettingsScreenState extends State<SettingsScreen> {
         _appendLog(l);
       }
     }
-    _appendLog(started
-        ? 'Ollama orchestrator running.'
-        : 'Failed to start Ollama orchestrator.');
+    _appendLog(started ? 'Ollama orchestrator running.' : 'Failed to start Ollama orchestrator.');
     if (!mounted) return;
     setState(() => _orchestratorBusy = false);
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
-        content: Text(started
-            ? 'Ollama orchestrator running'
-            : 'Failed to start Ollama orchestrator'),
-        backgroundColor: started ? Colors.green[700] : AppTheme.danger,
+        content: Text(started ? 'Ollama orchestrator running' : 'Failed to start Ollama orchestrator'),
+        backgroundColor: started ? AppTheme.accentMarrone : AppTheme.danger,
       ),
     );
   }
@@ -827,13 +1553,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
   Future<void> _refreshOllamaStatus({bool verbose = false}) async {
     final version = await OllamaManager.instance.detectBinary();
     final apiKey = _ollamaApiKeyController.text.trim();
-    final up = await OllamaService.instance
-        .isServerReachable(baseUrl: _ollamaBaseUrl, apiKey: apiKey);
+    final up = await OllamaService.instance.isServerReachable(baseUrl: _ollamaBaseUrl, apiKey: apiKey);
     List<String> installed = const [];
     if (up) {
       try {
-        installed = await OllamaService.instance
-            .listInstalledModels(baseUrl: _ollamaBaseUrl, apiKey: apiKey);
+        installed = await OllamaService.instance.listInstalledModels(baseUrl: _ollamaBaseUrl, apiKey: apiKey);
       } catch (e) {
         if (verbose) _appendOllamaLog('list models failed: $e');
       }
@@ -862,8 +1586,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   Future<void> _refreshOllamaPythonStatus({bool verbose = false}) async {
     final pythonVersion = await OllamaPythonManager.instance.detectPythonVersion();
     final packageVersion = await OllamaPythonManager.instance.detectPackageVersion();
-    final bridgeUp = await OllamaPythonManager.instance
-        .isBridgeReachable(bridgeUrl: _ollamaPythonBridgeUrl);
+    final bridgeUp = await OllamaPythonManager.instance.isBridgeReachable(bridgeUrl: _ollamaPythonBridgeUrl);
     if (verbose && pythonVersion == null) {
       _appendOllamaPythonLog('Python was not found on PATH.');
     }
@@ -894,10 +1617,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
     setState(() => _ollamaBusy = false);
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
-        content: Text(ok
-            ? 'Ollama installed successfully'
-            : 'Ollama install failed - see log'),
-        backgroundColor: ok ? Colors.green[700] : AppTheme.danger,
+        content: Text(ok ? 'Ollama installed successfully' : 'Ollama install failed - see log'),
+        backgroundColor: ok ? AppTheme.accentMarrone : AppTheme.danger,
       ),
     );
   }
@@ -918,10 +1639,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
     setState(() => _ollamaBusy = false);
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
-        content: Text(ok
-            ? '✓ Ollama server is ready'
-            : '✗ Ollama server failed to start — see log'),
-        backgroundColor: ok ? Colors.green[700] : AppTheme.danger,
+        content: Text(ok ? '✓ Ollama server is ready' : '✗ Ollama server failed to start — see log'),
+        backgroundColor: ok ? AppTheme.accentMarrone : AppTheme.danger,
       ),
     );
   }
@@ -929,8 +1648,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   Future<void> _stopOllamaServer() async {
     if (_ollamaBusy) return;
     if (!OllamaManager.instance.isManagingProcess) {
-      _appendOllamaLog(
-          'Not managing an ollama subprocess — nothing to stop. '
+      _appendOllamaLog('Not managing an ollama subprocess — nothing to stop. '
           '(If ollama was started externally, stop it in its own terminal.)');
       return;
     }
@@ -946,14 +1664,12 @@ class _SettingsScreenState extends State<SettingsScreen> {
     final name = _ollamaPullController.text.trim();
     if (name.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-            content: Text('Enter a model name, e.g. llama3 or qwen2.5-coder:7b')),
+        const SnackBar(content: Text('Enter a model name, e.g. llama3 or qwen2.5-coder:7b')),
       );
       return;
     }
     if (!_ollamaServerUp) {
-      _appendOllamaLog(
-          'Server not reachable. Start it first ("Start Ollama server").');
+      _appendOllamaLog('Server not reachable. Start it first ("Start Ollama server").');
       return;
     }
     setState(() {
@@ -977,7 +1693,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text('✓ Model "$name" pulled'),
-            backgroundColor: Colors.green[700],
+            backgroundColor: AppTheme.accentMarrone,
           ),
         );
       }
@@ -987,6 +1703,69 @@ class _SettingsScreenState extends State<SettingsScreen> {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text('✗ Pull failed: $e'),
+            backgroundColor: AppTheme.danger,
+          ),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _ollamaBusy = false);
+    }
+  }
+
+  Future<void> _deleteOllamaModel(String name) async {
+    if (_ollamaBusy) return;
+    if (!_ollamaServerUp) {
+      _appendOllamaLog('Server not reachable. Start it first.');
+      return;
+    }
+    final confirm = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Delete model'),
+        content: Text(
+          'Remove "$name" from Ollama? This frees disk space and cannot '
+          'be undone — you\'ll need to pull it again to use it.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(false),
+            child: const Text('Cancel'),
+          ),
+          TextButton(
+            style: TextButton.styleFrom(foregroundColor: AppTheme.danger),
+            onPressed: () => Navigator.of(ctx).pop(true),
+            child: const Text('Delete'),
+          ),
+        ],
+      ),
+    );
+    if (confirm != true) return;
+
+    setState(() => _ollamaBusy = true);
+    _appendOllamaLog('Deleting "$name"…');
+    try {
+      await OllamaService.instance.deleteModel(name, baseUrl: _ollamaBaseUrl);
+      _appendOllamaLog('✓ "$name" deleted.');
+      // Clear the stored default if we just removed it.
+      if (_ollamaSelectedModel == name) {
+        await BackendSettingsRepository.instance.setOllamaModel('');
+        if (mounted) setState(() => _ollamaSelectedModel = null);
+      }
+      await _refreshOllamaStatus();
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('✓ Model "$name" deleted'),
+            backgroundColor: AppTheme.accentMarrone,
+          ),
+        );
+      }
+    } catch (e) {
+      _appendOllamaLog('✗ Delete failed: $e');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('✗ Delete failed: $e'),
             backgroundColor: AppTheme.danger,
           ),
         );
@@ -1013,8 +1792,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   void _scheduleNumPredictSave(String value) {
     _ollamaNumPredictSaveTimer?.cancel();
-    _ollamaNumPredictSaveTimer =
-        Timer(const Duration(milliseconds: 400), () async {
+    _ollamaNumPredictSaveTimer = Timer(const Duration(milliseconds: 400), () async {
       final parsed = int.tryParse(value.trim());
       if (parsed == null || parsed <= 0) return;
       setState(() => _ollamaNumPredict = parsed);
@@ -1024,8 +1802,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   void _scheduleNumCtxSave(String value) {
     _ollamaNumCtxSaveTimer?.cancel();
-    _ollamaNumCtxSaveTimer =
-        Timer(const Duration(milliseconds: 400), () async {
+    _ollamaNumCtxSaveTimer = Timer(const Duration(milliseconds: 400), () async {
       final parsed = int.tryParse(value.trim());
       if (parsed == null || parsed <= 0) return;
       setState(() => _ollamaNumCtxValue = parsed);
@@ -1041,12 +1818,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
       _ollamaNumPredictController.text = _ollamaNumPredict.toString();
       _ollamaNumCtxController.text = _ollamaNumCtxValue.toString();
     });
-    await BackendSettingsRepository.instance
-        .setOllamaTemperature(_ollamaTemperature);
-    await BackendSettingsRepository.instance
-        .setOllamaNumPredict(_ollamaNumPredict);
-    await BackendSettingsRepository.instance
-        .setOllamaNumCtx(_ollamaNumCtxValue);
+    await BackendSettingsRepository.instance.setOllamaTemperature(_ollamaTemperature);
+    await BackendSettingsRepository.instance.setOllamaNumPredict(_ollamaNumPredict);
+    await BackendSettingsRepository.instance.setOllamaNumCtx(_ollamaNumCtxValue);
   }
 
   /// Compact, multi-section helper text used under each generation knob.
@@ -1129,8 +1903,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
             children: [
               const SizedBox(
                 width: 110,
-                child: Text('Temperature',
-                    style: TextStyle(fontSize: 12.5)),
+                child: Text('Temperature', style: TextStyle(fontSize: 12.5)),
               ),
               Expanded(
                 child: Slider(
@@ -1153,8 +1926,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
             ],
           ),
           _helperBlock(
-            what:
-                'Controls how random the model is when picking the next word. '
+            what: 'Controls how random the model is when picking the next word. '
                 '0 = always the most likely token (deterministic); higher = '
                 'more varied, more creative, more likely to go off-script.',
             normalRange: '0.0 – 1.5 (Ollama default 0.8, this app default 0.2)',
@@ -1200,8 +1972,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
           ),
           const SizedBox(height: 6),
           _helperBlock(
-            what:
-                'num_predict caps how many tokens the model can generate in '
+            what: 'num_predict caps how many tokens the model can generate in '
                 'ONE reply. It stops the model mid-sentence if it tries to '
                 'go longer — useful to prevent runaway generations that take '
                 'minutes on small models.',
@@ -1220,13 +1991,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
           ),
           const SizedBox(height: 10),
           _helperBlock(
-            what:
-                'num_ctx is the context window — how many tokens (prompt + '
+            what: 'num_ctx is the context window — how many tokens (prompt + '
                 'past messages + reply) the model can "see" at once. Bigger '
                 'window = more history, but KV-cache RAM grows roughly '
                 'linearly with it.',
-            normalRange:
-                '2048 – 32768 (default 4096). Ollama may ship Modelfiles '
+            normalRange: '2048 – 32768 (default 4096). Ollama may ship Modelfiles '
                 'defaulting to 128K — that can cost 30–50 GiB of RAM on '
                 'a tiny model, so this app caps at 4096 by default.',
             bestFor: [
@@ -1237,8 +2006,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
               '32768+ — rarely worth it; prompt-eval time grows with context '
                   'and small models ignore most of it anyway.',
             ],
-            example:
-                'Raising this from 4096 → 32768 on phi3:mini can push RAM use '
+            example: 'Raising this from 4096 → 32768 on phi3:mini can push RAM use '
                 'from ~2 GB to >10 GB for the same conversation.',
           ),
           const SizedBox(height: 12),
@@ -1276,10 +2044,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
     setState(() => _ollamaPythonBusy = false);
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
-        content: Text(ok
-            ? 'Python package installed'
-            : 'Python package install failed - see log'),
-        backgroundColor: ok ? Colors.green[700] : AppTheme.danger,
+        content: Text(ok ? 'Python package installed' : 'Python package install failed - see log'),
+        backgroundColor: ok ? AppTheme.accentMarrone : AppTheme.danger,
       ),
     );
   }
@@ -1299,10 +2065,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
     setState(() => _ollamaPythonBusy = false);
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
-        content: Text(ok
-            ? 'Ollama Python bridge is ready'
-            : 'Python bridge failed to start - see log'),
-        backgroundColor: ok ? Colors.green[700] : AppTheme.danger,
+        content: Text(ok ? 'Ollama Python bridge is ready' : 'Python bridge failed to start - see log'),
+        backgroundColor: ok ? AppTheme.accentMarrone : AppTheme.danger,
       ),
     );
   }
@@ -1333,16 +2097,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
   }
 
   @override
+  @override
   Widget build(BuildContext context) {
-    final isOllamaBackend = _activeBackend == LlmBackend.ollama ||
-        _activeBackend == LlmBackend.ollamaPython ||
-        _activeBackend == LlmBackend.ollamaOrchestrator;
-    // Groq manages its own model list inside _groqControlPanel().
-    // The HF-specific "Default model" and "Saved models" sections below
-    // must be hidden for these backends.
-    final isGroqBackend = _activeBackend == LlmBackend.groq ||
-        _activeBackend == LlmBackend.groqOrchestrator;
-
     return Scaffold(
       backgroundColor: AppTheme.bgPrimary,
       appBar: AppBar(
@@ -1356,572 +2112,648 @@ class _SettingsScreenState extends State<SettingsScreen> {
       ),
       body: _loading
           ? const Center(child: CircularProgressIndicator())
-          : SingleChildScrollView(
-              padding: const EdgeInsets.all(24),
-              child: Center(
-                child: ConstrainedBox(
-                  constraints: const BoxConstraints(maxWidth: 720),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.stretch,
-                    children: [
-                      _section(
-                        title: "LLM Backend",
-                        subtitle: "Choose between remote HF API or local server (Python/transformers, ollama, etc)",
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.stretch,
-                          children: [
-                            Container(
-                              decoration: BoxDecoration(
-                                border: Border.all(color: AppTheme.border),
-                                borderRadius: BorderRadius.circular(10),
-                              ),
-                              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                              child: DropdownButtonHideUnderline(
-                                child: DropdownButton<LlmBackend>(
-                                  isExpanded: true,
-                                  value: _activeBackend,
-                                  items: const [
-                                    DropdownMenuItem(
-                                      value: LlmBackend.huggingFace,
-                                      child: Text("Hugging Face API (Remote)"),
-                                    ),
-                                    DropdownMenuItem(
-                                      value: LlmBackend.orchestrator,
-                                      child: Text("🤖 Local Orchestrator (Recommended)"),
-                                    ),
-                                    DropdownMenuItem(
-                                      value: LlmBackend.ollama,
-                                      child: Text("🦙 Ollama (Local)"),
-                                    ),
-                                    DropdownMenuItem(
-                                      value: LlmBackend.ollamaOrchestrator,
-                                      child: Text(
-                                        "🦙🛠️ Ollama + filesystem tools "
-                                        "(orchestrator)",
-                                      ),
-                                    ),
-                                    DropdownMenuItem(
-                                      value: LlmBackend.local,
-                                      child: Text("Local Server (Python)"),
-                                    ),
-                                    DropdownMenuItem(
-                                      value: LlmBackend.ollamaPython,
-                                      child: Text("Ollama (Python bridge)"),
-                                    ),
-                                    DropdownMenuItem(
-                                      value: LlmBackend.groq,
-                                      child: Text("⚡ Groq Cloud"),
-                                    ),
-                                    DropdownMenuItem(
-                                      value: LlmBackend.groqOrchestrator,
-                                      child: Text("⚡🛠️ Groq + filesystem tools"),
-                                    ),
-                                  ],
-                                  onChanged: (v) async {
-                                    if (v != null) {
-                                      final messenger = ScaffoldMessenger.of(context);
-                                      setState(() => _activeBackend = v);
-                                      await BackendSettingsRepository.instance.setActiveBackend(v);
-                                      if (v == LlmBackend.ollama ||
-                                          v == LlmBackend.ollamaPython ||
-                                          v == LlmBackend.ollamaOrchestrator) {
-                                        // ignore: unawaited_futures
-                                        _refreshOllamaStatus();
-                                      }
-                                      if (v == LlmBackend.ollamaPython) {
-                                        // ignore: unawaited_futures
-                                        _refreshOllamaPythonStatus();
-                                      }
-                                      if (mounted) {
-                                        messenger.showSnackBar(
-                                          const SnackBar(
-                                            content: Text("✓ Backend saved"),
-                                            duration: Duration(milliseconds: 800),
-                                          ),
-                                        );
-                                      }
-                                    }
-                                  },
-                                ),
-                              ),
-                            ),
-                            if (_activeBackend == LlmBackend.local) ...[
-                              const SizedBox(height: 12),
-                              TextField(
-                                controller: _localServerUrlController,
-                                decoration: const InputDecoration(
-                                  hintText: "http://localhost:5000",
-                                  labelText: "Server URL",
-                                  helperText: "Auto-saved on change.",
-                                ),
-                                onChanged: (v) {
-                                  setState(() => _localServerUrl = v.trim());
-                                  _scheduleLocalServerUrlSave(v);
-                                },
-                              ),
-                              const SizedBox(height: 8),
-                              ElevatedButton.icon(
-                                onPressed: _localServerUrl != null && _localServerUrl!.isNotEmpty
-                                    ? () => _testLocalServer()
-                                    : null,
-                                icon: const Icon(Icons.cloud_done, size: 16),
-                                label: const Text("Test Connection"),
-                              ),
-                            ],
-                          ],
-                        ),
-                      ),
-                      const SizedBox(height: 28),
-                      if (_activeBackend == LlmBackend.ollama) ...[
-                        _ollamaControlPanel(),
-                        const SizedBox(height: 28),
-                      ] else if (_activeBackend ==
-                          LlmBackend.ollamaOrchestrator) ...[
-                        // Show the same Ollama panel (so the user can pull /
-                        // select a model) plus a header explaining what this
-                        // backend does differently — it wraps the local model
-                        // in the orchestrator, granting filesystem tools.
-                        _section(
-                          title: "🦙🛠️ Ollama + filesystem tools",
-                          subtitle:
-                              "Routes a local Ollama model through the same "
-                              "orchestrator used for HF models — the model "
-                              "can read/write files in the project root via "
-                              "tool calls. Strongly recommend a 7B+ coder "
-                              "model (qwen2.5-coder:7b, llama3:8b). Smaller "
-                              "models often refuse or emit natural-language "
-                              "answers instead of <tool>…</tool> calls.",
-                          child: const SizedBox.shrink(),
-                        ),
-                        const SizedBox(height: 12),
-                        _ollamaControlPanel(),
-                        const SizedBox(height: 20),
-                        _ollamaOrchestratorControlPanel(),
-                        const SizedBox(height: 28),
-                      ] else if (_activeBackend == LlmBackend.ollamaPython) ...[
-                        _ollamaPythonControlPanel(),
-                        const SizedBox(height: 28),
-                      ] else if (_activeBackend == LlmBackend.groq) ...[
-                        _groqControlPanel(),
-                        const SizedBox(height: 28),
-                      ] else if (_activeBackend == LlmBackend.groqOrchestrator) ...[
-                        _groqControlPanel(),
-                        const SizedBox(height: 20),
-                        _groqOrchestratorControlPanel(),
-                        const SizedBox(height: 28),
-                      ] else if (_activeBackend == LlmBackend.orchestrator) ...[
-                        _section(
-                          title: "🤖 HF Agent Configuration",
-                          subtitle: "Token for the local orchestrator. Stored locally only.",
-                          child: Row(
-                            children: [
-                              Expanded(
-                                child: TextField(
-                                  controller: _agentTokenController,
-                                  obscureText: _obscureAgentToken,
-                                  onChanged: (v) => _scheduleAgentTokenSave(v),
-                                  decoration: InputDecoration(
-                                    hintText: "hf_xxx...",
-                                    helperText: "Auto-saved on change. Get from https://huggingface.co/settings/tokens",
-                                    suffixIcon: IconButton(
-                                      icon: Icon(
-                                        _obscureAgentToken
-                                            ? Icons.visibility_outlined
-                                            : Icons.visibility_off_outlined,
-                                        size: 18,
-                                      ),
-                                      onPressed: () => setState(
-                                        () => _obscureAgentToken = !_obscureAgentToken,
-                                      ),
-                                    ),
-                                  ),
-                                ),
-                              ),
-                              const SizedBox(width: 10),
-                              ElevatedButton(
-                                onPressed: () async {
-                                  final messenger = ScaffoldMessenger.of(context);
-                                  final token = _agentTokenController.text.trim();
-                                  if (token.isEmpty) {
-                                    messenger.showSnackBar(
-                                      const SnackBar(content: Text("Token cannot be empty")),
-                                    );
-                                    return;
-                                  }
-                                  await AgentCredentialsRepository.instance
-                                      .saveCredentials(AgentCredentials(hfToken: token));
-                                  if (!mounted) return;
-                                  messenger.showSnackBar(
-                                    const SnackBar(content: Text("✓ Agent token saved")),
-                                  );
-                                },
-                                child: const Text("Save"),
-                              ),
-                            ],
-                          ),
-                        ),
-                        const SizedBox(height: 20),
-                        _orchestratorControlPanel(),
-                        const SizedBox(height: 28),
-                      ] else ...[
-                        _section(
-                          title: "Hugging Face token",
-                          subtitle: "Stored locally on this device only.",
-                          child: Row(
-                            children: [
-                              Expanded(
-                                child: TextField(
-                                  controller: _tokenController,
-                                  obscureText: _obscureToken,
-                                  onChanged: (v) => _scheduleHfTokenSave(v),
-                                  decoration: InputDecoration(
-                                    hintText: "hf_xxx...",
-                                    helperText: "Auto-saved on change.",
-                                    suffixIcon: IconButton(
-                                      icon: Icon(
-                                        _obscureToken
-                                            ? Icons.visibility_outlined
-                                            : Icons.visibility_off_outlined,
-                                        size: 18,
-                                      ),
-                                      onPressed: () => setState(
-                                        () => _obscureToken = !_obscureToken,
-                                      ),
-                                    ),
-                                  ),
-                                ),
-                              ),
-                              const SizedBox(width: 10),
-                              ElevatedButton(
-                                onPressed: _saveToken,
-                                child: const Text("Save"),
-                              ),
-                            ],
-                          ),
-                        ),
-                        const SizedBox(height: 28),
-                      ],
-                      // "Default model" and "Saved models" are HF-specific.
-                      // Groq manages its own model inside _groqControlPanel(),
-                      // so we hide these two sections for Groq backends.
-                      if (!isGroqBackend) ...[
-                      const SizedBox(height: 28),
-                      _section(
-                        title: "Default model",
-                        subtitle:
-                            "Used for new chats. You can still override per conversation.",
-                        child: isOllamaBackend
-                            ? _ollamaDefaultModelPicker()
-                            : Container(
-                                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
-                                decoration: BoxDecoration(
-                                  color: Colors.white,
-                                  border: Border.all(color: AppTheme.border),
-                                  borderRadius: BorderRadius.circular(10),
-                                ),
-                                child: DropdownButtonHideUnderline(
-                                  child: DropdownButton<String>(
-                                    isExpanded: true,
-                                    value: _models.any((m) => m.id == _selectedModelId)
-                                        ? _selectedModelId
-                                        : null,
-                                    hint: const Text("Select default model"),
-                                    items: _models
-                                        .map(
-                                          (m) => DropdownMenuItem<String>(
-                                            value: m.id,
-                                            child: Text(
-                                              m.name,
-                                              overflow: TextOverflow.ellipsis,
-                                            ),
-                                          ),
-                                        )
-                                        .toList(),
-                                    onChanged: (v) {
-                                      if (v != null) _setSelected(v);
-                                    },
-                                  ),
-                                ),
-                              ),
-                      ),
-                      if (!isOllamaBackend) ...[
-                      const SizedBox(height: 28),
-                      _section(
-                          title: "Saved models",
-                          subtitle: "Add any model id supported by the HF router.",
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.stretch,
-                            children: [
-                              Row(
-                                children: [
-                                  Expanded(
-                                    child: TextField(
-                                      controller: _newModelController,
-                                      decoration: const InputDecoration(
-                                        hintText: "e.g. Qwen/Qwen3-Coder-480B-A35B-Instruct:hyperbolic",
-                                      ),
-                                      onSubmitted: (_) => _addModel(),
-                                    ),
-                                  ),
-                                  const SizedBox(width: 10),
-                                  OutlinedButton.icon(
-                                    onPressed: _addModel,
-                                    icon: const Icon(Icons.add, size: 16),
-                                    label: const Text("Add"),
-                                  ),
-                                ],
-                              ),
-                              const SizedBox(height: 14),
-                              if (_models.isEmpty)
-                                const Text(
-                                  "No models saved yet.",
-                                  style: TextStyle(color: AppTheme.textMuted),
-                                )
-                              else
-                                Column(
-                                  children: _models
-                                      .map((m) => _modelRow(m))
-                                      .toList(),
-                                ),
-                            ],
-                          ),
-                        ),
-                      ]], // closes if (!isOllamaBackend) and if (!isGroqBackend)
-                      const SizedBox(height: 40),
-                    ],
-                  ),
+          : Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                _buildSideNav(),
+                const VerticalDivider(width: 1, thickness: 1, color: AppTheme.border),
+                Expanded(
+                  child: _settingsSection == 0 ? _buildModelSettings() : _buildOrchestratorPanel(),
                 ),
-              ),
+              ],
             ),
     );
   }
 
-  Widget _orchestratorControlPanel() {
-    final running = OrchestratorManager.instance.isRunning;
-    final logLines = _combinedOrchestratorLogLines();
-    return _section(
-      title: "Orchestrator control",
-      subtitle: "Install Python dependencies and start the local orchestrator "
-          "process. The process runs on this machine and the remote HF model "
-          "calls its tools to read/write files locally.",
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
+  // ---- Side navigation ------------------------------------------------------
+
+  Widget _buildSideNav() {
+    return Container(
+      width: 190,
+      color: AppTheme.bgPrimary,
+      child: ListView(
+        padding: const EdgeInsets.symmetric(vertical: 16, horizontal: 8),
         children: [
-          Row(
-            children: [
-              Container(
-                width: 10,
-                height: 10,
-                decoration: BoxDecoration(
-                  color: running ? Colors.green : AppTheme.textMuted,
-                  shape: BoxShape.circle,
-                ),
-              ),
-              const SizedBox(width: 8),
-              Text(
-                running ? "Running" : "Stopped",
-                style: TextStyle(
-                  fontSize: 13,
-                  color: running ? Colors.green[700] : AppTheme.textMuted,
-                  fontWeight: FontWeight.w600,
-                ),
-              ),
-              const Spacer(),
-              if (_orchestratorBusy)
-                const SizedBox(
-                  width: 14,
-                  height: 14,
-                  child: CircularProgressIndicator(strokeWidth: 2),
-                ),
-            ],
-          ),
-          const SizedBox(height: 12),
-          Wrap(
-            spacing: 10,
-            runSpacing: 8,
-            children: [
-              OutlinedButton.icon(
-                onPressed: _orchestratorBusy ? null : _installOrchestratorDeps,
-                icon: const Icon(Icons.download_outlined, size: 16),
-                label: const Text("Install dependencies"),
-              ),
-              ElevatedButton.icon(
-                onPressed: (_orchestratorBusy || running) ? null : _startOrchestrator,
-                icon: const Icon(Icons.play_arrow, size: 16),
-                label: const Text("Start orchestrator"),
-              ),
-              OutlinedButton.icon(
-                onPressed: (_orchestratorBusy || !running) ? null : _stopOrchestrator,
-                icon: const Icon(Icons.stop, size: 16),
-                label: const Text("Stop"),
-              ),
-            ],
-          ),
-          if (logLines.isNotEmpty) ...[
-            const SizedBox(height: 12),
-            _logConsole(logLines),
-          ],
+          _navItem("Model Settings", 0, Icons.tune_outlined),
+          const SizedBox(height: 4),
+          _navItem("Orchestrator", 1, Icons.memory_outlined),
         ],
       ),
     );
   }
 
-  Widget _ollamaOrchestratorControlPanel() {
-    final running = OrchestratorManager.instance.isRunning &&
-        OrchestratorManager.instance.currentBackend == OrchestratorBackend.ollama;
-    final logLines = _combinedOrchestratorLogLines();
-    return _section(
-      title: "Filesystem tools",
-      subtitle: "Start the Ollama-backed orchestrator when you want the local "
-          "model to inspect files or execute project tools.",
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          Row(
+  Widget _navItem(String label, int index, IconData icon) {
+    final selected = _settingsSection == index;
+    return Material(
+      color: selected ? AppTheme.accent.withOpacity(0.12) : Colors.transparent,
+      borderRadius: BorderRadius.circular(8),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(8),
+        onTap: () => setState(() => _settingsSection = index),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+          child: Row(
             children: [
-              Container(
-                width: 10,
-                height: 10,
-                decoration: BoxDecoration(
-                  color: running ? Colors.green : AppTheme.textMuted,
-                  shape: BoxShape.circle,
-                ),
+              Icon(
+                icon,
+                size: 17,
+                color: selected ? AppTheme.accent : AppTheme.textSecondary,
               ),
-              const SizedBox(width: 8),
+              const SizedBox(width: 10),
               Text(
-                running ? "Running" : "Stopped",
+                label,
                 style: TextStyle(
-                  fontSize: 13,
-                  color: running ? Colors.green[700] : AppTheme.textMuted,
-                  fontWeight: FontWeight.w600,
+                  fontSize: 13.5,
+                  fontWeight: selected ? FontWeight.w600 : FontWeight.normal,
+                  color: selected ? AppTheme.accent : AppTheme.textSecondary,
                 ),
-              ),
-              const Spacer(),
-              if (_orchestratorBusy)
-                const SizedBox(
-                  width: 14,
-                  height: 14,
-                  child: CircularProgressIndicator(strokeWidth: 2),
-                ),
-            ],
-          ),
-          const SizedBox(height: 12),
-          Wrap(
-            spacing: 10,
-            runSpacing: 8,
-            children: [
-              OutlinedButton.icon(
-                onPressed: _orchestratorBusy ? null : _installOrchestratorDeps,
-                icon: const Icon(Icons.download_outlined, size: 16),
-                label: const Text("Install dependencies"),
-              ),
-              ElevatedButton.icon(
-                onPressed: (_orchestratorBusy || running) ? null : _startOllamaOrchestrator,
-                icon: const Icon(Icons.play_arrow, size: 16),
-                label: const Text("Start orchestrator"),
-              ),
-              OutlinedButton.icon(
-                onPressed: (_orchestratorBusy || !running) ? null : _stopOrchestrator,
-                icon: const Icon(Icons.stop, size: 16),
-                label: const Text("Stop"),
               ),
             ],
           ),
-          if (logLines.isNotEmpty) ...[
-            const SizedBox(height: 12),
-            _logConsole(logLines),
-          ],
-        ],
+        ),
       ),
     );
   }
 
-  Widget _groqOrchestratorControlPanel() {
-    final running = OrchestratorManager.instance.isRunning &&
-        OrchestratorManager.instance.currentBackend == OrchestratorBackend.groq;
-    final logLines = _combinedOrchestratorLogLines();
-    return _section(
-      title: '⚡🛠️ Groq + filesystem tools — orchestrator',
-      subtitle: 'The local Python orchestrator wraps Groq Cloud so the model '
-          'can read/write files and run project commands via tool calls. '
-          'Requires the `groq` Python package (Install dependencies below).',
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          // Status row
-          Row(
+  // ---- Model Settings panel -------------------------------------------------
+
+  Widget _buildModelSettings() {
+    final isOllamaBackend =
+        _activeBackend == LlmBackend.ollama || _activeBackend == LlmBackend.ollamaPython || _activeBackend == LlmBackend.ollamaOrchestrator || _activeBackend == LlmBackend.ollamaGenerate;
+    final isGroqBackend = _activeBackend == LlmBackend.groq || _activeBackend == LlmBackend.groqOrchestrator;
+    final isGeminiBackend = _activeBackend == LlmBackend.geminiOrchestrator;
+    final isOpenRouterBackend = _activeBackend == LlmBackend.openRouter || _activeBackend == LlmBackend.openRouterOrchestrator;
+
+    return SingleChildScrollView(
+      padding: const EdgeInsets.all(24),
+      child: Center(
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 720),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              AnimatedContainer(
-                duration: const Duration(milliseconds: 300),
-                width: 10,
-                height: 10,
-                decoration: BoxDecoration(
-                  color: running ? Colors.green : AppTheme.textMuted,
-                  shape: BoxShape.circle,
+              _section(
+                title: "LLM Backend",
+                subtitle: "Choose between remote HF API, cloud agents "
+                    "(Groq / Gemini / OpenRouter), or local server "
+                    "(Python/transformers, Ollama, etc).",
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    Container(
+                      decoration: BoxDecoration(
+                        border: Border.all(color: AppTheme.border),
+                        borderRadius: BorderRadius.circular(10),
+                      ),
+                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                      child: DropdownButtonHideUnderline(
+                        child: DropdownButton<LlmBackend>(
+                          isExpanded: true,
+                          value: _activeBackend,
+                          // Only orchestrator-backed options are exposed —
+                          // direct backends don't route through
+                          // orchestrator.py and are intentionally hidden.
+                          items: const [
+                            // --- Hugging Face ---
+                            // DropdownMenuItem(
+                            //   value: LlmBackend.huggingFace,
+                            //   child: Text("Hugging Face (Direct)"),
+                            // ),
+                            DropdownMenuItem(
+                              value: LlmBackend.orchestrator,
+                              child: Text("Hugging Face + Orchestrator (Recommended)"),
+                            ),
+                            // --- Ollama ---
+                            // DropdownMenuItem(
+                            //   value: LlmBackend.ollama,
+                            //   child: Text("Ollama (Direct)"),
+                            // ),
+                            DropdownMenuItem(
+                              value: LlmBackend.ollamaOrchestrator,
+                              child: Text("Ollama + Orchestrator (filesystem tools)"),
+                            ),
+                            // DropdownMenuItem(
+                            //   value: LlmBackend.ollamaPython,
+                            //   child: Text("Ollama (Python bridge)"),
+                            // ),
+                            // DropdownMenuItem(
+                            //   value: LlmBackend.ollamaGenerate,
+                            //   child: Text("Ollama /api/generate"),
+                            // ),
+                            // --- Groq ---
+                            // DropdownMenuItem(
+                            //   value: LlmBackend.groq,
+                            //   child: Text("Groq Cloud (Direct)"),
+                            // ),
+                            DropdownMenuItem(
+                              value: LlmBackend.groqOrchestrator,
+                              child: Text("Groq + Orchestrator (filesystem tools)"),
+                            ),
+                            // --- Gemini ---
+                            DropdownMenuItem(
+                              value: LlmBackend.geminiOrchestrator,
+                              child: Text("Gemini + Orchestrator (filesystem tools)"),
+                            ),
+                            // --- OpenRouter ---
+                            // DropdownMenuItem(
+                            //   value: LlmBackend.openRouter,
+                            //   child: Text("OpenRouter (Direct)"),
+                            // ),
+                            DropdownMenuItem(
+                              value: LlmBackend.openRouterOrchestrator,
+                              child: Text("OpenRouter + Orchestrator (filesystem tools)"),
+                            ),
+                            // --- Other ---
+                            // DropdownMenuItem(
+                            //   value: LlmBackend.local,
+                            //   child: Text("Local Server (Python)"),
+                            // ),
+                          ],
+                          onChanged: (v) async {
+                            if (v != null) {
+                              final messenger = ScaffoldMessenger.of(context);
+                              setState(() => _activeBackend = v);
+                              await BackendSettingsRepository.instance.setActiveBackend(v);
+                              if (v == LlmBackend.ollama || v == LlmBackend.ollamaPython || v == LlmBackend.ollamaOrchestrator) {
+                                // ignore: unawaited_futures
+                                _refreshOllamaStatus();
+                              }
+                              if (v == LlmBackend.ollamaPython) {
+                                // ignore: unawaited_futures
+                                _refreshOllamaPythonStatus();
+                              }
+                              if (v == LlmBackend.openRouter || v == LlmBackend.openRouterOrchestrator) {
+                                // ignore: unawaited_futures
+                                _refreshOpenRouterModels(
+                                  _openRouterApiKeyController.text.trim(),
+                                );
+                              }
+                              if (mounted) {
+                                messenger.showSnackBar(
+                                  const SnackBar(
+                                    content: Text("✓ Backend saved"),
+                                    duration: Duration(milliseconds: 800),
+                                  ),
+                                );
+                              }
+                            }
+                          },
+                        ),
+                      ),
+                    ),
+                    if (_activeBackend == LlmBackend.local) ...[
+                      const SizedBox(height: 12),
+                      TextField(
+                        controller: _localServerUrlController,
+                        decoration: const InputDecoration(
+                          hintText: "http://localhost:5000",
+                          labelText: "Server URL",
+                          helperText: "Auto-saved on change.",
+                        ),
+                        onChanged: (v) {
+                          setState(() => _localServerUrl = v.trim());
+                          _scheduleLocalServerUrlSave(v);
+                        },
+                      ),
+                      const SizedBox(height: 8),
+                      ElevatedButton.icon(
+                        onPressed: _localServerUrl != null && _localServerUrl!.isNotEmpty ? () => _testLocalServer() : null,
+                        icon: const Icon(Icons.cloud_done, size: 16),
+                        label: const Text("Test Connection"),
+                      ),
+                    ],
+                  ],
                 ),
               ),
-              const SizedBox(width: 8),
-              Text(
-                running ? 'Running' : 'Stopped',
-                style: TextStyle(
-                  fontSize: 13,
-                  color: running ? Colors.green[700] : AppTheme.textMuted,
-                  fontWeight: FontWeight.w600,
+              const SizedBox(height: 28),
+              if (_activeBackend == LlmBackend.ollama) ...[
+                _ollamaControlPanel(),
+                const SizedBox(height: 28),
+              ] else if (_activeBackend == LlmBackend.ollamaOrchestrator) ...[
+                // Show the same Ollama panel (so the user can pull /
+                // select a model) plus a header explaining what this
+                // backend does differently — it wraps the local model
+                // in the orchestrator, granting filesystem tools.
+                _section(
+                  title: "🦙🛠️ Ollama + filesystem tools",
+                  subtitle: "Routes a local Ollama model through the same "
+                      "orchestrator used for HF models — the model "
+                      "can read/write files in the project root via "
+                      "tool calls. Strongly recommend a 7B+ coder "
+                      "model (qwen2.5-coder:7b, llama3:8b). Smaller "
+                      "models often refuse or emit natural-language "
+                      "answers instead of <tool>…</tool> calls.",
+                  child: const SizedBox.shrink(),
                 ),
-              ),
-              if (running) ...[
-                const SizedBox(width: 8),
-                Text(
-                  'model: ${OrchestratorManager.instance.logLines.isEmpty ? (_groqSelectedModel ?? '—') : (_groqSelectedModel ?? '—')}',
-                  style: const TextStyle(
-                    fontSize: 12,
-                    color: AppTheme.textSecondary,
+                const SizedBox(height: 12),
+                _ollamaControlPanel(),
+                const SizedBox(height: 20),
+                _orchestratorNote(),
+                const SizedBox(height: 28),
+              ] else if (_activeBackend == LlmBackend.ollamaPython) ...[
+                _ollamaPythonControlPanel(),
+                const SizedBox(height: 28),
+              ] else if (_activeBackend == LlmBackend.groq) ...[
+                _groqControlPanel(),
+                const SizedBox(height: 28),
+              ] else if (_activeBackend == LlmBackend.groqOrchestrator) ...[
+                _groqControlPanel(),
+                const SizedBox(height: 20),
+                _orchestratorNote(),
+                const SizedBox(height: 28),
+              ] else if (_activeBackend == LlmBackend.geminiOrchestrator) ...[
+                _geminiControlPanel(),
+                const SizedBox(height: 20),
+                _orchestratorNote(),
+                const SizedBox(height: 28),
+              ] else if (_activeBackend == LlmBackend.openRouter) ...[
+                _openRouterControlPanel(),
+                const SizedBox(height: 28),
+              ] else if (_activeBackend == LlmBackend.openRouterOrchestrator) ...[
+                _openRouterControlPanel(),
+                const SizedBox(height: 20),
+                _orchestratorNote(),
+                const SizedBox(height: 28),
+              ] else if (_activeBackend == LlmBackend.ollamaGenerate) ...[
+                _generateControlPanel(),
+                const SizedBox(height: 28),
+              ] else if (_activeBackend == LlmBackend.orchestrator) ...[
+                _section(
+                  title: "HF Agent Configuration",
+                  subtitle: "Token for the local orchestrator. Stored locally only.",
+                  child: Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Expanded(
+                        child: TextField(
+                          controller: _agentTokenController,
+                          obscureText: _obscureAgentToken,
+                          onChanged: (v) => _scheduleAgentTokenSave(v),
+                          decoration: InputDecoration(
+                            hintText: "hf_xxx...",
+                            helperText: "Auto-saved on change. Get from https://huggingface.co/settings/tokens",
+                            suffixIcon: IconButton(
+                              icon: Icon(
+                                _obscureAgentToken ? Icons.visibility_outlined : Icons.visibility_off_outlined,
+                                size: 18,
+                              ),
+                              onPressed: () => setState(
+                                () => _obscureAgentToken = !_obscureAgentToken,
+                              ),
+                            ),
+                          ),
+                        ),
+                      ),
+                      const SizedBox(width: 10),
+                      SizedBox(
+                          height: 48,
+                          child: ElevatedButton(
+                            onPressed: () async {
+                              final messenger = ScaffoldMessenger.of(context);
+                              final token = _agentTokenController.text.trim();
+                              if (token.isEmpty) {
+                                messenger.showSnackBar(
+                                  const SnackBar(content: Text("Token cannot be empty")),
+                                );
+                                return;
+                              }
+                              await AgentCredentialsRepository.instance.saveCredentials(AgentCredentials(hfToken: token));
+                              if (!mounted) return;
+                              messenger.showSnackBar(
+                                const SnackBar(content: Text("Agent token saved")),
+                              );
+                            },
+                            child: const Text("Save"),
+                          )),
+                    ],
                   ),
                 ),
-              ],
-              const Spacer(),
-              if (_orchestratorBusy)
-                const SizedBox(
-                  width: 14,
-                  height: 14,
-                  child: CircularProgressIndicator(strokeWidth: 2),
+                const SizedBox(height: 20),
+                _orchestratorNote(),
+                const SizedBox(height: 28),
+              ] else ...[
+                _section(
+                  title: "Hugging Face token",
+                  subtitle: "Stored locally on this device only.",
+                  child: Row(
+                    children: [
+                      Expanded(
+                        child: TextField(
+                          controller: _tokenController,
+                          obscureText: _obscureToken,
+                          onChanged: (v) => _scheduleHfTokenSave(v),
+                          decoration: InputDecoration(
+                            hintText: "hf_xxx...",
+                            helperText: "Auto-saved on change.",
+                            suffixIcon: IconButton(
+                              icon: Icon(
+                                _obscureToken ? Icons.visibility_outlined : Icons.visibility_off_outlined,
+                                size: 18,
+                              ),
+                              onPressed: () => setState(
+                                () => _obscureToken = !_obscureToken,
+                              ),
+                            ),
+                          ),
+                        ),
+                      ),
+                      const SizedBox(width: 10),
+                      ElevatedButton(
+                        onPressed: _saveToken,
+                        child: const Text("Save"),
+                      ),
+                    ],
+                  ),
                 ),
+                const SizedBox(height: 28),
+              ],
+              // "Default model" and "Saved models" are HF-specific.
+              // Groq and Gemini manage their own models inside their
+              // dedicated control panels, so we hide these sections
+              // for those backends.
+              if (!isGroqBackend && !isGeminiBackend && !isOpenRouterBackend) ...[
+                const SizedBox(height: 28),
+                _section(
+                  title: "Default model",
+                  subtitle: "Used for new chats. You can still override per conversation.",
+                  child: isOllamaBackend
+                      ? _ollamaDefaultModelPicker()
+                      : Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+                          decoration: BoxDecoration(
+                            border: Border.all(color: AppTheme.border),
+                            borderRadius: BorderRadius.circular(10),
+                          ),
+                          child: DropdownButtonHideUnderline(
+                            child: DropdownButton<String>(
+                              isExpanded: true,
+                              value: _models.any((m) => m.id == _selectedModelId) ? _selectedModelId : null,
+                              hint: const Text("Select default model"),
+                              items: _models
+                                  .map(
+                                    (m) => DropdownMenuItem<String>(
+                                      value: m.id,
+                                      child: Text(
+                                        m.name,
+                                        overflow: TextOverflow.ellipsis,
+                                      ),
+                                    ),
+                                  )
+                                  .toList(),
+                              onChanged: (v) {
+                                if (v != null) _setSelected(v);
+                              },
+                            ),
+                          ),
+                        ),
+                ),
+                if (!isOllamaBackend) ...[
+                  const SizedBox(height: 28),
+                  _section(
+                    title: "Saved models",
+                    subtitle: "Add any model id supported by the HF router.",
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        Row(
+                          children: [
+                            Expanded(
+                              child: TextField(
+                                controller: _newModelController,
+                                decoration: const InputDecoration(
+                                  hintText: "e.g. Qwen/Qwen3-Coder-480B-A35B-Instruct:hyperbolic",
+                                ),
+                                onSubmitted: (_) => _addModel(),
+                              ),
+                            ),
+                            const SizedBox(width: 10),
+                            SizedBox(
+                                height: 48,
+                                child: OutlinedButton.icon(
+                                  onPressed: _addModel,
+                                  icon: const Icon(Icons.add, size: 16),
+                                  label: const Text("Add"),
+                                )),
+                          ],
+                        ),
+                        const SizedBox(height: 14),
+                        if (_models.isEmpty)
+                          const Text(
+                            "No models saved yet.",
+                            style: TextStyle(color: AppTheme.textMuted),
+                          )
+                        else
+                          Column(
+                            children: _models.map((m) => _modelRow(m)).toList(),
+                          ),
+                      ],
+                    ),
+                  ),
+                ]
+              ], // closes if (!isOllamaBackend) and HF-only model sections
+              const SizedBox(height: 40),
             ],
           ),
-          const SizedBox(height: 12),
-          // Action buttons
-          Wrap(
-            spacing: 10,
-            runSpacing: 8,
-            children: [
-              OutlinedButton.icon(
-                onPressed: _orchestratorBusy ? null : _installOrchestratorDeps,
-                icon: const Icon(Icons.download_outlined, size: 16),
-                label: const Text('Install dependencies'),
-              ),
-              ElevatedButton.icon(
-                onPressed: (_orchestratorBusy || running)
-                    ? null
-                    : _startGroqOrchestrator,
-                icon: const Icon(Icons.play_arrow, size: 16),
-                label: const Text('Start orchestrator'),
-              ),
-              OutlinedButton.icon(
-                onPressed: (_orchestratorBusy || !running)
-                    ? null
-                    : _stopOrchestrator,
-                icon: const Icon(Icons.stop, size: 16),
-                label: const Text('Stop'),
-              ),
-            ],
+        ),
+      ),
+    );
+  }
+
+  // ---- Orchestrator quick-status note (shown inside Model Settings) ---------
+
+  Widget _orchestratorNote() {
+    final running = OrchestratorManager.instance.isRunning;
+    return _section(
+      title: "Orchestrator",
+      subtitle: "Manage the orchestrator process in the Orchestrator section.",
+      child: Row(
+        children: [
+          AnimatedContainer(
+            duration: const Duration(milliseconds: 300),
+            width: 9,
+            height: 9,
+            decoration: BoxDecoration(
+              color: running ? AppTheme.accentMarrone : AppTheme.textMuted,
+              shape: BoxShape.circle,
+            ),
           ),
-          if (logLines.isNotEmpty) ...[
-            const SizedBox(height: 12),
-            _logConsole(logLines),
-          ],
+          const SizedBox(width: 8),
+          Text(
+            running ? "Running" : "Stopped",
+            style: TextStyle(
+              fontSize: 13,
+              color: running ? AppTheme.accentMarrone : AppTheme.textMuted,
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+          const Spacer(),
+          TextButton.icon(
+            onPressed: () => setState(() => _settingsSection = 1),
+            icon: const Icon(Icons.memory_outlined, size: 15),
+            label: const Text("Manage"),
+            style: TextButton.styleFrom(foregroundColor: AppTheme.accent),
+          ),
         ],
       ),
     );
+  }
+
+  // ---- Orchestrator panel (side-nav section 1) ------------------------------
+
+  Widget _buildOrchestratorPanel() {
+    final running = OrchestratorManager.instance.isRunning;
+    final needsOrchestrator = _activeBackend == LlmBackend.orchestrator ||
+        _activeBackend == LlmBackend.ollamaOrchestrator ||
+        _activeBackend == LlmBackend.groqOrchestrator ||
+        _activeBackend == LlmBackend.geminiOrchestrator ||
+        _activeBackend == LlmBackend.openRouterOrchestrator;
+
+    // Merge in-memory session log + persisted log (deduplicated, persisted first).
+    final seen = <String>{};
+    final allLines = <String>[];
+    for (final l in _persistedLog) {
+      if (seen.add(l)) allLines.add(l);
+    }
+    for (final l in _orchestratorLog) {
+      if (seen.add(l)) allLines.add(l);
+    }
+    for (final l in const LineSplitter().convert(OrchestratorManager.instance.stderrLog)) {
+      if (l.trim().isEmpty) continue;
+      if (seen.add(l)) allLines.add(l);
+    }
+
+    return SingleChildScrollView(
+      padding: const EdgeInsets.all(24),
+      child: Center(
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 720),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              // Status
+              _section(
+                title: "Status",
+                subtitle: "Current orchestrator process state.",
+                child: Row(
+                  children: [
+                    AnimatedContainer(
+                      duration: const Duration(milliseconds: 300),
+                      width: 10,
+                      height: 10,
+                      decoration: BoxDecoration(
+                        color: running ? AppTheme.accentMarrone : AppTheme.textMuted,
+                        shape: BoxShape.circle,
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    Text(
+                      running ? "Running" : "Stopped",
+                      style: TextStyle(
+                        fontSize: 13,
+                        color: running ? AppTheme.accentMarrone : AppTheme.textMuted,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                    if (running) ...[
+                      const SizedBox(width: 12),
+                      Text(
+                        "backend: ${_activeBackend.name}",
+                        style: const TextStyle(fontSize: 12, color: AppTheme.textSecondary),
+                      ),
+                    ],
+                    const Spacer(),
+                    if (_orchestratorBusy)
+                      const SizedBox(
+                        width: 14,
+                        height: 14,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 20),
+              // Actions
+              _section(
+                title: "Actions",
+                child: Wrap(
+                  spacing: 10,
+                  runSpacing: 8,
+                  children: [
+                    OutlinedButton.icon(
+                      onPressed: _orchestratorBusy ? null : _installOrchestratorDeps,
+                      icon: const Icon(Icons.download_outlined, size: 16),
+                      label: const Text("Install dependencies"),
+                    ),
+                    if (needsOrchestrator) ...[
+                      ElevatedButton.icon(
+                        onPressed: (_orchestratorBusy || running) ? null : _startCurrentOrchestrator,
+                        icon: const Icon(Icons.play_arrow, size: 16),
+                        label: const Text("Start orchestrator"),
+                      ),
+                      OutlinedButton.icon(
+                        onPressed: (_orchestratorBusy || !running) ? null : _stopOrchestrator,
+                        icon: const Icon(Icons.stop, size: 16),
+                        label: const Text("Stop"),
+                      ),
+                    ] else
+                      const Text(
+                        "Start/Stop controls appear when an orchestrator backend is selected in Model Settings.",
+                        style: TextStyle(fontSize: 12, color: AppTheme.textMuted),
+                      ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 20),
+              // Log
+              _section(
+                title: "Log",
+                subtitle: "Persisted log — last 2 000 lines (oldest auto-removed).",
+                child: allLines.isEmpty
+                    ? const Padding(
+                        padding: EdgeInsets.symmetric(vertical: 8),
+                        child: Text(
+                          "No log entries yet.",
+                          style: TextStyle(color: AppTheme.textMuted, fontSize: 13),
+                        ),
+                      )
+                    : _logConsole(allLines),
+              ),
+              const SizedBox(height: 40),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  // Dispatch Start to the right method based on active backend.
+  Future<void> _startCurrentOrchestrator() async {
+    switch (_activeBackend) {
+      case LlmBackend.huggingFace:
+      case LlmBackend.local:
+      case LlmBackend.ollama:
+      case LlmBackend.ollamaPython:
+      case LlmBackend.groq:
+      case LlmBackend.openRouter:
+      case LlmBackend.ollamaGenerate:
+        break;
+      case LlmBackend.orchestrator:
+        await _startOrchestrator();
+        break;
+      case LlmBackend.ollamaOrchestrator:
+        await _startOllamaOrchestrator();
+        break;
+      case LlmBackend.groqOrchestrator:
+        await _startGroqOrchestrator();
+        break;
+      case LlmBackend.geminiOrchestrator:
+        await _startGeminiOrchestrator();
+        break;
+      case LlmBackend.openRouterOrchestrator:
+        await _startOpenRouterOrchestrator();
+        break;
+    }
   }
 
   List<String> _combinedOrchestratorLogLines() {
@@ -1948,8 +2780,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
       children: [
         _section(
           title: "🦙 Ollama — local models",
-          subtitle:
-              "Ollama runs LLMs entirely on this machine. Step 1 is a "
+          subtitle: "Ollama runs LLMs entirely on this machine. Step 1 is a "
               "one-time install of the Ollama binary; everything else "
               "(starting the daemon, pulling models, chatting) is driven "
               "from here.",
@@ -1959,28 +2790,24 @@ class _SettingsScreenState extends State<SettingsScreen> {
               // --- Status row -------------------------------------------------
               Row(
                 children: [
-                  _statusDot(hasBinary ? Colors.green : AppTheme.textMuted),
+                  _statusDot(hasBinary ? AppTheme.accentMarrone : AppTheme.textMuted),
                   const SizedBox(width: 8),
                   Text(
-                    hasBinary
-                        ? 'Binary: ${_ollamaBinaryVersion!}'
-                        : 'Binary: not detected',
+                    hasBinary ? 'Binary: ${_ollamaBinaryVersion!}' : 'Binary: not detected',
                     style: TextStyle(
                       fontSize: 13,
-                      color: hasBinary ? Colors.green[700] : AppTheme.textMuted,
+                      color: hasBinary ? AppTheme.accentMarrone : AppTheme.textMuted,
                       fontWeight: FontWeight.w600,
                     ),
                   ),
                   const SizedBox(width: 16),
-                  _statusDot(serverUp ? Colors.green : AppTheme.textMuted),
+                  _statusDot(serverUp ? AppTheme.accentMarrone : AppTheme.textMuted),
                   const SizedBox(width: 8),
                   Text(
-                    serverUp
-                        ? 'Server: running'
-                        : (managing ? 'Server: starting…' : 'Server: stopped'),
+                    serverUp ? 'Server: running' : (managing ? 'Server: starting…' : 'Server: stopped'),
                     style: TextStyle(
                       fontSize: 13,
-                      color: serverUp ? Colors.green[700] : AppTheme.textMuted,
+                      color: serverUp ? AppTheme.accentMarrone : AppTheme.textMuted,
                       fontWeight: FontWeight.w600,
                     ),
                   ),
@@ -2019,8 +2846,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                         'Run the installer from here when possible. If your '
                         'platform is not supported, copy the download URL and '
                         'install Ollama manually.',
-                        style: TextStyle(
-                            fontSize: 12.5, color: AppTheme.textMuted),
+                        style: TextStyle(fontSize: 12.5, color: AppTheme.textMuted),
                       ),
                       const SizedBox(height: 10),
                       Wrap(
@@ -2028,25 +2854,19 @@ class _SettingsScreenState extends State<SettingsScreen> {
                         runSpacing: 8,
                         children: [
                           ElevatedButton.icon(
-                            onPressed: (_ollamaBusy || !OllamaManager.instance.supportsUiInstall)
-                                ? null
-                                : _installOllamaBinary,
+                            onPressed: (_ollamaBusy || !OllamaManager.instance.supportsUiInstall) ? null : _installOllamaBinary,
                             icon: const Icon(Icons.download_outlined, size: 14),
                             label: Text(
-                              OllamaManager.instance.supportsUiInstall
-                                  ? 'Install from UI'
-                                  : 'UI install unavailable',
+                              OllamaManager.instance.supportsUiInstall ? 'Install from UI' : 'UI install unavailable',
                             ),
                           ),
                           OutlinedButton.icon(
                             onPressed: () async {
-                              await Clipboard.setData(const ClipboardData(
-                                  text: 'https://ollama.com/download'));
+                              await Clipboard.setData(const ClipboardData(text: 'https://ollama.com/download'));
                               if (!mounted) return;
                               ScaffoldMessenger.of(context).showSnackBar(
                                 const SnackBar(
-                                  content: Text(
-                                      'Download URL copied: https://ollama.com/download'),
+                                  content: Text('Download URL copied: https://ollama.com/download'),
                                 ),
                               );
                             },
@@ -2055,9 +2875,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                           ),
                           const SizedBox(width: 10),
                           OutlinedButton.icon(
-                            onPressed: _ollamaBusy
-                                ? null
-                                : () => _refreshOllamaStatus(verbose: true),
+                            onPressed: _ollamaBusy ? null : () => _refreshOllamaStatus(verbose: true),
                             icon: const Icon(Icons.refresh, size: 14),
                             label: const Text('Re-check'),
                           ),
@@ -2075,8 +2893,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 decoration: const InputDecoration(
                   labelText: 'Server URL',
                   hintText: OllamaService.defaultBaseUrl,
-                  helperText:
-                      'Local daemon: http://localhost:11434 (default). '
+                  helperText: 'Local daemon: http://localhost:11434 (default). '
                       'Cloud: use the URL from your Ollama account '
                       '(e.g. https://api.ollama.ai). Auto-saved.',
                 ),
@@ -2095,15 +2912,12 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 decoration: InputDecoration(
                   labelText: 'API key (cloud models)',
                   hintText: 'Leave blank for local daemon',
-                  helperText:
-                      'Bearer token for cloud-hosted Ollama endpoints '
+                  helperText: 'Bearer token for cloud-hosted Ollama endpoints '
                       '(e.g. Ollama Cloud, OpenRouter). '
                       'Local daemon needs no key.',
                   suffixIcon: IconButton(
                     icon: Icon(
-                      _ollamaApiKeyVisible
-                          ? Icons.visibility_off
-                          : Icons.visibility,
+                      _ollamaApiKeyVisible ? Icons.visibility_off : Icons.visibility,
                       size: 18,
                     ),
                     onPressed: () => setState(
@@ -2123,8 +2937,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     style: TextStyle(fontSize: 12),
                   ),
                   style: TextButton.styleFrom(
-                    padding: const EdgeInsets.symmetric(
-                        horizontal: 6, vertical: 4),
+                    padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 4),
                     minimumSize: Size.zero,
                     tapTargetSize: MaterialTapTargetSize.shrinkWrap,
                   ),
@@ -2139,23 +2952,17 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 runSpacing: 8,
                 children: [
                   ElevatedButton.icon(
-                    onPressed: (_ollamaBusy || !hasBinary || serverUp)
-                        ? null
-                        : _startOllamaServer,
+                    onPressed: (_ollamaBusy || !hasBinary || serverUp) ? null : _startOllamaServer,
                     icon: const Icon(Icons.play_arrow, size: 16),
                     label: const Text('Start Ollama server'),
                   ),
                   OutlinedButton.icon(
-                    onPressed: (_ollamaBusy || !managing)
-                        ? null
-                        : _stopOllamaServer,
+                    onPressed: (_ollamaBusy || !managing) ? null : _stopOllamaServer,
                     icon: const Icon(Icons.stop, size: 16),
                     label: const Text('Stop'),
                   ),
                   OutlinedButton.icon(
-                    onPressed: _ollamaBusy
-                        ? null
-                        : () => _refreshOllamaStatus(verbose: true),
+                    onPressed: _ollamaBusy ? null : () => _refreshOllamaStatus(verbose: true),
                     icon: const Icon(Icons.refresh, size: 16),
                     label: const Text('Refresh'),
                   ),
@@ -2175,20 +2982,17 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   '(e.g. `llama3`, `qwen2.5-coder:7b`, `gemma:2b`).',
                   style: TextStyle(color: AppTheme.textMuted, fontSize: 12.5),
                 )
-              else
+              else ...[
                 Container(
                   padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
                   decoration: BoxDecoration(
-                    color: Colors.white,
                     border: Border.all(color: AppTheme.border),
                     borderRadius: BorderRadius.circular(8),
                   ),
                   child: DropdownButtonHideUnderline(
                     child: DropdownButton<String>(
                       isExpanded: true,
-                      value: _ollamaInstalledModels.contains(_ollamaSelectedModel)
-                          ? _ollamaSelectedModel
-                          : null,
+                      value: _ollamaInstalledModels.contains(_ollamaSelectedModel) ? _ollamaSelectedModel : null,
                       hint: const Text('Select model to use in chat'),
                       items: _ollamaInstalledModels
                           .map((m) => DropdownMenuItem<String>(
@@ -2202,6 +3006,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     ),
                   ),
                 ),
+                const SizedBox(height: 8),
+                _installedModelsList(canModify: serverUp),
+              ],
 
               const SizedBox(height: 14),
               Row(
@@ -2218,8 +3025,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   ),
                   const SizedBox(width: 10),
                   ElevatedButton.icon(
-                    onPressed:
-                        (_ollamaBusy || !serverUp) ? null : _pullOllamaModel,
+                    onPressed: (_ollamaBusy || !serverUp) ? null : _pullOllamaModel,
                     icon: const Icon(Icons.download, size: 16),
                     label: const Text('Pull'),
                   ),
@@ -2270,8 +3076,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
     return _section(
       title: "Ollama Python bridge",
-      subtitle:
-          "This approach follows the Python guide: install Ollama, install "
+      subtitle: "This approach follows the Python guide: install Ollama, install "
           "`pip install ollama`, then start a small local bridge the app can "
           "chat through.",
       child: Column(
@@ -2283,9 +3088,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
             children: [
               _statusChip(
                 ok: hasBinary,
-                label: hasBinary
-                    ? 'Ollama: ${_ollamaBinaryVersion!}'
-                    : 'Ollama: not installed',
+                label: hasBinary ? 'Ollama: ${_ollamaBinaryVersion!}' : 'Ollama: not installed',
               ),
               _statusChip(
                 ok: serverUp,
@@ -2293,21 +3096,15 @@ class _SettingsScreenState extends State<SettingsScreen> {
               ),
               _statusChip(
                 ok: hasPython,
-                label: hasPython
-                    ? 'Python: ${_pythonVersion!}'
-                    : 'Python: not found',
+                label: hasPython ? 'Python: ${_pythonVersion!}' : 'Python: not found',
               ),
               _statusChip(
                 ok: hasPackage,
-                label: hasPackage
-                    ? 'Package: ollama ${_ollamaPythonPackageVersion!}'
-                    : 'Package: missing',
+                label: hasPackage ? 'Package: ollama ${_ollamaPythonPackageVersion!}' : 'Package: missing',
               ),
               _statusChip(
                 ok: bridgeUp,
-                label: bridgeUp
-                    ? 'Bridge: running'
-                    : (managingBridge ? 'Bridge: starting' : 'Bridge: stopped'),
+                label: bridgeUp ? 'Bridge: running' : (managingBridge ? 'Bridge: starting' : 'Bridge: stopped'),
               ),
             ],
           ),
@@ -2325,25 +3122,19 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 runSpacing: 8,
                 children: [
                   ElevatedButton.icon(
-                    onPressed: (_ollamaBusy || !OllamaManager.instance.supportsUiInstall)
-                        ? null
-                        : _installOllamaBinary,
+                    onPressed: (_ollamaBusy || !OllamaManager.instance.supportsUiInstall) ? null : _installOllamaBinary,
                     icon: const Icon(Icons.download_outlined, size: 14),
                     label: Text(
-                      OllamaManager.instance.supportsUiInstall
-                          ? 'Install Ollama'
-                          : 'UI install unavailable',
+                      OllamaManager.instance.supportsUiInstall ? 'Install Ollama' : 'UI install unavailable',
                     ),
                   ),
                   OutlinedButton.icon(
                     onPressed: () async {
-                      await Clipboard.setData(const ClipboardData(
-                          text: 'https://ollama.com/download'));
+                      await Clipboard.setData(const ClipboardData(text: 'https://ollama.com/download'));
                       if (!mounted) return;
                       ScaffoldMessenger.of(context).showSnackBar(
                         const SnackBar(
-                          content: Text(
-                              'Download URL copied: https://ollama.com/download'),
+                          content: Text('Download URL copied: https://ollama.com/download'),
                         ),
                       );
                     },
@@ -2374,37 +3165,27 @@ class _SettingsScreenState extends State<SettingsScreen> {
             runSpacing: 8,
             children: [
               ElevatedButton.icon(
-                onPressed: (_ollamaPythonBusy || !hasPython)
-                    ? null
-                    : _installOllamaPythonPackage,
+                onPressed: (_ollamaPythonBusy || !hasPython) ? null : _installOllamaPythonPackage,
                 icon: const Icon(Icons.download_outlined, size: 16),
                 label: const Text('Install Python package'),
               ),
               ElevatedButton.icon(
-                onPressed: (_ollamaBusy || !hasBinary || serverUp)
-                    ? null
-                    : _startOllamaServer,
+                onPressed: (_ollamaBusy || !hasBinary || serverUp) ? null : _startOllamaServer,
                 icon: const Icon(Icons.play_arrow, size: 16),
                 label: const Text('Start Ollama daemon'),
               ),
               ElevatedButton.icon(
-                onPressed: (_ollamaPythonBusy || !hasPackage || bridgeUp)
-                    ? null
-                    : _startOllamaPythonBridge,
+                onPressed: (_ollamaPythonBusy || !hasPackage || bridgeUp) ? null : _startOllamaPythonBridge,
                 icon: const Icon(Icons.play_circle_outline, size: 16),
                 label: const Text('Start Python bridge'),
               ),
               OutlinedButton.icon(
-                onPressed: (_ollamaPythonBusy || !managingBridge)
-                    ? null
-                    : _stopOllamaPythonBridge,
+                onPressed: (_ollamaPythonBusy || !managingBridge) ? null : _stopOllamaPythonBridge,
                 icon: const Icon(Icons.stop, size: 16),
                 label: const Text('Stop bridge'),
               ),
               OutlinedButton.icon(
-                onPressed: (_ollamaBusy || !OllamaManager.instance.isManagingProcess)
-                    ? null
-                    : _stopOllamaServer,
+                onPressed: (_ollamaBusy || !OllamaManager.instance.isManagingProcess) ? null : _stopOllamaServer,
                 icon: const Icon(Icons.stop_circle_outlined, size: 16),
                 label: const Text('Stop daemon'),
               ),
@@ -2435,6 +3216,45 @@ class _SettingsScreenState extends State<SettingsScreen> {
     );
   }
 
+  /// Compact list of installed Ollama models, each with a delete button.
+  /// [canModify] is false when the daemon is unreachable — the delete icon
+  /// is then disabled so users don't hit an inevitable error.
+  Widget _installedModelsList({required bool canModify}) {
+    if (_ollamaInstalledModels.isEmpty) return const SizedBox.shrink();
+    return Wrap(
+      spacing: 6,
+      runSpacing: 6,
+      children: _ollamaInstalledModels.map((m) {
+        return Container(
+          padding: const EdgeInsets.only(left: 10, right: 4, top: 2, bottom: 2),
+          decoration: BoxDecoration(
+            border: Border.all(color: AppTheme.border),
+            borderRadius: BorderRadius.circular(14),
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(m, style: const TextStyle(fontSize: 12)),
+              const SizedBox(width: 4),
+              InkWell(
+                onTap: (_ollamaBusy || !canModify) ? null : () => _deleteOllamaModel(m),
+                borderRadius: BorderRadius.circular(12),
+                child: Padding(
+                  padding: const EdgeInsets.all(4),
+                  child: Icon(
+                    Icons.close,
+                    size: 14,
+                    color: (_ollamaBusy || !canModify) ? AppTheme.textMuted : AppTheme.danger,
+                  ),
+                ),
+              ),
+            ],
+          ),
+        );
+      }).toList(),
+    );
+  }
+
   Widget _ollamaDefaultModelPicker() {
     if (_ollamaInstalledModels.isEmpty) {
       return Container(
@@ -2454,16 +3274,13 @@ class _SettingsScreenState extends State<SettingsScreen> {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
       decoration: BoxDecoration(
-        color: Colors.white,
         border: Border.all(color: AppTheme.border),
         borderRadius: BorderRadius.circular(10),
       ),
       child: DropdownButtonHideUnderline(
         child: DropdownButton<String>(
           isExpanded: true,
-          value: _ollamaInstalledModels.contains(_ollamaSelectedModel)
-              ? _ollamaSelectedModel
-              : null,
+          value: _ollamaInstalledModels.contains(_ollamaSelectedModel) ? _ollamaSelectedModel : null,
           hint: const Text('Select default Ollama model'),
           items: _ollamaInstalledModels
               .map((m) => DropdownMenuItem<String>(
@@ -2497,7 +3314,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
             '(e.g. `llama3`, `qwen2.5-coder:7b`, `gemma:2b`).',
             style: TextStyle(color: AppTheme.textMuted, fontSize: 12.5),
           )
-        else
+        else ...[
           Container(
             padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
             decoration: BoxDecoration(
@@ -2508,9 +3325,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
             child: DropdownButtonHideUnderline(
               child: DropdownButton<String>(
                 isExpanded: true,
-                value: _ollamaInstalledModels.contains(_ollamaSelectedModel)
-                    ? _ollamaSelectedModel
-                    : null,
+                value: _ollamaInstalledModels.contains(_ollamaSelectedModel) ? _ollamaSelectedModel : null,
                 hint: const Text('Select model to use in chat'),
                 items: _ollamaInstalledModels
                     .map((m) => DropdownMenuItem<String>(
@@ -2524,6 +3339,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
               ),
             ),
           ),
+          const SizedBox(height: 8),
+          _installedModelsList(canModify: canPull),
+        ],
         const SizedBox(height: 14),
         Row(
           children: [
@@ -2557,7 +3375,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
       decoration: BoxDecoration(
         color: Colors.white,
-        border: Border.all(color: ok ? Colors.green : AppTheme.border),
+        border: Border.all(color: ok ? AppTheme.accentMarrone : AppTheme.border),
         borderRadius: BorderRadius.circular(999),
       ),
       child: Text(
@@ -2565,7 +3383,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
         style: TextStyle(
           fontSize: 12,
           fontWeight: FontWeight.w600,
-          color: ok ? Colors.green[700] : AppTheme.textMuted,
+          color: ok ? AppTheme.accentMarrone : AppTheme.textMuted,
         ),
       ),
     );
@@ -2605,7 +3423,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
       margin: const EdgeInsets.symmetric(vertical: 4),
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
       decoration: BoxDecoration(
-        color: selected ? AppTheme.bgSecondary : Colors.white,
         border: Border.all(
           color: selected ? AppTheme.accent.withOpacity(0.4) : AppTheme.border,
         ),
@@ -2699,6 +3516,55 @@ class _SettingsScreenState extends State<SettingsScreen> {
         const SizedBox(height: 10),
         child,
       ],
+    );
+  }
+
+  Future<void> _startOpenRouterOrchestrator() async {
+    if (_orchestratorBusy) return;
+    final apiKey = _openRouterApiKeyController.text.trim();
+    final envOpenRouterKey = Platform.environment['OPENROUTER_API_KEY'] ?? '';
+    if (apiKey.isEmpty && envOpenRouterKey.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Save the OpenRouter API key first.')),
+      );
+      return;
+    }
+    final model = _openRouterSelectedModel ?? OpenRouterService.fallbackModels.first;
+
+    if (OrchestratorManager.instance.isRunning && OrchestratorManager.instance.currentBackend != OrchestratorBackend.openrouter) {
+      await OrchestratorManager.instance.stop();
+    }
+
+    setState(() {
+      _orchestratorBusy = true;
+      _orchestratorLog.clear();
+    });
+    _appendLog('Starting OpenRouter orchestrator (model: $model)...');
+
+    final temperature = _openRouterTemperature;
+    final maxTokens = int.tryParse(_openRouterMaxTokensController.text.trim()) ?? BackendSettingsRepository.defaultOpenRouterMaxTokens;
+
+    final started = await OrchestratorManager.instance.start(
+      backend: OrchestratorBackend.openrouter,
+      modelId: model,
+      openRouterApiKey: apiKey,
+      temperature: temperature,
+      maxTokens: maxTokens,
+    );
+    final stderr = OrchestratorManager.instance.stderrLog;
+    if (stderr.isNotEmpty) {
+      for (final l in const LineSplitter().convert(stderr)) {
+        _appendLog(l);
+      }
+    }
+    _appendLog(started ? 'OpenRouter orchestrator running.' : 'Failed to start OpenRouter orchestrator.');
+    if (!mounted) return;
+    setState(() => _orchestratorBusy = false);
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(started ? 'OpenRouter orchestrator running' : 'Failed to start — check log'),
+        backgroundColor: started ? AppTheme.accentMarrone : AppTheme.danger,
+      ),
     );
   }
 }
