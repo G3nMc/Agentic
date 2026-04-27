@@ -24,9 +24,10 @@ chew through quota indefinitely.
 """
 from __future__ import annotations
 
+import json
 import sys
 import uuid
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from .agent_config import build_agents, SecretsResolver
 from .state import (ROUTE_REASONING, ROUTE_TRIVIAL, WorkflowState)
@@ -38,7 +39,7 @@ class Workflow:
     """Multi-agent dispatcher. Drop-in replacement for ``Orchestrator.run()``."""
 
     def __init__(self, agents: Dict[str, Any], tool_registry: ToolRegistry,
-                 *, max_iterations: int = 8 * 3,
+                 *, max_iterations: int = 200,
                  max_history_turns: int = 6):
         self.agents = agents
         self.tool_registry = tool_registry
@@ -161,6 +162,12 @@ class Workflow:
         reasoner = self.agents["reasoner"]  # required (validated at build time)
         executor = self.agents.get("executor")
 
+        # Tracks (tool, params) of the most recent failed call so we can
+        # break out when a weak Reasoner gets stuck re-issuing the same
+        # broken request (the classic gemma-style infinite loop).
+        last_failed_sig: Optional[str] = None
+        consecutive_identical_failures = 0
+
         for iteration in range(self.max_iterations):
             try:
                 reasoner.run(state)
@@ -177,12 +184,40 @@ class Workflow:
                     )
                     state.add_trace("workflow", output="(executor missing)")
                     break
+
+                # Detect identical-failed-call loops before spending another
+                # tool execution + Reasoner turn on a request we already
+                # know the model can't formulate correctly.
+                pending_sig = self._calls_signature(state.tool_calls)
+                if (pending_sig and pending_sig == last_failed_sig):
+                    consecutive_identical_failures += 1
+                    if consecutive_identical_failures >= 2:
+                        state.final_answer = (
+                            "Reasoner kept repeating the same failing tool "
+                            "call (parameters likely missing or malformed). "
+                            "Switch to a stronger Reasoner model (e.g. "
+                            "gemini-2.5-pro or qwen3-coder:480b-cloud) and "
+                            "lower its temperature."
+                        )
+                        state.add_trace("workflow",
+                                        output="(stuck on identical call)")
+                        break
+
                 try:
                     executor.run(state)
                 except Exception as e:  # noqa: BLE001
                     print(f"[workflow] executor crashed: {e}", file=sys.stderr)
                     state.final_answer = f"Executor error: {e}"
                     break
+
+                # If the latest tool results errored out, remember the
+                # signature for next iteration's comparison; otherwise reset
+                # so a different broken call has its own retry budget.
+                if self._latest_results_errored(state):
+                    last_failed_sig = pending_sig
+                else:
+                    last_failed_sig = None
+                    consecutive_identical_failures = 0
                 # Loop back to the reasoner with the fresh tool results.
                 continue
 
@@ -200,6 +235,41 @@ class Workflow:
                 state.add_trace("workflow", output="(max iterations)")
 
         return self._finalize(state, user_input)
+
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _calls_signature(calls: List[Dict[str, Any]]) -> str:
+        """Stable string representing a list of tool calls for loop-detection."""
+        try:
+            return json.dumps(
+                [{"t": c.get("tool"), "p": c.get("parameters") or {}}
+                 for c in calls],
+                sort_keys=True, ensure_ascii=False,
+            )
+        except Exception:  # noqa: BLE001
+            return repr(calls)
+
+    @staticmethod
+    def _latest_results_errored(state: WorkflowState) -> bool:
+        """Return True if the most recent batch of tool results contains an error."""
+        if not state.tool_results:
+            return False
+        # Executor accumulates across iterations now; the *most recent* batch
+        # we just appended is whatever's at the tail. Conservative check: if
+        # ANY of the trailing entries has an error-shaped payload, treat the
+        # batch as failed.
+        for r in reversed(state.tool_results):
+            raw = r.get("result", "")
+            if not raw:
+                continue
+            lower = raw.lower() if isinstance(raw, str) else ""
+            if '"status": "error"' in lower or '"status":"error"' in lower:
+                return True
+            # Stop scanning once we hit a successful-looking entry — earlier
+            # ones belong to prior iterations.
+            if '"status": "success"' in lower or '"status":"success"' in lower:
+                return False
+        return False
 
     # ------------------------------------------------------------------
     def _finalize(self, state: WorkflowState, user_input: str) -> Dict[str, Any]:

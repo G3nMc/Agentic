@@ -31,6 +31,8 @@ class _SidebarState extends StateManager<Sidebar> {
   List<Conversation> _conversations = [];
   bool _loading = true;
   LlmBackend? _activeBackend;
+  List<WorkflowGroup> _workflowGroups = [];
+  String _activeGroupId = '';
 
   @override
   void initState() {
@@ -39,6 +41,22 @@ class _SidebarState extends StateManager<Sidebar> {
     // once the active backend is known, so the list is filtered correctly
     // from the start.
     _loadActiveBackend();
+    _loadWorkflowGroups();
+    AgentRoleSettingsRepository.instance.activeGroupNotifier.addListener(_onActiveGroupChanged);
+  }
+
+  void _onActiveGroupChanged() {
+    _loadWorkflowGroups();
+  }
+
+  Future<void> _loadWorkflowGroups() async {
+    final groups = await AgentRoleSettingsRepository.instance.listGroups();
+    final activeGroupId = await AgentRoleSettingsRepository.instance.getActiveGroupId();
+    if (!mounted) return;
+    setState(() {
+      _workflowGroups = groups;
+      _activeGroupId = activeGroupId;
+    });
   }
 
   Future<void> _loadActiveBackend() async {
@@ -283,27 +301,45 @@ class _SidebarState extends StateManager<Sidebar> {
                         .instance.enabledNotifier,
                     builder: (ctx, multiAgent, _) {
                       if (multiAgent) {
-                        // Hide the per-conversation backend picker; the
-                        // workflow's roles each pick their own provider in
-                        // Settings → Workflow Agents. A static label keeps
-                        // the row's height/style identical to the dropdown
-                        // so the layout doesn't jump.
-                        return const Center(
-                          child: Row(
-                            mainAxisSize: MainAxisSize.min,
-                            children: [
-                              Icon(Icons.account_tree_outlined,
-                                  size: 16, color: AppTheme.accent),
-                              SizedBox(width: 6),
-                              Text(
-                                'Multi Agent',
-                                style: TextStyle(
-                                  fontSize: 13,
-                                  fontWeight: FontWeight.w600,
-                                  color: AppTheme.textPrimary,
-                                ),
+                        // Show workflow group dropdown instead of static label.
+                        // Same options as in Settings → Workflow Agents, but
+                        // read-only (no save/edit/delete here).
+                        final activeGroup = _workflowGroups.firstWhere(
+                          (g) => g.id == _activeGroupId,
+                          orElse: () => _workflowGroups.isNotEmpty ? _workflowGroups.first : const WorkflowGroup(id: '', title: 'Default', roles: {}),
+                        );
+                        return DropdownButtonHideUnderline(
+                          child: DropdownButton<WorkflowGroup>(
+                            isExpanded: true,
+                            isDense: true,
+                            value: _workflowGroups.isNotEmpty ? activeGroup : null,
+                            hint: const Text(
+                              'Workflow',
+                              style: TextStyle(
+                                fontSize: 13,
+                                fontWeight: FontWeight.w600,
+                                color: AppTheme.textPrimary,
                               ),
+                            ),
+                            style: const TextStyle(
+                              fontSize: 13,
+                              fontWeight: FontWeight.w600,
+                              color: AppTheme.textPrimary,
+                            ),
+                            icon: const Icon(Icons.account_tree_outlined, size: 16, color: AppTheme.accent),
+                            items: [
+                              for (final group in _workflowGroups)
+                                DropdownMenuItem(
+                                  value: group,
+                                  child: Text(group.title, overflow: TextOverflow.ellipsis),
+                                ),
                             ],
+                            onChanged: (group) async {
+                              if (group == null) return;
+                              await AgentRoleSettingsRepository.instance.setActiveGroupId(group.id);
+                              if (!mounted) return;
+                              setState(() => _activeGroupId = group.id);
+                            },
                           ),
                         );
                       }

@@ -32,6 +32,8 @@ class AgentWorkflowSettings extends StatefulWidget {
 class _AgentWorkflowSettingsState extends State<AgentWorkflowSettings> {
   bool _loading = true;
   bool _enabled = false;
+  List<WorkflowGroup> _groups = [];
+  String _activeGroupId = '';
 
   // The aggregate — single source of truth for the form.
   WorkflowAgents _agents = WorkflowAgents({});
@@ -44,12 +46,14 @@ class _AgentWorkflowSettingsState extends State<AgentWorkflowSettings> {
 
   // Per-role debounce timers — coalesce rapid edits into a single save.
   final Map<String, Timer> _saveTimers = {};
+
   // Per-role transient state for save-feedback indicator.
   final Map<String, _SaveState> _saveState = {};
 
   // Per-(backend,model-input) cached model list. Refreshes only on user
   // request via the refresh button — never auto-fetched.
   final Map<String, List<String>> _modelsCache = {};
+
   // Per-role flag while a fetch is in-flight (drives the spinner).
   final Map<String, bool> _modelsLoading = {};
 
@@ -63,6 +67,7 @@ class _AgentWorkflowSettingsState extends State<AgentWorkflowSettings> {
       _ollamaUrlCtrls[r] = TextEditingController();
     }
     _load();
+    AgentRoleSettingsRepository.instance.activeGroupNotifier.addListener(_onActiveGroupChanged);
   }
 
   @override
@@ -88,16 +93,19 @@ class _AgentWorkflowSettingsState extends State<AgentWorkflowSettings> {
   // ─── Load / save plumbing ────────────────────────────────────────────────
   Future<void> _load() async {
     final enabled = await AgentRoleSettingsRepository.instance.isEnabled();
-    final agents = await WorkflowAgents.load();
+    final groups = await AgentRoleSettingsRepository.instance.listGroups();
+    final activeGroupId = await AgentRoleSettingsRepository.instance.getActiveGroupId();
+    final agents = await WorkflowAgents.loadGroup(activeGroupId);
     // Gemini is the only backend with a *user-editable* saved list (in the
     // Gemini Settings panel the user can add e.g. gemma4). Read it here so
     // the role's model dropdown shows the same options the dedicated panel
     // does, not just the hardcoded defaults.
-    final geminiSaved =
-        await BackendSettingsRepository.instance.getGeminiModels();
+    final geminiSaved = await BackendSettingsRepository.instance.getGeminiModels();
     if (!mounted) return;
     setState(() {
       _enabled = enabled;
+      _groups = groups;
+      _activeGroupId = activeGroupId;
       _agents = agents;
       if (geminiSaved.isNotEmpty) _modelsCache['gemini'] = geminiSaved;
       for (final r in AgentRoleSettingsRepository.roles) {
@@ -156,6 +164,108 @@ class _AgentWorkflowSettingsState extends State<AgentWorkflowSettings> {
     );
   }
 
+  Future<void> _addGroup() async {
+    final name = await showDialog<String>(
+      context: context,
+      builder: (context) => const _GroupNameDialog(
+        title: 'New Workflow Group',
+        hint: 'e.g., "Python Specialists" or "Logic/Analysis"',
+      ),
+    );
+    if (name == null || name.trim().isEmpty) return;
+    final group = await AgentRoleSettingsRepository.instance.addGroup(
+      title: name.trim(),
+      seedFromGroupId: _activeGroupId,
+    );
+    await _load();
+    await AgentRoleSettingsRepository.instance.setActiveGroupId(group.id);
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text('Created group "${group.title}"')),
+    );
+  }
+
+  Future<void> _renameGroup() async {
+    final group = _groups.firstWhere((g) => g.id == _activeGroupId);
+    final name = await showDialog<String>(
+      context: context,
+      builder: (context) => _GroupNameDialog(
+        title: 'Rename Group',
+        hint: 'New name for "${group.title}"',
+        initialValue: group.title,
+      ),
+    );
+    if (name == null || name.trim().isEmpty) return;
+    await AgentRoleSettingsRepository.instance.renameGroup(_activeGroupId, name.trim());
+    await _load();
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text('Renamed group to "$name"')),
+    );
+  }
+
+  Future<void> _deleteGroup() async {
+    if (_groups.length <= 1) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Cannot delete the last remaining group')),
+      );
+      return;
+    }
+    final group = _groups.firstWhere((g) => g.id == _activeGroupId);
+    final confirm = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Delete Group'),
+        content: Text('Delete "${group.title}" and all its configurations?'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('Cancel'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(true),
+            child: const Text('Delete', style: TextStyle(color: Colors.red)),
+          ),
+        ],
+      ),
+    );
+    if (confirm != true) return;
+    final removed = await AgentRoleSettingsRepository.instance.removeGroup(_activeGroupId);
+    if (!removed) return;
+    await _load();
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text('Deleted group "${group.title}"')),
+    );
+  }
+
+  Future<void> _duplicateGroup() async {
+    final group = _groups.firstWhere((g) => g.id == _activeGroupId);
+    final name = await showDialog<String>(
+      context: context,
+      builder: (context) => _GroupNameDialog(
+        title: 'Duplicate Group',
+        hint: 'Name for the copy of "${group.title}"',
+        initialValue: '${group.title} (Copy)',
+      ),
+    );
+    if (name == null || name.trim().isEmpty) return;
+    final newGroup = await AgentRoleSettingsRepository.instance.addGroup(
+      title: name.trim(),
+      seedFromGroupId: _activeGroupId,
+    );
+    await _load();
+    await AgentRoleSettingsRepository.instance.setActiveGroupId(newGroup.id);
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text('Duplicated group as "$name"')),
+    );
+  }
+
+  void _onActiveGroupChanged() {
+    _load();
+  }
+
   // ─── Live model list fetching ────────────────────────────────────────────
   String _cacheKey(String backend, String role) {
     final cfg = _agents.get(role);
@@ -185,9 +295,7 @@ class _AgentWorkflowSettingsState extends State<AgentWorkflowSettings> {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text(list.isEmpty
-                ? 'No models returned for $backend (using suggestions).'
-                : 'Loaded ${list.length} $backend models.'),
+            content: Text(list.isEmpty ? 'No models returned for $backend (using suggestions).' : 'Loaded ${list.length} $backend models.'),
             duration: const Duration(milliseconds: 1400),
           ),
         );
@@ -218,12 +326,9 @@ class _AgentWorkflowSettingsState extends State<AgentWorkflowSettings> {
         return GithubModelsService.instance.listModels(key);
       case 'ollama':
         final cfg = _agents.get(role);
-        final url = (cfg.ollamaBaseUrl?.isNotEmpty ?? false)
-            ? cfg.ollamaBaseUrl!
-            : 'http://localhost:11434';
+        final url = (cfg.ollamaBaseUrl?.isNotEmpty ?? false) ? cfg.ollamaBaseUrl! : 'http://localhost:11434';
         final apiKey = await settings.getOllamaApiKey() ?? '';
-        return OllamaService.instance
-            .listInstalledModels(baseUrl: url, apiKey: apiKey);
+        return OllamaService.instance.listInstalledModels(baseUrl: url, apiKey: apiKey);
       case 'gemini':
         // Pull from the same persisted list the Gemini Settings panel
         // edits, so user-added models (e.g. gemma4) show up here too.
@@ -253,6 +358,8 @@ class _AgentWorkflowSettingsState extends State<AgentWorkflowSettings> {
               _header(),
               const SizedBox(height: 16),
               _enableSwitch(),
+              const SizedBox(height: 16),
+              _groupManagementControls(),
               const SizedBox(height: 24),
               for (final role in AgentRoleSettingsRepository.roles) ...[
                 _roleCard(role),
@@ -341,6 +448,99 @@ class _AgentWorkflowSettingsState extends State<AgentWorkflowSettings> {
           ),
         ],
       ),
+    );
+  }
+
+  Widget _groupManagementControls() {
+    final activeGroup = _groups.firstWhere((g) => g.id == _activeGroupId);
+    return Container(
+      decoration: BoxDecoration(
+        border: Border.all(color: AppTheme.border),
+        borderRadius: BorderRadius.circular(10),
+      ),
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Row(
+            children: [
+              const Icon(Icons.layers_outlined, size: 18, color: AppTheme.accent),
+              const SizedBox(width: 8),
+              const Text(
+                'Workflow Group',
+                style: TextStyle(
+                  fontSize: 14,
+                  fontWeight: FontWeight.w600,
+                  color: AppTheme.textPrimary,
+                ),
+              ),
+              const SizedBox(width: 6),
+              Expanded(
+                child: Text(
+                  'Active: ${activeGroup.title}',
+                  style: const TextStyle(
+                    fontSize: 12,
+                    color: AppTheme.textMuted,
+                  ),
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          Row(
+            children: [
+              Expanded(
+                child: _groupDropdown(),
+              ),
+              const SizedBox(width: 8),
+              IconButton(
+                tooltip: 'Create new group',
+                icon: const Icon(Icons.add_circle_outline, size: 20),
+                onPressed: _addGroup,
+              ),
+              IconButton(
+                tooltip: 'Rename current group',
+                icon: const Icon(Icons.edit_outlined, size: 20),
+                onPressed: _renameGroup,
+              ),
+              IconButton(
+                tooltip: 'Duplicate current group',
+                icon: const Icon(Icons.copy_outlined, size: 20),
+                onPressed: _duplicateGroup,
+              ),
+              IconButton(
+                tooltip: 'Delete current group',
+                icon: const Icon(Icons.delete_outline, size: 20, color: AppTheme.danger),
+                onPressed: _deleteGroup,
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _groupDropdown() {
+    return DropdownButtonFormField<WorkflowGroup>(
+      initialValue: _groups.firstWhere((g) => g.id == _activeGroupId),
+      decoration: const InputDecoration(
+        labelText: 'Switch group',
+        border: OutlineInputBorder(),
+        isDense: true,
+      ),
+      items: [
+        for (final group in _groups)
+          DropdownMenuItem(
+            value: group,
+            child: Text(group.title),
+          ),
+      ],
+      onChanged: (group) async {
+        if (group == null) return;
+        await AgentRoleSettingsRepository.instance.setActiveGroupId(group.id);
+        await _load();
+      },
     );
   }
 
@@ -444,8 +644,7 @@ class _AgentWorkflowSettingsState extends State<AgentWorkflowSettings> {
         isDense: true,
       ),
       items: [
-        for (final b in AgentRoleSettingsRepository.supportedBackends)
-          DropdownMenuItem(value: b, child: Text(b)),
+        for (final b in AgentRoleSettingsRepository.supportedBackends) DropdownMenuItem(value: b, child: Text(b)),
       ],
       onChanged: (v) async {
         if (v == null) return;
@@ -487,8 +686,7 @@ class _AgentWorkflowSettingsState extends State<AgentWorkflowSettings> {
               isDense: true,
             ),
             items: [
-              for (final m in items)
-                DropdownMenuItem(value: m, child: Text(m, overflow: TextOverflow.ellipsis)),
+              for (final m in items) DropdownMenuItem(value: m, child: Text(m, overflow: TextOverflow.ellipsis)),
             ],
             onChanged: (v) async {
               if (v == null) return;
@@ -528,8 +726,7 @@ class _AgentWorkflowSettingsState extends State<AgentWorkflowSettings> {
         ),
         onChanged: (v) {
           final cfg = _agents.get(role);
-          setState(() => _agents.put(
-              role, cfg.copyWith(ollamaBaseUrl: v.trim().isEmpty ? null : v.trim())));
+          setState(() => _agents.put(role, cfg.copyWith(ollamaBaseUrl: v.trim().isEmpty ? null : v.trim())));
           _scheduleSave(role);
         },
       ),
@@ -651,6 +848,68 @@ class _AgentWorkflowSettingsState extends State<AgentWorkflowSettings> {
 }
 
 enum _SaveState { idle, dirty, saving, saved, error }
+
+/// Dialog for entering a workflow group name.
+class _GroupNameDialog extends StatefulWidget {
+  final String title;
+  final String hint;
+  final String? initialValue;
+
+  const _GroupNameDialog({
+    required this.title,
+    required this.hint,
+    this.initialValue,
+  });
+
+  @override
+  State<_GroupNameDialog> createState() => _GroupNameDialogState();
+}
+
+class _GroupNameDialogState extends State<_GroupNameDialog> {
+  late TextEditingController _controller;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = TextEditingController(text: widget.initialValue ?? '');
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: Text(widget.title),
+      content: TextField(
+        controller: _controller,
+        decoration: InputDecoration(
+          hintText: widget.hint,
+          border: const OutlineInputBorder(),
+        ),
+        autofocus: true,
+        onSubmitted: (_) => _submit(),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('Cancel'),
+        ),
+        FilledButton(
+          onPressed: _submit,
+          child: const Text('OK'),
+        ),
+      ],
+    );
+  }
+
+  void _submit() {
+    Navigator.of(context).pop(_controller.text.trim());
+  }
+}
 
 // Silence unused-import lint when SettingsRepository helpers aren't needed
 // directly by this file but are used via repositories.

@@ -17,7 +17,7 @@ import sys
 from typing import Any, Dict, Optional
 
 from ..core.state import WorkflowState
-from .base import Agent
+from .base import Agent, _truncate
 
 _EXECUTOR_SYSTEM_PROMPT = (
     "You are a concise conversational assistant. The user is making small "
@@ -54,6 +54,11 @@ class ExecutorAgent(Agent):
             state.add_trace(self.name, output="(no tool calls)")
             return state
 
+        # Log input to stderr
+        tool_calls_str = " ".join([f"{c.get('tool')} {c.get('parameters')}" for c in state.tool_calls])
+        print(f"[agent:{self.name}→{self.model_id}] Tool calls: {_truncate(tool_calls_str)}",
+              file=sys.stderr, flush=True)
+
         results: list[dict] = []
         previews: list[str] = []
         for call in state.tool_calls:
@@ -66,11 +71,22 @@ class ExecutorAgent(Agent):
             results.append({"tool": tool, "parameters": params, "result": raw})
             previews.append(self._preview(tool, raw))
 
-        state.tool_results = results
+        # Accumulate across iterations so the Reasoner sees the full history
+        # of what it tried this turn — critical for weak/non-tool-tuned models
+        # that would otherwise re-issue the same broken call indefinitely.
+        if state.tool_results:
+            state.tool_results = [*state.tool_results, *results]
+        else:
+            state.tool_results = results
         state.tool_calls = []  # consumed — dispatcher will hand back to Reasoner.
         state.add_trace(self.name,
                         output=" | ".join(previews)[:200],
                         detail=json.dumps(results, indent=2))
+
+        # Log output to stderr
+        print(f"[agent:{self.name}←{self.model_id}] Tool results: {_truncate(' | '.join(previews))}",
+              file=sys.stderr, flush=True)
+
         return state
 
     # ------------------------------------------------------------------

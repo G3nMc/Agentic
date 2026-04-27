@@ -13,6 +13,7 @@ existing :mod:`agent.loop.tool_dispatch` parser keeps working unchanged.
 """
 from __future__ import annotations
 
+import json
 import sys
 from typing import Any, Dict, List, Optional
 
@@ -117,11 +118,24 @@ class ReasonerAgent(Agent):
             parts.append(state.user_input)
 
         if state.tool_results:
-            parts.append("\n[Tool results from this turn]")
-            for r in state.tool_results:
+            parts.append("\n[Tool calls + results so far this turn]")
+            for i, r in enumerate(state.tool_results, 1):
                 tool = r.get("tool", "?")
+                # Surface the parameters the model used — without them, the
+                # Reasoner can't tell why a call failed and tends to re-issue
+                # the exact same broken request.
+                params = r.get("parameters") or {}
+                try:
+                    params_str = json.dumps(params, ensure_ascii=False)
+                except Exception:  # noqa: BLE001
+                    params_str = str(params)
                 result = r.get("result", "")
-                parts.append(f"- {tool}: {result}")
-            parts.append("[End of tool results]\n"
-                         "Decide: call another tool, or give the final answer.")
+                parts.append(f"{i}. {tool}({params_str}) -> {result}")
+            parts.append(
+                "[End of tool history]\n"
+                "If a previous call failed, READ THE ERROR and either fix the "
+                "parameters or pick a different tool — do NOT repeat an "
+                "identical failing call. When you have enough information, "
+                "give the final answer in plain text without any <tool> tag."
+            )
         return "\n".join(parts)

@@ -74,11 +74,7 @@ class RouterAgent(Agent):
                             detail="rule-match (no LLM call)")
             return state
         lowered = text.lower()
-        if any(m in lowered for m in _TOOL_MARKERS):
-            state.route = ROUTE_TOOL
-            state.add_trace(self.name, output=ROUTE_TOOL,
-                            detail="rule-match (no LLM call)")
-            return state
+        # Tool markers removed to ensure LLM classification
 
         # Tier 2: cheap classifier.
         try:
