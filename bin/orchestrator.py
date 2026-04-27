@@ -54,6 +54,7 @@ import json
 from agent.backends import RateLimitedBackend, build_backend
 from agent.backends.gemini import GeminiBackend
 from agent.backends.ollama import OllamaBackend
+from agent.core.workflow import build_workflow_from_args
 from agent.loop import Orchestrator
 from agent.policy import SecurityConfig
 from agent.utils.bootstrap import (
@@ -220,12 +221,75 @@ def main():
             "accept. Requests exceeding this limit are rejected. Default: 10."
         ),
     )
+    parser.add_argument(
+        "--multi-agent",
+        action="store_true",
+        help=(
+            "Enable the multi-agent workflow (router/shaper/reasoner/executor). "
+            "Requires --agent-config pointing at a JSON file mapping each role "
+            "to a backend+model. Falls back to the single-agent loop when off."
+        ),
+    )
+    parser.add_argument(
+        "--agent-config",
+        default="",
+        metavar="PATH",
+        help=(
+            "Path to the JSON file describing per-role backend/model assignments "
+            "(written by the Flutter Settings UI). Required when --multi-agent "
+            "is set."
+        ),
+    )
 
     args = parser.parse_args()
 
     if args.install_deps:
         ok = install_dependencies(verbose=True)
         sys.exit(0 if ok else 1)
+
+    audit_log_path = (args.audit_log or "").strip()
+    security_config = SecurityConfig(
+        sandbox_mode=args.sandbox,
+        max_file_size_bytes=int(args.max_file_size_mb * 1024 * 1024),
+        enable_audit_log=bool(audit_log_path),
+        audit_log_path=audit_log_path or "orchestrator_audit.log",
+    )
+    if args.sandbox:
+        print("[orch] SANDBOX MODE: write/delete/run_command are disabled.",
+              file=sys.stderr)
+    if security_config.enable_audit_log:
+        print(f"[orch] Audit logging enabled -> {security_config.audit_log_path}",
+              file=sys.stderr)
+
+    # ------------------------------------------------------------------
+    # Multi-agent path: read agents.json, build Workflow, drive the loop.
+    # The single-agent path below stays untouched as a fallback.
+    # ------------------------------------------------------------------
+    if args.multi_agent:
+        if not args.agent_config:
+            print("[orch] --multi-agent requires --agent-config <path>.",
+                  file=sys.stderr)
+            sys.exit(2)
+        try:
+            workflow = build_workflow_from_args(
+                args,
+                security_config=security_config,
+                base_path=args.base_path,
+            )
+        except Exception as e:  # noqa: BLE001
+            print(f"[orch] Failed to build multi-agent workflow: {e}",
+                  file=sys.stderr)
+            sys.exit(2)
+        print(
+            f"[orch] Multi-agent workflow ready. "
+            f"Roles configured: {sorted(workflow.agents.keys())}",
+            file=sys.stderr,
+        )
+        if args.interactive:
+            _run_interactive_workflow(workflow)
+        else:
+            _run_oneshot_workflow(workflow)
+        return
 
     # Backend-specific dependency checks keep the startup error focused on
     # the backend the user actually selected.
@@ -251,20 +315,6 @@ def main():
         f"Model: {args.model}",
         file=sys.stderr,
     )
-
-    audit_log_path = (args.audit_log or "").strip()
-    security_config = SecurityConfig(
-        sandbox_mode=args.sandbox,
-        max_file_size_bytes=int(args.max_file_size_mb * 1024 * 1024),
-        enable_audit_log=bool(audit_log_path),
-        audit_log_path=audit_log_path or "orchestrator_audit.log",
-    )
-    if args.sandbox:
-        print("[orch] SANDBOX MODE: write/delete/run_command are disabled.",
-              file=sys.stderr)
-    if security_config.enable_audit_log:
-        print(f"[orch] Audit logging enabled -> {security_config.audit_log_path}",
-              file=sys.stderr)
 
     orchestrator = Orchestrator(
         backend=backend,
@@ -444,6 +494,47 @@ def _run_oneshot(orchestrator: Orchestrator) -> None:
     if prompt:
         response = orchestrator.run(prompt)
         print(response)
+        print(RESPONSE_SENTINEL)
+
+
+# ---------------------------------------------------------------------------
+# Multi-agent flavours of the interactive / one-shot loops.
+# Same protocol, but the response payload also carries a ``trace`` array.
+# ---------------------------------------------------------------------------
+def _run_interactive_workflow(workflow) -> None:
+    print("__READY__")
+    sys.stdout.flush()
+    try:
+        while True:
+            req = read_interactive_request(sys.stdin)
+            if req is None:
+                break
+            if req.get("new_session"):
+                workflow.reset()
+                history = req.get("history") or []
+                if isinstance(history, list):
+                    workflow.import_history(history)
+            prompt = (req.get("prompt") or "").strip()
+            if not prompt:
+                print(RESPONSE_SENTINEL)
+                sys.stdout.flush()
+                continue
+            try:
+                payload = workflow.run(prompt)
+            except Exception as e:  # noqa: BLE001
+                payload = {"response": f"Error: {e}", "trace": []}
+            print(json.dumps(payload))
+            print(RESPONSE_SENTINEL)
+            sys.stdout.flush()
+    except KeyboardInterrupt:
+        print("[orch] Shutdown requested.", file=sys.stderr)
+
+
+def _run_oneshot_workflow(workflow) -> None:
+    prompt = sys.stdin.read().strip()
+    if prompt:
+        payload = workflow.run(prompt)
+        print(json.dumps(payload))
         print(RESPONSE_SENTINEL)
 
 

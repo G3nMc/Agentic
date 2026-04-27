@@ -88,7 +88,10 @@
       "PowerShell(flutter analyze lib/services/openrouter_service.dart lib/ui/screens/settings_screen.dart 2>&1)",
       "Bash(command -v flutter.bat)",
       "Bash(python -B bin/orchestrator.py --help)",
-      "Bash(python -B -m compileall -q bin/orchestrator.py bin/agent/)"
+      "Bash(python -B -m compileall -q bin/orchestrator.py bin/agent/)",
+      "Bash(python -c \"import ast; ast.parse\\(open\\('bin/orchestrator.py', encoding='utf-8'\\).read\\(\\)\\); print\\('OK orchestrator'\\)\")",
+      "Bash(python -c \"import ast; ast.parse\\(open\\('bin/agent/core/state.py', encoding='utf-8'\\).read\\(\\)\\); ast.parse\\(open\\('bin/agent/core/agent_config.py', encoding='utf-8'\\).read\\(\\)\\); ast.parse\\(open\\('bin/agent/core/workflow.py', encoding='utf-8'\\).read\\(\\)\\); print\\('OK core'\\)\")",
+      "Bash(python -c \"import ast; ast.parse\\(open\\('bin/agent/agents/base.py', encoding='utf-8'\\).read\\(\\)\\); ast.parse\\(open\\('bin/agent/agents/router.py', encoding='utf-8'\\).read\\(\\)\\); ast.parse\\(open\\('bin/agent/agents/shaper.py', encoding='utf-8'\\).read\\(\\)\\); ast.parse\\(open\\('bin/agent/agents/reasoner.py', encoding='utf-8'\\).read\\(\\)\\); ast.parse\\(open\\('bin/agent/agents/executor.py', encoding='utf-8'\\).read\\(\\)\\); print\\('OK agents'\\)\")"
     ]
   }
 }

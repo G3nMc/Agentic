@@ -25,6 +25,7 @@ import '../../services/ollama_library_service.dart';
 import '../../services/github_models_service.dart';
 import '../../services/openrouter_service.dart';
 import '../../services/orchestrator_manager.dart';
+import '../widgets/agent_workflow_settings.dart';
 import '../widgets/local_server_config_widget.dart';
 
 class SettingsScreen extends StatefulWidget {
@@ -3759,7 +3760,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 _buildSideNav(),
                 const VerticalDivider(width: 1, thickness: 1, color: AppTheme.border),
                 Expanded(
-                  child: _settingsSection == 0 ? _buildModelSettings() : _buildOrchestratorPanel(),
+                  child: _settingsSection == 0
+                      ? _buildModelSettings()
+                      : _settingsSection == 1
+                          ? _buildOrchestratorPanel()
+                          : _buildAgentWorkflowPanel(),
                 ),
               ],
             ),
@@ -3778,6 +3783,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
           _navItem("Model Settings", 0, Icons.tune_outlined),
           const SizedBox(height: 4),
           _navItem("Orchestrator", 1, Icons.memory_outlined),
+          const SizedBox(height: 4),
+          _navItem("Workflow Agents", 2, Icons.account_tree_outlined),
         ],
       ),
     );
@@ -4261,6 +4268,12 @@ class _SettingsScreenState extends State<SettingsScreen> {
         ],
       ),
     );
+  }
+
+  // ---- Workflow Agents panel (side-nav section 2) ---------------------------
+
+  Widget _buildAgentWorkflowPanel() {
+    return const AgentWorkflowSettings();
   }
 
   // ---- Orchestrator panel (side-nav section 1) ------------------------------

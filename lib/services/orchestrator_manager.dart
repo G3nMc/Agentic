@@ -3,6 +3,11 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:hf_chat_flutter/services/project_service.dart';
+import 'package:path_provider/path_provider.dart';
+
+import '../data/repositories/agent_role_settings_repository.dart';
+import '../data/repositories/backend_settings_repository.dart';
+import '../data/repositories/settings_repository.dart';
 
 // Inactivity timeout: if the orchestrator emits no output on stdout OR
 // stderr for this long, we assume it's wedged and give up. Activity
@@ -50,6 +55,16 @@ class OrchestratorManager {
   // A broadcast StreamController so multiple widgets can subscribe
   // simultaneously without causing "already subscribed" errors.
   final StreamController<String> _logController = StreamController<String>.broadcast();
+
+  // ── Multi-agent execution-trace stream ─────────────────────────────────────
+  // Each entry is one agent activation. Only fires when the orchestrator was
+  // launched with `multiAgent: true` and Python actually returned a `trace`
+  // array in its response payload. Single-agent mode leaves this idle.
+  final StreamController<List<Map<String, Object?>>> _traceController =
+      StreamController<List<Map<String, Object?>>>.broadcast();
+  Stream<List<Map<String, Object?>>> get traceStream => _traceController.stream;
+  List<Map<String, Object?>> _lastTrace = const [];
+  List<Map<String, Object?>> get lastTrace => List.unmodifiable(_lastTrace);
 
   /// Live stream of orchestrator log lines (stderr of the subprocess).
   /// Each event is a single trimmed line such as
@@ -204,8 +219,42 @@ class OrchestratorManager {
     String? githubApiKey,
     int? tpmLimit,
     bool disableTools = false,
+    bool? multiAgent,
   }) async {
     if (_isRunning) return false;
+    // When the caller doesn't override, honour the toggle the user set in the
+    // Workflow Agents settings panel. This way every existing start-button
+    // wiring flips into multi-agent mode automatically once the user enables
+    // it, without each caller having to thread the flag through.
+    final effectiveMultiAgent =
+        multiAgent ?? await AgentRoleSettingsRepository.instance.isEnabled();
+
+    // In multi-agent mode the agent config can reference any backend
+    // regardless of the primary `backend` parameter. Auto-fill any missing
+    // key from persistent settings so the Python `SecretsResolver` doesn't
+    // crash with `<X> backend requires --<x>-api-key` when a role uses a
+    // different provider than the primary one.
+    if (effectiveMultiAgent) {
+      final backendSettings = BackendSettingsRepository.instance;
+      if (hfToken == null || hfToken.isEmpty) {
+        hfToken = await SettingsRepository.instance.getHfToken();
+      }
+      if (groqApiKey == null || groqApiKey.isEmpty) {
+        groqApiKey = await backendSettings.getGroqApiKey();
+      }
+      if (geminiApiKey == null || geminiApiKey.isEmpty) {
+        geminiApiKey = await backendSettings.getGeminiApiKey();
+      }
+      if (openRouterApiKey == null || openRouterApiKey.isEmpty) {
+        openRouterApiKey = await backendSettings.getOpenRouterApiKey();
+      }
+      if (githubApiKey == null || githubApiKey.isEmpty) {
+        githubApiKey = await backendSettings.getGithubApiKey();
+      }
+      if (ollamaApiKey == null || ollamaApiKey.isEmpty) {
+        ollamaApiKey = await backendSettings.getOllamaApiKey();
+      }
+    }
 
     final script = orchestratorScript;
     if (!script.existsSync()) {
@@ -261,7 +310,7 @@ class OrchestratorManager {
       ];
       switch (backend) {
         case OrchestratorBackend.huggingface:
-          args.addAll(['--backend', 'huggingface', '--hf-token', hfToken!]);
+          args.addAll(['--backend', 'huggingface']);
           break;
         case OrchestratorBackend.ollama:
           args.addAll(['--backend', 'ollama']);
@@ -273,28 +322,29 @@ class OrchestratorManager {
           }
           break;
         case OrchestratorBackend.groq:
-          args.addAll(['--backend', 'groq', '--groq-api-key', groqApiKey!]);
+          args.addAll(['--backend', 'groq']);
           break;
         case OrchestratorBackend.gemini:
-          args.addAll(['--backend', 'gemini', '--gemini-api-key', geminiApiKey!]);
+          args.addAll(['--backend', 'gemini']);
           break;
         case OrchestratorBackend.openrouter:
-          args.addAll([
-            '--backend',
-            'openrouter',
-            '--openrouter-api-key',
-            openRouterApiKey ?? envOpenRouterKey,
-          ]);
+          args.addAll(['--backend', 'openrouter']);
           break;
         case OrchestratorBackend.github:
-          args.addAll([
-            '--backend',
-            'github',
-            '--github-api-key',
-            githubApiKey ?? envGithubKey,
-          ]);
+          args.addAll(['--backend', 'github']);
           break;
       }
+
+      // Pass all available keys to support multi-agent workflows where roles use different backends.
+      if (hfToken != null && hfToken.isNotEmpty) args.addAll(['--hf-token', hfToken]);
+      final finalGroqKey = groqApiKey ?? envGroqKey;
+      if (finalGroqKey.isNotEmpty) args.addAll(['--groq-api-key', finalGroqKey]);
+      final finalGeminiKey = geminiApiKey ?? envGeminiKey;
+      if (finalGeminiKey.isNotEmpty) args.addAll(['--gemini-api-key', finalGeminiKey]);
+      final finalOpenRouterKey = openRouterApiKey ?? envOpenRouterKey;
+      if (finalOpenRouterKey.isNotEmpty) args.addAll(['--openrouter-api-key', finalOpenRouterKey]);
+      final finalGithubKey = githubApiKey ?? envGithubKey;
+      if (finalGithubKey.isNotEmpty) args.addAll(['--github-api-key', finalGithubKey]);
       if (modelId != null && modelId.isNotEmpty) {
         args.addAll(['--model', modelId]);
       }
@@ -312,6 +362,24 @@ class OrchestratorManager {
       }
       if (disableTools) {
         args.add('--disable-tools');
+      }
+
+      // Multi-agent mode: persist the per-role assignments to a JSON file
+      // (in the app's temp dir) and tell Python where to find it. The single
+      // --backend flag still travels along to provide the API keys / fallback,
+      // but the workflow itself is built from agents.json.
+      if (effectiveMultiAgent) {
+        try {
+          final tmp = await getTemporaryDirectory();
+          final cfgPath = '${tmp.path}/hf_chat_flutter_agents.json';
+          await AgentRoleSettingsRepository.instance
+              .writeAgentConfigJson(cfgPath);
+          args.addAll(['--multi-agent', '--agent-config', cfgPath]);
+          _appendLog('[manager] Multi-agent config written -> $cfgPath');
+        } catch (e) {
+          _appendLog('[manager] Failed to write agents.json: $e');
+          return false;
+        }
       }
 
       _process = await Process.start(
@@ -458,12 +526,29 @@ class OrchestratorManager {
       final joined = _activeLines.join('\n').trim();
       String response = joined;
       // Orchestrator wraps the response in {"response": "..."} so embedded
-      // newlines survive the line-oriented protocol.
+      // newlines survive the line-oriented protocol. In multi-agent mode the
+      // same payload also carries a `trace` array — surface it on the trace
+      // stream without changing the public sendPrompt contract.
       if (joined.startsWith('{')) {
         try {
           final obj = jsonDecode(joined);
-          if (obj is Map && obj['response'] is String) {
-            response = obj['response'] as String;
+          if (obj is Map) {
+            if (obj['response'] is String) {
+              response = obj['response'] as String;
+            }
+            final rawTrace = obj['trace'];
+            if (rawTrace is List) {
+              final entries = <Map<String, Object?>>[];
+              for (final e in rawTrace) {
+                if (e is Map) {
+                  entries.add(e.map((k, v) => MapEntry(k.toString(), v)));
+                }
+              }
+              _lastTrace = entries;
+              if (!_traceController.isClosed) _traceController.add(entries);
+            } else {
+              _lastTrace = const [];
+            }
           }
         } catch (_) {
           // Not JSON — treat as raw text.

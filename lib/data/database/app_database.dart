@@ -12,7 +12,7 @@ class AppDatabase {
   static final AppDatabase instance = AppDatabase._();
 
   static const String _dbName = "hf_chat.db";
-  static const int _dbVersion = 4;
+  static const int _dbVersion = 5;
 
   Database? _db;
   Completer<Database>? _opening;
@@ -110,6 +110,9 @@ class AppDatabase {
     ''');
 
     // Individual chat messages.
+    // `agent` is nullable: legacy single-agent replies leave it NULL, the
+    // multi-agent workflow sets it to the producing role (router/shaper/
+    // reasoner/executor/workflow) so the UI can render per-step badges.
     batch.execute('''
       CREATE TABLE messages (
         id TEXT PRIMARY KEY,
@@ -117,6 +120,7 @@ class AppDatabase {
         role TEXT NOT NULL,
         content TEXT NOT NULL,
         created_at INTEGER NOT NULL,
+        agent TEXT,
         FOREIGN KEY (conversation_id)
           REFERENCES conversations(id)
           ON DELETE CASCADE
@@ -219,6 +223,11 @@ class AppDatabase {
         {'backend': defaultBackend},
         where: 'backend IS NULL',
       );
+    }
+    if (oldVersion < 5) {
+      // Migrate to v5: tag each assistant reply with the workflow agent
+      // that produced it. Nullable so single-agent rows stay untouched.
+      await db.execute('ALTER TABLE messages ADD COLUMN agent TEXT');
     }
   }
 

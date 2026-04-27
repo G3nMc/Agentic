@@ -34,6 +34,11 @@ class ChatMessage {
   final MessageRole role;
   final String content;
   final int createdAt;
+  /// Which workflow agent produced this message. Null for plain
+  /// single-agent-mode replies. One of: `router`, `shaper`, `reasoner`,
+  /// `executor`, `workflow`. Persisted in the same row so re-opening a
+  /// chat keeps the badges visible.
+  final String? agent;
 
   ChatMessage({
     required this.id,
@@ -41,6 +46,7 @@ class ChatMessage {
     required this.role,
     required this.content,
     required this.createdAt,
+    this.agent,
   });
 
   factory ChatMessage.fromMap(Map<String, Object?> map) {
@@ -50,6 +56,7 @@ class ChatMessage {
       role: MessageRole.fromString((map["role"] as String?) ?? "user"),
       content: (map["content"] as String?) ?? "",
       createdAt: (map["created_at"] as int?) ?? 0,
+      agent: map["agent"] as String?,
     );
   }
 
@@ -60,6 +67,7 @@ class ChatMessage {
       "role": role.apiValue,
       "content": content,
       "created_at": createdAt,
+      if (agent != null) "agent": agent,
     };
   }
 
@@ -77,6 +85,7 @@ class ChatMessage {
     MessageRole? role,
     String? content,
     int? createdAt,
+    String? agent,
   }) {
     return ChatMessage(
       id: id ?? this.id,
@@ -84,6 +93,7 @@ class ChatMessage {
       role: role ?? this.role,
       content: content ?? this.content,
       createdAt: createdAt ?? this.createdAt,
+      agent: agent ?? this.agent,
     );
   }
 }
