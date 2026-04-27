@@ -147,11 +147,11 @@ class _LocalServerConfigWidgetState extends State<LocalServerConfigWidget> {
                     color: AppTheme.accentMarrone,
                     borderRadius: BorderRadius.circular(8),
                   ),
-                  child: Row(
+                  child: const Row(
                     mainAxisSize: MainAxisSize.min,
                     children: [
                       Icon(Icons.cloud_done, size: 16, color: AppTheme.accentMarrone),
-                      const SizedBox(width: 6),
+                      SizedBox(width: 6),
                       Text(
                         "Running",
                         style: TextStyle(
@@ -276,7 +276,7 @@ class _LocalServerConfigWidgetState extends State<LocalServerConfigWidget> {
                 color: _statusMessage!.startsWith("✓") ? AppTheme.accentMarrone : Colors.red[100],
                 borderRadius: BorderRadius.circular(8),
                 border: Border.all(
-                  color: _statusMessage!.startsWith("✓") ? AppTheme.accentMarrone! : Colors.red[300]!,
+                  color: _statusMessage!.startsWith("✓") ? AppTheme.accentMarrone : Colors.red[300]!,
                 ),
               ),
               child: SelectableText(

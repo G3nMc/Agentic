@@ -2,7 +2,6 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:uuid/uuid.dart';
 
-import '../../core/constants/api_constants.dart';
 import '../../core/theme/app_theme.dart';
 import '../../data/models/conversation.dart';
 import '../../data/models/message.dart';
@@ -22,6 +21,7 @@ import '../../statemanagement/state_manager.dart';
 import 'chat_input.dart';
 import 'message_bubble.dart';
 import 'model_switcher.dart';
+import 'openrouter_usage_badge.dart';
 import 'orchestrator_log_panel.dart';
 import 'quick_server_panel.dart';
 import 'sidebar.dart';
@@ -61,6 +61,11 @@ class _ChatViewState extends StateManager<ChatView> with WidgetsBindingObserver 
   /// Active backend — loaded once and cached so build() never needs a
   /// FutureBuilder (which tears down child widgets on every setState).
   LlmBackend? _activeBackend;
+
+  /// Whether the OrchestratorLogPanel is currently expanded under the input.
+  /// Toggled by the log button in [ChatInput] and auto-set to true when the
+  /// orchestrator successfully starts.
+  bool _logVisible = false;
 
   /// Token for the currently in-flight send. Non-null only while [_sending].
   _CancelToken? _currentCancel;
@@ -175,60 +180,77 @@ class _ChatViewState extends StateManager<ChatView> with WidgetsBindingObserver 
 
   Future<void> _sendMessage(String text) async {
     if (_sending) return;
+
     final conv = _conversation;
     if (conv == null) return;
 
     final trimmed = text.trim();
     if (trimmed.isEmpty) return;
 
-    // Read settings and credentials.
+    final safeText = trimmed.replaceAll('\u0000', '').replaceAll(RegExp(r'[\uD800-\uDFFF]'), '');
+
     final backend = await BackendSettingsRepository.instance.getActiveBackend();
-    // Keep the cached backend in sync so panels (orchestrator log, local
-    // server) show/hide correctly even when the user changed backends in
-    // Settings and navigated back without triggering a lifecycle event.
+
     if (mounted && _activeBackend != backend) {
       setState(() => _activeBackend = backend);
     }
 
-    // Get HF token from credentials
     final agentCreds = await AgentCredentialsRepository.instance.getCredentials();
+
     final token = agentCreds?.hfToken ?? await SettingsRepository.instance.getHfToken();
 
     final serverUrl = await BackendSettingsRepository.instance.getLocalServerUrl();
+
     final ollamaBaseUrl = await BackendSettingsRepository.instance.getOllamaBaseUrl();
+
     final ollamaModel = await BackendSettingsRepository.instance.getOllamaModel();
+
     final openRouterApiKey = await BackendSettingsRepository.instance.getOpenRouterApiKey();
+
     final openRouterModel = await BackendSettingsRepository.instance.getOpenRouterModel();
+
     final ollamaPythonBridgeUrl = await BackendSettingsRepository.instance.getOllamaPythonBridgeUrl();
 
-    // Validate based on selected backend.
     if (backend == LlmBackend.huggingFace || backend == LlmBackend.orchestrator) {
       if (token == null || token.trim().isEmpty) {
-        setState(() => _sendError = "Set your Hugging Face token in Settings first.");
+        setState(() {
+          _sendError = "Set your Hugging Face token in Settings first.";
+        });
         return;
       }
     } else if (backend == LlmBackend.local) {
       if (serverUrl == null || serverUrl.trim().isEmpty) {
-        setState(() => _sendError = "Configure local server URL in Settings first.");
+        setState(() {
+          _sendError = "Configure local server URL in Settings first.";
+        });
         return;
       }
     } else if (backend == LlmBackend.ollama || backend == LlmBackend.ollamaPython || backend == LlmBackend.ollamaOrchestrator) {
       final resolvedModel = (conv.modelId != null && conv.modelId!.trim().isNotEmpty) ? conv.modelId! : ollamaModel;
+
       if (resolvedModel == null || resolvedModel.trim().isEmpty) {
-        setState(() => _sendError = "Select an Ollama model in Settings before sending a message.");
+        setState(() {
+          _sendError = "Select an Ollama model in Settings before sending a message.";
+        });
         return;
       }
     } else if (backend == LlmBackend.openRouter) {
       if (openRouterApiKey == null || openRouterApiKey.trim().isEmpty) {
-        setState(() => _sendError = "Set your OpenRouter API key in Settings first.");
+        setState(() {
+          _sendError = "Set your OpenRouter API key in Settings first.";
+        });
         return;
       }
+
       final resolvedModel = resolveOpenRouterModel(
         conv.modelId ?? '',
         openRouterModel ?? '',
       );
+
       if (resolvedModel.trim().isEmpty) {
-        setState(() => _sendError = "Select an OpenRouter model in Settings before sending a message.");
+        setState(() {
+          _sendError = "Select an OpenRouter model in Settings before sending a message.";
+        });
         return;
       }
     }
@@ -240,41 +262,51 @@ class _ChatViewState extends StateManager<ChatView> with WidgetsBindingObserver 
 
     final modelId = switch (backend) {
       LlmBackend.ollama || LlmBackend.ollamaPython || LlmBackend.ollamaOrchestrator => (conv.modelId != null && conv.modelId!.trim().isNotEmpty) ? conv.modelId! : (ollamaModel ?? ''),
-      LlmBackend.openRouter => resolveOpenRouterModel(conv.modelId ?? '', openRouterModel ?? ''),
+      LlmBackend.openRouter => resolveOpenRouterModel(
+          conv.modelId ?? '',
+          openRouterModel ?? '',
+        ),
       LlmBackend.geminiOrchestrator => (conv.modelId != null && conv.modelId!.startsWith('gemini')) ? conv.modelId! : (geminiModel ?? BackendSettingsRepository.defaultGeminiModel),
-      _ => conv.modelId ?? ApiConstants.defaultModelId,
+      _ => conv.modelId ?? '',
     };
 
-    // Persist and append user message.
     final now = DateTime.now().millisecondsSinceEpoch;
+
     final userMsg = ChatMessage(
       id: const Uuid().v4(),
       conversationId: conv.id,
       role: MessageRole.user,
-      content: trimmed,
+      content: safeText,
       createdAt: now,
     );
+
     await MessageRepository.instance.insert(userMsg);
     await ConversationRepository.instance.touch(conv.id);
 
     final cancelToken = _CancelToken();
     _currentCancel = cancelToken;
+
     setState(() {
       _messages.add(userMsg);
       _sending = true;
       _sendError = null;
     });
-    WidgetsBinding.instance.addPostFrameCallback((_) => _scrollToBottom());
 
-    // If this is the first message of a "New chat", use it as the title.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _scrollToBottom();
+    });
+
     if (conv.title == "New chat") {
-      final newTitle = _autoTitleFrom(trimmed);
-      await ConversationRepository.instance.updateTitle(conv.id, newTitle);
+      final newTitle = _autoTitleFrom(safeText);
+      await ConversationRepository.instance.updateTitle(
+        conv.id,
+        newTitle,
+      );
+
       _conversation = conv.copyWith(title: newTitle);
       await MethodListener<Sidebar>().callMethod("refreshConversations");
     }
 
-    // Full conversation history sent to the model every call.
     final history = List<ChatMessage>.unmodifiable(_messages);
 
     try {
@@ -290,7 +322,6 @@ class _ChatViewState extends StateManager<ChatView> with WidgetsBindingObserver 
         ollamaPythonBridgeUrl: ollamaPythonBridgeUrl,
       );
 
-      // Discard result if the user stopped generation while we were waiting.
       if (cancelToken.isCancelled) return;
 
       final assistantMsg = ChatMessage(
@@ -300,19 +331,26 @@ class _ChatViewState extends StateManager<ChatView> with WidgetsBindingObserver 
         content: reply,
         createdAt: DateTime.now().millisecondsSinceEpoch,
       );
+
       await MessageRepository.instance.insert(assistantMsg);
       await ConversationRepository.instance.touch(conv.id);
 
       if (!mounted) return;
+
       setState(() {
         _messages.add(assistantMsg);
         _sending = false;
         _currentCancel = null;
       });
+
       await MethodListener<Sidebar>().callMethod("refreshConversations");
-      WidgetsBinding.instance.addPostFrameCallback((_) => _scrollToBottom());
+
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        _scrollToBottom();
+      });
     } on HuggingFaceException catch (e) {
       if (cancelToken.isCancelled || !mounted) return;
+
       setState(() {
         _sending = false;
         _currentCancel = null;
@@ -320,6 +358,7 @@ class _ChatViewState extends StateManager<ChatView> with WidgetsBindingObserver 
       });
     } catch (e) {
       if (cancelToken.isCancelled || !mounted) return;
+
       setState(() {
         _sending = false;
         _currentCancel = null;
@@ -327,6 +366,161 @@ class _ChatViewState extends StateManager<ChatView> with WidgetsBindingObserver 
       });
     }
   }
+
+  // Future<void> _sendMessage(String text) async {
+  //   if (_sending) return;
+  //   final conv = _conversation;
+  //   if (conv == null) return;
+  //
+  //   final trimmed = text.trim();
+  //   if (trimmed.isEmpty) return;
+  //
+  //   // Read settings and credentials.
+  //   final backend = await BackendSettingsRepository.instance.getActiveBackend();
+  //   // Keep the cached backend in sync so panels (orchestrator log, local
+  //   // server) show/hide correctly even when the user changed backends in
+  //   // Settings and navigated back without triggering a lifecycle event.
+  //   if (mounted && _activeBackend != backend) {
+  //     setState(() => _activeBackend = backend);
+  //   }
+  //
+  //   // Get HF token from credentials
+  //   final agentCreds = await AgentCredentialsRepository.instance.getCredentials();
+  //   final token = agentCreds?.hfToken ?? await SettingsRepository.instance.getHfToken();
+  //
+  //   final serverUrl = await BackendSettingsRepository.instance.getLocalServerUrl();
+  //   final ollamaBaseUrl = await BackendSettingsRepository.instance.getOllamaBaseUrl();
+  //   final ollamaModel = await BackendSettingsRepository.instance.getOllamaModel();
+  //   final openRouterApiKey = await BackendSettingsRepository.instance.getOpenRouterApiKey();
+  //   final openRouterModel = await BackendSettingsRepository.instance.getOpenRouterModel();
+  //   final ollamaPythonBridgeUrl = await BackendSettingsRepository.instance.getOllamaPythonBridgeUrl();
+  //
+  //   // Validate based on selected backend.
+  //   if (backend == LlmBackend.huggingFace || backend == LlmBackend.orchestrator) {
+  //     if (token == null || token.trim().isEmpty) {
+  //       setState(() => _sendError = "Set your Hugging Face token in Settings first.");
+  //       return;
+  //     }
+  //   } else if (backend == LlmBackend.local) {
+  //     if (serverUrl == null || serverUrl.trim().isEmpty) {
+  //       setState(() => _sendError = "Configure local server URL in Settings first.");
+  //       return;
+  //     }
+  //   } else if (backend == LlmBackend.ollama || backend == LlmBackend.ollamaPython || backend == LlmBackend.ollamaOrchestrator) {
+  //     final resolvedModel = (conv.modelId != null && conv.modelId!.trim().isNotEmpty) ? conv.modelId! : ollamaModel;
+  //     if (resolvedModel == null || resolvedModel.trim().isEmpty) {
+  //       setState(() => _sendError = "Select an Ollama model in Settings before sending a message.");
+  //       return;
+  //     }
+  //   } else if (backend == LlmBackend.openRouter) {
+  //     if (openRouterApiKey == null || openRouterApiKey.trim().isEmpty) {
+  //       setState(() => _sendError = "Set your OpenRouter API key in Settings first.");
+  //       return;
+  //     }
+  //     final resolvedModel = resolveOpenRouterModel(
+  //       conv.modelId ?? '',
+  //       openRouterModel ?? '',
+  //     );
+  //     if (resolvedModel.trim().isEmpty) {
+  //       setState(() => _sendError = "Select an OpenRouter model in Settings before sending a message.");
+  //       return;
+  //     }
+  //   }
+  //
+  //   String? geminiModel;
+  //   if (backend == LlmBackend.geminiOrchestrator) {
+  //     geminiModel = await BackendSettingsRepository.instance.getGeminiModel();
+  //   }
+  //
+  //   final modelId = switch (backend) {
+  //     LlmBackend.ollama || LlmBackend.ollamaPython || LlmBackend.ollamaOrchestrator => (conv.modelId != null && conv.modelId!.trim().isNotEmpty) ? conv.modelId! : (ollamaModel ?? ''),
+  //     LlmBackend.openRouter => resolveOpenRouterModel(conv.modelId ?? '', openRouterModel ?? ''),
+  //     LlmBackend.geminiOrchestrator => (conv.modelId != null && conv.modelId!.startsWith('gemini')) ? conv.modelId! : (geminiModel ?? BackendSettingsRepository.defaultGeminiModel),
+  //     _ => conv.modelId ?? '',
+  //   };
+  //
+  //   // Persist and append user message.
+  //   final now = DateTime.now().millisecondsSinceEpoch;
+  //   final userMsg = ChatMessage(
+  //     id: const Uuid().v4(),
+  //     conversationId: conv.id,
+  //     role: MessageRole.user,
+  //     content: trimmed,
+  //     createdAt: now,
+  //   );
+  //   await MessageRepository.instance.insert(userMsg);
+  //   await ConversationRepository.instance.touch(conv.id);
+  //
+  //   final cancelToken = _CancelToken();
+  //   _currentCancel = cancelToken;
+  //   setState(() {
+  //     _messages.add(userMsg);
+  //     _sending = true;
+  //     _sendError = null;
+  //   });
+  //   WidgetsBinding.instance.addPostFrameCallback((_) => _scrollToBottom());
+  //
+  //   // If this is the first message of a "New chat", use it as the title.
+  //   if (conv.title == "New chat") {
+  //     final newTitle = _autoTitleFrom(trimmed);
+  //     await ConversationRepository.instance.updateTitle(conv.id, newTitle);
+  //     _conversation = conv.copyWith(title: newTitle);
+  //     await MethodListener<Sidebar>().callMethod("refreshConversations");
+  //   }
+  //
+  //   // Full conversation history sent to the model every call.
+  //   final history = List<ChatMessage>.unmodifiable(_messages);
+  //
+  //   try {
+  //     final reply = await LlmService.instance.sendChat(
+  //       backend: backend,
+  //       token: token ?? "",
+  //       modelId: modelId,
+  //       history: history,
+  //       conversationId: conv.id,
+  //       localServerUrl: serverUrl,
+  //       ollamaBaseUrl: ollamaBaseUrl,
+  //       ollamaModelId: modelId,
+  //       ollamaPythonBridgeUrl: ollamaPythonBridgeUrl,
+  //     );
+  //
+  //     // Discard result if the user stopped generation while we were waiting.
+  //     if (cancelToken.isCancelled) return;
+  //
+  //     final assistantMsg = ChatMessage(
+  //       id: const Uuid().v4(),
+  //       conversationId: conv.id,
+  //       role: MessageRole.assistant,
+  //       content: reply,
+  //       createdAt: DateTime.now().millisecondsSinceEpoch,
+  //     );
+  //     await MessageRepository.instance.insert(assistantMsg);
+  //     await ConversationRepository.instance.touch(conv.id);
+  //
+  //     if (!mounted) return;
+  //     setState(() {
+  //       _messages.add(assistantMsg);
+  //       _sending = false;
+  //       _currentCancel = null;
+  //     });
+  //     await MethodListener<Sidebar>().callMethod("refreshConversations");
+  //     WidgetsBinding.instance.addPostFrameCallback((_) => _scrollToBottom());
+  //   } on HuggingFaceException catch (e) {
+  //     if (cancelToken.isCancelled || !mounted) return;
+  //     setState(() {
+  //       _sending = false;
+  //       _currentCancel = null;
+  //       _sendError = e.message;
+  //     });
+  //   } catch (e) {
+  //     if (cancelToken.isCancelled || !mounted) return;
+  //     setState(() {
+  //       _sending = false;
+  //       _currentCancel = null;
+  //       _sendError = e.toString();
+  //     });
+  //   }
+  // }
 
   String _autoTitleFrom(String firstMessage) {
     final cleaned = firstMessage.replaceAll(RegExp(r"\s+"), " ").trim();
@@ -397,7 +591,8 @@ class _ChatViewState extends StateManager<ChatView> with WidgetsBindingObserver 
         backend == LlmBackend.ollamaOrchestrator ||
         backend == LlmBackend.groqOrchestrator ||
         backend == LlmBackend.geminiOrchestrator ||
-        backend == LlmBackend.openRouterOrchestrator;
+        backend == LlmBackend.openRouterOrchestrator ||
+        backend == LlmBackend.githubOrchestrator;
 
     return Column(
       children: [
@@ -410,20 +605,24 @@ class _ChatViewState extends StateManager<ChatView> with WidgetsBindingObserver 
           sending: _sending,
           onSend: _sendMessage,
           onStop: _stopGeneration,
+          showLogToggle: showOrchestratorLog,
+          logVisible: _logVisible,
+          onToggleLog: () => setState(() => _logVisible = !_logVisible),
+          onProjectFolderChanged: _startOrchestrator,
         ),
         if (showServerPanel)
           QuickServerPanel(
-            modelId: _conversation!.modelId ?? ApiConstants.defaultModelId,
+            modelId: _conversation!.modelId ?? '',
             onServerStatusChanged: () => setState(() {}),
           ),
-        if (showOrchestratorLog) const OrchestratorLogPanel(),
+        if (showOrchestratorLog && _logVisible) const OrchestratorLogPanel(),
       ],
     );
   }
 
   Widget _buildHeader(Conversation conv) {
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
+      padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
       decoration: const BoxDecoration(
         border: Border(bottom: BorderSide(color: AppTheme.border)),
         color: AppTheme.bgPrimary,
@@ -448,8 +647,10 @@ class _ChatViewState extends StateManager<ChatView> with WidgetsBindingObserver 
               ),
             ),
           ),
+          const OpenRouterUsageBadge(),
+          const SizedBox(width: 8),
           ModelSwitcher(
-            selectedModelId: conv.modelId ?? ApiConstants.defaultModelId,
+            selectedModelId: conv.modelId ?? '',
             onChanged: (newId) {
               MethodListener<ChatView>().callMethod(
                 "modelChanged",
@@ -479,7 +680,7 @@ class _ChatViewState extends StateManager<ChatView> with WidgetsBindingObserver 
           if (_activeBackend == LlmBackend.local)
             Builder(
               builder: (ctx) {
-                final modelId = conv.modelId ?? ApiConstants.defaultModelId;
+                final modelId = conv.modelId ?? '';
                 final isRunning = LocalServerManager.instance.isServerRunning(modelId);
                 return IconButton(
                   tooltip: isRunning ? "Server running" : "Start local server",
@@ -499,7 +700,7 @@ class _ChatViewState extends StateManager<ChatView> with WidgetsBindingObserver 
           //     if (backendSnapshot.data != LlmBackend.local) {
           //       return const SizedBox.shrink();
           //     }
-          //     final modelId = conv.modelId ?? ApiConstants.defaultModelId;
+          //     final modelId = conv.modelId ?? '';
           //     final isRunning = LocalServerManager.instance.isServerRunning(modelId);
           //     return IconButton(
           //       tooltip: isRunning ? "Server running" : "Start local server",
@@ -729,7 +930,7 @@ class _ChatViewState extends StateManager<ChatView> with WidgetsBindingObserver 
             backgroundColor: const Color.fromARGB(255, 76, 175, 80),
           ),
         );
-        setState(() {});
+        setState(() => _logVisible = true);
       } else {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
@@ -889,7 +1090,7 @@ class _ChatViewState extends StateManager<ChatView> with WidgetsBindingObserver 
               ),
               const SizedBox(height: 6),
               Text(
-                "Model: ${_conversation?.modelId ?? ApiConstants.defaultModelId}",
+                "Model: ${_conversation?.modelId ?? ''}",
                 style: const TextStyle(color: AppTheme.textMuted, fontSize: 13),
               ),
             ],
@@ -900,7 +1101,7 @@ class _ChatViewState extends StateManager<ChatView> with WidgetsBindingObserver 
 
     return ListView.builder(
       controller: _scrollController,
-      padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 10),
       itemCount: _messages.length + (_sending ? 1 : 0),
       itemBuilder: (ctx, i) {
         if (_sending && i == _messages.length) {

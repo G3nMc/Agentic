@@ -77,7 +77,7 @@ class _CodeBlockView extends StatelessWidget {
           ),
           Container(
             height: 1,
-            color: AppTheme.textMuted.withOpacity(0.15),
+            color: AppTheme.textMuted.withAlpha(30),
           ),
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 6),

@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:dio/dio.dart' show CancelToken;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:path_provider/path_provider.dart';
@@ -20,6 +21,8 @@ import '../../services/ollama_generate_service.dart';
 import '../../services/ollama_manager.dart';
 import '../../services/ollama_python_manager.dart';
 import '../../services/ollama_service.dart';
+import '../../services/ollama_library_service.dart';
+import '../../services/github_models_service.dart';
 import '../../services/openrouter_service.dart';
 import '../../services/orchestrator_manager.dart';
 import '../widgets/local_server_config_widget.dart';
@@ -63,10 +66,27 @@ class _SettingsScreenState extends State<SettingsScreen> {
   bool _ollamaApiKeyVisible = false;
   Timer? _ollamaApiKeySaveTimer;
   bool _ollamaBusy = false;
+  // In-progress pull tracking — populated only while a download is running.
+  CancelToken? _ollamaPullCancelToken;
+  String? _ollamaPullingModel;
+  int _ollamaPullCompleted = 0;
+  int _ollamaPullTotal = 0;
+  bool _ollamaPullCancelled = false;
   final List<String> _ollamaLog = [];
   String? _ollamaBinaryVersion; // null => not detected yet or missing
   bool _ollamaServerUp = false;
   List<String> _ollamaInstalledModels = const [];
+  List<OllamaCatalogModel> _ollamaCatalog = const [];
+  bool _ollamaCatalogLoading = false;
+  final ScrollController _ollamaCatalogScrollController = ScrollController();
+  // Library scrape (ollama.com/library) — separate from the local catalog.
+  List<OllamaLibraryModel> _ollamaLibrary = const [];
+  bool _ollamaLibraryLoading = false;
+  String? _ollamaLibraryError;
+  final ScrollController _ollamaLibraryScrollController = ScrollController();
+  final TextEditingController _ollamaLibraryFilterController =
+      TextEditingController();
+  String _ollamaLibraryFilter = '';
   String? _ollamaSelectedModel;
   final TextEditingController _ollamaPythonUrlController = TextEditingController();
   bool _ollamaPythonBusy = false;
@@ -95,6 +115,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
   Timer? _groqMaxTokensSaveTimer;
   final TextEditingController _groqTpmLimitController = TextEditingController();
   Timer? _groqTpmLimitSaveTimer;
+  List<GroqModel> _groqCatalog = const [];
+  final ScrollController _groqCatalogScrollController = ScrollController();
 
   // Gemini settings
   List<String> _geminiModels = List<String>.from(
@@ -116,7 +138,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
   final TextEditingController _openRouterApiKeyController = TextEditingController();
   bool _openRouterApiKeyVisible = false;
   Timer? _openRouterApiKeySaveTimer;
-  List<String> _openRouterModels = OpenRouterService.fallbackModels;
+  List<OpenRouterModel> _openRouterCatalog = const [];
+  List<String> _openRouterModels = const [];
   String? _openRouterSelectedModel;
   bool _openRouterLoadingModels = false;
   double _openRouterTemperature = BackendSettingsRepository.defaultOpenRouterTemperature;
@@ -124,6 +147,28 @@ class _SettingsScreenState extends State<SettingsScreen> {
   Timer? _openRouterMaxTokensSaveTimer;
   final TextEditingController _openRouterTpmLimitController = TextEditingController();
   Timer? _openRouterTpmLimitSaveTimer;
+  final ScrollController _openRouterCatalogScrollController = ScrollController();
+  // Sort state for the OpenRouter catalog table — null = original (id) order.
+  String? _orSortColumn; // 'priceIn' | 'priceOut'
+  bool _orSortAsc = true;
+
+  // GitHub Models settings
+  final TextEditingController _githubApiKeyController = TextEditingController();
+  bool _githubApiKeyVisible = false;
+  Timer? _githubApiKeySaveTimer;
+  List<GithubModel> _githubCatalog = const [];
+  List<String> _githubModels = GithubModelsService.fallbackModels;
+  String? _githubSelectedModel;
+  bool _githubLoadingModels = false;
+  double _githubTemperature = BackendSettingsRepository.defaultGithubTemperature;
+  final TextEditingController _githubMaxTokensController = TextEditingController();
+  Timer? _githubMaxTokensSaveTimer;
+  final TextEditingController _githubTpmLimitController = TextEditingController();
+  Timer? _githubTpmLimitSaveTimer;
+  // Dedicated controller for the catalog ListView so the Scrollbar can
+  // attach to a real ScrollPosition (avoids the PrimaryScrollController
+  // assertion on desktop when the catalog list is short).
+  final ScrollController _githubCatalogScrollController = ScrollController();
 
   // /api/generate backend settings
   final TextEditingController _generateBaseUrlController = TextEditingController();
@@ -156,9 +201,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
     for (int i = 0; i < parts.length; i++) {
       spans.add(TextSpan(text: parts[i], style: baseStyle));
       if (i < parts.length - 1) {
-        spans.add(TextSpan(
+        spans.add(const TextSpan(
           text: ':free',
-          style: const TextStyle(
+          style: TextStyle(
             fontSize: 13,
             color: Colors.white,
             fontWeight: FontWeight.bold,
@@ -194,6 +239,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
     _ollamaUrlController.dispose();
     _ollamaApiKeyController.dispose();
     _ollamaPullController.dispose();
+    _ollamaCatalogScrollController.dispose();
+    _ollamaLibraryScrollController.dispose();
+    _ollamaLibraryFilterController.dispose();
     _ollamaPythonUrlController.dispose();
     _ollamaNumPredictController.dispose();
     _ollamaNumCtxController.dispose();
@@ -203,6 +251,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     _groqApiKeyController.dispose();
     _groqMaxTokensController.dispose();
     _groqTpmLimitController.dispose();
+    _groqCatalogScrollController.dispose();
     _geminiApiKeySaveTimer?.cancel();
     _geminiMaxTokensSaveTimer?.cancel();
     _geminiTpmLimitSaveTimer?.cancel();
@@ -216,6 +265,14 @@ class _SettingsScreenState extends State<SettingsScreen> {
     _openRouterApiKeyController.dispose();
     _openRouterMaxTokensController.dispose();
     _openRouterTpmLimitController.dispose();
+    _openRouterCatalogScrollController.dispose();
+    _githubApiKeySaveTimer?.cancel();
+    _githubMaxTokensSaveTimer?.cancel();
+    _githubTpmLimitSaveTimer?.cancel();
+    _githubApiKeyController.dispose();
+    _githubMaxTokensController.dispose();
+    _githubTpmLimitController.dispose();
+    _githubCatalogScrollController.dispose();
     _generateBaseUrlSaveTimer?.cancel();
     _generateModelSaveTimer?.cancel();
     _generateBaseUrlController.dispose();
@@ -375,9 +432,13 @@ class _SettingsScreenState extends State<SettingsScreen> {
   Future<void> _refreshGroqModels(String apiKey) async {
     if (!mounted) return;
     setState(() => _groqLoadingModels = true);
-    final models = await GroqService.instance.listModels(apiKey);
+    final catalog = await GroqService.instance.listCatalog(apiKey);
+    final models = catalog.isEmpty
+        ? GroqService.fallbackModels
+        : catalog.map((m) => m.id).toList();
     if (!mounted) return;
     setState(() {
+      _groqCatalog = catalog;
       _groqModels = models;
       if (!models.contains(_groqSelectedModel)) {
         _groqSelectedModel = models.first;
@@ -391,25 +452,104 @@ class _SettingsScreenState extends State<SettingsScreen> {
     if (!mounted) return;
     setState(() => _openRouterLoadingModels = true);
 
-    List<String> models = OpenRouterService.fallbackModels;
+    List<OpenRouterModel> catalog = const [];
     if (apiKey.trim().isNotEmpty) {
-      models = await OpenRouterService.instance.listModels(apiKey);
+      catalog = await OpenRouterService.instance.listCatalog(apiKey);
     }
+
+    List<String> models = catalog.map((m) => m.id).toList();
 
     final selected = _openRouterSelectedModel?.trim() ?? '';
     if (selected.isNotEmpty && !models.contains(selected)) {
       models = [selected, ...models];
     }
 
-    final nextSelected = models.contains(_openRouterSelectedModel) ? (_openRouterSelectedModel ?? models.first) : models.first;
+    final String? nextSelected = models.isEmpty
+        ? null
+        : (models.contains(_openRouterSelectedModel)
+            ? _openRouterSelectedModel
+            : models.first);
 
     if (!mounted) return;
     setState(() {
+      _openRouterCatalog = catalog;
       _openRouterModels = models;
       _openRouterSelectedModel = nextSelected;
       _openRouterLoadingModels = false;
     });
-    await BackendSettingsRepository.instance.setOpenRouterModel(nextSelected);
+    if (nextSelected != null) {
+      await BackendSettingsRepository.instance.setOpenRouterModel(nextSelected);
+    }
+  }
+
+  void _scheduleGithubApiKeySave(String value) {
+    _githubApiKeySaveTimer?.cancel();
+    _githubApiKeySaveTimer = Timer(const Duration(milliseconds: 600), () async {
+      final trimmed = value.trim();
+      await BackendSettingsRepository.instance.setGithubApiKey(trimmed);
+      await _refreshGithubCatalog(trimmed);
+    });
+  }
+
+  void _scheduleGithubMaxTokensSave(String value) {
+    _githubMaxTokensSaveTimer?.cancel();
+    _githubMaxTokensSaveTimer = Timer(const Duration(milliseconds: 600), () async {
+      final v = int.tryParse(value.trim());
+      if (v != null && v > 0) {
+        await BackendSettingsRepository.instance.setGithubMaxTokens(v);
+      }
+    });
+  }
+
+  void _scheduleGithubTpmLimitSave(String value) {
+    _githubTpmLimitSaveTimer?.cancel();
+    _githubTpmLimitSaveTimer =
+        Timer(const Duration(milliseconds: 600), () async {
+      final v = int.tryParse(value.trim()) ?? 0;
+      await BackendSettingsRepository.instance
+          .setGithubTpmLimit(v < 0 ? 0 : v);
+    });
+  }
+
+  Future<void> _refreshGithubCatalog(String apiKey) async {
+    if (!mounted) return;
+    setState(() => _githubLoadingModels = true);
+
+    List<GithubModel> catalog = const [];
+    if (apiKey.trim().isNotEmpty) {
+      catalog = await GithubModelsService.instance.listCatalog(apiKey);
+    }
+    // Show every model in the dropdown — non-tool-capable ones (phi-4,
+    // base Mistral, etc.) work as plain reasoning chat. The Settings UI
+    // automatically writes `githubDisableTools=true` for those so the
+    // orchestrator skips the tool loop and the `tools=[...]` payload.
+    List<String> models = catalog.map((m) => m.id).toList();
+    if (models.isEmpty) models = GithubModelsService.fallbackModels;
+
+    final selected = _githubSelectedModel?.trim() ?? '';
+    if (selected.isNotEmpty && !models.contains(selected)) {
+      models = [selected, ...models];
+    }
+    final nextSelected = models.contains(_githubSelectedModel)
+        ? (_githubSelectedModel ?? models.first)
+        : models.first;
+
+    if (!mounted) return;
+    setState(() {
+      _githubCatalog = catalog;
+      _githubModels = models;
+      _githubSelectedModel = nextSelected;
+      _githubLoadingModels = false;
+    });
+    await BackendSettingsRepository.instance.setGithubModel(nextSelected);
+    // Sync the plain-chat flag with the (possibly auto-changed) selection.
+    final cat = catalog.firstWhere(
+      (m) => m.id == nextSelected,
+      orElse: () => GithubModel.fromJson(const {}),
+    );
+    final disable =
+        cat.id.isNotEmpty && !GithubModelsService.supportsToolCalling(cat);
+    await BackendSettingsRepository.instance.setGithubDisableTools(disable);
   }
 
   Widget _groqControlPanel() {
@@ -461,6 +601,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
                           if (v == null) return;
                           setState(() => _groqSelectedModel = v);
                           await BackendSettingsRepository.instance.setGroqModel(v);
+                          if (OrchestratorManager.instance.isRunning) {
+                            await OrchestratorManager.instance.stop();
+                          }
                         },
                       ),
               ),
@@ -542,6 +685,260 @@ class _SettingsScreenState extends State<SettingsScreen> {
             ),
             onChanged: _scheduleGroqTpmLimitSave,
           ),
+          const SizedBox(height: 24),
+          _groqCatalogTable(),
+        ],
+      ),
+    );
+  }
+
+  // Groq catalog table — column geometry mirrors the GitHub one.
+  // Groq's `/models` endpoint exposes id, owner, active, context window,
+  // and max completion tokens — no pricing — so the column set is trimmed
+  // to what's actually returned.
+  static const int _kGroqColFlexName = 6;
+  static const int _kGroqColFlexOwner = 3;
+  static const int _kGroqColFlexCtx = 2;
+  static const int _kGroqColFlexMaxOut = 2;
+  static const double _kGroqColWidthActive = 36;
+  static const double _kGroqColWidthTools = 36;
+
+  static const List<Widget> _kGroqCatalogHeaderCells = [
+    Expanded(
+      flex: _kGroqColFlexName,
+      child: Text('Name / ID',
+          style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold)),
+    ),
+    SizedBox(width: 8),
+    Expanded(
+      flex: _kGroqColFlexOwner,
+      child: Text('Owner',
+          style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold)),
+    ),
+    SizedBox(width: 8),
+    Expanded(
+      flex: _kGroqColFlexCtx,
+      child: Text('Context',
+          style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold),
+          textAlign: TextAlign.right),
+    ),
+    SizedBox(width: 8),
+    Expanded(
+      flex: _kGroqColFlexMaxOut,
+      child: Text('Max out',
+          style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold),
+          textAlign: TextAlign.right),
+    ),
+    SizedBox(width: 8),
+    SizedBox(
+      width: _kGroqColWidthActive,
+      child: Text('Active',
+          style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold),
+          textAlign: TextAlign.center),
+    ),
+    SizedBox(width: 8),
+    SizedBox(
+      width: _kGroqColWidthTools,
+      child: Text('Tools',
+          style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold),
+          textAlign: TextAlign.center),
+    ),
+  ];
+
+  Future<void> _copyGroqCatalog() async {
+    if (_groqCatalog.isEmpty) return;
+    final buf = StringBuffer()
+      ..writeln([
+        'id',
+        'owner',
+        'context_window',
+        'max_completion_tokens',
+        'active',
+        'tools',
+      ].join('\t'));
+    for (final m in _groqCatalog) {
+      buf.writeln([
+        m.id,
+        m.ownedBy,
+        m.contextWindow?.toString() ?? '',
+        m.maxCompletionTokens?.toString() ?? '',
+        m.active ? 'yes' : 'no',
+        GroqService.supportsToolCalling(m.id) ? 'yes' : 'no',
+      ].join('\t'));
+    }
+    await Clipboard.setData(ClipboardData(text: buf.toString()));
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text('Copied ${_groqCatalog.length} Groq models to clipboard'),
+        duration: const Duration(seconds: 2),
+      ),
+    );
+  }
+
+  Widget _groqCatalogTable() {
+    if (_groqCatalog.isEmpty) {
+      return Container(
+        padding: const EdgeInsets.all(16),
+        decoration: BoxDecoration(
+          border: Border.all(color: AppTheme.accentDarkMarrone.withAlpha(100)),
+          borderRadius: BorderRadius.circular(8),
+        ),
+        child: Text(
+          _groqLoadingModels
+              ? 'Loading catalog…'
+              : 'No catalog loaded. Save an API key or click refresh to fetch '
+                  'the model catalog from api.groq.com.',
+          style: const TextStyle(fontSize: 12, color: AppTheme.textSecondary),
+        ),
+      );
+    }
+
+    return Container(
+      decoration: BoxDecoration(
+        border: Border.all(color: AppTheme.accentDarkMarrone.withAlpha(100)),
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Padding(
+            padding: const EdgeInsets.fromLTRB(12, 10, 12, 8),
+            child: Row(
+              children: [
+                const Icon(Icons.list_alt, size: 16),
+                const SizedBox(width: 6),
+                Text(
+                  'Catalog (${_groqCatalog.length} models)',
+                  style: const TextStyle(
+                      fontSize: 13, fontWeight: FontWeight.w600),
+                ),
+                const Spacer(),
+                IconButton(
+                  tooltip: 'Copy all rows as TSV',
+                  padding: EdgeInsets.zero,
+                  constraints:
+                      const BoxConstraints(minWidth: 28, minHeight: 28),
+                  icon: const Icon(Icons.copy_all, size: 16),
+                  onPressed: _copyGroqCatalog,
+                ),
+              ],
+            ),
+          ),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+            decoration: BoxDecoration(
+              color: AppTheme.bgSecondary,
+              border: Border(
+                top: BorderSide(
+                    color: AppTheme.accentDarkMarrone.withAlpha(80)),
+                bottom: BorderSide(
+                    color: AppTheme.accentDarkMarrone.withAlpha(80)),
+              ),
+            ),
+            child: const Row(
+              crossAxisAlignment: CrossAxisAlignment.center,
+              children: _kGroqCatalogHeaderCells,
+            ),
+          ),
+          ConstrainedBox(
+            constraints: const BoxConstraints(maxHeight: 380),
+            child: Scrollbar(
+              controller: _groqCatalogScrollController,
+              child: ListView.separated(
+                controller: _groqCatalogScrollController,
+                shrinkWrap: true,
+                padding: EdgeInsets.zero,
+                itemCount: _groqCatalog.length,
+                separatorBuilder: (_, __) => Divider(
+                  height: 1,
+                  thickness: 1,
+                  color: AppTheme.accentDarkMarrone.withAlpha(30),
+                ),
+                itemBuilder: (ctx, i) {
+                  final m = _groqCatalog[i];
+                  final tools = GroqService.supportsToolCalling(m.id);
+                  return Padding(
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 10, vertical: 8),
+                    child: Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Expanded(
+                          flex: _kGroqColFlexName,
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                m.id,
+                                style: const TextStyle(
+                                    fontSize: 12,
+                                    fontWeight: FontWeight.w600),
+                                softWrap: true,
+                              ),
+                            ],
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          flex: _kGroqColFlexOwner,
+                          child: Text(
+                            m.ownedBy,
+                            style: const TextStyle(fontSize: 12),
+                            softWrap: true,
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          flex: _kGroqColFlexCtx,
+                          child: Text(
+                            m.contextWindow?.toString() ?? '—',
+                            style: const TextStyle(fontSize: 12),
+                            textAlign: TextAlign.right,
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          flex: _kGroqColFlexMaxOut,
+                          child: Text(
+                            m.maxCompletionTokens?.toString() ?? '—',
+                            style: const TextStyle(fontSize: 12),
+                            textAlign: TextAlign.right,
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        SizedBox(
+                          width: _kGroqColWidthActive,
+                          child: Center(
+                            child: Icon(
+                              m.active
+                                  ? Icons.check_circle
+                                  : Icons.remove_circle_outline,
+                              size: 16,
+                              color: m.active ? Colors.green : Colors.grey,
+                            ),
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        SizedBox(
+                          width: _kGroqColWidthTools,
+                          child: Center(
+                            child: Icon(
+                              tools
+                                  ? Icons.check_circle
+                                  : Icons.remove_circle_outline,
+                              size: 16,
+                              color: tools ? Colors.green : Colors.grey,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  );
+                },
+              ),
+            ),
+          ),
         ],
       ),
     );
@@ -553,7 +950,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   Widget _openRouterControlPanel() {
     final modelOptions = _openRouterModelOptions();
-    final selectedModel = modelOptions.contains(_openRouterSelectedModel) ? _openRouterSelectedModel : modelOptions.first;
+    final selectedModel = modelOptions.contains(_openRouterSelectedModel)
+        ? _openRouterSelectedModel
+        : (modelOptions.isEmpty ? null : modelOptions.first);
 
     return _section(
       title: 'OpenRouter',
@@ -590,25 +989,63 @@ class _SettingsScreenState extends State<SettingsScreen> {
               Expanded(
                 child: _openRouterLoadingModels
                     ? const LinearProgressIndicator()
+                    : modelOptions.isEmpty
+                    ? Text(
+                        _openRouterApiKeyController.text.trim().isEmpty
+                            ? 'Save an API key to load the model catalog.'
+                            : 'No models available — refresh to retry.',
+                        style: TextStyle(
+                            fontSize: 12, color: Colors.grey[600]),
+                      )
                     : DropdownButton<String>(
                         isExpanded: true,
                         value: selectedModel,
                         items: modelOptions
-                            .map(
-                              (m) => DropdownMenuItem<String>(
+                            .map((m) {
+                              final cat = _openRouterCatalog.firstWhere(
+                                (c) => c.id == m,
+                                orElse: () =>
+                                    OpenRouterModel.fromJson(const {}),
+                              );
+                              final tools = cat.id.isEmpty
+                                  ? true
+                                  : OpenRouterService.supportsToolCalling(cat);
+                              return DropdownMenuItem<String>(
                                 value: m,
-                                child: RichText(
-                                  text: TextSpan(
-                                    children: _buildModelTextSpans(m),
-                                  ),
+                                child: Row(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    Flexible(
+                                      child: RichText(
+                                        overflow: TextOverflow.ellipsis,
+                                        text: TextSpan(
+                                          children: _buildModelTextSpans(m),
+                                        ),
+                                      ),
+                                    ),
+                                    if (!tools) ...[
+                                      const SizedBox(width: 4),
+                                      const Tooltip(
+                                        message:
+                                            'No tool calling — chat / reasoning only.\n'
+                                            'Filesystem tools won\'t work with this model.',
+                                        child: Icon(
+                                            Icons.warning_amber_rounded,
+                                            size: 14,
+                                            color: Colors.orange),
+                                      ),
+                                    ],
+                                  ],
                                 ),
-                              ),
-                            )
-                            .toList(),
+                              );
+                            }).toList(),
                         onChanged: (v) async {
                           if (v == null) return;
                           setState(() => _openRouterSelectedModel = v);
                           await BackendSettingsRepository.instance.setOpenRouterModel(v);
+                          if (OrchestratorManager.instance.isRunning) {
+                            await OrchestratorManager.instance.stop();
+                          }
                         },
                       ),
               ),
@@ -681,6 +1118,926 @@ class _SettingsScreenState extends State<SettingsScreen> {
               suffixText: 'TPM',
             ),
             onChanged: _scheduleOpenRouterTpmLimitSave,
+          ),
+          const SizedBox(height: 24),
+          _openRouterCatalogTable(),
+        ],
+      ),
+    );
+  }
+
+  // OpenRouter catalog table — same column-flex pattern as the GitHub one.
+  static const int _kOrColFlexName = 6;
+  static const int _kOrColFlexCtx = 2;
+  static const int _kOrColFlexMaxOut = 2;
+  static const int _kOrColFlexPriceIn = 3;
+  static const int _kOrColFlexPriceOut = 3;
+  static const int _kOrColFlexModalities = 3;
+  static const double _kOrColWidthTools = 36;
+  static const double _kOrColWidthPage = 36;
+
+  void _toggleOrSort(String column) {
+    setState(() {
+      if (_orSortColumn == column) {
+        _orSortAsc = !_orSortAsc;
+      } else {
+        _orSortColumn = column;
+        _orSortAsc = true;
+      }
+    });
+  }
+
+  Widget _orSortableHeader(String label, String column) {
+    final active = _orSortColumn == column;
+    final icon = !active
+        ? Icons.unfold_more
+        : (_orSortAsc ? Icons.arrow_upward : Icons.arrow_downward);
+    return InkWell(
+      onTap: () => _toggleOrSort(column),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.end,
+        children: [
+          Flexible(
+            child: Text(
+              label,
+              style: TextStyle(
+                fontSize: 11,
+                fontWeight: FontWeight.bold,
+                color: active ? AppTheme.accentMarrone : null,
+              ),
+              textAlign: TextAlign.right,
+              overflow: TextOverflow.ellipsis,
+            ),
+          ),
+          const SizedBox(width: 2),
+          Icon(icon,
+              size: 12,
+              color: active ? AppTheme.accentMarrone : Colors.grey),
+        ],
+      ),
+    );
+  }
+
+  List<Widget> _orCatalogHeaderCells() => [
+        const Expanded(
+          flex: _kOrColFlexName,
+          child: Text('Name / ID',
+              style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold)),
+        ),
+        const SizedBox(width: 8),
+        const Expanded(
+          flex: _kOrColFlexCtx,
+          child: Text('Context',
+              style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold),
+              textAlign: TextAlign.right),
+        ),
+        const SizedBox(width: 8),
+        const Expanded(
+          flex: _kOrColFlexMaxOut,
+          child: Text('Max out',
+              style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold),
+              textAlign: TextAlign.right),
+        ),
+        const SizedBox(width: 8),
+        Expanded(
+          flex: _kOrColFlexPriceIn,
+          child: _orSortableHeader('In \$/Mtok', 'priceIn'),
+        ),
+        const SizedBox(width: 8),
+        Expanded(
+          flex: _kOrColFlexPriceOut,
+          child: _orSortableHeader('Out \$/Mtok', 'priceOut'),
+        ),
+        const SizedBox(width: 8),
+        const Expanded(
+          flex: _kOrColFlexModalities,
+          child: Text('Modalities',
+              style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold)),
+        ),
+        const SizedBox(width: 8),
+        const SizedBox(
+          width: _kOrColWidthTools,
+          child: Text('Tools',
+              style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold),
+              textAlign: TextAlign.center),
+        ),
+        const SizedBox(width: 8),
+        const SizedBox(
+          width: _kOrColWidthPage,
+          child: Text('Page',
+              style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold),
+              textAlign: TextAlign.center),
+        ),
+      ];
+
+  String _formatPricePerMillion(double? perToken) {
+    if (perToken == null) return '—';
+    final perM = perToken * 1000000;
+    if (perM == 0) return 'free';
+    if (perM >= 100) return perM.toStringAsFixed(0);
+    if (perM >= 1) return perM.toStringAsFixed(2);
+    return perM.toStringAsFixed(3);
+  }
+
+  /// Renders a single price cell. When `highlightFree` is true and the value
+  /// is exactly zero, the word "free" gets a green rounded pill.
+  Widget _orPriceCell(double? perToken, {required bool highlightFree}) {
+    final text = _formatPricePerMillion(perToken);
+    if (text == 'free' && highlightFree) {
+      return Align(
+        alignment: Alignment.centerRight,
+        child: Container(
+          padding:
+              const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+          decoration: BoxDecoration(
+            color: Colors.green.shade600,
+            borderRadius: BorderRadius.circular(999),
+          ),
+          child: const Text(
+            'free',
+            style: TextStyle(
+              fontSize: 11,
+              fontWeight: FontWeight.w600,
+              color: Colors.white,
+            ),
+          ),
+        ),
+      );
+    }
+    return Text(
+      text,
+      style: const TextStyle(fontSize: 12),
+      textAlign: TextAlign.right,
+    );
+  }
+
+  Future<void> _copyOpenRouterCatalog() async {
+    final rows = _sortedOpenRouterCatalog();
+    if (rows.isEmpty) return;
+    final buf = StringBuffer()
+      ..writeln([
+        'id',
+        'name',
+        'context',
+        'max_out',
+        'in_per_mtok',
+        'out_per_mtok',
+        'modalities_in',
+        'modalities_out',
+        'tools',
+      ].join('\t'));
+    for (final m in rows) {
+      buf.writeln([
+        m.id,
+        m.name,
+        m.contextLength?.toString() ?? '',
+        m.maxCompletionTokens?.toString() ?? '',
+        _formatPricePerMillion(m.promptPricePerToken),
+        _formatPricePerMillion(m.completionPricePerToken),
+        m.inputModalities.join(','),
+        m.outputModalities.join(','),
+        OpenRouterService.supportsToolCalling(m) ? 'yes' : 'no',
+      ].join('\t'));
+    }
+    await Clipboard.setData(ClipboardData(text: buf.toString()));
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text('Copied ${rows.length} OpenRouter models to clipboard'),
+        duration: const Duration(seconds: 2),
+      ),
+    );
+  }
+
+  List<OpenRouterModel> _sortedOpenRouterCatalog() {
+    if (_orSortColumn == null) return _openRouterCatalog;
+    final list = [..._openRouterCatalog];
+    double key(OpenRouterModel m) {
+      final v = _orSortColumn == 'priceIn'
+          ? m.promptPricePerToken
+          : m.completionPricePerToken;
+      // Sort missing prices to the bottom regardless of direction.
+      if (v == null) return _orSortAsc ? double.infinity : double.negativeInfinity;
+      return v;
+    }
+    list.sort((a, b) {
+      final c = key(a).compareTo(key(b));
+      return _orSortAsc ? c : -c;
+    });
+    return list;
+  }
+
+  Widget _openRouterCatalogTable() {
+    if (_openRouterCatalog.isEmpty) {
+      return Container(
+        padding: const EdgeInsets.all(16),
+        decoration: BoxDecoration(
+          border: Border.all(color: AppTheme.accentDarkMarrone.withAlpha(100)),
+          borderRadius: BorderRadius.circular(8),
+        ),
+        child: Text(
+          _openRouterLoadingModels
+              ? 'Loading catalog…'
+              : 'No catalog loaded. Save an API key or click refresh to fetch '
+                  'the model catalog from openrouter.ai.',
+          style: const TextStyle(fontSize: 12, color: AppTheme.textSecondary),
+        ),
+      );
+    }
+
+    return Container(
+      decoration: BoxDecoration(
+        border: Border.all(color: AppTheme.accentDarkMarrone.withAlpha(100)),
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Padding(
+            padding: const EdgeInsets.fromLTRB(12, 10, 12, 8),
+            child: Row(
+              children: [
+                const Icon(Icons.list_alt, size: 16),
+                const SizedBox(width: 6),
+                Text(
+                  'Catalog (${_openRouterCatalog.length} models)',
+                  style: const TextStyle(
+                      fontSize: 13, fontWeight: FontWeight.w600),
+                ),
+                const Spacer(),
+                IconButton(
+                  tooltip: 'Copy all rows as TSV',
+                  padding: EdgeInsets.zero,
+                  constraints:
+                      const BoxConstraints(minWidth: 28, minHeight: 28),
+                  icon: const Icon(Icons.copy_all, size: 16),
+                  onPressed: _copyOpenRouterCatalog,
+                ),
+              ],
+            ),
+          ),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+            decoration: BoxDecoration(
+              color: AppTheme.bgSecondary,
+              border: Border(
+                top: BorderSide(
+                    color: AppTheme.accentDarkMarrone.withAlpha(80)),
+                bottom: BorderSide(
+                    color: AppTheme.accentDarkMarrone.withAlpha(80)),
+              ),
+            ),
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.center,
+              children: _orCatalogHeaderCells(),
+            ),
+          ),
+          Builder(builder: (_) {
+            final sorted = _sortedOpenRouterCatalog();
+            return ConstrainedBox(
+            constraints: const BoxConstraints(maxHeight: 380),
+            child: Scrollbar(
+              controller: _openRouterCatalogScrollController,
+              child: ListView.separated(
+                controller: _openRouterCatalogScrollController,
+                shrinkWrap: true,
+                padding: EdgeInsets.zero,
+                itemCount: sorted.length,
+                separatorBuilder: (_, __) => Divider(
+                  height: 1,
+                  thickness: 1,
+                  color: AppTheme.accentDarkMarrone.withAlpha(30),
+                ),
+                itemBuilder: (ctx, i) {
+                  final m = sorted[i];
+                  final tools = OpenRouterService.supportsToolCalling(m);
+                  final modalities = m.inputModalities.isEmpty
+                      ? '—'
+                      : m.inputModalities.join(', ');
+                  final bothFree = (m.promptPricePerToken ?? -1) == 0 &&
+                      (m.completionPricePerToken ?? -1) == 0;
+                  return Padding(
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 10, vertical: 8),
+                    child: Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Expanded(
+                          flex: _kOrColFlexName,
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                m.name.isNotEmpty ? m.name : m.id,
+                                style: const TextStyle(
+                                    fontSize: 12,
+                                    fontWeight: FontWeight.w600),
+                                softWrap: true,
+                              ),
+                              Text(
+                                m.id,
+                                style: const TextStyle(
+                                    fontSize: 10,
+                                    color: AppTheme.textSecondary),
+                                softWrap: true,
+                              ),
+                            ],
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          flex: _kOrColFlexCtx,
+                          child: Text(
+                            m.contextLength?.toString() ?? '—',
+                            style: const TextStyle(fontSize: 12),
+                            textAlign: TextAlign.right,
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          flex: _kOrColFlexMaxOut,
+                          child: Text(
+                            m.maxCompletionTokens?.toString() ?? '—',
+                            style: const TextStyle(fontSize: 12),
+                            textAlign: TextAlign.right,
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          flex: _kOrColFlexPriceIn,
+                          child: _orPriceCell(m.promptPricePerToken,
+                              highlightFree: bothFree),
+                        ),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          flex: _kOrColFlexPriceOut,
+                          child: _orPriceCell(m.completionPricePerToken,
+                              highlightFree: bothFree),
+                        ),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          flex: _kOrColFlexModalities,
+                          child: Text(
+                            modalities,
+                            style: const TextStyle(fontSize: 12),
+                            softWrap: true,
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        SizedBox(
+                          width: _kOrColWidthTools,
+                          child: Center(
+                            child: Icon(
+                              tools
+                                  ? Icons.check_circle
+                                  : Icons.remove_circle_outline,
+                              size: 16,
+                              color: tools ? Colors.green : Colors.grey,
+                            ),
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        SizedBox(
+                          width: _kOrColWidthPage,
+                          child: Center(
+                            child: IconButton(
+                              tooltip: m.htmlUrl.isEmpty
+                                  ? 'No marketplace URL'
+                                  : 'Copy ${m.htmlUrl} to clipboard',
+                              padding: EdgeInsets.zero,
+                              constraints: const BoxConstraints(
+                                  minWidth: 28, minHeight: 28),
+                              icon: const Icon(Icons.open_in_new, size: 16),
+                              onPressed: m.htmlUrl.isEmpty
+                                  ? null
+                                  : () async {
+                                      await Clipboard.setData(
+                                          ClipboardData(text: m.htmlUrl));
+                                      if (!mounted) return;
+                                      ScaffoldMessenger.of(context)
+                                          .showSnackBar(
+                                        SnackBar(
+                                          content: Text(
+                                              'Copied URL: ${m.htmlUrl}'),
+                                          duration:
+                                              const Duration(seconds: 2),
+                                        ),
+                                      );
+                                    },
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  );
+                },
+              ),
+            ),
+          );
+          }),
+        ],
+      ),
+    );
+  }
+
+  Widget _githubControlPanel() {
+    final modelOptions = _githubModels.isNotEmpty
+        ? _githubModels
+        : GithubModelsService.fallbackModels;
+    final selectedModel = modelOptions.contains(_githubSelectedModel)
+        ? _githubSelectedModel
+        : modelOptions.first;
+
+    return _section(
+      title: 'GitHub Models',
+      subtitle: 'OpenAI-compatible inference via models.github.ai. '
+          'Use a fine-grained PAT with `models:read` scope. Model IDs are '
+          'publisher-prefixed, e.g. `openai/gpt-4o-mini`.',
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          TextField(
+            controller: _githubApiKeyController,
+            obscureText: !_githubApiKeyVisible,
+            decoration: InputDecoration(
+              labelText: 'GitHub PAT (models:read)',
+              hintText: 'github_pat_...',
+              helperText:
+                  'Create one at github.com/settings/personal-access-tokens/new',
+              suffixIcon: IconButton(
+                icon: Icon(
+                  _githubApiKeyVisible ? Icons.visibility_off : Icons.visibility,
+                  size: 18,
+                ),
+                onPressed: () => setState(
+                  () => _githubApiKeyVisible = !_githubApiKeyVisible,
+                ),
+              ),
+            ),
+            onChanged: _scheduleGithubApiKeySave,
+          ),
+          const SizedBox(height: 16),
+          Row(
+            children: [
+              const Text('Model', style: TextStyle(fontSize: 13)),
+              const SizedBox(width: 12),
+              Expanded(
+                child: _githubLoadingModels
+                    ? const LinearProgressIndicator()
+                    : DropdownButton<String>(
+                        isExpanded: true,
+                        value: selectedModel,
+                        items: modelOptions
+                            .map(
+                              (m) {
+                                final cat = _githubCatalog.firstWhere(
+                                    (c) => c.id == m,
+                                    orElse: () => GithubModel.fromJson(const {}));
+                                final tools =
+                                    GithubModelsService.supportsToolCalling(cat);
+                                return DropdownMenuItem<String>(
+                                  value: m,
+                                  child: Row(
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: [
+                                      Flexible(
+                                        child: Text(m,
+                                            style:
+                                                const TextStyle(fontSize: 13),
+                                            overflow: TextOverflow.ellipsis),
+                                      ),
+                                      if (!tools && cat.id.isNotEmpty) ...[
+                                        const SizedBox(width: 4),
+                                        const Tooltip(
+                                          message:
+                                              'No tool calling — chat / reasoning only.\n'
+                                              'Filesystem tools will be disabled for this model.',
+                                          child: Icon(Icons.warning_amber_rounded,
+                                              size: 14, color: Colors.orange),
+                                        ),
+                                      ],
+                                    ],
+                                  ),
+                                );
+                              },
+                            )
+                            .toList(),
+                        onChanged: (v) async {
+                          if (v == null) return;
+                          setState(() => _githubSelectedModel = v);
+                          await BackendSettingsRepository.instance
+                              .setGithubModel(v);
+                          if (OrchestratorManager.instance.isRunning) {
+                            await OrchestratorManager.instance.stop();
+                          }
+                          // Auto-toggle plain-chat mode for non-tool models so
+                          // the orchestrator skips the tool loop on next start.
+                          final cat = _githubCatalog.firstWhere(
+                              (c) => c.id == v,
+                              orElse: () => GithubModel.fromJson(const {}));
+                          final disable = cat.id.isNotEmpty &&
+                              !GithubModelsService.supportsToolCalling(cat);
+                          await BackendSettingsRepository.instance
+                              .setGithubDisableTools(disable);
+                        },
+                      ),
+              ),
+              const SizedBox(width: 8),
+              IconButton(
+                icon: const Icon(Icons.refresh, size: 18),
+                tooltip: 'Refresh catalog from models.github.ai',
+                onPressed: () => _refreshGithubCatalog(
+                  _githubApiKeyController.text.trim(),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          Text(
+            'All catalog models are listed. Models marked with ⚠️ don\'t '
+            'support tool calling — they\'re fine for plain chat / reasoning, '
+            'but filesystem tools will be auto-disabled for them.',
+            style: TextStyle(fontSize: 11, color: Colors.grey[600]),
+          ),
+          const SizedBox(height: 20),
+          Row(
+            children: [
+              const SizedBox(
+                width: 110,
+                child: Text('Temperature', style: TextStyle(fontSize: 13)),
+              ),
+              Expanded(
+                child: Slider(
+                  value: _githubTemperature,
+                  min: 0.0,
+                  max: 2.0,
+                  divisions: 40,
+                  label: _githubTemperature.toStringAsFixed(2),
+                  onChanged: (v) async {
+                    setState(() => _githubTemperature = v);
+                    await BackendSettingsRepository.instance
+                        .setGithubTemperature(v);
+                  },
+                ),
+              ),
+              SizedBox(
+                width: 38,
+                child: Text(
+                  _githubTemperature.toStringAsFixed(2),
+                  style: const TextStyle(fontSize: 12),
+                  textAlign: TextAlign.right,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 16),
+          TextField(
+            controller: _githubMaxTokensController,
+            keyboardType: TextInputType.number,
+            decoration: const InputDecoration(
+              labelText: 'Max completion tokens',
+              hintText: '4096',
+              helperText:
+                  'GitHub Models uses `max_tokens` for the completion budget.',
+              suffixText: 'tokens',
+            ),
+            onChanged: _scheduleGithubMaxTokensSave,
+          ),
+          const SizedBox(height: 16),
+          TextField(
+            controller: _githubTpmLimitController,
+            keyboardType: TextInputType.number,
+            decoration: const InputDecoration(
+              labelText: 'TPM limit (0 = unlimited)',
+              hintText: '0',
+              helperText:
+                  'Tokens-per-minute cap applied by the orchestrator. '
+                  'GitHub Models has per-tier rate limits — see the catalog table below.',
+              suffixText: 'TPM',
+            ),
+            onChanged: _scheduleGithubTpmLimitSave,
+          ),
+          const SizedBox(height: 24),
+          _githubCatalogTable(),
+        ],
+      ),
+    );
+  }
+
+  // Catalog table column geometry — flex units for text columns,
+  // fixed pixel widths for the icon-only ones. Tweaking these reflows
+  // the whole table without touching the rendering code.
+  static const int _kGithubColFlexName = 6;
+  static const int _kGithubColFlexPublisher = 3;
+  static const int _kGithubColFlexSummary = 11;
+  static const int _kGithubColFlexTier = 2;
+  static const int _kGithubColFlexMaxIn = 2;
+  static const int _kGithubColFlexMaxOut = 2;
+  static const double _kGithubColWidthTools = 36;
+  static const double _kGithubColWidthPage = 36;
+
+  static const List<Widget> _kGithubCatalogHeaderCells = [
+    Expanded(
+      flex: _kGithubColFlexName,
+      child: Text('Name / ID',
+          style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold)),
+    ),
+    SizedBox(width: 8),
+    Expanded(
+      flex: _kGithubColFlexPublisher,
+      child: Text('Publisher',
+          style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold)),
+    ),
+    SizedBox(width: 8),
+    Expanded(
+      flex: _kGithubColFlexSummary,
+      child: Text('Summary',
+          style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold)),
+    ),
+    SizedBox(width: 8),
+    Expanded(
+      flex: _kGithubColFlexTier,
+      child: Text('Tier',
+          style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold)),
+    ),
+    SizedBox(width: 8),
+    Expanded(
+      flex: _kGithubColFlexMaxIn,
+      child: Text('Max in',
+          style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold),
+          textAlign: TextAlign.right),
+    ),
+    SizedBox(width: 8),
+    Expanded(
+      flex: _kGithubColFlexMaxOut,
+      child: Text('Max out',
+          style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold),
+          textAlign: TextAlign.right),
+    ),
+    SizedBox(width: 8),
+    SizedBox(
+      width: _kGithubColWidthTools,
+      child: Text('Tools',
+          style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold),
+          textAlign: TextAlign.center),
+    ),
+    SizedBox(width: 8),
+    SizedBox(
+      width: _kGithubColWidthPage,
+      child: Text('Page',
+          style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold),
+          textAlign: TextAlign.center),
+    ),
+  ];
+
+  Future<void> _copyGithubCatalog() async {
+    if (_githubCatalog.isEmpty) return;
+    final buf = StringBuffer()
+      ..writeln([
+        'id',
+        'name',
+        'publisher',
+        'summary',
+        'tier',
+        'max_in',
+        'max_out',
+        'tools',
+        'html_url',
+      ].join('\t'));
+    for (final m in _githubCatalog) {
+      buf.writeln([
+        m.id,
+        m.name,
+        m.publisher,
+        m.summary.replaceAll('\t', ' ').replaceAll('\n', ' '),
+        m.rateLimitTier,
+        m.maxInputTokens?.toString() ?? '',
+        m.maxOutputTokens?.toString() ?? '',
+        GithubModelsService.supportsToolCalling(m) ? 'yes' : 'no',
+        m.htmlUrl,
+      ].join('\t'));
+    }
+    await Clipboard.setData(ClipboardData(text: buf.toString()));
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content:
+            Text('Copied ${_githubCatalog.length} GitHub models to clipboard'),
+        duration: const Duration(seconds: 2),
+      ),
+    );
+  }
+
+  Widget _githubCatalogTable() {
+    if (_githubCatalog.isEmpty) {
+      return Container(
+        padding: const EdgeInsets.all(16),
+        decoration: BoxDecoration(
+          border: Border.all(color: AppTheme.accentDarkMarrone.withAlpha(100)),
+          borderRadius: BorderRadius.circular(8),
+        ),
+        child: Text(
+          _githubLoadingModels
+              ? 'Loading catalog…'
+              : 'No catalog loaded. Save a PAT or click refresh to fetch '
+                  'the model catalog from models.github.ai.',
+          style: const TextStyle(fontSize: 12, color: AppTheme.textSecondary),
+        ),
+      );
+    }
+
+    return Container(
+      decoration: BoxDecoration(
+        border: Border.all(color: AppTheme.accentDarkMarrone.withAlpha(100)),
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Padding(
+            padding: const EdgeInsets.fromLTRB(12, 10, 12, 8),
+            child: Row(
+              children: [
+                const Icon(Icons.list_alt, size: 16),
+                const SizedBox(width: 6),
+                Text(
+                  'Catalog (${_githubCatalog.length} models)',
+                  style: const TextStyle(
+                      fontSize: 13, fontWeight: FontWeight.w600),
+                ),
+                const Spacer(),
+                IconButton(
+                  tooltip: 'Copy all rows as TSV',
+                  padding: EdgeInsets.zero,
+                  constraints:
+                      const BoxConstraints(minWidth: 28, minHeight: 28),
+                  icon: const Icon(Icons.copy_all, size: 16),
+                  onPressed: _copyGithubCatalog,
+                ),
+              ],
+            ),
+          ),
+          // Header row — flex-based so it fills the available width and
+          // matches each data row's column widths exactly.
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+            decoration: BoxDecoration(
+              color: AppTheme.bgSecondary,
+              border: Border(
+                top: BorderSide(
+                    color: AppTheme.accentDarkMarrone.withAlpha(80)),
+                bottom: BorderSide(
+                    color: AppTheme.accentDarkMarrone.withAlpha(80)),
+              ),
+            ),
+            child: const Row(
+              crossAxisAlignment: CrossAxisAlignment.center,
+              children: _kGithubCatalogHeaderCells,
+            ),
+          ),
+          ConstrainedBox(
+            constraints: const BoxConstraints(maxHeight: 380),
+            child: Scrollbar(
+              controller: _githubCatalogScrollController,
+              child: ListView.separated(
+                controller: _githubCatalogScrollController,
+                shrinkWrap: true,
+                padding: EdgeInsets.zero,
+                itemCount: _githubCatalog.length,
+                separatorBuilder: (_, __) => Divider(
+                  height: 1,
+                  thickness: 1,
+                  color: AppTheme.accentDarkMarrone.withAlpha(30),
+                ),
+                itemBuilder: (ctx, i) {
+                  final m = _githubCatalog[i];
+                  return Padding(
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+                    child: Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        // Name / ID — wraps onto multiple lines.
+                        Expanded(
+                          flex: _kGithubColFlexName,
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                m.name.isNotEmpty ? m.name : m.id,
+                                style: const TextStyle(
+                                    fontSize: 12,
+                                    fontWeight: FontWeight.w600),
+                                softWrap: true,
+                              ),
+                              Text(
+                                m.id,
+                                style: const TextStyle(
+                                    fontSize: 10,
+                                    color: AppTheme.textSecondary),
+                                softWrap: true,
+                              ),
+                            ],
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          flex: _kGithubColFlexPublisher,
+                          child: Text(
+                            m.publisher,
+                            style: const TextStyle(fontSize: 12),
+                            softWrap: true,
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        // Summary — full-width wrapping, no truncation.
+                        Expanded(
+                          flex: _kGithubColFlexSummary,
+                          child: Text(
+                            m.summary,
+                            style: const TextStyle(fontSize: 12, height: 1.3),
+                            softWrap: true,
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          flex: _kGithubColFlexTier,
+                          child: Text(
+                            m.rateLimitTier,
+                            style: const TextStyle(fontSize: 12),
+                            softWrap: true,
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          flex: _kGithubColFlexMaxIn,
+                          child: Text(
+                            m.maxInputTokens?.toString() ?? '—',
+                            style: const TextStyle(fontSize: 12),
+                            textAlign: TextAlign.right,
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          flex: _kGithubColFlexMaxOut,
+                          child: Text(
+                            m.maxOutputTokens?.toString() ?? '—',
+                            style: const TextStyle(fontSize: 12),
+                            textAlign: TextAlign.right,
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        SizedBox(
+                          width: _kGithubColWidthTools,
+                          child: Center(
+                            child: Icon(
+                              GithubModelsService.supportsToolCalling(m)
+                                  ? Icons.check_circle
+                                  : Icons.remove_circle_outline,
+                              size: 16,
+                              color: GithubModelsService.supportsToolCalling(m)
+                                  ? Colors.green
+                                  : Colors.grey,
+                            ),
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        SizedBox(
+                          width: _kGithubColWidthPage,
+                          child: Center(
+                            child: IconButton(
+                              tooltip: m.htmlUrl.isEmpty
+                                  ? 'No marketplace URL'
+                                  : 'Copy ${m.htmlUrl} to clipboard',
+                              padding: EdgeInsets.zero,
+                              constraints: const BoxConstraints(
+                                  minWidth: 28, minHeight: 28),
+                              icon: const Icon(Icons.open_in_new, size: 16),
+                              onPressed: m.htmlUrl.isEmpty
+                                  ? null
+                                  : () async {
+                                      await Clipboard.setData(
+                                          ClipboardData(text: m.htmlUrl));
+                                      if (!mounted) return;
+                                      ScaffoldMessenger.of(context)
+                                          .showSnackBar(
+                                        SnackBar(
+                                          content: Text(
+                                              'Copied URL: ${m.htmlUrl}'),
+                                          duration:
+                                              const Duration(seconds: 2),
+                                        ),
+                                      );
+                                    },
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  );
+                },
+              ),
+            ),
           ),
         ],
       ),
@@ -790,6 +2147,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     if (v == null) return;
                     setState(() => _geminiSelectedModel = v);
                     await BackendSettingsRepository.instance.setGeminiModel(v);
+                    if (OrchestratorManager.instance.isRunning) {
+                      await OrchestratorManager.instance.stop();
+                    }
                   },
                 ),
               ),
@@ -924,7 +2284,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
             controller: _generateBaseUrlController,
             decoration: const InputDecoration(
               labelText: 'Server URL',
-              hintText: 'http://localhost:11434',
+              hintText: ApiConstants.ollamaLocalBaseUrl,
               helperText: 'Address of the /api/generate server. '
                   'Include port if non-default, e.g. http://localhost:12345',
             ),
@@ -1179,6 +2539,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
     final openRouterTemperature = await BackendSettingsRepository.instance.getOpenRouterTemperature();
     final openRouterMaxTokens = await BackendSettingsRepository.instance.getOpenRouterMaxTokens();
     final openRouterTpmLimit = await BackendSettingsRepository.instance.getOpenRouterTpmLimit();
+    final githubApiKey = await BackendSettingsRepository.instance.getGithubApiKey();
+    final githubModel = await BackendSettingsRepository.instance.getGithubModel();
+    final githubTemperature = await BackendSettingsRepository.instance.getGithubTemperature();
+    final githubMaxTokens = await BackendSettingsRepository.instance.getGithubMaxTokens();
+    final githubTpmLimit = await BackendSettingsRepository.instance.getGithubTpmLimit();
     final genBaseUrl = await BackendSettingsRepository.instance.getGenerateBaseUrl();
     final genModel = await BackendSettingsRepository.instance.getGenerateModel();
     final genApiKey = await BackendSettingsRepository.instance.getGenerateApiKey();
@@ -1191,7 +2556,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     setState(() {
       _tokenController.text = token ?? "";
       _agentTokenController.text = agentCreds?.hfToken ?? "";
-      _selectedModelId = selected ?? ApiConstants.defaultModelId;
+      _selectedModelId = selected ?? '';
       _models = models;
       _activeBackend = backend;
       _localServerUrl = serverUrl;
@@ -1217,10 +2582,17 @@ class _SettingsScreenState extends State<SettingsScreen> {
       _geminiMaxTokensController.text = geminiMaxTokens.toString();
       _geminiTpmLimitController.text = geminiTpmLimit.toString();
       _openRouterApiKeyController.text = openRouterApiKey ?? '';
-      _openRouterSelectedModel = openRouterModel ?? OpenRouterService.fallbackModels.first;
+      _openRouterSelectedModel = openRouterModel;
       _openRouterTemperature = openRouterTemperature;
       _openRouterMaxTokensController.text = openRouterMaxTokens.toString();
       _openRouterTpmLimitController.text = openRouterTpmLimit.toString();
+      _githubApiKeyController.text = githubApiKey ?? '';
+      _githubSelectedModel = (githubModel == null || githubModel.isEmpty)
+          ? GithubModelsService.fallbackModels.first
+          : githubModel;
+      _githubTemperature = githubTemperature;
+      _githubMaxTokensController.text = githubMaxTokens.toString();
+      _githubTpmLimitController.text = githubTpmLimit.toString();
       _generateBaseUrlController.text = genBaseUrl ?? OllamaGenerateService.defaultBaseUrl;
       _generateModelController.text = genModel ?? '';
       _generateApiKeyController.text = genApiKey ?? '';
@@ -1243,9 +2615,16 @@ class _SettingsScreenState extends State<SettingsScreen> {
       // ignore: unawaited_futures
       _refreshGroqModels(groqApiKey!);
     }
-    if (backend == LlmBackend.openRouter) {
+    // Always load the OpenRouter catalog when a key exists, regardless of
+    // the active backend — populates both the dropdown and the table.
+    if ((openRouterApiKey ?? '').isNotEmpty) {
       // ignore: unawaited_futures
-      _refreshOpenRouterModels(openRouterApiKey ?? '');
+      _refreshOpenRouterModels(openRouterApiKey!);
+    }
+    if (backend == LlmBackend.githubOrchestrator &&
+        (githubApiKey ?? '').isNotEmpty) {
+      // ignore: unawaited_futures
+      _refreshGithubCatalog(githubApiKey!);
     }
   }
 
@@ -1285,14 +2664,17 @@ class _SettingsScreenState extends State<SettingsScreen> {
   Future<void> _deleteModel(HfModel m) async {
     await ModelRepository.instance.delete(m.id);
     if (_selectedModelId == m.id) {
-      await SettingsRepository.instance.setSelectedModelId(ApiConstants.defaultModelId);
-      _selectedModelId = ApiConstants.defaultModelId;
+      await SettingsRepository.instance.setSelectedModelId('');
+      _selectedModelId = '';
     }
     await _load();
   }
 
   Future<void> _setSelected(String id) async {
     await SettingsRepository.instance.setSelectedModelId(id);
+    if (OrchestratorManager.instance.isRunning) {
+      await OrchestratorManager.instance.stop();
+    }
     if (!mounted) return;
     setState(() => _selectedModelId = id);
   }
@@ -1670,6 +3052,58 @@ class _SettingsScreenState extends State<SettingsScreen> {
       _ollamaInstalledModels = installed;
       _ollamaSelectedModel = resolvedModel;
     });
+
+    // Fire-and-forget the rich catalog fetch (tags + show fan-out). The
+    // simple installed list is already populated above, so the dropdown
+    // works immediately even if `/api/show` is slow.
+    if (up) {
+      // ignore: unawaited_futures
+      _refreshOllamaCatalog();
+    } else if (mounted) {
+      setState(() => _ollamaCatalog = const []);
+    }
+  }
+
+  Future<void> _refreshOllamaCatalog() async {
+    if (!mounted) return;
+    setState(() => _ollamaCatalogLoading = true);
+    final apiKey = _ollamaApiKeyController.text.trim();
+    List<OllamaCatalogModel> catalog = const [];
+    try {
+      catalog = await OllamaService.instance.listCatalog(
+        baseUrl: _ollamaBaseUrl,
+        apiKey: apiKey,
+      );
+    } catch (e) {
+      _appendOllamaLog('catalog fetch failed: $e');
+    }
+    if (!mounted) return;
+    setState(() {
+      _ollamaCatalog = catalog;
+      _ollamaCatalogLoading = false;
+    });
+  }
+
+  Future<void> _refreshOllamaLibrary() async {
+    if (!mounted) return;
+    setState(() {
+      _ollamaLibraryLoading = true;
+      _ollamaLibraryError = null;
+    });
+    try {
+      final lib = await OllamaLibraryService.instance.fetchLibrary();
+      if (!mounted) return;
+      setState(() {
+        _ollamaLibrary = lib;
+        _ollamaLibraryLoading = false;
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _ollamaLibraryError = e.toString();
+        _ollamaLibraryLoading = false;
+      });
+    }
   }
 
   Future<void> _refreshOllamaPythonStatus({bool verbose = false}) async {
@@ -1761,8 +3195,14 @@ class _SettingsScreenState extends State<SettingsScreen> {
       _appendOllamaLog('Server not reachable. Start it first ("Start Ollama server").');
       return;
     }
+    final token = CancelToken();
     setState(() {
       _ollamaBusy = true;
+      _ollamaPullCancelToken = token;
+      _ollamaPullingModel = name;
+      _ollamaPullCompleted = 0;
+      _ollamaPullTotal = 0;
+      _ollamaPullCancelled = false;
     });
     _appendOllamaLog('Pulling "$name"… this may take several minutes.');
     try {
@@ -1770,6 +3210,22 @@ class _SettingsScreenState extends State<SettingsScreen> {
         name,
         baseUrl: _ollamaBaseUrl,
         onProgress: _appendOllamaLog,
+        onBytes: (completed, total) {
+          if (!mounted) return;
+          // Avoid spamming setState — only rebuild when the percentage
+          // actually changes by at least one point (or transfer finishes).
+          final prevPct = _ollamaPullTotal > 0
+              ? (_ollamaPullCompleted * 100 / _ollamaPullTotal).floor()
+              : -1;
+          final nextPct = total > 0 ? (completed * 100 / total).floor() : -1;
+          if (nextPct != prevPct || completed == total) {
+            setState(() {
+              _ollamaPullCompleted = completed;
+              _ollamaPullTotal = total;
+            });
+          }
+        },
+        cancelToken: token,
       );
       _appendOllamaLog('✓ "$name" downloaded.');
       _ollamaPullController.clear();
@@ -1787,18 +3243,111 @@ class _SettingsScreenState extends State<SettingsScreen> {
         );
       }
     } catch (e) {
-      _appendOllamaLog('✗ Pull failed: $e');
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('✗ Pull failed: $e'),
-            backgroundColor: AppTheme.danger,
-          ),
-        );
+      // Cancellation is expected — don't surface as a failure.
+      if (_ollamaPullCancelled || token.isCancelled) {
+        _appendOllamaLog('⏹ Pull of "$name" cancelled by user.');
+        // Best-effort cleanup of any partial blobs the daemon kept.
+        try {
+          await OllamaService.instance.deleteModel(
+            name,
+            baseUrl: _ollamaBaseUrl,
+          );
+          _appendOllamaLog('   Cleaned up partial download.');
+        } catch (delErr) {
+          // Manifest probably wasn't written yet — Ollama returns 404,
+          // and the blobs will be garbage-collected next pull.
+          _appendOllamaLog('   (no manifest to delete: $delErr)');
+        }
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text('Pull of "$name" cancelled'),
+              backgroundColor: AppTheme.textMuted,
+            ),
+          );
+        }
+      } else {
+        _appendOllamaLog('✗ Pull failed: $e');
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text('✗ Pull failed: $e'),
+              backgroundColor: AppTheme.danger,
+            ),
+          );
+        }
       }
     } finally {
-      if (mounted) setState(() => _ollamaBusy = false);
+      if (mounted) {
+        setState(() {
+          _ollamaBusy = false;
+          _ollamaPullCancelToken = null;
+          _ollamaPullingModel = null;
+          _ollamaPullCompleted = 0;
+          _ollamaPullTotal = 0;
+          _ollamaPullCancelled = false;
+        });
+      }
+      // Refresh the catalog whether we succeeded or cancelled — installed
+      // models may have shifted (deletion above can drop the row).
+      // ignore: unawaited_futures
+      _refreshOllamaStatus();
     }
+  }
+
+  /// Abort the in-progress pull. The HTTP stream is closed via [CancelToken];
+  /// the `_pullOllamaModel` `catch` branch then deletes the partial model.
+  void _cancelOllamaPull() {
+    final token = _ollamaPullCancelToken;
+    if (token == null || token.isCancelled) return;
+    setState(() => _ollamaPullCancelled = true);
+    token.cancel('user cancelled');
+    _appendOllamaLog('Cancelling download…');
+  }
+
+  Widget _ollamaPullProgressBar() {
+    final hasTotal = _ollamaPullTotal > 0;
+    final pct = hasTotal
+        ? (_ollamaPullCompleted * 100 / _ollamaPullTotal)
+        : null;
+    return Padding(
+      padding: const EdgeInsets.only(top: 10),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Row(
+            children: [
+              Expanded(
+                child: Text(
+                  'Pulling ${_ollamaPullingModel ?? ''}'
+                  '${_ollamaPullCancelled ? ' — cancelling…' : ''}',
+                  style: const TextStyle(
+                      fontSize: 12, fontWeight: FontWeight.w600),
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ),
+              if (hasTotal)
+                Text(
+                  '${_formatBytes(_ollamaPullCompleted)} / '
+                  '${_formatBytes(_ollamaPullTotal)}'
+                  '  •  ${pct!.toStringAsFixed(1)}%',
+                  style: const TextStyle(
+                      fontSize: 11, color: AppTheme.textSecondary),
+                ),
+            ],
+          ),
+          const SizedBox(height: 4),
+          ClipRRect(
+            borderRadius: BorderRadius.circular(4),
+            child: LinearProgressIndicator(
+              value: hasTotal ? (pct! / 100).clamp(0.0, 1.0) : null,
+              minHeight: 6,
+              backgroundColor: AppTheme.bgSecondary,
+            ),
+          ),
+        ],
+      ),
+    );
   }
 
   Future<void> _deleteOllamaModel(String name) async {
@@ -1866,6 +3415,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   Future<void> _setOllamaModel(String name) async {
     await BackendSettingsRepository.instance.setOllamaModel(name);
+    if (OrchestratorManager.instance.isRunning) {
+      await OrchestratorManager.instance.stop();
+    }
     if (!mounted) return;
     setState(() => _ollamaSelectedModel = name);
   }
@@ -2234,7 +3786,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   Widget _navItem(String label, int index, IconData icon) {
     final selected = _settingsSection == index;
     return Material(
-      color: selected ? AppTheme.accent.withOpacity(0.12) : Colors.transparent,
+      color: selected ? AppTheme.accent.withAlpha(25) : Colors.transparent,
       borderRadius: BorderRadius.circular(8),
       child: InkWell(
         borderRadius: BorderRadius.circular(8),
@@ -2272,6 +3824,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     final isGroqBackend = _activeBackend == LlmBackend.groq || _activeBackend == LlmBackend.groqOrchestrator;
     final isGeminiBackend = _activeBackend == LlmBackend.geminiOrchestrator;
     final isOpenRouterBackend = _activeBackend == LlmBackend.openRouter || _activeBackend == LlmBackend.openRouterOrchestrator;
+    final isGithubBackend = _activeBackend == LlmBackend.githubOrchestrator;
 
     return SingleChildScrollView(
       padding: const EdgeInsets.all(24),
@@ -2352,6 +3905,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
                               value: LlmBackend.openRouterOrchestrator,
                               child: Text("OpenRouter + Orchestrator (filesystem tools)"),
                             ),
+                            // --- GitHub Models ---
+                            DropdownMenuItem(
+                              value: LlmBackend.githubOrchestrator,
+                              child: Text("GitHub + Orchestrator (filesystem tools)"),
+                            ),
                             // --- Other ---
                             // DropdownMenuItem(
                             //   value: LlmBackend.local,
@@ -2363,6 +3921,12 @@ class _SettingsScreenState extends State<SettingsScreen> {
                               final messenger = ScaffoldMessenger.of(context);
                               setState(() => _activeBackend = v);
                               await BackendSettingsRepository.instance.setActiveBackend(v);
+
+                              // Stop orchestrator as backend change requires a process restart
+                              if (OrchestratorManager.instance.isRunning) {
+                                await OrchestratorManager.instance.stop();
+                              }
+
                               if (v == LlmBackend.ollama || v == LlmBackend.ollamaPython || v == LlmBackend.ollamaOrchestrator) {
                                 // ignore: unawaited_futures
                                 _refreshOllamaStatus();
@@ -2375,6 +3939,12 @@ class _SettingsScreenState extends State<SettingsScreen> {
                                 // ignore: unawaited_futures
                                 _refreshOpenRouterModels(
                                   _openRouterApiKeyController.text.trim(),
+                                );
+                              }
+                              if (v == LlmBackend.githubOrchestrator) {
+                                // ignore: unawaited_futures
+                                _refreshGithubCatalog(
+                                  _githubApiKeyController.text.trim(),
                                 );
                               }
                               if (mounted) {
@@ -2463,6 +4033,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 const SizedBox(height: 20),
                 _orchestratorNote(),
                 const SizedBox(height: 28),
+              ] else if (_activeBackend == LlmBackend.githubOrchestrator) ...[
+                _githubControlPanel(),
+                const SizedBox(height: 20),
+                _orchestratorNote(),
+                const SizedBox(height: 28),
               ] else if (_activeBackend == LlmBackend.ollamaGenerate) ...[
                 _generateControlPanel(),
                 const SizedBox(height: 28),
@@ -2481,7 +4056,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                           onChanged: (v) => _scheduleAgentTokenSave(v),
                           decoration: InputDecoration(
                             hintText: "hf_xxx...",
-                            helperText: "Auto-saved on change. Get from https://huggingface.co/settings/tokens",
+                            helperText: "Auto-saved on change. Get from ${ApiConstants.huggingfaceTokensUrl}",
                             suffixIcon: IconButton(
                               icon: Icon(
                                 _obscureAgentToken ? Icons.visibility_outlined : Icons.visibility_off_outlined,
@@ -2561,7 +4136,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
               // Groq and Gemini manage their own models inside their
               // dedicated control panels, so we hide these sections
               // for those backends.
-              if (!isGroqBackend && !isGeminiBackend && !isOpenRouterBackend) ...[
+              if (!isGroqBackend && !isGeminiBackend && !isOpenRouterBackend && !isGithubBackend) ...[
                 const SizedBox(height: 28),
                 _section(
                   title: "Default model",
@@ -2696,7 +4271,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
         _activeBackend == LlmBackend.ollamaOrchestrator ||
         _activeBackend == LlmBackend.groqOrchestrator ||
         _activeBackend == LlmBackend.geminiOrchestrator ||
-        _activeBackend == LlmBackend.openRouterOrchestrator;
+        _activeBackend == LlmBackend.openRouterOrchestrator ||
+        _activeBackend == LlmBackend.githubOrchestrator;
 
     // Merge in-memory session log + persisted log (deduplicated, persisted first).
     final seen = <String>{};
@@ -2842,22 +4418,25 @@ class _SettingsScreenState extends State<SettingsScreen> {
       case LlmBackend.openRouterOrchestrator:
         await _startOpenRouterOrchestrator();
         break;
+      case LlmBackend.githubOrchestrator:
+        await _startGithubOrchestrator();
+        break;
     }
   }
 
-  List<String> _combinedOrchestratorLogLines() {
-    final combined = <String>[..._orchestratorLog];
-    final runtime = OrchestratorManager.instance.stderrLog;
-    if (runtime.isNotEmpty) {
-      for (final line in const LineSplitter().convert(runtime)) {
-        if (line.trim().isEmpty) continue;
-        if (!combined.contains(line)) {
-          combined.add(line);
-        }
-      }
-    }
-    return combined;
-  }
+  // List<String> _combinedOrchestratorLogLines() {
+  //   final combined = <String>[..._orchestratorLog];
+  //   final runtime = OrchestratorManager.instance.stderrLog;
+  //   if (runtime.isNotEmpty) {
+  //     for (final line in const LineSplitter().convert(runtime)) {
+  //       if (line.trim().isEmpty) continue;
+  //       if (!combined.contains(line)) {
+  //         combined.add(line);
+  //       }
+  //     }
+  //   }
+  //   return combined;
+  // }
 
   Widget _ollamaControlPanel() {
     final hasBinary = _ollamaBinaryVersion != null;
@@ -2951,11 +4530,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
                           ),
                           OutlinedButton.icon(
                             onPressed: () async {
-                              await Clipboard.setData(const ClipboardData(text: 'https://ollama.com/download'));
+                              await Clipboard.setData(const ClipboardData(text: ApiConstants.ollamaDownloadUrl));
                               if (!mounted) return;
                               ScaffoldMessenger.of(context).showSnackBar(
                                 const SnackBar(
-                                  content: Text('Download URL copied: https://ollama.com/download'),
+                                  content: Text('Download URL copied: ${ApiConstants.ollamaDownloadUrl}'),
                                 ),
                               );
                             },
@@ -2982,9 +4561,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 decoration: const InputDecoration(
                   labelText: 'Server URL',
                   hintText: OllamaService.defaultBaseUrl,
-                  helperText: 'Local daemon: http://localhost:11434 (default). '
+                  helperText: 'Local daemon: ${ApiConstants.ollamaLocalBaseUrl} (default). '
                       'Cloud: use the URL from your Ollama account '
-                      '(e.g. https://api.ollama.ai). Auto-saved.',
+                      '(e.g. ${ApiConstants.ollamaCloudBaseUrl}). Auto-saved.',
                 ),
                 onChanged: (v) {
                   _scheduleOllamaUrlSave(v);
@@ -3118,8 +4697,33 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     icon: const Icon(Icons.download, size: 16),
                     label: const Text('Pull'),
                   ),
+                  if (_ollamaPullingModel != null) ...[
+                    const SizedBox(width: 6),
+                    IconButton(
+                      tooltip: 'Stop download and remove partial data',
+                      style: IconButton.styleFrom(
+                        backgroundColor: AppTheme.danger.withAlpha(30),
+                      ),
+                      icon: Icon(
+                        Icons.stop_circle_outlined,
+                        size: 22,
+                        color: _ollamaPullCancelled
+                            ? AppTheme.textMuted
+                            : AppTheme.danger,
+                      ),
+                      onPressed:
+                          _ollamaPullCancelled ? null : _cancelOllamaPull,
+                    ),
+                  ],
                 ],
               ),
+              if (_ollamaPullingModel != null) _ollamaPullProgressBar(),
+
+              const SizedBox(height: 16),
+              _ollamaCatalogTable(serverUp: serverUp),
+
+              const SizedBox(height: 16),
+              _ollamaLibraryPanel(serverUp: serverUp),
 
               // --- Generation parameters -------------------------------------
               const SizedBox(height: 18),
@@ -3219,11 +4823,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   ),
                   OutlinedButton.icon(
                     onPressed: () async {
-                      await Clipboard.setData(const ClipboardData(text: 'https://ollama.com/download'));
+                      await Clipboard.setData(const ClipboardData(text: ApiConstants.ollamaDownloadUrl));
                       if (!mounted) return;
                       ScaffoldMessenger.of(context).showSnackBar(
                         const SnackBar(
-                          content: Text('Download URL copied: https://ollama.com/download'),
+                          content: Text('Download URL copied: ${ApiConstants.ollamaDownloadUrl}'),
                         ),
                       );
                     },
@@ -3341,6 +4945,664 @@ class _SettingsScreenState extends State<SettingsScreen> {
           ),
         );
       }).toList(),
+    );
+  }
+
+  // --- Ollama catalog table -------------------------------------------------
+
+  static const int _kOlColFlexName = 6;
+  static const int _kOlColFlexFamily = 3;
+  static const int _kOlColFlexParams = 2;
+  static const int _kOlColFlexQuant = 2;
+  static const int _kOlColFlexSize = 2;
+  static const int _kOlColFlexModified = 3;
+  static const double _kOlColWidthInstalled = 36;
+  static const double _kOlColWidthTools = 36;
+  static const double _kOlColWidthActions = 72;
+
+  String _formatBytes(int bytes) {
+    if (bytes <= 0) return '—';
+    const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+    double v = bytes.toDouble();
+    int i = 0;
+    while (v >= 1024 && i < units.length - 1) {
+      v /= 1024;
+      i++;
+    }
+    return v >= 100
+        ? '${v.toStringAsFixed(0)} ${units[i]}'
+        : v >= 10
+            ? '${v.toStringAsFixed(1)} ${units[i]}'
+            : '${v.toStringAsFixed(2)} ${units[i]}';
+  }
+
+  String _formatRelative(DateTime? when) {
+    if (when == null) return '—';
+    final d = DateTime.now().difference(when);
+    if (d.inDays >= 365) return '${(d.inDays / 365).floor()}y ago';
+    if (d.inDays >= 30) return '${(d.inDays / 30).floor()}mo ago';
+    if (d.inDays >= 1) return '${d.inDays}d ago';
+    if (d.inHours >= 1) return '${d.inHours}h ago';
+    if (d.inMinutes >= 1) return '${d.inMinutes}m ago';
+    return 'just now';
+  }
+
+  Future<void> _copyOllamaCatalog() async {
+    if (_ollamaCatalog.isEmpty) return;
+    final buf = StringBuffer()
+      ..writeln([
+        'name',
+        'family',
+        'params',
+        'quant',
+        'size_bytes',
+        'size_human',
+        'modified_at',
+        'tools',
+        'capabilities',
+        'digest',
+      ].join('\t'));
+    for (final m in _ollamaCatalog) {
+      buf.writeln([
+        m.name,
+        m.family,
+        m.parameterSize,
+        m.quantizationLevel,
+        m.sizeBytes.toString(),
+        _formatBytes(m.sizeBytes),
+        m.modifiedAt?.toIso8601String() ?? '',
+        OllamaService.supportsToolCalling(m) ? 'yes' : 'no',
+        m.capabilities.join(','),
+        m.digest,
+      ].join('\t'));
+    }
+    await Clipboard.setData(ClipboardData(text: buf.toString()));
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content:
+            Text('Copied ${_ollamaCatalog.length} Ollama models to clipboard'),
+        duration: const Duration(seconds: 2),
+      ),
+    );
+  }
+
+  Future<void> _pullOllamaCatalogRow(String name) async {
+    _ollamaPullController.text = name;
+    await _pullOllamaModel();
+  }
+
+  Widget _ollamaCatalogTable({required bool serverUp}) {
+    if (!serverUp) {
+      return Container(
+        padding: const EdgeInsets.all(16),
+        decoration: BoxDecoration(
+          border: Border.all(color: AppTheme.accentDarkMarrone.withAlpha(100)),
+          borderRadius: BorderRadius.circular(8),
+        ),
+        child: const Text(
+          'Ollama daemon not reachable. Start the server to load the catalog.',
+          style: TextStyle(fontSize: 12, color: AppTheme.textSecondary),
+        ),
+      );
+    }
+    if (_ollamaCatalog.isEmpty) {
+      return Container(
+        padding: const EdgeInsets.all(16),
+        decoration: BoxDecoration(
+          border: Border.all(color: AppTheme.accentDarkMarrone.withAlpha(100)),
+          borderRadius: BorderRadius.circular(8),
+        ),
+        child: Text(
+          _ollamaCatalogLoading
+              ? 'Loading catalog…'
+              : 'No models installed yet. Pull one above to populate this table.',
+          style: const TextStyle(fontSize: 12, color: AppTheme.textSecondary),
+        ),
+      );
+    }
+
+    return Container(
+      decoration: BoxDecoration(
+        border: Border.all(color: AppTheme.accentDarkMarrone.withAlpha(100)),
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Padding(
+            padding: const EdgeInsets.fromLTRB(12, 10, 12, 8),
+            child: Row(
+              children: [
+                const Icon(Icons.list_alt, size: 16),
+                const SizedBox(width: 6),
+                Text(
+                  'Catalog (${_ollamaCatalog.length} models)',
+                  style: const TextStyle(
+                      fontSize: 13, fontWeight: FontWeight.w600),
+                ),
+                const Spacer(),
+                if (_ollamaCatalogLoading)
+                  const SizedBox(
+                    width: 14,
+                    height: 14,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  ),
+                IconButton(
+                  tooltip: 'Refresh catalog',
+                  padding: EdgeInsets.zero,
+                  constraints:
+                      const BoxConstraints(minWidth: 28, minHeight: 28),
+                  icon: const Icon(Icons.refresh, size: 16),
+                  onPressed:
+                      _ollamaCatalogLoading ? null : _refreshOllamaCatalog,
+                ),
+                IconButton(
+                  tooltip: 'Copy all rows as TSV',
+                  padding: EdgeInsets.zero,
+                  constraints:
+                      const BoxConstraints(minWidth: 28, minHeight: 28),
+                  icon: const Icon(Icons.copy_all, size: 16),
+                  onPressed: _copyOllamaCatalog,
+                ),
+              ],
+            ),
+          ),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+            decoration: BoxDecoration(
+              color: AppTheme.bgSecondary,
+              border: Border(
+                top: BorderSide(
+                    color: AppTheme.accentDarkMarrone.withAlpha(80)),
+                bottom: BorderSide(
+                    color: AppTheme.accentDarkMarrone.withAlpha(80)),
+              ),
+            ),
+            child: const Row(
+              crossAxisAlignment: CrossAxisAlignment.center,
+              children: [
+                Expanded(
+                  flex: _kOlColFlexName,
+                  child: Text('Name',
+                      style: TextStyle(
+                          fontSize: 11, fontWeight: FontWeight.bold)),
+                ),
+                SizedBox(width: 8),
+                Expanded(
+                  flex: _kOlColFlexFamily,
+                  child: Text('Family',
+                      style: TextStyle(
+                          fontSize: 11, fontWeight: FontWeight.bold)),
+                ),
+                SizedBox(width: 8),
+                Expanded(
+                  flex: _kOlColFlexParams,
+                  child: Text('Params',
+                      style: TextStyle(
+                          fontSize: 11, fontWeight: FontWeight.bold),
+                      textAlign: TextAlign.right),
+                ),
+                SizedBox(width: 8),
+                Expanded(
+                  flex: _kOlColFlexQuant,
+                  child: Text('Quant',
+                      style: TextStyle(
+                          fontSize: 11, fontWeight: FontWeight.bold)),
+                ),
+                SizedBox(width: 8),
+                Expanded(
+                  flex: _kOlColFlexSize,
+                  child: Text('Size',
+                      style: TextStyle(
+                          fontSize: 11, fontWeight: FontWeight.bold),
+                      textAlign: TextAlign.right),
+                ),
+                SizedBox(width: 8),
+                Expanded(
+                  flex: _kOlColFlexModified,
+                  child: Text('Modified',
+                      style: TextStyle(
+                          fontSize: 11, fontWeight: FontWeight.bold)),
+                ),
+                SizedBox(width: 8),
+                SizedBox(
+                  width: _kOlColWidthInstalled,
+                  child: Text('Inst.',
+                      style: TextStyle(
+                          fontSize: 11, fontWeight: FontWeight.bold),
+                      textAlign: TextAlign.center),
+                ),
+                SizedBox(width: 8),
+                SizedBox(
+                  width: _kOlColWidthTools,
+                  child: Text('Tools',
+                      style: TextStyle(
+                          fontSize: 11, fontWeight: FontWeight.bold),
+                      textAlign: TextAlign.center),
+                ),
+                SizedBox(width: 8),
+                SizedBox(
+                  width: _kOlColWidthActions,
+                  child: Text('Actions',
+                      style: TextStyle(
+                          fontSize: 11, fontWeight: FontWeight.bold),
+                      textAlign: TextAlign.center),
+                ),
+              ],
+            ),
+          ),
+          ConstrainedBox(
+            constraints: const BoxConstraints(maxHeight: 380),
+            child: Scrollbar(
+              controller: _ollamaCatalogScrollController,
+              child: ListView.separated(
+                controller: _ollamaCatalogScrollController,
+                shrinkWrap: true,
+                padding: EdgeInsets.zero,
+                itemCount: _ollamaCatalog.length,
+                separatorBuilder: (_, __) => Divider(
+                  height: 1,
+                  thickness: 1,
+                  color: AppTheme.accentDarkMarrone.withAlpha(30),
+                ),
+                itemBuilder: (ctx, i) {
+                  final m = _ollamaCatalog[i];
+                  final tools = OllamaService.supportsToolCalling(m);
+                  return Padding(
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 10, vertical: 8),
+                    child: Row(
+                      crossAxisAlignment: CrossAxisAlignment.center,
+                      children: [
+                        Expanded(
+                          flex: _kOlColFlexName,
+                          child: Text(
+                            m.name,
+                            style: const TextStyle(
+                                fontSize: 12, fontWeight: FontWeight.w600),
+                            softWrap: true,
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          flex: _kOlColFlexFamily,
+                          child: Text(
+                            m.family.isEmpty ? '—' : m.family,
+                            style: const TextStyle(fontSize: 12),
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          flex: _kOlColFlexParams,
+                          child: Text(
+                            m.parameterSize.isEmpty ? '—' : m.parameterSize,
+                            style: const TextStyle(fontSize: 12),
+                            textAlign: TextAlign.right,
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          flex: _kOlColFlexQuant,
+                          child: Text(
+                            m.quantizationLevel.isEmpty
+                                ? '—'
+                                : m.quantizationLevel,
+                            style: const TextStyle(fontSize: 12),
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          flex: _kOlColFlexSize,
+                          child: Text(
+                            _formatBytes(m.sizeBytes),
+                            style: const TextStyle(fontSize: 12),
+                            textAlign: TextAlign.right,
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          flex: _kOlColFlexModified,
+                          child: Text(
+                            _formatRelative(m.modifiedAt),
+                            style: const TextStyle(
+                                fontSize: 12,
+                                color: AppTheme.textSecondary),
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        const SizedBox(
+                          width: _kOlColWidthInstalled,
+                          child: Center(
+                            child: Icon(
+                              Icons.check_circle,
+                              size: 16,
+                              color: Colors.green,
+                            ),
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        SizedBox(
+                          width: _kOlColWidthTools,
+                          child: Center(
+                            child: Icon(
+                              tools
+                                  ? Icons.check_circle
+                                  : Icons.remove_circle_outline,
+                              size: 16,
+                              color: tools ? Colors.green : Colors.grey,
+                            ),
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        SizedBox(
+                          width: _kOlColWidthActions,
+                          child: Row(
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            children: [
+                              IconButton(
+                                tooltip: 'Re-pull / update ${m.name}',
+                                padding: EdgeInsets.zero,
+                                constraints: const BoxConstraints(
+                                    minWidth: 28, minHeight: 28),
+                                icon: const Icon(Icons.download, size: 16),
+                                onPressed: _ollamaBusy
+                                    ? null
+                                    : () => _pullOllamaCatalogRow(m.name),
+                              ),
+                              IconButton(
+                                tooltip: 'Delete ${m.name}',
+                                padding: EdgeInsets.zero,
+                                constraints: const BoxConstraints(
+                                    minWidth: 28, minHeight: 28),
+                                icon: const Icon(Icons.delete_outline,
+                                    size: 16, color: AppTheme.danger),
+                                onPressed: _ollamaBusy
+                                    ? null
+                                    : () => _deleteOllamaModel(m.name),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ],
+                    ),
+                  );
+                },
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  // --- Browse the public ollama.com/library --------------------------------
+
+  /// Quick lookup: short installed-name matches `_ollamaInstalledModels`
+  /// entries like `llama3:latest` -> base name `llama3`. Used to draw the
+  /// green check on rows the user already has locally.
+  bool _libraryRowInstalled(String name) {
+    final n = name.toLowerCase();
+    for (final m in _ollamaInstalledModels) {
+      final base = m.split(':').first.toLowerCase();
+      if (base == n) return true;
+    }
+    return false;
+  }
+
+  List<OllamaLibraryModel> _filteredLibrary() {
+    if (_ollamaLibraryFilter.trim().isEmpty) return _ollamaLibrary;
+    final q = _ollamaLibraryFilter.trim().toLowerCase();
+    return _ollamaLibrary.where((m) {
+      if (m.name.toLowerCase().contains(q)) return true;
+      if (m.description.toLowerCase().contains(q)) return true;
+      if (m.sizes.any((s) => s.contains(q))) return true;
+      if (m.tags.any((t) => t.contains(q))) return true;
+      if (m.capabilities.any((c) => c.contains(q))) return true;
+      return false;
+    }).toList();
+  }
+
+  Widget _ollamaLibraryPanel({required bool serverUp}) {
+    return Container(
+      decoration: BoxDecoration(
+        border: Border.all(color: AppTheme.accentDarkMarrone.withAlpha(100)),
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Padding(
+            padding: const EdgeInsets.fromLTRB(12, 10, 12, 8),
+            child: Row(
+              children: [
+                const Icon(Icons.travel_explore, size: 16),
+                const SizedBox(width: 6),
+                Text(
+                  _ollamaLibrary.isEmpty
+                      ? 'Browse ollama.com/library'
+                      : 'Browse ollama.com/library '
+                          '(${_filteredLibrary().length}'
+                          '${_ollamaLibraryFilter.isEmpty ? '' : ' / ${_ollamaLibrary.length}'} '
+                          'models)',
+                  style: const TextStyle(
+                      fontSize: 13, fontWeight: FontWeight.w600),
+                ),
+                const Spacer(),
+                if (_ollamaLibraryLoading)
+                  const SizedBox(
+                    width: 14,
+                    height: 14,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  ),
+                IconButton(
+                  tooltip: _ollamaLibrary.isEmpty
+                      ? 'Fetch library'
+                      : 'Refresh library',
+                  padding: EdgeInsets.zero,
+                  constraints:
+                      const BoxConstraints(minWidth: 28, minHeight: 28),
+                  icon: const Icon(Icons.refresh, size: 16),
+                  onPressed:
+                      _ollamaLibraryLoading ? null : _refreshOllamaLibrary,
+                ),
+              ],
+            ),
+          ),
+          if (_ollamaLibrary.isEmpty && !_ollamaLibraryLoading) ...[
+            Padding(
+              padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
+              child: Text(
+                _ollamaLibraryError != null
+                    ? 'Failed to load: $_ollamaLibraryError'
+                    : 'Click refresh to fetch the public model catalog from '
+                        'ollama.com/library. Scraped HTML — Ollama has no '
+                        'public JSON API, so layout changes may break this.',
+                style: TextStyle(
+                    fontSize: 12, color: Colors.grey[700], height: 1.4),
+              ),
+            ),
+          ] else if (_ollamaLibrary.isNotEmpty) ...[
+            Padding(
+              padding: const EdgeInsets.fromLTRB(12, 0, 12, 8),
+              child: TextField(
+                controller: _ollamaLibraryFilterController,
+                decoration: const InputDecoration(
+                  isDense: true,
+                  prefixIcon: Icon(Icons.search, size: 16),
+                  hintText: 'Filter by name, size, capability…',
+                  border: OutlineInputBorder(),
+                ),
+                onChanged: (v) =>
+                    setState(() => _ollamaLibraryFilter = v),
+              ),
+            ),
+            ConstrainedBox(
+              constraints: const BoxConstraints(maxHeight: 480),
+              child: Scrollbar(
+                controller: _ollamaLibraryScrollController,
+                child: ListView.separated(
+                  controller: _ollamaLibraryScrollController,
+                  shrinkWrap: true,
+                  padding: EdgeInsets.zero,
+                  itemCount: _filteredLibrary().length,
+                  separatorBuilder: (_, __) => Divider(
+                    height: 1,
+                    thickness: 1,
+                    color: AppTheme.accentDarkMarrone.withAlpha(30),
+                  ),
+                  itemBuilder: (ctx, i) =>
+                      _ollamaLibraryRow(_filteredLibrary()[i], serverUp),
+                ),
+              ),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+
+  Widget _ollamaLibraryRow(OllamaLibraryModel m, bool serverUp) {
+    final installed = _libraryRowInstalled(m.name);
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          // Left: name + description + chips
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    SelectableText(
+                      m.name,
+                      style: const TextStyle(
+                        fontSize: 13,
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                    if (installed) ...[
+                      const SizedBox(width: 6),
+                      const Icon(Icons.check_circle,
+                          size: 14, color: Colors.green),
+                    ],
+                  ],
+                ),
+                if (m.description.isNotEmpty) ...[
+                  const SizedBox(height: 2),
+                  Text(
+                    m.description,
+                    style: const TextStyle(
+                        fontSize: 12, color: AppTheme.textSecondary),
+                  ),
+                ],
+                const SizedBox(height: 6),
+                Wrap(
+                  spacing: 4,
+                  runSpacing: 4,
+                  children: [
+                    if (m.isCloud) _libChip('cloud', color: Colors.indigo),
+                    for (final s in m.sizes) _libChip(s),
+                    for (final c in m.capabilities)
+                      _libChip(c, color: Colors.teal),
+                    for (final t in m.tags.where((t) => t != 'cloud'))
+                      _libChip(t),
+                  ],
+                ),
+                if (m.pulls.isNotEmpty || m.updated.isNotEmpty) ...[
+                  const SizedBox(height: 6),
+                  Text(
+                    [
+                      if (m.pulls.isNotEmpty) '${m.pulls} pulls',
+                      if (m.updated.isNotEmpty) 'updated ${m.updated}',
+                    ].join(' • '),
+                    style: const TextStyle(
+                        fontSize: 11, color: AppTheme.textMuted),
+                  ),
+                ],
+              ],
+            ),
+          ),
+          const SizedBox(width: 8),
+          // Right: actions
+          Column(
+            crossAxisAlignment: CrossAxisAlignment.end,
+            children: [
+              IconButton(
+                tooltip: 'Copy name',
+                padding: EdgeInsets.zero,
+                constraints:
+                    const BoxConstraints(minWidth: 28, minHeight: 28),
+                icon: const Icon(Icons.copy, size: 14),
+                onPressed: () async {
+                  await Clipboard.setData(ClipboardData(text: m.name));
+                  if (!mounted) return;
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(
+                      content: Text('Copied "${m.name}" to clipboard'),
+                      duration: const Duration(seconds: 1),
+                    ),
+                  );
+                },
+              ),
+              IconButton(
+                tooltip: m.url.isEmpty
+                    ? 'No URL'
+                    : 'Copy ${m.url}',
+                padding: EdgeInsets.zero,
+                constraints:
+                    const BoxConstraints(minWidth: 28, minHeight: 28),
+                icon: const Icon(Icons.open_in_new, size: 14),
+                onPressed: m.url.isEmpty
+                    ? null
+                    : () async {
+                        await Clipboard.setData(ClipboardData(text: m.url));
+                        if (!mounted) return;
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          SnackBar(
+                            content: Text('Copied URL: ${m.url}'),
+                            duration: const Duration(seconds: 1),
+                          ),
+                        );
+                      },
+              ),
+              IconButton(
+                tooltip: serverUp
+                    ? (installed
+                        ? 'Re-pull / update ${m.name}'
+                        : 'Pull ${m.name}')
+                    : 'Start the Ollama server first',
+                padding: EdgeInsets.zero,
+                constraints:
+                    const BoxConstraints(minWidth: 28, minHeight: 28),
+                icon: const Icon(Icons.download, size: 14),
+                onPressed: (!serverUp || _ollamaBusy)
+                    ? null
+                    : () => _pullOllamaCatalogRow(m.name),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _libChip(String label, {Color? color}) {
+    final fg = color ?? AppTheme.textSecondary;
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+      decoration: BoxDecoration(
+        color: fg.withAlpha(25),
+        border: Border.all(color: fg.withAlpha(1000)),
+        borderRadius: BorderRadius.circular(10),
+      ),
+      child: Text(
+        label,
+        style: TextStyle(
+            fontSize: 10, fontWeight: FontWeight.w600, color: fg),
+      ),
     );
   }
 
@@ -3513,7 +5775,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
       decoration: BoxDecoration(
         border: Border.all(
-          color: selected ? AppTheme.accent.withOpacity(0.4) : AppTheme.border,
+          color: selected ? AppTheme.accent.withAlpha(100) : AppTheme.border,
         ),
         borderRadius: BorderRadius.circular(8),
       ),
@@ -3618,7 +5880,14 @@ class _SettingsScreenState extends State<SettingsScreen> {
       );
       return;
     }
-    final model = _openRouterSelectedModel ?? OpenRouterService.fallbackModels.first;
+    final model = _openRouterSelectedModel?.trim() ?? '';
+    if (model.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text(
+            'Pick an OpenRouter model first (refresh the catalog if empty).')),
+      );
+      return;
+    }
 
     if (OrchestratorManager.instance.isRunning && OrchestratorManager.instance.currentBackend != OrchestratorBackend.openrouter) {
       await OrchestratorManager.instance.stop();
@@ -3652,6 +5921,76 @@ class _SettingsScreenState extends State<SettingsScreen> {
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
         content: Text(started ? 'OpenRouter orchestrator running' : 'Failed to start — check log'),
+        backgroundColor: started ? AppTheme.accentMarrone : AppTheme.danger,
+      ),
+    );
+  }
+
+  Future<void> _startGithubOrchestrator() async {
+    if (_orchestratorBusy) return;
+    final apiKey = _githubApiKeyController.text.trim();
+    final envKey = Platform.environment['GITHUB_TOKEN'] ??
+        Platform.environment['GITHUB_API_KEY'] ??
+        '';
+    if (apiKey.isEmpty && envKey.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Save the GitHub PAT first.')),
+      );
+      return;
+    }
+    final model =
+        _githubSelectedModel ?? GithubModelsService.fallbackModels.first;
+
+    if (OrchestratorManager.instance.isRunning &&
+        OrchestratorManager.instance.currentBackend !=
+            OrchestratorBackend.github) {
+      await OrchestratorManager.instance.stop();
+    }
+
+    setState(() {
+      _orchestratorBusy = true;
+      _orchestratorLog.clear();
+    });
+    _appendLog('Starting GitHub Models orchestrator (model: $model)...');
+
+    final temperature = _githubTemperature;
+    final maxTokens =
+        int.tryParse(_githubMaxTokensController.text.trim()) ??
+            BackendSettingsRepository.defaultGithubMaxTokens;
+    final tpmLimit =
+        int.tryParse(_githubTpmLimitController.text.trim()) ?? 0;
+    final disableTools =
+        await BackendSettingsRepository.instance.getGithubDisableTools();
+    if (disableTools) {
+      _appendLog(
+          '"$model" is a non-tool-calling model — running in plain-chat mode.');
+    }
+
+    final started = await OrchestratorManager.instance.start(
+      backend: OrchestratorBackend.github,
+      modelId: model,
+      githubApiKey: apiKey,
+      temperature: temperature,
+      maxTokens: maxTokens,
+      tpmLimit: tpmLimit,
+      disableTools: disableTools,
+    );
+    final stderr = OrchestratorManager.instance.stderrLog;
+    if (stderr.isNotEmpty) {
+      for (final l in const LineSplitter().convert(stderr)) {
+        _appendLog(l);
+      }
+    }
+    _appendLog(started
+        ? 'GitHub Models orchestrator running.'
+        : 'Failed to start GitHub Models orchestrator.');
+    if (!mounted) return;
+    setState(() => _orchestratorBusy = false);
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(started
+            ? 'GitHub Models orchestrator running'
+            : 'Failed to start — check log'),
         backgroundColor: started ? AppTheme.accentMarrone : AppTheme.danger,
       ),
     );

@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import '../../core/theme/app_theme.dart';
 import '../../data/repositories/backend_settings_repository.dart';
 import '../../data/repositories/model_repository.dart';
+import '../../services/github_models_service.dart';
 import '../../services/groq_service.dart';
 import '../../services/llm_service.dart';
 import '../../services/ollama_service.dart';
@@ -127,12 +128,10 @@ class _ModelSwitcherState extends State<ModelSwitcher> with WidgetsBindingObserv
       return;
     }
 
-    // --- OpenRouter Orchestrator: show only the model picked in Settings. ---
-    // The orchestrator is pinned to one OpenRouter model at startup, so
-    // per-chat switching doesn't apply — surface a single-entry dropdown.
-    if (backend == LlmBackend.openRouterOrchestrator) {
-      final saved = await BackendSettingsRepository.instance.getOpenRouterModel() ?? '';
-      final pinned = saved.isNotEmpty ? saved : OpenRouterService.fallbackModels.first;
+    // --- GitHub Orchestrator: show only the model picked in Settings. ---
+    if (backend == LlmBackend.githubOrchestrator) {
+      final saved = await BackendSettingsRepository.instance.getGithubModel() ?? '';
+      final pinned = saved.isNotEmpty ? saved : GithubModelsService.fallbackModels.first;
       if (!mounted) return;
       setState(() {
         _choices = [_ModelChoice(id: pinned, label: pinned)];
@@ -142,16 +141,32 @@ class _ModelSwitcherState extends State<ModelSwitcher> with WidgetsBindingObserv
       return;
     }
 
+    // --- OpenRouter Orchestrator: show only the model picked in Settings. ---
+    // The orchestrator is pinned to one OpenRouter model at startup, so
+    // per-chat switching doesn't apply — surface a single-entry dropdown.
+    if (backend == LlmBackend.openRouterOrchestrator) {
+      final saved = await BackendSettingsRepository.instance.getOpenRouterModel() ?? '';
+      if (!mounted) return;
+      setState(() {
+        _choices = saved.isEmpty
+            ? const []
+            : [_ModelChoice(id: saved, label: saved)];
+        _showManualInput = saved.isEmpty;
+        _loading = false;
+      });
+      return;
+    }
+
     // --- OpenRouter (Direct): fetch model list from OpenRouter API ---
     if (backend == LlmBackend.openRouter) {
       final apiKey = await BackendSettingsRepository.instance.getOpenRouterApiKey() ?? '';
       final saved = await BackendSettingsRepository.instance.getOpenRouterModel() ?? '';
-      List<String> models = OpenRouterService.fallbackModels;
+      List<String> models = const [];
       if (apiKey.isNotEmpty) {
         try {
           models = await OpenRouterService.instance.listModels(apiKey);
         } catch (_) {
-          models = OpenRouterService.fallbackModels;
+          models = const [];
         }
       }
 

@@ -4,6 +4,7 @@ import 'dart:io';
 
 import 'package:dio/dio.dart';
 
+import '../core/constants/api_constants.dart';
 import '../data/models/message.dart';
 
 /// Thin wrapper around Ollama's `/api/generate` endpoint.
@@ -25,7 +26,7 @@ class OllamaGenerateService {
 
   static final OllamaGenerateService instance = OllamaGenerateService._();
 
-  static const String defaultBaseUrl = 'http://localhost:11434';
+  static const String defaultBaseUrl = ApiConstants.ollamaLocalBaseUrl;
 
   final Dio _dio = Dio();
 

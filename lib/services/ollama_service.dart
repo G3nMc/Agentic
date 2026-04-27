@@ -4,6 +4,7 @@ import 'dart:io';
 
 import 'package:dio/dio.dart';
 
+import '../core/constants/api_constants.dart';
 import '../data/models/message.dart';
 
 /// Thin wrapper around Ollama's native REST API (http://localhost:11434).
@@ -19,7 +20,7 @@ class OllamaService {
   static final OllamaService instance = OllamaService._();
 
   /// Default Ollama daemon address.
-  static const String defaultBaseUrl = 'http://localhost:11434';
+  static const String defaultBaseUrl = ApiConstants.ollamaLocalBaseUrl;
 
   final Dio _dio = Dio();
 
@@ -97,6 +98,65 @@ class OllamaService {
         .toList();
   }
 
+  /// Rich catalog of installed models — combines `/api/tags` (size, family,
+  /// quantization, modified date) with `/api/show` (capabilities, e.g.
+  /// `tools`, `vision`). The `show` calls are fanned out in parallel; if any
+  /// individual one fails the row is still returned with empty capabilities.
+  Future<List<OllamaCatalogModel>> listCatalog({
+    String? baseUrl,
+    String? apiKey,
+  }) async {
+    final url = _normalise(baseUrl ?? defaultBaseUrl);
+    final resp = await _dio.get(
+      '$url/api/tags',
+      options: Options(
+        headers: _headers(apiKey: apiKey),
+        receiveTimeout: const Duration(seconds: 10),
+      ),
+    );
+    if (resp.statusCode != 200) {
+      throw Exception('Ollama /api/tags returned ${resp.statusCode}');
+    }
+    final raw = (resp.data?['models'] as List?) ?? const [];
+    final base = raw
+        .whereType<Map>()
+        .map((m) => OllamaCatalogModel.fromTagJson(
+              Map<String, dynamic>.from(m),
+            ))
+        .where((m) => m.name.isNotEmpty)
+        .toList();
+
+    // Fan out /api/show — capability data is the part that lets us draw a
+    // Tools ✓ column matching OpenRouter / GitHub catalogs.
+    final futures = base.map((m) async {
+      try {
+        final showResp = await _dio.post(
+          '$url/api/show',
+          data: jsonEncode({'name': m.name}),
+          options: Options(
+            headers: _headers(apiKey: apiKey),
+            receiveTimeout: const Duration(seconds: 10),
+            sendTimeout: const Duration(seconds: 5),
+            validateStatus: (_) => true,
+          ),
+        );
+        if (showResp.statusCode != 200) return m;
+        final data = showResp.data;
+        if (data is! Map) return m;
+        final caps = (data['capabilities'] as List?)
+                ?.whereType<String>()
+                .toList() ??
+            const <String>[];
+        return m.withCapabilities(caps);
+      } catch (_) {
+        return m;
+      }
+    });
+    final enriched = await Future.wait(futures);
+    enriched.sort((a, b) => a.name.toLowerCase().compareTo(b.name.toLowerCase()));
+    return enriched;
+  }
+
   // ---------------------------------------------------------------------------
   // Delete an installed model
   // ---------------------------------------------------------------------------
@@ -140,11 +200,22 @@ class OllamaService {
     String? baseUrl,
     String? apiKey,
     void Function(String line)? onProgress,
+    /// Optional callback fired whenever the server reports progress on a
+    /// digest. `completed` and `total` are bytes; both are 0 before the
+    /// transfer phase begins.
+    void Function(int completed, int total)? onBytes,
+    /// Pass a Dio [CancelToken] to abort the pull mid-stream. Cancelling
+    /// closes the HTTP connection — Ollama then stops fetching, but any
+    /// blobs it already wrote stay in its store. Callers that want to
+    /// reclaim the disk space should follow up with [deleteModel] (which
+    /// the daemon handles silently if the manifest hasn't been written).
+    CancelToken? cancelToken,
   }) async {
     final url = _normalise(baseUrl ?? defaultBaseUrl);
     final resp = await _dio.post<ResponseBody>(
       '$url/api/pull',
       data: jsonEncode({'name': modelName, 'stream': true}),
+      cancelToken: cancelToken,
       options: Options(
         responseType: ResponseType.stream,
         headers: _headers(apiKey: apiKey),
@@ -173,11 +244,19 @@ class OllamaService {
         final trimmed = line.trim();
         if (trimmed.isEmpty) continue;
         onProgress?.call(trimmed);
-        // Fail fast if server reports an error status.
+        // Fail fast if server reports an error status, and surface byte
+        // progress when present so the UI can show a real progress bar.
         try {
           final obj = jsonDecode(trimmed);
-          if (obj is Map && obj['error'] is String) {
-            throw Exception('Ollama pull error: ${obj['error']}');
+          if (obj is Map) {
+            if (obj['error'] is String) {
+              throw Exception('Ollama pull error: ${obj['error']}');
+            }
+            final completed = obj['completed'];
+            final total = obj['total'];
+            if (completed is num && total is num && total > 0) {
+              onBytes?.call(completed.toInt(), total.toInt());
+            }
           }
         } catch (e) {
           // Not JSON — just forward as-is; already sent to onProgress.
@@ -372,6 +451,12 @@ class OllamaService {
         'Open Settings → 🦙 Ollama → Pull, and use one of those tags.';
   }
 
+  /// Whether a catalog entry advertises native tool/function calling
+  /// (Ollama exposes this in `/api/show` -> `capabilities`).
+  static bool supportsToolCalling(OllamaCatalogModel m) {
+    return m.capabilities.any((c) => c.toLowerCase() == 'tools');
+  }
+
   String _roleToApi(MessageRole r) {
     switch (r) {
       case MessageRole.user:
@@ -382,4 +467,67 @@ class OllamaService {
         return 'system';
     }
   }
+}
+
+/// One row in the local Ollama catalog.
+///
+/// Built from `/api/tags` (size + details) merged with `/api/show`
+/// (capabilities). Every entry here represents an *installed* model — Ollama
+/// has no public registry endpoint, so the catalog is by definition the set
+/// of pulled models.
+class OllamaCatalogModel {
+  final String name;
+  final String digest;
+  final int sizeBytes;
+  final DateTime? modifiedAt;
+  final String family;
+  final String parameterSize;
+  final String quantizationLevel;
+  final String format;
+  final List<String> capabilities;
+
+  const OllamaCatalogModel({
+    required this.name,
+    required this.digest,
+    required this.sizeBytes,
+    required this.modifiedAt,
+    required this.family,
+    required this.parameterSize,
+    required this.quantizationLevel,
+    required this.format,
+    required this.capabilities,
+  });
+
+  factory OllamaCatalogModel.fromTagJson(Map<String, dynamic> j) {
+    final details = (j['details'] is Map)
+        ? Map<String, dynamic>.from(j['details'] as Map)
+        : const <String, dynamic>{};
+    int asInt(dynamic v) =>
+        v is num ? v.toInt() : (int.tryParse('${v ?? ''}') ?? 0);
+    DateTime? asDate(dynamic v) =>
+        v is String ? DateTime.tryParse(v) : null;
+    return OllamaCatalogModel(
+      name: (j['name'] as String?) ?? '',
+      digest: (j['digest'] as String?) ?? '',
+      sizeBytes: asInt(j['size']),
+      modifiedAt: asDate(j['modified_at']),
+      family: (details['family'] as String?) ?? '',
+      parameterSize: (details['parameter_size'] as String?) ?? '',
+      quantizationLevel: (details['quantization_level'] as String?) ?? '',
+      format: (details['format'] as String?) ?? '',
+      capabilities: const [],
+    );
+  }
+
+  OllamaCatalogModel withCapabilities(List<String> caps) => OllamaCatalogModel(
+        name: name,
+        digest: digest,
+        sizeBytes: sizeBytes,
+        modifiedAt: modifiedAt,
+        family: family,
+        parameterSize: parameterSize,
+        quantizationLevel: quantizationLevel,
+        format: format,
+        capabilities: caps,
+      );
 }

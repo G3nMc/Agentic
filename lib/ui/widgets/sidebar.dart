@@ -1,15 +1,14 @@
 import 'package:flutter/material.dart';
 import 'package:uuid/uuid.dart';
 
-import '../../core/constants/api_constants.dart';
 import '../../core/theme/app_theme.dart';
 import '../../data/models/conversation.dart';
 import '../../data/repositories/backend_settings_repository.dart';
 import '../../data/repositories/conversation_repository.dart';
 import '../../data/repositories/settings_repository.dart';
+import '../../services/github_models_service.dart';
 import '../../services/groq_service.dart';
 import '../../services/llm_service.dart';
-import '../../services/openrouter_service.dart';
 import '../../services/orchestrator_manager.dart';
 import '../../statemanagement/method_data.dart';
 import '../../statemanagement/method_listener.dart';
@@ -118,8 +117,9 @@ class _SidebarState extends StateManager<Sidebar> {
       // For Groq backends use the saved Groq model so the new conversation
       // is initialised with the correct model ID from the start.
       LlmBackend.groq || LlmBackend.groqOrchestrator => await BackendSettingsRepository.instance.getGroqModel() ?? GroqService.fallbackModels.first,
-      LlmBackend.openRouter || LlmBackend.openRouterOrchestrator => await BackendSettingsRepository.instance.getOpenRouterModel() ?? OpenRouterService.fallbackModels.first,
-      _ => (await SettingsRepository.instance.getSelectedModelId()) ?? ApiConstants.defaultModelId,
+      LlmBackend.openRouter || LlmBackend.openRouterOrchestrator => await BackendSettingsRepository.instance.getOpenRouterModel() ?? '',
+      LlmBackend.githubOrchestrator => await BackendSettingsRepository.instance.getGithubModel() ?? GithubModelsService.fallbackModels.first,
+      _ => (await SettingsRepository.instance.getSelectedModelId()) ?? '',
     };
 
     final conversation = Conversation(
@@ -240,7 +240,10 @@ class _SidebarState extends StateManager<Sidebar> {
     }
   }
 
-  void _selectConversation(Conversation c) {
+  Future<void> _selectConversation(Conversation c) async {
+    if (OrchestratorManager.instance.isRunning) {
+      await OrchestratorManager.instance.stop();
+    }
     MethodListener<HomeScreen>().callMethod(
       "openConversation",
       params: {"conversationId": c.id},
@@ -336,6 +339,10 @@ class _SidebarState extends StateManager<Sidebar> {
                         DropdownMenuItem(
                           value: LlmBackend.openRouterOrchestrator,
                           child: Text("OpenRouter + Orchestrator"),
+                        ),
+                        DropdownMenuItem(
+                          value: LlmBackend.githubOrchestrator,
+                          child: Text("GitHub + Orchestrator"),
                         ),
                         // DropdownMenuItem(
                         //   value: LlmBackend.local,

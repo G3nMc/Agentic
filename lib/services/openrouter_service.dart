@@ -1,6 +1,7 @@
 import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart';
 
+import '../core/constants/api_constants.dart';
 import '../data/models/message.dart';
 
 /// Client for the OpenRouter chat-completions API.
@@ -9,12 +10,11 @@ class OpenRouterService {
   OpenRouterService._();
   static final OpenRouterService instance = OpenRouterService._();
 
-  static const String _baseUrl = 'https://openrouter.ai/api/v1';
   static const String _appTitle = 'HF Chat Flutter';
 
   final Dio _dio = Dio(
     BaseOptions(
-      baseUrl: _baseUrl,
+      baseUrl: ApiConstants.openRouterBaseUrl,
       connectTimeout: const Duration(seconds: 30),
       receiveTimeout: const Duration(minutes: 5),
       headers: {'Content-Type': 'application/json'},
@@ -44,24 +44,42 @@ class OpenRouterService {
     }
   }
 
-  /// Fetch available model IDs from OpenRouter's `/models` endpoint.
-  Future<List<String>> listModels(String apiKey) async {
-    if (apiKey.trim().isEmpty) return fallbackModels;
-
+  /// Fetch the full model catalog from OpenRouter's `/models` endpoint.
+  ///
+  /// Each entry includes pricing, context window, modalities and the list of
+  /// `supported_parameters` (used to detect tool-calling support).
+  /// Docs: https://openrouter.ai/docs/api/reference/list-available-models
+  Future<List<OpenRouterModel>> listCatalog(String apiKey) async {
+    if (apiKey.trim().isEmpty) return const [];
     try {
       final resp = await _dio.get('/models', options: _authOptions(apiKey));
-      if (resp.statusCode != 200) return fallbackModels;
-      final data = resp.data?['data'] as List? ?? [];
-      final ids = data
-          .map((m) => m is Map ? m['id'] as String? : null)
-          .whereType<String>()
-          .toSet()
+      if (resp.statusCode != 200) return const [];
+      final data = resp.data?['data'];
+      if (data is! List) return const [];
+      return data
+          .whereType<Map>()
+          .map((m) => OpenRouterModel.fromJson(Map<String, dynamic>.from(m)))
+          .where((m) => m.id.isNotEmpty)
           .toList()
-        ..sort();
-      return ids.isEmpty ? fallbackModels : ids;
+        ..sort((a, b) => a.id.toLowerCase().compareTo(b.id.toLowerCase()));
     } catch (_) {
-      return fallbackModels;
+      return const [];
     }
+  }
+
+  /// Convenience: just the model IDs (used by simple dropdowns).
+  /// Returns an empty list when the catalog can't be fetched — callers
+  /// should treat that as "no models available" rather than substituting
+  /// hardcoded defaults.
+  Future<List<String>> listModels(String apiKey) async {
+    final cat = await listCatalog(apiKey);
+    return cat.map((m) => m.id).toList();
+  }
+
+  /// Whether a catalog entry advertises native tool/function calling.
+  /// OpenRouter exposes this via `supported_parameters` containing `tools`.
+  static bool supportsToolCalling(OpenRouterModel m) {
+    return m.supportedParameters.any((p) => p.toLowerCase() == 'tools');
   }
 
   /// Send a chat-completions request and return the assistant reply.
@@ -157,12 +175,74 @@ class OpenRouterService {
         .trim();
   }
 
-  /// Small fallback list used when `/models` is unreachable.
-  static const List<String> fallbackModels = [
-    'google/gemini-2.5-flash',
-    'openai/gpt-5-mini',
-    'anthropic/claude-sonnet-4.5',
-  ];
+}
+
+/// One row from `/models` — rich metadata for a single OpenRouter model.
+class OpenRouterModel {
+  final String id;
+  final String name;
+  final String description;
+  final int? contextLength;
+  final int? maxCompletionTokens;
+  final double? promptPricePerToken;
+  final double? completionPricePerToken;
+  final List<String> inputModalities;
+  final List<String> outputModalities;
+  final List<String> supportedParameters;
+  final bool isModerated;
+
+  const OpenRouterModel({
+    required this.id,
+    required this.name,
+    required this.description,
+    required this.contextLength,
+    required this.maxCompletionTokens,
+    required this.promptPricePerToken,
+    required this.completionPricePerToken,
+    required this.inputModalities,
+    required this.outputModalities,
+    required this.supportedParameters,
+    required this.isModerated,
+  });
+
+  factory OpenRouterModel.fromJson(Map<String, dynamic> j) {
+    List<String> asStrList(dynamic v) =>
+        v is List ? v.whereType<String>().toList() : const [];
+    int? asInt(dynamic v) =>
+        v is num ? v.toInt() : int.tryParse('${v ?? ''}');
+    double? asDouble(dynamic v) => v == null
+        ? null
+        : (v is num ? v.toDouble() : double.tryParse('$v'));
+
+    final arch = (j['architecture'] is Map)
+        ? Map<String, dynamic>.from(j['architecture'] as Map)
+        : const <String, dynamic>{};
+    final pricing = (j['pricing'] is Map)
+        ? Map<String, dynamic>.from(j['pricing'] as Map)
+        : const <String, dynamic>{};
+    final topProvider = (j['top_provider'] is Map)
+        ? Map<String, dynamic>.from(j['top_provider'] as Map)
+        : const <String, dynamic>{};
+
+    return OpenRouterModel(
+      id: (j['id'] as String?) ?? '',
+      name: (j['name'] as String?) ?? '',
+      description: (j['description'] as String?) ?? '',
+      contextLength:
+          asInt(j['context_length']) ?? asInt(topProvider['context_length']),
+      maxCompletionTokens: asInt(topProvider['max_completion_tokens']),
+      promptPricePerToken: asDouble(pricing['prompt']),
+      completionPricePerToken: asDouble(pricing['completion']),
+      inputModalities: asStrList(arch['input_modalities']),
+      outputModalities: asStrList(arch['output_modalities']),
+      supportedParameters: asStrList(j['supported_parameters']),
+      isModerated: topProvider['is_moderated'] == true,
+    );
+  }
+
+  /// Marketplace / details URL on openrouter.ai (best-effort, derived from id).
+  String get htmlUrl =>
+      id.isEmpty ? '' : 'https://openrouter.ai/${Uri.encodeFull(id)}';
 }
 
 /// Snapshot of `/api/v1/key` — credit + usage info for the current API key.

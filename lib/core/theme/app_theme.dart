@@ -11,9 +11,9 @@ class AppTheme {
   static const Color textPrimary = Color(0xFFE1E1E1);
   static const Color textSecondary = Color(0xFFB0B0B0);
   static const Color textMuted = Color(0xFF757575);
-  static const Color accent = Color(0xFFB95A50);
-  static const Color accentMarrone = Color(0xFFD25A50);
-  static const Color accentDarkMarrone = Color(0xFF783C32);
+  static const Color accent = Color(0xFFBE5A46);
+  static const Color accentMarrone = Color(0xFFBE5046);
+  static const Color accentDarkMarrone = Color(0xFF823232);
   static const Color accentHover = Color(0xFFD7B7FD);
   static const Color userBubble = Color(0xFF2C2C2C);
   static const Color aiBubble = Color(0xFF1E1E1E);

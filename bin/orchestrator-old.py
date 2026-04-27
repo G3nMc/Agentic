@@ -29,8 +29,12 @@ Usage:
 """
 
 import argparse
+import collections
+import dataclasses
+import enum
 import io
 import json
+import logging
 import os
 import re
 import subprocess
@@ -59,9 +63,164 @@ BACKEND_REQUIRED_MODULES = {
     "ollama": ("ollama",),
     "groq": ("groq",),
     "gemini": ("google.genai",),
+    # OpenRouter uses only stdlib (urllib) — no extra pip package needed.
+    "openrouter": (),
+    # GitHub Models uses only stdlib (urllib) — no extra pip package needed.
+    "github": (),
 }
 
 RESPONSE_SENTINEL = "__RESPONSE_END__"
+
+
+# ============================================================================
+# SECURITY & RELIABILITY PRIMITIVES
+# ============================================================================
+
+class CircuitState(enum.Enum):
+    """States for the circuit-breaker pattern."""
+    CLOSED    = "closed"     # Normal: requests go through.
+    OPEN      = "open"       # Failing: requests are rejected immediately.
+    HALF_OPEN = "half_open"  # Recovery probe: one request allowed through.
+
+
+class CircuitBreaker:
+    """
+    Classic circuit-breaker for wrapping unreliable operations.
+
+    Transitions:
+      CLOSED  -> OPEN      when consecutive failures reach failure_threshold
+      OPEN    -> HALF_OPEN after recovery_timeout seconds
+      HALF_OPEN -> CLOSED  on success; back to OPEN on failure
+    """
+
+    def __init__(self, name: str = "unnamed", failure_threshold: int = 5,
+                 recovery_timeout: float = 60.0):
+        self.name = name
+        self.failure_threshold = failure_threshold
+        self.recovery_timeout = recovery_timeout
+        self.state = CircuitState.CLOSED
+        self.failure_count = 0
+        self.last_failure_time: Optional[float] = None
+
+    def allow_request(self) -> bool:
+        """Return True when the caller should proceed with the operation."""
+        if self.state == CircuitState.CLOSED:
+            return True
+        if self.state == CircuitState.OPEN:
+            if (self.last_failure_time is not None
+                    and time.time() - self.last_failure_time > self.recovery_timeout):
+                self.state = CircuitState.HALF_OPEN
+                print(f"[circuit-breaker:{self.name}] HALF-OPEN: testing recovery.",
+                      file=sys.stderr, flush=True)
+                return True
+            return False
+        # HALF_OPEN: let one probe through
+        return True
+
+    def record_success(self):
+        """Call after a successful operation."""
+        if self.state != CircuitState.CLOSED:
+            print(f"[circuit-breaker:{self.name}] CLOSED (recovered).",
+                  file=sys.stderr, flush=True)
+        self.failure_count = 0
+        self.state = CircuitState.CLOSED
+
+    def record_failure(self):
+        """Call after a failed operation."""
+        self.failure_count += 1
+        self.last_failure_time = time.time()
+        if self.failure_count >= self.failure_threshold:
+            if self.state != CircuitState.OPEN:
+                print(
+                    f"[circuit-breaker:{self.name}] OPEN after "
+                    f"{self.failure_count} consecutive failures.",
+                    file=sys.stderr, flush=True,
+                )
+            self.state = CircuitState.OPEN
+
+
+@dataclasses.dataclass
+class SecurityConfig:
+    """
+    Operational policy applied by ToolRegistry.
+
+    sandbox_mode         -- when True, run_command is completely disabled
+                           and write/delete operations are blocked.
+                           Default: False — the agent operates with full
+                           freedom inside base_path; git is the safety net.
+    max_file_size_bytes  -- hard cap on content written by write_file /
+                           append_file. 0 means no limit (default).
+    enable_audit_log     -- when True, every tool call is appended to
+                           audit_log_path with timestamp, tool name,
+                           sanitized parameters, and result status.
+    audit_log_path       -- destination file for audit entries.
+    command_blocklist    -- substrings that must never appear in a
+                           run_command call (case-insensitive match).
+                           Default: empty — no commands are blocked.
+    """
+    sandbox_mode: bool = False
+    max_file_size_bytes: int = 0          # 0 = no limit
+    enable_audit_log: bool = True
+    audit_log_path: str = "orchestrator_audit.log"
+    command_blocklist: tuple = dataclasses.field(default_factory=tuple)  # empty = no restrictions
+
+
+def _sanitize_params_for_log(tool_name: str, params: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Remove or truncate large / sensitive parameter values before audit logging.
+    The `content` field of write_file / append_file can be megabytes long and
+    may contain secrets — replace it with a byte-count placeholder.
+    """
+    if not params:
+        return params
+    sanitized = dict(params)
+    for key in ("content", "old_content", "new_content"):
+        if key in sanitized:
+            val = sanitized[key]
+            if isinstance(val, str):
+                sanitized[key] = f"<{len(val.encode('utf-8'))} bytes>"
+            else:
+                sanitized[key] = "<non-string>"
+    return sanitized
+
+
+def _setup_audit_logger(config: SecurityConfig) -> Optional[logging.Logger]:
+    """
+    Create (or reuse) a dedicated file logger for tool-call audit records.
+    Returns None when audit logging is disabled in the config.
+    """
+    if not config.enable_audit_log:
+        return None
+    logger_name = f"orchestrator.audit.{config.audit_log_path}"
+    logger = logging.getLogger(logger_name)
+    if not logger.handlers:
+        try:
+            handler = logging.FileHandler(config.audit_log_path, encoding="utf-8")
+            handler.setFormatter(
+                logging.Formatter("%(asctime)s %(message)s", datefmt="%Y-%m-%dT%H:%M:%S")
+            )
+            logger.addHandler(handler)
+            logger.setLevel(logging.INFO)
+            logger.propagate = False
+        except OSError as e:
+            print(f"[audit] Cannot open audit log '{config.audit_log_path}': {e}",
+                  file=sys.stderr)
+            return None
+    return logger
+
+
+def _audit_log(logger: Optional[logging.Logger], tool_name: str,
+               params: Dict[str, Any], result: str):
+    """Append one structured line to the audit log."""
+    if logger is None:
+        return
+    sanitized = _sanitize_params_for_log(tool_name, params)
+    try:
+        result_obj = json.loads(result)
+        status = result_obj.get("status", "unknown")
+    except Exception:
+        status = "unknown"
+    logger.info("TOOL=%s PARAMS=%s STATUS=%s", tool_name, json.dumps(sanitized), status)
 
 
 # ============================================================================
@@ -101,7 +260,7 @@ def install_dependencies(verbose: bool = True) -> bool:
         if verbose:
             print(f"[deps] pip install {package} ...", file=sys.stderr)
         result = subprocess.run(
-            [sys.executable, "-m", "pip", "install", package],
+            [sys.executable, "-m", "pip", "install", "--user", package],
             capture_output=True,
             text=True,
         )
@@ -143,8 +302,12 @@ class ToolRegistry:
     Manages the tools the AI can call. Paths are confined to `base_path`.
     """
 
-    def __init__(self, base_path: str = "."):
+    def __init__(self, base_path: str = ".", security_config: Optional[SecurityConfig] = None):
         self.base_path = Path(base_path).resolve()
+        self.security_config: SecurityConfig = security_config or SecurityConfig()
+        self._audit_logger = _setup_audit_logger(self.security_config)
+        # Per-tool circuit breakers: track consecutive failures on each tool.
+        self._tool_circuit_breakers: Dict[str, CircuitBreaker] = {}
         self.tools: Dict[str, Callable] = {}
         self.definitions: List[Dict[str, Any]] = []
         self._register_tools()
@@ -169,14 +332,24 @@ class ToolRegistry:
                 fp = self._resolve_path(path)
                 if not fp.exists():
                     return json.dumps({"status": "error", "message": f"File not found: {path}"})
-                content = fp.read_text(encoding="utf-8")
+                content = fp.read_text(encoding="utf-8", errors="replace")
                 return json.dumps({"status": "success", "path": path, "content": content, "size": len(content)})
             except Exception as e:
                 return json.dumps({"status": "error", "message": str(e)})
 
         def write_file(path: str, content: str) -> str:
             try:
+                if self.security_config.sandbox_mode:
+                    return json.dumps({"status": "error",
+                                       "message": "write_file is disabled in sandbox mode."})
                 fp = self._resolve_path(path)
+                size_bytes = len(content.encode("utf-8"))
+                limit = self.security_config.max_file_size_bytes
+                if limit > 0 and size_bytes > limit:
+                    limit_mb = limit / (1024 * 1024)
+                    return json.dumps({"status": "error",
+                                       "message": (f"Content too large: {size_bytes:,} bytes "
+                                                   f"exceeds the {limit_mb:.0f} MB limit.")})
                 fp.parent.mkdir(parents=True, exist_ok=True)
                 fp.write_text(content, encoding="utf-8")
                 return json.dumps({"status": "success", "message": f"File written: {path}", "size": len(content)})
@@ -185,7 +358,22 @@ class ToolRegistry:
 
         def append_file(path: str, content: str) -> str:
             try:
+                if self.security_config.sandbox_mode:
+                    return json.dumps({"status": "error",
+                                       "message": "append_file is disabled in sandbox mode."})
                 fp = self._resolve_path(path)
+                # Check new chunk size AND existing file size combined.
+                chunk_bytes = len(content.encode("utf-8"))
+                limit = self.security_config.max_file_size_bytes
+                if limit > 0:
+                    existing_bytes = fp.stat().st_size if fp.exists() else 0
+                    total_bytes = existing_bytes + chunk_bytes
+                    if total_bytes > limit:
+                        limit_mb = limit / (1024 * 1024)
+                        return json.dumps({"status": "error",
+                                           "message": (f"Cannot append: resulting file size "
+                                                       f"({total_bytes:,} bytes) would exceed "
+                                                       f"the {limit_mb:.0f} MB limit.")})
                 with open(fp, "a", encoding="utf-8") as f:
                     f.write(content)
                 return json.dumps({"status": "success", "message": f"Appended to: {path}"})
@@ -194,6 +382,9 @@ class ToolRegistry:
 
         def delete_file(path: str) -> str:
             try:
+                if self.security_config.sandbox_mode:
+                    return json.dumps({"status": "error",
+                                       "message": "delete_file is disabled in sandbox mode."})
                 fp = self._resolve_path(path)
                 if not fp.exists():
                     return json.dumps({"status": "error", "message": f"File not found: {path}"})
@@ -204,6 +395,18 @@ class ToolRegistry:
 
         def run_command(command: str, timeout: int = 120) -> str:
             try:
+                if self.security_config.sandbox_mode:
+                    return json.dumps({"status": "error",
+                                       "message": "run_command is disabled in sandbox mode."})
+                # Blocklist check: reject commands containing dangerous substrings.
+                cmd_lower = command.lower().strip()
+                for blocked in self.security_config.command_blocklist:
+                    if blocked.lower() in cmd_lower:
+                        return json.dumps({
+                            "status": "error",
+                            "message": (f"Command blocked by security policy "
+                                        f"(matches forbidden pattern: '{blocked}')."),
+                        })
                 result = subprocess.run(
                     command, shell=True, capture_output=True, text=True,
                     timeout=timeout, cwd=str(self.base_path),
@@ -408,6 +611,61 @@ class ToolRegistry:
             except Exception as e:
                 return json.dumps({"status": "error", "message": str(e)})
 
+        def flutter_analyze(path: str = ".", timeout: int = 180) -> str:
+            """Run `flutter analyze` and return the diagnostics.
+
+            Read-only static analysis — safe to run in sandbox mode. Honours
+            `path` (file or directory) so the model can scope analysis to a
+            single file after editing it. Returns parsed counts (errors /
+            warnings / info) plus the raw output, capped to keep the tool
+            result small enough for any context window.
+            """
+            try:
+                target = self._resolve_path(path)
+                rel = str(target.relative_to(self.base_path)) if target != self.base_path else "."
+                # Use the locally-installed flutter binary (caller's PATH).
+                cmd = ["flutter", "analyze", "--no-pub"]
+                if rel != ".":
+                    cmd.append(rel)
+                result = subprocess.run(
+                    cmd,
+                    capture_output=True, text=True,
+                    timeout=timeout, cwd=str(self.base_path),
+                )
+                output = (result.stdout or "") + (result.stderr or "")
+                # Tally severities from the typical analyzer output, e.g.:
+                #   "  error • Undefined name 'foo' • lib/main.dart:12:4"
+                lines = output.splitlines()
+                errors = sum(1 for ln in lines if re.search(r"^\s*error\b", ln))
+                warnings = sum(1 for ln in lines if re.search(r"^\s*warning\b", ln))
+                infos = sum(1 for ln in lines if re.search(r"^\s*info\b", ln))
+                # Cap output so we don't blow up the context window on a
+                # repo with thousands of lints.
+                MAX_CHARS = 20000
+                truncated = len(output) > MAX_CHARS
+                if truncated:
+                    output = output[:MAX_CHARS] + f"\n... [truncated, {len(output) - MAX_CHARS} more chars]"
+                return json.dumps({
+                    "status": "success" if result.returncode == 0 else "error",
+                    "path": rel,
+                    "returncode": result.returncode,
+                    "errors": errors,
+                    "warnings": warnings,
+                    "info": infos,
+                    "truncated": truncated,
+                    "output": output if output.strip() else "(no analyzer output)",
+                })
+            except FileNotFoundError:
+                return json.dumps({
+                    "status": "error",
+                    "message": ("flutter CLI not found on PATH. Install Flutter and "
+                                "ensure `flutter` is reachable from the orchestrator's shell."),
+                })
+            except subprocess.TimeoutExpired:
+                return json.dumps({"status": "error", "message": f"flutter analyze timed out ({timeout}s)"})
+            except Exception as e:
+                return json.dumps({"status": "error", "message": str(e)})
+
         def git_commit(message: str) -> str:
             """Stage all changes and commit with the given message."""
             try:
@@ -438,6 +696,7 @@ class ToolRegistry:
             "git_diff": git_diff,
             "git_checkout": git_checkout,
             "git_commit": git_commit,
+            "flutter_analyze": flutter_analyze,
         }
 
         # OpenAI-compatible tool definitions (HF InferenceClient accepts these
@@ -583,6 +842,32 @@ class ToolRegistry:
             {
                 "type": "function",
                 "function": {
+                    "name": "flutter_analyze",
+                    "description": (
+                        "Run `flutter analyze` on the project (or a specific file/dir) "
+                        "and return the diagnostics. Use after editing Dart code to "
+                        "verify there are no static errors or new lints. Read-only — "
+                        "safe to call in sandbox mode."
+                    ),
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "path": {
+                                "type": "string",
+                                "description": "Optional file or directory to analyze (default '.', the whole project)",
+                            },
+                            "timeout": {
+                                "type": "integer",
+                                "description": "Seconds before the analyzer is killed (default 180)",
+                            },
+                        },
+                        "required": [],
+                    },
+                },
+            },
+            {
+                "type": "function",
+                "function": {
                     "name": "git_commit",
                     "description": "Stage all changes (git add -A) and commit with a message.",
                     "parameters": {
@@ -710,14 +995,48 @@ class ToolRegistry:
 
     def execute(self, tool_name: str, parameters: Dict[str, Any]) -> str:
         if tool_name not in self.tools:
-            return json.dumps({"status": "error", "message": f"Unknown tool: {tool_name}"})
+            result = json.dumps({"status": "error", "message": f"Unknown tool: {tool_name}"})
+            _audit_log(self._audit_logger, tool_name, parameters or {}, result)
+            return result
+
+        # Per-tool circuit breaker: skip execution when the breaker is OPEN.
+        cb = self._tool_circuit_breakers.setdefault(
+            tool_name, CircuitBreaker(name=f"tool:{tool_name}", failure_threshold=5, recovery_timeout=30.0)
+        )
+        if not cb.allow_request():
+            result = json.dumps({
+                "status": "error",
+                "message": (f"Tool '{tool_name}' is temporarily disabled by circuit breaker "
+                            f"(too many consecutive failures). Will retry after "
+                            f"{cb.recovery_timeout:.0f}s."),
+            })
+            _audit_log(self._audit_logger, tool_name, parameters or {}, result)
+            return result
+
         try:
             safe_params = self._relativise(parameters or {})
-            return self.tools[tool_name](**(safe_params))
+            result = self.tools[tool_name](**(safe_params))
+            # Track success/failure for the per-tool circuit breaker.
+            try:
+                result_obj = json.loads(result)
+                if result_obj.get("status") == "error":
+                    cb.record_failure()
+                else:
+                    cb.record_success()
+            except Exception:
+                cb.record_success()
+            _audit_log(self._audit_logger, tool_name, safe_params, result)
+            return result
         except TypeError as e:
-            return json.dumps({"status": "error", "message": f"Invalid parameters: {e}"})
+            err = json.dumps({"status": "error", "message": f"Invalid parameters: {e}"})
+            cb.record_failure()
+            _audit_log(self._audit_logger, tool_name, parameters or {}, err)
+            return err
         except Exception as e:
-            return json.dumps({"status": "error", "message": str(e)})
+            err = json.dumps({"status": "error", "message": str(e)})
+            cb.record_failure()
+            _audit_log(self._audit_logger, tool_name, parameters or {}, err)
+            return err
 
     def get_system_prompt(self) -> str:
         """
@@ -806,6 +1125,196 @@ class ModelBackend:
             tools: Optional[List[Dict[str, Any]]] = None,
     ) -> Tuple[str, str]:
         raise NotImplementedError
+
+
+# ============================================================================
+# RATE LIMITING
+# ============================================================================
+#
+# Cloud backends (Groq free tier in particular) enforce a per-minute token
+# quota that is small enough (6-8k TPM) to clip even one medium conversation.
+# The orchestrator used to surface the 413 straight to the user; now we
+# optionally wrap any backend in a TokenBucket that:
+#   - Sleeps before the next call when the rolling-60s usage plus the
+#     estimated cost of this call would exceed the limit.
+#   - Auto-trims the oldest non-system messages when a single request is
+#     larger than the entire per-minute budget (otherwise no amount of
+#     waiting would ever let it through).
+#   - Self-corrects the estimator on 413 by reading Groq's "Requested N"
+#     field out of the error body.
+#
+# Keyed by (backend-label, model-id) so the same orchestrator process can
+# share limits across sessions but not across unrelated models.
+
+def _estimate_tokens(messages, max_tokens: int) -> int:
+    """Cheap prompt-size estimate: chars/4 is within ~15% of the real
+    tokenizer for English/code and avoids a tiktoken dependency. Adds the
+    reply budget so we reserve for the response, not just the prompt."""
+    total_chars = 0
+    for m in messages or []:
+        c = m.get("content")
+        if isinstance(c, str):
+            total_chars += len(c)
+        elif isinstance(c, list):
+            for part in c:
+                if isinstance(part, dict):
+                    total_chars += len(str(part.get("text", "")))
+    # +10 per message as overhead for role tokens and separators.
+    overhead = 10 * len(messages or [])
+    return (total_chars // 4) + overhead + max_tokens
+
+
+class TokenBucket:
+    """Sliding 60-second window of (timestamp, tokens_used) entries."""
+
+    WINDOW_SECONDS = 60.0
+    # Use 95% of the nominal limit as the effective budget — the estimator
+    # is imperfect and Groq counts a bit more than chars/4 suggests.
+    SAFETY_FACTOR = 0.95
+
+    def __init__(self, tpm_limit: int):
+        self.tpm_limit = int(tpm_limit)
+        self._entries: "collections.deque[Tuple[float, int]]" = collections.deque()
+
+    def _effective_limit(self) -> int:
+        return int(self.tpm_limit * self.SAFETY_FACTOR)
+
+    def _expire(self, now: float) -> None:
+        cutoff = now - self.WINDOW_SECONDS
+        while self._entries and self._entries[0][0] < cutoff:
+            self._entries.popleft()
+
+    def used_in_window(self) -> int:
+        now = time.time()
+        self._expire(now)
+        return sum(t for _, t in self._entries)
+
+    def wait_for_budget(self, estimated_tokens: int) -> float:
+        """Block until there is room for `estimated_tokens`. Returns the
+        total seconds slept. Does NOT reserve — call `record` after the
+        request actually completes."""
+        if self.tpm_limit <= 0:
+            return 0.0
+        slept_total = 0.0
+        while True:
+            now = time.time()
+            self._expire(now)
+            used = sum(t for _, t in self._entries)
+            if used + estimated_tokens <= self._effective_limit():
+                return slept_total
+            # Wait just past the moment the oldest entry expires.
+            oldest_ts = self._entries[0][0]
+            sleep_s = max(0.1, (oldest_ts + self.WINDOW_SECONDS) - now + 0.05)
+            # Cap single sleep so the user gets a heartbeat line.
+            sleep_s = min(sleep_s, 5.0)
+            print(
+                f"[orch] TPM limit: {used}/{self._effective_limit()} used, "
+                f"need {estimated_tokens} — sleeping {sleep_s:.1f}s.",
+                file=sys.stderr,
+                flush=True,
+            )
+            time.sleep(sleep_s)
+            slept_total += sleep_s
+
+    def record(self, tokens_used: int) -> None:
+        if self.tpm_limit <= 0 or tokens_used <= 0:
+            return
+        self._entries.append((time.time(), int(tokens_used)))
+
+
+class RateLimitedBackend(ModelBackend):
+    """Decorator that gates calls to an inner backend with a TokenBucket.
+    Also auto-trims oversize histories and retries once on 413."""
+
+    def __init__(self, inner: ModelBackend, tpm_limit: int, label: str = ""):
+        self.inner = inner
+        self.bucket = TokenBucket(tpm_limit)
+        self.label = label or inner.__class__.__name__
+        # Expose common attributes so callers that introspect still work.
+        self.model_id = getattr(inner, "model_id", "")
+
+    def __getattr__(self, name):
+        # Pass-through for health_check and any other backend-specific
+        # methods the orchestrator setup calls.
+        return getattr(self.inner, name)
+
+    def chat(self, messages, max_tokens, temperature, tools=None):
+        if self.bucket.tpm_limit <= 0:
+            return self.inner.chat(messages, max_tokens, temperature, tools)
+
+        estimated = _estimate_tokens(messages, max_tokens)
+        limit = self.bucket._effective_limit()
+
+        # Single request bigger than the whole per-minute budget: no amount
+        # of waiting helps. Auto-trim the oldest non-system messages and
+        # retry. If it still won't fit after trimming to just the system
+        # prompt + last user turn, surface a clear error.
+        if estimated > limit:
+            messages = self._trim_to_fit(messages, max_tokens, limit)
+            estimated = _estimate_tokens(messages, max_tokens)
+            if estimated > limit:
+                raise RuntimeError(
+                    f"Single request ({estimated} est. tokens) exceeds the "
+                    f"TPM limit of {self.bucket.tpm_limit} even after "
+                    f"trimming history. Lower max_tokens, raise TPM in "
+                    f"Settings, or pick a model with a larger quota."
+                )
+            print(
+                f"[orch] Auto-trimmed history to fit TPM budget "
+                f"({estimated}/{limit}).",
+                file=sys.stderr,
+                flush=True,
+            )
+
+        self.bucket.wait_for_budget(estimated)
+
+        try:
+            content, finish_reason = self.inner.chat(
+                messages, max_tokens, temperature, tools
+            )
+        except Exception as e:
+            # Groq / OpenAI-style 413: the body contains "Requested N". Use
+            # that to bump the estimator by recording the real cost so the
+            # next call waits the right amount, then re-raise.
+            requested = self._parse_requested_tokens(str(e))
+            if requested:
+                self.bucket.record(requested)
+                print(
+                    f"[orch] 413 rate-limit: server reported "
+                    f"{requested} tokens; charged the bucket.",
+                    file=sys.stderr,
+                    flush=True,
+                )
+            raise
+
+        # Record actual usage if the inner backend surfaced it as an
+        # attribute (backends set `self.last_usage_tokens` when known),
+        # otherwise fall back to the estimate.
+        actual = getattr(self.inner, "last_usage_tokens", 0) or estimated
+        self.bucket.record(actual)
+        return content, finish_reason
+
+    @staticmethod
+    def _parse_requested_tokens(err_msg: str) -> int:
+        m = re.search(r"Requested\s+(\d+)", err_msg)
+        return int(m.group(1)) if m else 0
+
+    @staticmethod
+    def _trim_to_fit(messages, max_tokens: int, limit: int) -> List[Dict[str, Any]]:
+        """Drop the oldest non-system messages until the estimate fits.
+        Keeps the system prompt (index 0 if role=system) and the most
+        recent user turn."""
+        if not messages:
+            return messages
+        kept = list(messages)
+        # Always keep system prompt if present at [0].
+        head: List[Dict[str, Any]] = []
+        if kept and kept[0].get("role") == "system":
+            head = [kept.pop(0)]
+        # Drop from the front (oldest) until it fits or only 1 msg left.
+        while len(kept) > 1 and _estimate_tokens(head + kept, max_tokens) > limit:
+            kept.pop(0)
+        return head + kept
 
 
 class HFBackend(ModelBackend):
@@ -941,6 +1450,14 @@ class OllamaBackend(ModelBackend):
                 "\n-> Prompt exceeded the model's context window. "
                 "Start a new chat to clear history."
             )
+        if "internal server error" in low:
+            return (
+                "\n-> Ollama returned a generic 500. For cloud-tagged models "
+                "(':<size>-cloud') make sure you're signed in via "
+                "`ollama signin`, and that the model supports the features "
+                "being requested (some cloud models don't accept tools or "
+                "custom num_ctx)."
+            )
         return ""
 
     def chat(self, messages, max_tokens, temperature, tools=None):
@@ -971,15 +1488,26 @@ class OllamaBackend(ModelBackend):
             # Skip tools= for models that are known not to support it.
             effective_tools = None if self._tools_unsupported else tools
 
+            # Ollama Cloud models (tagged ':<size>-cloud', e.g.
+            # 'mistral-large-3:675b-cloud') are served by Ollama's hosted
+            # inference and reject the local-only `options` payload with
+            # a bare HTTP 500. For those, only pass `temperature` and skip
+            # num_ctx/num_predict entirely.
+            is_cloud_model = self.model_id.endswith("-cloud") or "-cloud:" in self.model_id
+            if is_cloud_model:
+                chat_options: Dict[str, Any] = {"temperature": temperature}
+            else:
+                chat_options = {
+                    "temperature": temperature,
+                    "num_predict": max_tokens,
+                    "num_ctx": self.num_ctx,
+                }
+
             chat_kwargs: Dict[str, Any] = dict(
                 model=self.model_id,
                 messages=messages,
                 stream=True,
-                options={
-                    "temperature": temperature,
-                    "num_predict": max_tokens,
-                    "num_ctx": self.num_ctx,
-                },
+                options=chat_options,
             )
             if effective_tools:
                 chat_kwargs["tools"] = effective_tools
@@ -1360,6 +1888,342 @@ class GeminiBackend(ModelBackend):
 
 
 # ============================================================================
+# OPENROUTER BACKEND
+# ============================================================================
+
+class OpenRouterBackend(ModelBackend):
+    """
+    OpenRouter backend via the OpenAI-compatible REST API.
+
+    OpenRouter routes requests to dozens of providers (OpenAI, Anthropic,
+    Google, Meta, Mistral, …) using a single unified API endpoint. The model
+    ID follows the provider/name convention, e.g. 'openai/gpt-4o',
+    'anthropic/claude-3.5-sonnet', 'meta-llama/llama-3.1-70b-instruct'.
+
+    No extra pip dependency — the implementation uses only stdlib urllib so
+    it works out of the box on any Python 3.8+ installation.
+
+    API docs:  https://openrouter.ai/docs
+    Key:       https://openrouter.ai/keys
+    """
+
+    DEFAULT_BASE_URL = "https://openrouter.ai/api/v1"
+
+    def __init__(self, api_key: str, model_id: str,
+                 base_url: str = DEFAULT_BASE_URL):
+        if not api_key:
+            raise RuntimeError(
+                "OpenRouter backend requires --openrouter-api-key. "
+                "Get one free at https://openrouter.ai/keys."
+            )
+        if not model_id:
+            raise RuntimeError(
+                "OpenRouter backend requires --model "
+                "(e.g. 'openai/gpt-4o' or 'meta-llama/llama-3.1-70b-instruct')."
+            )
+        self.api_key = api_key
+        self.model_id = model_id
+        self.base_url = base_url.rstrip("/")
+
+    def chat(self, messages, max_tokens, temperature, tools=None):
+        import urllib.request as _req
+        import urllib.error as _err
+
+        payload: Dict[str, Any] = {
+            "model": self.model_id,
+            "messages": messages,
+            "max_tokens": max_tokens,
+            "temperature": temperature,
+        }
+        # OpenRouter supports native tool calling (OpenAI function-calling format).
+        if tools:
+            payload["tools"] = tools
+
+        raw = json.dumps(payload).encode("utf-8")
+        request = _req.Request(
+            f"{self.base_url}/chat/completions",
+            data=raw,
+            headers={
+                "Authorization": f"Bearer {self.api_key}",
+                "Content-Type": "application/json",
+                # Recommended by OpenRouter for usage tracking / leaderboard.
+                "HTTP-Referer": "https://github.com/hf-chat-flutter",
+                "X-Title": "HF Chat Flutter Orchestrator",
+            },
+            method="POST",
+        )
+
+        print(
+            f"[orch] OpenRouter request '{self.model_id}' "
+            f"({len(messages)} msgs, tools={bool(tools)})...",
+            file=sys.stderr,
+            flush=True,
+        )
+
+        try:
+            with _req.urlopen(request, timeout=120) as resp:
+                body = resp.read().decode("utf-8")
+        except _err.HTTPError as e:
+            body_err = e.read().decode("utf-8", errors="replace")
+            raise RuntimeError(
+                f"OpenRouter HTTP {e.code}: {body_err[:400]}"
+            ) from e
+        except Exception as e:
+            raise RuntimeError(f"OpenRouter error: {e}") from e
+
+        try:
+            data = json.loads(body)
+        except json.JSONDecodeError as exc:
+            raise RuntimeError(
+                f"OpenRouter: invalid JSON response: {body[:200]}"
+            ) from exc
+
+        choices = data.get("choices") or []
+        if not choices:
+            # Surface OpenRouter-level error messages (quota, bad model, etc.)
+            error = data.get("error") or {}
+            msg = error.get("message") or str(data)
+            raise RuntimeError(f"OpenRouter returned no choices: {msg[:400]}")
+
+        choice = choices[0]
+        message = choice.get("message") or {}
+        finish_reason = choice.get("finish_reason") or ""
+
+        # Native tool calls (OpenAI function-calling format) -> <tool> tags.
+        tool_calls = message.get("tool_calls") or []
+        if tool_calls:
+            tag_lines: List[str] = []
+            for tc in tool_calls:
+                fn = tc.get("function") or {}
+                name = fn.get("name")
+                args = fn.get("arguments") or "{}"
+                if isinstance(args, str):
+                    try:
+                        args = json.loads(args)
+                    except json.JSONDecodeError:
+                        args = {}
+                if not name:
+                    continue
+                tag_lines.append(
+                    f'<tool>{json.dumps({"tool": name, "parameters": args})}</tool>'
+                )
+                print(
+                    f"[orch] OpenRouter native tool_call -> {name}({args})",
+                    file=sys.stderr,
+                    flush=True,
+                )
+            if tag_lines:
+                return "\n".join(tag_lines), finish_reason
+
+        content = message.get("content") or ""
+        return content.strip(), finish_reason
+
+
+# ============================================================================
+# GITHUB MODELS BACKEND
+# ============================================================================
+
+class GitHubModelsBackend(ModelBackend):
+    """
+    GitHub Models backend via the OpenAI-compatible REST API.
+
+    Endpoint: POST https://models.github.ai/inference/chat/completions
+    Catalog:  GET  https://models.github.ai/catalog/models
+    Auth:     fine-grained PAT with `models:read` scope.
+
+    Model IDs follow the publisher/name convention, e.g. 'openai/gpt-4o',
+    'meta/Llama-3.3-70B-Instruct', 'mistral-ai/Mistral-Large-2411'.
+
+    No extra pip dependency — uses only stdlib urllib.
+
+    Docs: https://docs.github.com/en/rest/models/inference?apiVersion=2026-03-10
+    PAT:  https://github.com/settings/personal-access-tokens/new
+    """
+
+    DEFAULT_BASE_URL = "https://models.github.ai"
+    API_VERSION = "2026-03-10"
+
+    def __init__(self, api_key: str, model_id: str,
+                 base_url: str = DEFAULT_BASE_URL):
+        if not api_key:
+            raise RuntimeError(
+                "GitHub Models backend requires --github-api-key. "
+                "Create a fine-grained PAT with `models:read` scope at "
+                "https://github.com/settings/personal-access-tokens/new."
+            )
+        if not model_id:
+            raise RuntimeError(
+                "GitHub Models backend requires --model "
+                "(e.g. 'openai/gpt-4o-mini' or 'meta/Llama-3.3-70B-Instruct')."
+            )
+        self.api_key = api_key
+        self.model_id = model_id
+        self.base_url = base_url.rstrip("/")
+
+    def chat(self, messages, max_tokens, temperature, tools=None):
+        import urllib.request as _req
+        import urllib.error as _err
+
+        payload: Dict[str, Any] = {
+            "model": self.model_id,
+            "messages": messages,
+            "max_tokens": max_tokens,
+            "temperature": temperature,
+        }
+        # GitHub Models supports OpenAI function-calling format on capable models.
+        if tools:
+            payload["tools"] = tools
+
+        raw = json.dumps(payload).encode("utf-8")
+        request = _req.Request(
+            f"{self.base_url}/inference/chat/completions",
+            data=raw,
+            headers={
+                "Authorization": f"Bearer {self.api_key}",
+                "Content-Type": "application/json",
+                "Accept": "application/vnd.github+json",
+                "X-GitHub-Api-Version": self.API_VERSION,
+            },
+            method="POST",
+        )
+
+        print(
+            f"[orch] GitHub Models request '{self.model_id}' "
+            f"({len(messages)} msgs, tools={bool(tools)})...",
+            file=sys.stderr,
+            flush=True,
+        )
+
+        # Retry on 429 with exponential backoff, honouring the
+        # `Retry-After` and GitHub's `x-ratelimit-reset` / `x-ratelimit-timeremaining`
+        # headers when present. GitHub Models rate limits are very strict
+        # (free `low` tier: 15 req/min, 150 req/day; `high` tier: 10/min, 50/day),
+        # and the orchestrator's tool-loop emits multiple requests per turn,
+        # so transient 429s are expected on consecutive prompts.
+        # Reasoning models (phi-4, DeepSeek-R1, the o-series) routinely
+        # think for several minutes before emitting a single token, so we
+        # need a long socket timeout. We also tick a heartbeat to stderr
+        # every 20s so the Flutter-side inactivity watchdog (10 min) stays
+        # happy while urllib is blocked on the read.
+        import threading as _th
+        max_attempts = 4
+        body = ""
+        # 10 min per attempt — long-thinking reasoning models need it.
+        request_timeout = 600
+        for attempt in range(max_attempts):
+            heartbeat_stop = _th.Event()
+
+            def _heartbeat():
+                ticks = 0
+                while not heartbeat_stop.wait(20):
+                    ticks += 1
+                    print(
+                        f"[orch] GitHub Models still waiting "
+                        f"({ticks * 20}s elapsed, model={self.model_id})...",
+                        file=sys.stderr,
+                        flush=True,
+                    )
+
+            hb = _th.Thread(target=_heartbeat, daemon=True)
+            hb.start()
+            try:
+                with _req.urlopen(request, timeout=request_timeout) as resp:
+                    body = resp.read().decode("utf-8")
+                heartbeat_stop.set()
+                break
+            except _err.HTTPError as e:
+                heartbeat_stop.set()
+                if e.code == 429 and attempt < max_attempts - 1:
+                    retry_after = e.headers.get("Retry-After")
+                    wait_s: float
+                    if retry_after and retry_after.strip().isdigit():
+                        wait_s = float(retry_after)
+                    else:
+                        # Exponential backoff: 5s, 15s, 35s.
+                        wait_s = 5.0 * (2 ** attempt) + 5.0
+                    print(
+                        f"[orch] GitHub Models 429 — sleeping {wait_s:.0f}s "
+                        f"(attempt {attempt + 1}/{max_attempts})...",
+                        file=sys.stderr,
+                        flush=True,
+                    )
+                    time.sleep(wait_s)
+                    continue
+                body_err = e.read().decode("utf-8", errors="replace")
+                hint = ""
+                if e.code == 429:
+                    hint = (
+                        " — GitHub Models rate limit hit. Free tiers are "
+                        "15 req/min (`low`) or 10 req/min (`high`) and "
+                        "150/50 per day. Wait ~60s, switch to a `low`-tier "
+                        "model, or set a TPM/RPM limit in Settings."
+                    )
+                raise RuntimeError(
+                    f"GitHub Models HTTP {e.code}: {body_err[:400]}{hint}"
+                ) from e
+            except Exception as e:
+                heartbeat_stop.set()
+                # Surface a clearer hint when the long socket timeout fires —
+                # it usually means the model is generating a very long reply
+                # or is heavily loaded. Encourage the user to lower max_tokens
+                # or pick a smaller / non-reasoning model.
+                hint = ""
+                if "timed out" in str(e).lower():
+                    hint = (
+                        f" — request exceeded {request_timeout}s. "
+                        "Reasoning models (phi-4, DeepSeek-R1, o-series) "
+                        "can take this long; try lowering Max tokens, "
+                        "shortening the prompt, or picking a faster model."
+                    )
+                raise RuntimeError(f"GitHub Models error: {e}{hint}") from e
+
+        try:
+            data = json.loads(body)
+        except json.JSONDecodeError as exc:
+            raise RuntimeError(
+                f"GitHub Models: invalid JSON response: {body[:200]}"
+            ) from exc
+
+        choices = data.get("choices") or []
+        if not choices:
+            error = data.get("error") or {}
+            msg = error.get("message") or str(data)
+            raise RuntimeError(f"GitHub Models returned no choices: {msg[:400]}")
+
+        choice = choices[0]
+        message = choice.get("message") or {}
+        finish_reason = choice.get("finish_reason") or ""
+
+        tool_calls = message.get("tool_calls") or []
+        if tool_calls:
+            tag_lines: List[str] = []
+            for tc in tool_calls:
+                fn = tc.get("function") or {}
+                name = fn.get("name")
+                args = fn.get("arguments") or "{}"
+                if isinstance(args, str):
+                    try:
+                        args = json.loads(args)
+                    except json.JSONDecodeError:
+                        args = {}
+                if not name:
+                    continue
+                tag_lines.append(
+                    f'<tool>{json.dumps({"tool": name, "parameters": args})}</tool>'
+                )
+                print(
+                    f"[orch] GitHub Models native tool_call -> {name}({args})",
+                    file=sys.stderr,
+                    flush=True,
+                )
+            if tag_lines:
+                return "\n".join(tag_lines), finish_reason
+
+        content = message.get("content") or ""
+        return content.strip(), finish_reason
+
+
+# ============================================================================
 # ORCHESTRATOR
 # ============================================================================
 
@@ -1370,11 +2234,24 @@ class Orchestrator:
             base_path: str = ".",
             temperature: float = 0.2,
             max_tokens: int = 2048,
+            security_config: Optional[SecurityConfig] = None,
+            disable_tools: bool = False,
     ):
         self.backend = backend
+        # When True, every request is routed as a plain chat call — the
+        # tool-decision heuristic and the tool loop are bypassed. Useful
+        # for reasoning-only models (phi-4, plain Mistral, etc.) that
+        # can't emit valid tool calls.
+        self.disable_tools = disable_tools
         # Expose model_id for logging/diagnostics; both backends carry one.
         self.model_id = getattr(backend, "model_id", "(unknown)")
-        self.tool_registry = ToolRegistry(base_path=base_path)
+        self.tool_registry = ToolRegistry(base_path=base_path,
+                                          security_config=security_config)
+        # Model-level circuit breaker: open after 5 consecutive API failures,
+        # probe again after 60 s so a temporary outage doesn't loop forever.
+        self._model_circuit_breaker = CircuitBreaker(
+            name=f"model:{self.model_id}", failure_threshold=5, recovery_timeout=60.0
+        )
         self.conversation_history: List[Dict[str, Any]] = []
         # Generation knobs. Exposed as CLI flags so the Flutter UI can
         # let users tune them per-backend without editing Python.
@@ -1495,7 +2372,7 @@ class Orchestrator:
         self._ensure_system_prompt()
         self._trim_history()
 
-        use_tools = self._needs_tools(user_input)
+        use_tools = (not self.disable_tools) and self._needs_tools(user_input)
 
         if use_tools:
             decorated = self._TOOL_REMINDER + user_input
@@ -1517,10 +2394,19 @@ class Orchestrator:
                     tools=None,
                 )
             except Exception as e:
+                # Pop the just-added user turn so a retry doesn't end up
+                # with two consecutive user messages, and so the failed
+                # error string never leaks into model context on the next
+                # turn (some models will parrot it back).
+                if self.conversation_history and \
+                        self.conversation_history[-1].get("role") == "user":
+                    self.conversation_history.pop()
                 return f"Model error: {e}"
-            # Strip <tool_call> blocks from history to save context; preserve them
-            # in the returned answer so the Flutter UI can render reasoning.
-            text_clean = self._THINK_PATTERN.sub("", text or "").strip()
+            # Strip <tool_call> blocks AND chat-template control tokens
+            # from history so the next turn doesn't see them in context.
+            text_clean = self._THINK_PATTERN.sub("", text or "")
+            text_clean = self._CHAT_TEMPLATE_TOKEN_PATTERN.sub("", text_clean)
+            text_clean = self._STRAY_THINK_CLOSE_PATTERN.sub("", text_clean).strip()
             self.conversation_history.append({"role": "assistant", "content": text_clean})
             return self._clean_final_answer(text or "")
 
@@ -1544,15 +2430,18 @@ class Orchestrator:
             except Exception as e:
                 return f"Model error: {e}"
 
-            preview = (text or "").replace("\n", " ")[:200]
-            print(f"[orch] Model reply (iter {iteration}, finish={finish_reason}): "
-                  f"{preview!r}", file=sys.stderr)
+            preview = (text or "").replace("\n", " ")[:800]
+            print(f"[orch] Model reply (iter {iteration}, finish={finish_reason}, "
+                  f"len={len(text or '')}): {preview!r}", file=sys.stderr)
 
-            # Strip <tool_call> blocks before storing in history — they waste
-            # context and confuse the tool parser.  The raw `text` (with
-            # thinking intact) is still used for the final answer so the
-            # Flutter UI can render the reasoning section.
-            text_clean = self._THINK_PATTERN.sub("", text or "").strip()
+            # Strip <tool_call> blocks AND chat-template control tokens
+            # before storing in history — they waste context and confuse
+            # the tool parser. The raw `text` (with thinking intact) is
+            # still used for the final answer so the Flutter UI can render
+            # the reasoning section.
+            text_clean = self._THINK_PATTERN.sub("", text or "")
+            text_clean = self._CHAT_TEMPLATE_TOKEN_PATTERN.sub("", text_clean)
+            text_clean = self._STRAY_THINK_CLOSE_PATTERN.sub("", text_clean).strip()
             self.conversation_history.append({"role": "assistant", "content": text_clean})
 
             # Parse tool calls from the cleaned text to avoid false positives
@@ -1568,13 +2457,15 @@ class Orchestrator:
                     if is_last_chance:
                         follow_up = (
                             f"Tool `{name}` returned:\n{result}\n\n"
-                            "FINAL ANSWER REQUIRED. Do NOT call any more tools. "
-                            "Write only your plain-text answer to the user now."
+                            "[INTERNAL: FINAL ANSWER REQUIRED. Do NOT call any more tools. "
+                            "Write only your plain-text answer to the user now. "
+                            "Do NOT echo this instruction back to the user.]"
                         )
                     else:
                         follow_up = (
                             f"Tool `{name}` returned:\n{result}\n\n"
-                            "Continue. Either call another tool or give the final answer."
+                            "[INTERNAL: Continue. Either call another tool or give the final answer. "
+                            "Do NOT echo this instruction back to the user.]"
                         )
                     self.conversation_history.append({"role": "user", "content": follow_up})
                 continue
@@ -1584,6 +2475,11 @@ class Orchestrator:
                 malformed_tool_retries += 1
                 print(
                     f"[orch] Malformed tool call detected (retry {malformed_tool_retries}).",
+                    file=sys.stderr,
+                )
+                print(
+                    f"[orch] Unparseable reply (first 500 chars): "
+                    f"{text_clean[:500]!r}",
                     file=sys.stderr,
                 )
                 self.conversation_history.append({
@@ -1683,6 +2579,20 @@ class Orchestrator:
     # chain-of-thought in <think>…</think>. Strip the entire block so only the
     # final answer reaches the user.
     _THINK_PATTERN = re.compile(r"<think>.*?</think>", re.DOTALL | re.IGNORECASE)
+    # Some models leak their raw chat-template control tokens into the
+    # response (`<|im_start|>`, `<|im_end|>`, `<|im_sep|>`, `<|endoftext|>`,
+    # `<|user|>`, `<|assistant|>`, `<|system|>`, `<|eot_id|>`,
+    # `<|start_header_id|>...<|end_header_id|>`, etc.). Strip them all —
+    # they are never meant to be user-visible.
+    _CHAT_TEMPLATE_TOKEN_PATTERN = re.compile(
+        r"<\|[^|>]{0,40}\|>",
+    )
+    # Stray closing `</think>` without an opening tag (the model emitted
+    # the close tag at the start of its reply because thinking was
+    # truncated by max_tokens or the prompt template).
+    _STRAY_THINK_CLOSE_PATTERN = re.compile(
+        r"^\s*</think>\s*", re.IGNORECASE,
+    )
 
     @classmethod
     def _clean_final_answer(cls, text: str) -> str:
@@ -1692,6 +2602,10 @@ class Orchestrator:
         # Flutter UI renders them as a collapsible "Reasoning" section.
         # They are stripped from history entries (in run()) to save context.
         cleaned = cls._JUNK_TAG_PATTERN.sub("", text)
+        # Strip leaked chat-template control tokens (phi-4 / Qwen / Llama).
+        cleaned = cls._CHAT_TEMPLATE_TOKEN_PATTERN.sub("", cleaned)
+        # Drop a stray `</think>` at the very start of the reply.
+        cleaned = cls._STRAY_THINK_CLOSE_PATTERN.sub("", cleaned)
         # Collapse runs of blank lines the stripping may have produced.
         cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
         cleaned = cleaned.strip()
@@ -1724,6 +2638,50 @@ class Orchestrator:
             if '"tool"' in text or "'tool'" in text:
                 return True
         return False
+
+    # Matches the hybrid JSON-inside-XML pattern some models emit, e.g.:
+    #   {"tool":"run_command"><parameters>{"command":"..."}}
+    # Captures: (1) tool name, (2) parameters JSON body.
+    _HYBRID_RE = re.compile(
+        r'["\']?(?:tool|name)["\']?\s*["\':=]\s*["\']([a-zA-Z_][\w\-]*)["\']'
+        r'[^<{]*?<\s*parameters\s*>?\s*(\{.*?\})',
+        re.DOTALL | re.IGNORECASE,
+        )
+
+    @classmethod
+    def _repair_hybrid_tool_call(cls, text: str) -> Optional[str]:
+        """
+        Repair the common malformed pattern where a model mixes JSON and XML:
+            {"tool":"NAME"><parameters>{"key":"val"}}
+            {"tool":"NAME"}<parameters>{"key":"val"}</parameters>
+        Returns a valid JSON string ``{"tool":"NAME","parameters":{...}}`` or
+        None if no repair could be made.
+        """
+        if not text or "<parameters" not in text.lower():
+            return None
+        m = cls._HYBRID_RE.search(text)
+        if not m:
+            return None
+        name = m.group(1)
+        params_raw = m.group(2)
+        # Balance braces — the regex is non-greedy so it may under-count.
+        depth = 0
+        end = -1
+        for i, ch in enumerate(params_raw):
+            if ch == "{":
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+                if depth == 0:
+                    end = i + 1
+                    break
+        if end > 0:
+            params_raw = params_raw[:end]
+        try:
+            params_obj = json.loads(params_raw)
+        except json.JSONDecodeError:
+            return None
+        return json.dumps({"tool": name, "parameters": params_obj})
 
     @staticmethod
     def _looks_like_malformed_tool_call(text: str) -> bool:
@@ -1787,6 +2745,15 @@ class Orchestrator:
         the truncation detector handles the rare case where we need more,
         by asking the model to break large writes into append_file chunks.
         """
+        # Model circuit breaker: fast-fail when the backend is consistently broken.
+        if not self._model_circuit_breaker.allow_request():
+            raise RuntimeError(
+                f"Model circuit breaker is OPEN for '{self.model_id}'. "
+                f"Too many consecutive failures — will auto-retry after "
+                f"{self._model_circuit_breaker.recovery_timeout:.0f}s. "
+                f"Check your API key, quota, or network connectivity."
+            )
+
         last_exc: Optional[BaseException] = None
         # attempt 0 = immediate; attempts 1..N = after waiting backoffs[i-1]
         for attempt in range(len(self._RETRY_BACKOFFS) + 1):
@@ -1800,21 +2767,26 @@ class Orchestrator:
                 )
                 time.sleep(wait_s)
             try:
-                return self.backend.chat(
+                result = self.backend.chat(
                     messages=self.conversation_history,
                     max_tokens=self.max_tokens,
                     temperature=self.temperature,
                     tools=self.tool_registry.definitions,
                 )
+                # Successful call: reset the circuit breaker failure count.
+                self._model_circuit_breaker.record_success()
+                return result
             except Exception as e:  # noqa: BLE001 - broad by design
                 last_exc = e
                 if not self._is_retryable_error(e):
                     # Auth errors, malformed input, Ollama connection refused,
-                    # etc. Don't retry.
+                    # etc. Don't retry — but still count as a failure.
+                    self._model_circuit_breaker.record_failure()
                     raise
                 # else: fall through to next backoff
 
-        # Exhausted all retries. Surface a clear, user-actionable message.
+        # Exhausted all retries. Record the failure and surface a clear message.
+        self._model_circuit_breaker.record_failure()
         raise RuntimeError(
             f"Model backend kept returning a rate-limit / transient error "
             f"after {len(self._RETRY_BACKOFFS) + 1} attempts. "
@@ -1864,8 +2836,28 @@ class Orchestrator:
         # 1. Preferred: <tool>…</tool> — the tag boundaries are explicit, so
         #    we can grab the full body and let _extract_json_objects find the
         #    outermost object (handles nested braces in `parameters`).
-        for m in re.finditer(r"<tool[^>]*>(.*?)</tool>", response, re.DOTALL):
-            candidates.extend(Orchestrator._extract_json_objects(m.group(1)))
+        #    Also match <tool_call> (Qwen/Hermes/Llama 3.1) and <function_call>
+        #    (older OpenAI-style) since different model families use different tags.
+        _tag_re = re.compile(
+            r"<(tool|tool_call|function_call)[^>]*>(.*?)</\1>",
+            re.DOTALL | re.IGNORECASE,
+            )
+        for m in _tag_re.finditer(response):
+            body = m.group(2)
+            candidates.extend(Orchestrator._extract_json_objects(body))
+            # Repair: some models emit a hybrid like
+            #   {"tool":"X"><parameters>{...}}
+            # where <parameters> is an XML tag embedded inside JSON. Convert
+            # the XML wrapper into a proper JSON key so the object parses.
+            repaired = Orchestrator._repair_hybrid_tool_call(body)
+            if repaired:
+                candidates.append(repaired)
+
+        # 1b. Free-text hybrid (no wrapping tag).
+        if "<parameters>" in response.lower():
+            repaired_all = Orchestrator._repair_hybrid_tool_call(response)
+            if repaired_all:
+                candidates.append(repaired_all)
 
         # 2. ```json { … } ``` fences (some coder models love these).
         for m in re.finditer(r"```(?:json|tool)?\s*(\{.*?\})\s*```", response, re.DOTALL):
@@ -1926,9 +2918,23 @@ class Orchestrator:
 
         candidates: List[str] = []
 
-        # 1. Preferred: <tool>…</tool>
-        for m in re.finditer(r"<tool[^>]*>(.*?)</tool>", response, re.DOTALL):
-            candidates.extend(Orchestrator._extract_json_objects(m.group(1)))
+        # 1. Preferred: <tool>…</tool>, plus <tool_call> / <function_call>.
+        _tag_re = re.compile(
+            r"<(tool|tool_call|function_call)[^>]*>(.*?)</\1>",
+            re.DOTALL | re.IGNORECASE,
+            )
+        for m in _tag_re.finditer(response):
+            body = m.group(2)
+            candidates.extend(Orchestrator._extract_json_objects(body))
+            repaired = Orchestrator._repair_hybrid_tool_call(body)
+            if repaired:
+                candidates.append(repaired)
+
+        # 1b. Free-text hybrid (no wrapping tag) — repair whole response.
+        if "<parameters>" in response.lower():
+            repaired_all = Orchestrator._repair_hybrid_tool_call(response)
+            if repaired_all:
+                candidates.append(repaired_all)
 
         # 2. ```json { … } ``` fences
         for m in re.finditer(r"```(?:json|tool)?\s*(\{.*?\})\s*```", response, re.DOTALL):
@@ -1952,7 +2958,11 @@ class Orchestrator:
                         json.dumps({"tool": m.group(1), "parameters": _pargs})
                     )
 
-        results = []
+        results: List[Tuple[str, Dict[str, Any]]] = []
+        # Dedup: section 3 (free-text JSON scan) will re-pick up the same
+        # object already captured inside a <tool> tag in section 1. Use a
+        # set of (name, canonical-params-json) keys to drop repeats.
+        seen: set = set()
         for raw in candidates:
             for cleaned in Orchestrator._json_variants(raw):
                 try:
@@ -1969,7 +2979,10 @@ class Orchestrator:
                     except json.JSONDecodeError:
                         params = {}
                 if isinstance(name, str) and isinstance(params, dict):
-                    results.append((name, params))
+                    key = (name, json.dumps(params, sort_keys=True))
+                    if key not in seen:
+                        seen.add(key)
+                        results.append((name, params))
                     break
         return results
 
@@ -2097,14 +3110,17 @@ def main():
     )
     parser.add_argument(
         "--backend",
-        choices=["huggingface", "ollama", "groq", "gemini"],
+        choices=["huggingface", "ollama", "groq", "gemini", "openrouter", "github"],
         default="huggingface",
         help=(
             "Which model backend to use. `huggingface` (default) talks to "
             "the HF Inference router; `ollama` talks to a local/cloud Ollama "
             "daemon; `groq` talks to Groq Cloud (needs --groq-api-key); "
             "`gemini` talks to Google AI Studio / Gemini Cloud (needs "
-            "--gemini-api-key). All use the same tool protocol."
+            "--gemini-api-key); `openrouter` routes through OpenRouter to "
+            "any supported provider (needs --openrouter-api-key); "
+            "`github` talks to GitHub Models (needs --github-api-key, a PAT "
+            "with `models:read` scope). All backends use the same tool protocol."
         ),
     )
     parser.add_argument("--hf-token",
@@ -2157,6 +3173,17 @@ def main():
              "(phi3) can push a single iteration over a minute.",
     )
     parser.add_argument(
+        "--tpm-limit",
+        type=int,
+        default=0,
+        help="Tokens-per-minute cap for the selected backend. 0 = unlimited "
+             "(default). When >0, the orchestrator wraps the backend in a "
+             "sliding-window rate limiter that sleeps before oversize calls "
+             "and auto-trims history when a single request exceeds the "
+             "budget. Use the free-tier TPM from your provider dashboard "
+             "(Groq free: 6000-8000 depending on model).",
+    )
+    parser.add_argument(
         "--groq-api-key",
         default="",
         help="Groq Cloud API key (required when --backend=groq). "
@@ -2168,12 +3195,64 @@ def main():
         help="Google AI Studio API key (required when --backend=gemini). "
              "Get one free at https://aistudio.google.com/app/apikey.",
     )
+    parser.add_argument(
+        "--openrouter-api-key",
+        default="",
+        help="OpenRouter API key (required when --backend=openrouter). "
+             "Get one free at https://openrouter.ai/keys.",
+    )
+    parser.add_argument(
+        "--github-api-key",
+        default="",
+        help="GitHub fine-grained PAT with `models:read` scope (required when "
+             "--backend=github). Create one at "
+             "https://github.com/settings/personal-access-tokens/new.",
+    )
     parser.add_argument("--interactive", action="store_true",
                         help="Interactive mode (JSON-per-line protocol)")
     parser.add_argument("--install-deps", action="store_true",
                         help="Install required Python packages and exit")
     parser.add_argument("--base-path", default=".",
                         help="Base path that tools are allowed to touch")
+    parser.add_argument(
+        "--sandbox",
+        action="store_true",
+        help=(
+            "Enable sandbox mode: run_command, write_file, append_file, and "
+            "delete_file are all disabled. The model can only read and search "
+            "files. Useful for safe code-review sessions."
+        ),
+    )
+    parser.add_argument(
+        "--audit-log",
+        default="orchestrator_audit.log",
+        metavar="PATH",
+        help=(
+            "Path to the audit log file. Every tool call is appended with a "
+            "timestamp, tool name, sanitized parameters, and result status. "
+            "Default: orchestrator_audit.log. Pass an empty string to disable."
+        ),
+    )
+    parser.add_argument(
+        "--disable-tools",
+        action="store_true",
+        help=(
+            "Bypass the tool-decision heuristic and the tool loop entirely — "
+            "every user message is sent to the model as a plain chat call "
+            "(no `tools=[...]` payload, no <tool> parsing). Use this for "
+            "reasoning-only models that don't support tool calling."
+        ),
+    )
+    parser.add_argument(
+        "--max-file-size-mb",
+        type=float,
+        default=10.0,
+        metavar="MB",
+        help=(
+            "Maximum file size (in MB) that write_file / append_file will "
+            "accept. Requests exceeding this limit are rejected. Default: 10."
+        ),
+    )
 
     args = parser.parse_args()
 
@@ -2243,6 +3322,41 @@ def main():
             sys.exit(2)
         backend = GroqBackend(api_key=groq_key, model_id=args.model)
         print(f"[orch] Using Groq backend, model={args.model}", file=sys.stderr)
+    elif args.backend == "openrouter":
+        openrouter_key = (
+                args.openrouter_api_key
+                or os.environ.get("OPENROUTER_API_KEY", "")
+        )
+        if not openrouter_key:
+            print(
+                "[orch] --openrouter-api-key (or OPENROUTER_API_KEY env var) "
+                "is required for --backend=openrouter.",
+                file=sys.stderr,
+            )
+            sys.exit(2)
+        backend = OpenRouterBackend(
+            api_key=openrouter_key,
+            model_id=args.model,
+        )
+        print(f"[orch] Using OpenRouter backend, model={args.model}", file=sys.stderr)
+    elif args.backend == "github":
+        github_key = (
+                args.github_api_key
+                or os.environ.get("GITHUB_TOKEN", "")
+                or os.environ.get("GITHUB_API_KEY", "")
+        )
+        if not github_key:
+            print(
+                "[orch] --github-api-key (or GITHUB_TOKEN env var) "
+                "is required for --backend=github.",
+                file=sys.stderr,
+            )
+            sys.exit(2)
+        backend = GitHubModelsBackend(
+            api_key=github_key,
+            model_id=args.model,
+        )
+        print(f"[orch] Using GitHub Models backend, model={args.model}", file=sys.stderr)
     else:  # ollama
         missing = check_dependencies(BACKEND_REQUIRED_MODULES["ollama"])
         if missing:
@@ -2267,18 +3381,47 @@ def main():
             file=sys.stderr,
         )
 
+    if args.tpm_limit and args.tpm_limit > 0:
+        backend = RateLimitedBackend(
+            backend, tpm_limit=args.tpm_limit, label=args.backend
+        )
+        print(
+            f"[orch] TPM rate limiter active: {args.tpm_limit} tokens/min "
+            f"(effective {int(args.tpm_limit * 0.95)}).",
+            file=sys.stderr,
+        )
+
     print(
         f"[orch] Local Orchestrator ready. Backend: {args.backend}, "
         f"Model: {args.model}",
         file=sys.stderr,
     )
 
+    audit_log_path = (args.audit_log or "").strip()
+    security_config = SecurityConfig(
+        sandbox_mode=args.sandbox,
+        max_file_size_bytes=int(args.max_file_size_mb * 1024 * 1024),
+        enable_audit_log=bool(audit_log_path),
+        audit_log_path=audit_log_path or "orchestrator_audit.log",
+    )
+    if args.sandbox:
+        print("[orch] SANDBOX MODE: write/delete/run_command are disabled.",
+              file=sys.stderr)
+    if security_config.enable_audit_log:
+        print(f"[orch] Audit logging enabled -> {security_config.audit_log_path}",
+              file=sys.stderr)
+
     orchestrator = Orchestrator(
         backend=backend,
         base_path=args.base_path,
         temperature=args.temperature,
         max_tokens=args.max_tokens,
+        security_config=security_config,
+        disable_tools=args.disable_tools,
     )
+    if args.disable_tools:
+        print("[orch] Tools disabled — running in plain-chat mode.",
+              file=sys.stderr)
 
     if args.interactive:
         # Signal readiness so the client knows the process is up.

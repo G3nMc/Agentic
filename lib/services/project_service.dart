@@ -1,5 +1,5 @@
 import 'dart:io';
-import 'package:file_picker/file_picker.dart';
+import 'package:file_picker/file_picker.dart' ;
 
 class ProjectService {
   static final ProjectService _instance = ProjectService._internal();
@@ -10,9 +10,11 @@ class ProjectService {
 
   String get currentPath => _currentPath ?? Directory.current.path;
 
-  Future<String> pickProjectFolder() async {
-    final selected = await FilePicker.platform.getDirectoryPath();
-    if (selected != null) _currentPath = selected;
-    return currentPath;
+  Future<String?> pickProjectFolder() async {
+    return await FilePicker.getDirectoryPath();
+  }
+
+  void setProjectFolder(String path) {
+    _currentPath = path;
   }
 }

@@ -67,9 +67,9 @@ class _OrchestratorLogPanelState extends State<OrchestratorLogPanel> {
     if (!hasContent) return const SizedBox.shrink();
 
     return Container(
-      margin: const EdgeInsets.fromLTRB(20, 0, 20, 6),
+      margin: const EdgeInsets.fromLTRB(10, 0, 10, 10),
       decoration: BoxDecoration(
-        color: const Color(0xFF1E1E2E),
+        color: const Color(0xFF281E1E),
         borderRadius: BorderRadius.circular(8),
         border: Border.all(color: AppTheme.border),
       ),

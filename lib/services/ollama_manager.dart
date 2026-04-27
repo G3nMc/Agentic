@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
+import '../core/constants/api_constants.dart';
 import 'ollama_service.dart';
 
 /// Manages the local `ollama serve` subprocess so the user can install and
@@ -70,7 +71,7 @@ class OllamaManager {
     if (!supportsUiInstall) {
       onLine?.call(
         'Automatic Ollama install is currently supported only on Windows. '
-        'Install it from https://ollama.com/download and retry.',
+        'Install it from ${ApiConstants.ollamaDownloadUrl} and retry.',
       );
       return false;
     }
@@ -151,7 +152,7 @@ class OllamaManager {
       if (version == null) {
         onLine?.call(
           'ERROR: `ollama` binary not found on PATH. Install it from '
-          'https://ollama.com/download and restart this app.',
+          '${ApiConstants.ollamaDownloadUrl} and restart this app.',
         );
         return false;
       }

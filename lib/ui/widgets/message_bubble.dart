@@ -7,7 +7,7 @@ import '../../core/theme/app_theme.dart';
 import '../../data/models/message.dart';
 import 'code_block.dart';
 
-/// Matches every <think>…</think> block, including multi-line content.
+/// Matches every < think >…< /think > block, including multi-line content.
 final _thinkPattern = RegExp(
   r'<think>(.*?)</think>',
   dotAll: true,
@@ -80,15 +80,16 @@ class MessageBubble extends StatelessWidget {
     );
   }
 
+  /// Max height applied to user bubbles only — long pasted blobs would
+  /// otherwise blow up the chat list and stutter scrolling. Assistant
+  /// messages keep their natural height (markdown, code blocks, etc.).
+  static const double _userBubbleMaxHeight = 360;
+
   Widget _buildContent(BuildContext context) {
     if (_isUser) {
-      return SelectableText(
-        message.content,
-        style: const TextStyle(
-          fontSize: 14.5,
-          color: AppTheme.textPrimary,
-          height: 1.5,
-        ),
+      return _ConstrainedUserText(
+        content: message.content,
+        maxHeight: _userBubbleMaxHeight,
       );
     }
 
@@ -275,6 +276,55 @@ class _ReasoningBlockState extends State<_ReasoningBlock> {
             ),
           ],
         ],
+      ),
+    );
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Height-capped user message body — long pasted blobs scroll inside the
+// bubble instead of stretching the whole chat list (and locking the UI).
+// Assistant bubbles intentionally bypass this — markdown / code-blocks
+// already manage their own layout.
+// ─────────────────────────────────────────────────────────────────────────────
+
+class _ConstrainedUserText extends StatefulWidget {
+  final String content;
+  final double maxHeight;
+  const _ConstrainedUserText({required this.content, required this.maxHeight});
+
+  @override
+  State<_ConstrainedUserText> createState() => _ConstrainedUserTextState();
+}
+
+class _ConstrainedUserTextState extends State<_ConstrainedUserText> {
+  late final ScrollController _controller = ScrollController();
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return ConstrainedBox(
+      constraints: BoxConstraints(maxHeight: widget.maxHeight),
+      child: Scrollbar(
+        controller: _controller,
+        thumbVisibility: true,
+        child: SingleChildScrollView(
+          controller: _controller,
+          primary: false,
+          child: SelectableText(
+            widget.content,
+            style: const TextStyle(
+              fontSize: 14.5,
+              color: AppTheme.textPrimary,
+              height: 1.5,
+            ),
+          ),
+        ),
       ),
     );
   }

@@ -4,6 +4,8 @@ import 'dart:io';
 
 import 'package:dio/dio.dart';
 
+import '../core/constants/api_constants.dart';
+
 /// Manages a lightweight local Python bridge built on top of the
 /// `ollama` Python package.
 ///
@@ -17,7 +19,7 @@ class OllamaPythonManager {
 
   static final OllamaPythonManager instance = OllamaPythonManager._();
 
-  static const String defaultBridgeUrl = 'http://127.0.0.1:11501';
+  static const String defaultBridgeUrl = ApiConstants.ollamaPythonBridgeUrl;
 
   final Dio _dio = Dio();
 

@@ -1,34 +1,4 @@
-
-
-import '../core/constants/api_constants.dart';
-import '../data/models/hf_model.dart';
-import '../data/repositories/model_repository.dart';
-import '../data/repositories/settings_repository.dart';
-
-Future<void> seedDefaults() async {
-  try {
-
-    final selected = await SettingsRepository.instance.getSelectedModelId();
-    if (selected == null || selected.isEmpty) {
-      await SettingsRepository.instance
-          .setSelectedModelId(ApiConstants.defaultModelId);
-    }
-
-    final models = await ModelRepository.instance.listAll();
-    final alreadyHasDefault = models.any(
-      (m) => m.id == ApiConstants.defaultModelId,
-    );
-    if (!alreadyHasDefault) {
-      await ModelRepository.instance.upsert(
-        HfModel(
-          id: ApiConstants.defaultModelId,
-          name: ApiConstants.defaultModelId,
-          isFavorite: true,
-          createdAt: DateTime.now().millisecondsSinceEpoch,
-        ),
-      );
-    }
-  } catch (_) {
-    // DB not ready (e.g. on web without ffi): ignore, user will configure later.
-  }
-}
+/// No hardcoded model defaults are seeded. The user picks a model from
+/// Settings before sending the first message; until then the selected
+/// model id stays empty.
+Future<void> seedDefaults() async {}

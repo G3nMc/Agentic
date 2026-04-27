@@ -131,6 +131,7 @@ class _OpenRouterUsageBadgeState extends State<OpenRouterUsageBadge> {
         borderRadius: BorderRadius.circular(6),
         onTap: _loading ? null : () => _refresh(),
         child: Container(
+          height: 48,
           padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
           decoration: BoxDecoration(
             border: Border.all(color: AppTheme.border),

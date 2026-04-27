@@ -2,6 +2,8 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:hf_chat_flutter/services/project_service.dart';
+
 // Inactivity timeout: if the orchestrator emits no output on stdout OR
 // stderr for this long, we assume it's wedged and give up. Activity
 // (including per-chunk heartbeat lines from the Python streaming loops)
@@ -20,7 +22,7 @@ const Duration _kOrchestratorAbsoluteTimeout = Duration(minutes: 20);
 /// token), [ollama] hits a local Ollama daemon (needs the daemon running),
 /// [groq] hits Groq Cloud, [gemini] hits Google AI Studio / Gemini Cloud,
 /// and [openrouter] routes to any supported provider via OpenRouter.
-enum OrchestratorBackend { huggingface, ollama, groq, gemini, openrouter }
+enum OrchestratorBackend { huggingface, ollama, groq, gemini, openrouter, github }
 
 /// Manages the lifecycle of the local Python orchestrator subprocess that
 /// bridges the Flutter UI with remote Hugging Face models + local tools.
@@ -47,8 +49,7 @@ class OrchestratorManager {
   // ── Live log stream ────────────────────────────────────────────────────────
   // A broadcast StreamController so multiple widgets can subscribe
   // simultaneously without causing "already subscribed" errors.
-  final StreamController<String> _logController =
-      StreamController<String>.broadcast();
+  final StreamController<String> _logController = StreamController<String>.broadcast();
 
   /// Live stream of orchestrator log lines (stderr of the subprocess).
   /// Each event is a single trimmed line such as
@@ -121,7 +122,7 @@ class OrchestratorManager {
 
   /// Directory the orchestrator is allowed to touch (its --base-path).
   /// Defaults to the project root so tools operate on the current project.
-  static Directory get baseDirectory => Directory.current;
+  static Directory get baseDirectory => Directory(ProjectService().currentPath);
 
   /// Install Python dependencies the orchestrator needs. Runs synchronously
   /// (streams output via [onLine] if provided) and returns true on success.
@@ -140,16 +141,8 @@ class OrchestratorManager {
         workingDirectory: script.parent.path,
       );
 
-      final stdoutDone = proc.stdout
-          .transform(utf8.decoder)
-          .transform(const LineSplitter())
-          .listen((l) => onLine?.call(l))
-          .asFuture<void>();
-      final stderrDone = proc.stderr
-          .transform(utf8.decoder)
-          .transform(const LineSplitter())
-          .listen((l) => onLine?.call(l))
-          .asFuture<void>();
+      final stdoutDone = proc.stdout.transform(utf8.decoder).transform(const LineSplitter()).listen((l) => onLine?.call(l)).asFuture<void>();
+      final stderrDone = proc.stderr.transform(utf8.decoder).transform(const LineSplitter()).listen((l) => onLine?.call(l)).asFuture<void>();
 
       final exitCode = await proc.exitCode;
       await Future.wait([stdoutDone, stderrDone]);
@@ -173,16 +166,8 @@ class OrchestratorManager {
         ['-m', 'pip', 'install', '--user', packageName],
       );
 
-      final stdoutDone = proc.stdout
-          .transform(utf8.decoder)
-          .transform(const LineSplitter())
-          .listen((l) => onLine?.call(l))
-          .asFuture<void>();
-      final stderrDone = proc.stderr
-          .transform(utf8.decoder)
-          .transform(const LineSplitter())
-          .listen((l) => onLine?.call(l))
-          .asFuture<void>();
+      final stdoutDone = proc.stdout.transform(utf8.decoder).transform(const LineSplitter()).listen((l) => onLine?.call(l)).asFuture<void>();
+      final stderrDone = proc.stderr.transform(utf8.decoder).transform(const LineSplitter()).listen((l) => onLine?.call(l)).asFuture<void>();
 
       final exitCode = await proc.exitCode;
       await Future.wait([stdoutDone, stderrDone]);
@@ -216,7 +201,9 @@ class OrchestratorManager {
     String? groqApiKey,
     String? geminiApiKey,
     String? openRouterApiKey,
+    String? githubApiKey,
     int? tpmLimit,
+    bool disableTools = false,
   }) async {
     if (_isRunning) return false;
 
@@ -226,39 +213,37 @@ class OrchestratorManager {
       return false;
     }
 
-    if (backend == OrchestratorBackend.huggingface &&
-        (hfToken == null || hfToken.isEmpty)) {
+    if (backend == OrchestratorBackend.huggingface && (hfToken == null || hfToken.isEmpty)) {
       _appendLog(
         'HF orchestrator backend requires a token but none was provided.',
       );
       return false;
     }
     final envGroqKey = Platform.environment['GROQ_API_KEY'] ?? '';
-    if (backend == OrchestratorBackend.groq &&
-        (groqApiKey == null || groqApiKey.isEmpty) &&
-        envGroqKey.isEmpty) {
+    if (backend == OrchestratorBackend.groq && (groqApiKey == null || groqApiKey.isEmpty) && envGroqKey.isEmpty) {
       _appendLog(
         'Groq orchestrator backend requires an API key but none was provided.',
       );
       return false;
     }
-    final envGeminiKey = Platform.environment['GOOGLE_API_KEY'] ??
-        Platform.environment['GEMINI_API_KEY'] ??
-        '';
-    if (backend == OrchestratorBackend.gemini &&
-        (geminiApiKey == null || geminiApiKey.isEmpty) &&
-        envGeminiKey.isEmpty) {
+    final envGeminiKey = Platform.environment['GOOGLE_API_KEY'] ?? Platform.environment['GEMINI_API_KEY'] ?? '';
+    if (backend == OrchestratorBackend.gemini && (geminiApiKey == null || geminiApiKey.isEmpty) && envGeminiKey.isEmpty) {
       _appendLog(
         'Gemini orchestrator backend requires an API key but none was provided.',
       );
       return false;
     }
     final envOpenRouterKey = Platform.environment['OPENROUTER_API_KEY'] ?? '';
-    if (backend == OrchestratorBackend.openrouter &&
-        (openRouterApiKey == null || openRouterApiKey.isEmpty) &&
-        envOpenRouterKey.isEmpty) {
+    if (backend == OrchestratorBackend.openrouter && (openRouterApiKey == null || openRouterApiKey.isEmpty) && envOpenRouterKey.isEmpty) {
       _appendLog(
         'OpenRouter orchestrator backend requires an API key but none was provided.',
+      );
+      return false;
+    }
+    final envGithubKey = Platform.environment['GITHUB_TOKEN'] ?? Platform.environment['GITHUB_API_KEY'] ?? '';
+    if (backend == OrchestratorBackend.github && (githubApiKey == null || githubApiKey.isEmpty) && envGithubKey.isEmpty) {
+      _appendLog(
+        'GitHub Models orchestrator backend requires a PAT but none was provided.',
       );
       return false;
     }
@@ -271,7 +256,8 @@ class OrchestratorManager {
       final args = <String>[
         script.path,
         '--interactive',
-        '--base-path', workingDirectory ?? baseDirectory.path,
+        '--base-path',
+        workingDirectory ?? baseDirectory.path,
       ];
       switch (backend) {
         case OrchestratorBackend.huggingface:
@@ -294,9 +280,18 @@ class OrchestratorManager {
           break;
         case OrchestratorBackend.openrouter:
           args.addAll([
-            '--backend', 'openrouter',
+            '--backend',
+            'openrouter',
             '--openrouter-api-key',
             openRouterApiKey ?? envOpenRouterKey,
+          ]);
+          break;
+        case OrchestratorBackend.github:
+          args.addAll([
+            '--backend',
+            'github',
+            '--github-api-key',
+            githubApiKey ?? envGithubKey,
           ]);
           break;
       }
@@ -315,6 +310,9 @@ class OrchestratorManager {
       if (tpmLimit != null && tpmLimit > 0) {
         args.addAll(['--tpm-limit', tpmLimit.toString()]);
       }
+      if (disableTools) {
+        args.add('--disable-tools');
+      }
 
       _process = await Process.start(
         pythonExecutable,
@@ -322,15 +320,9 @@ class OrchestratorManager {
         workingDirectory: script.parent.path,
       );
 
-      _stdoutSub = _process!.stdout
-          .transform(utf8.decoder)
-          .transform(const LineSplitter())
-          .listen(_onStdoutLine, onError: _onStreamError, onDone: _onProcessExited);
+      _stdoutSub = _process!.stdout.transform(utf8.decoder).transform(const LineSplitter()).listen(_onStdoutLine, onError: _onStreamError, onDone: _onProcessExited);
 
-      _stderrSub = _process!.stderr
-          .transform(utf8.decoder)
-          .transform(const LineSplitter())
-          .listen((line) {
+      _stderrSub = _process!.stderr.transform(utf8.decoder).transform(const LineSplitter()).listen((line) {
         _appendLog(line);
         // stderr activity (e.g. `[orch] Model reply (iter 0) …`) counts as
         // a heartbeat — the subprocess is alive and making progress.
@@ -390,8 +382,7 @@ class OrchestratorManager {
       return 'Error: Orchestrator not ready yet.';
     }
 
-    final shouldResetSession =
-        newSession || (sessionKey != null && sessionKey != _sessionKey);
+    final shouldResetSession = newSession || (sessionKey != null && sessionKey != _sessionKey);
     if (shouldResetSession) {
       _sessionKey = sessionKey;
     }
@@ -421,8 +412,7 @@ class OrchestratorManager {
     try {
       return await _activeCompleter!.future.timeout(
         _kOrchestratorAbsoluteTimeout,
-        onTimeout: () =>
-            'Timeout: orchestrator exceeded the absolute ceiling of '
+        onTimeout: () => 'Timeout: orchestrator exceeded the absolute ceiling of '
             '${_kOrchestratorAbsoluteTimeout.inMinutes} minutes.',
       );
     } finally {
@@ -438,9 +428,7 @@ class OrchestratorManager {
     _inactivityTimer?.cancel();
     _inactivityTimer = Timer(_kOrchestratorInactivityTimeout, () {
       if (_activeCompleter == null || _activeCompleter!.isCompleted) return;
-      final waited = _requestStartedAt == null
-          ? 'unknown'
-          : '${DateTime.now().difference(_requestStartedAt!).inSeconds}s';
+      final waited = _requestStartedAt == null ? 'unknown' : '${DateTime.now().difference(_requestStartedAt!).inSeconds}s';
       _activeCompleter!.complete(
         'Timeout: orchestrator was silent for '
         '${_kOrchestratorInactivityTimeout.inMinutes} minutes '

@@ -35,6 +35,9 @@ enum LlmBackend {
   // OpenRouter routed through the local orchestrator for filesystem tools.
   // Uses the same API key and model as the direct openRouter backend.
   openRouterOrchestrator,
+  // GitHub Models routed through the local orchestrator for filesystem tools.
+  // Uses a fine-grained GitHub PAT with the `models:read` scope.
+  githubOrchestrator,
   // Direct /api/generate endpoint (Ollama-compatible).
   // Supports custom ports (e.g. localhost:12345), raw prompt templating,
   // and the `think` parameter for native reasoning output.
@@ -483,6 +486,73 @@ class LlmService {
           seedHistory: _seedHistoryForOrchestrator(history),
         );
 
+      case LlmBackend.githubOrchestrator:
+        final ghSettings = BackendSettingsRepository.instance;
+        final ghKey = await ghSettings.getGithubApiKey() ?? '';
+        final ghSavedModel = await ghSettings.getGithubModel() ?? '';
+        final ghModel = (modelId.isNotEmpty && modelId.contains('/'))
+            ? modelId
+            : ghSavedModel;
+        final ghTemperature = await ghSettings.getGithubTemperature();
+        final ghMaxTokens = await ghSettings.getGithubMaxTokens();
+        final ghTpmLimit = await ghSettings.getGithubTpmLimit();
+        final ghDisableTools = await ghSettings.getGithubDisableTools();
+
+        if (OrchestratorManager.instance.isRunning &&
+            OrchestratorManager.instance.currentBackend !=
+                OrchestratorBackend.github) {
+          await OrchestratorManager.instance.stop();
+        }
+        if (!OrchestratorManager.instance.isRunning) {
+          bool started = await OrchestratorManager.instance.start(
+            modelId: ghModel,
+            backend: OrchestratorBackend.github,
+            githubApiKey: ghKey,
+            temperature: ghTemperature,
+            maxTokens: ghMaxTokens,
+            tpmLimit: ghTpmLimit,
+            disableTools: ghDisableTools,
+          );
+
+          // Auto-install deps on first run (GitHub Models uses stdlib only,
+          // but other orchestrator deps like pydantic may still be missing).
+          if (!started) {
+            final log = OrchestratorManager.instance.stderrLog;
+            final isMissingDep = log.contains('Missing dependency') ||
+                log.contains('ModuleNotFoundError') ||
+                log.contains('No module named');
+            if (isMissingDep) {
+              final installed =
+                  await OrchestratorManager.instance.installDependencies();
+              if (installed) {
+                started = await OrchestratorManager.instance.start(
+                  modelId: ghModel,
+                  backend: OrchestratorBackend.github,
+                  githubApiKey: ghKey,
+                  temperature: ghTemperature,
+                  maxTokens: ghMaxTokens,
+                  tpmLimit: ghTpmLimit,
+                );
+              }
+            }
+          }
+
+          if (!started) {
+            throw Exception(
+              'Failed to start GitHub Models orchestrator. Check that Python is '
+              'installed and your GitHub PAT (with `models:read`) is set in Settings. '
+              'stderr: ${OrchestratorManager.instance.stderrLog}',
+            );
+          }
+        }
+        final lastUser = _lastUserMessage(history);
+        if (lastUser == null) throw Exception('No user message to send.');
+        return OrchestratorManager.instance.sendPrompt(
+          lastUser,
+          sessionKey: conversationId,
+          seedHistory: _seedHistoryForOrchestrator(history),
+        );
+
       case LlmBackend.ollamaGenerate:
         final settings = BackendSettingsRepository.instance;
         final genBaseUrl = await settings.getGenerateBaseUrl() ?? '';
@@ -591,6 +661,14 @@ class LlmService {
         final key =
             await BackendSettingsRepository.instance.getOpenRouterApiKey();
         final envKey = Platform.environment['OPENROUTER_API_KEY'] ?? '';
+        return (key != null && key.trim().isNotEmpty) || envKey.isNotEmpty;
+
+      case LlmBackend.githubOrchestrator:
+        final key =
+            await BackendSettingsRepository.instance.getGithubApiKey();
+        final envKey = Platform.environment['GITHUB_TOKEN'] ??
+            Platform.environment['GITHUB_API_KEY'] ??
+            '';
         return (key != null && key.trim().isNotEmpty) || envKey.isNotEmpty;
 
       case LlmBackend.ollamaGenerate:

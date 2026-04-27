@@ -37,6 +37,13 @@ class BackendSettingsRepository {
   static const String _kOpenRouterMaxTokens = "openrouter_max_tokens";
   static const String _kOpenRouterTpmLimit = "openrouter_tpm_limit";
 
+  static const String _kGithubApiKey = "github_api_key";
+  static const String _kGithubModel = "github_model";
+  static const String _kGithubTemperature = "github_temperature";
+  static const String _kGithubMaxTokens = "github_max_tokens";
+  static const String _kGithubTpmLimit = "github_tpm_limit";
+  static const String _kGithubDisableTools = "github_disable_tools";
+
   // /api/generate backend (custom Ollama-compatible endpoint)
   static const String _kGenerateBaseUrl = "generate_base_url";
   static const String _kGenerateModel = "generate_model";
@@ -64,6 +71,9 @@ class BackendSettingsRepository {
 
   static const double defaultOpenRouterTemperature = 0.7;
   static const int defaultOpenRouterMaxTokens = 4096;
+
+  static const double defaultGithubTemperature = 0.7;
+  static const int defaultGithubMaxTokens = 4096;
 
   // Defaults kept in sync with bin/orchestrator.py. Small enough for
   // phi3:mini to stay responsive but big enough for real coding tasks.
@@ -107,6 +117,7 @@ class BackendSettingsRepository {
       case LlmBackend.groqOrchestrator:
       case LlmBackend.geminiOrchestrator:
       case LlmBackend.openRouterOrchestrator:
+      case LlmBackend.githubOrchestrator:
         return b;
     }
   }
@@ -140,6 +151,8 @@ class BackendSettingsRepository {
         return LlmBackend.openRouter;
       case 'openRouterOrchestrator':
         return LlmBackend.openRouterOrchestrator;
+      case 'githubOrchestrator':
+        return LlmBackend.githubOrchestrator;
       case 'ollamaGenerate':
         return LlmBackend.ollamaGenerate;
       case 'huggingFace':
@@ -370,6 +383,50 @@ class BackendSettingsRepository {
   }
   Future<void> setOpenRouterTpmLimit(int v) =>
       _writeString(_kOpenRouterTpmLimit, v.toString());
+
+  // ---------------------------------------------------------------------------
+  // GitHub Models settings
+  // ---------------------------------------------------------------------------
+
+  Future<String?> getGithubApiKey() => _readString(_kGithubApiKey);
+  Future<void> setGithubApiKey(String key) =>
+      _writeString(_kGithubApiKey, key);
+
+  Future<String?> getGithubModel() => _readString(_kGithubModel);
+  Future<void> setGithubModel(String model) =>
+      _writeString(_kGithubModel, model);
+
+  Future<double> getGithubTemperature() async {
+    final v = await _readString(_kGithubTemperature);
+    return double.tryParse(v ?? '') ?? defaultGithubTemperature;
+  }
+  Future<void> setGithubTemperature(double v) =>
+      _writeString(_kGithubTemperature, v.toString());
+
+  Future<int> getGithubMaxTokens() async {
+    final v = await _readString(_kGithubMaxTokens);
+    return int.tryParse(v ?? '') ?? defaultGithubMaxTokens;
+  }
+  Future<void> setGithubMaxTokens(int v) =>
+      _writeString(_kGithubMaxTokens, v.toString());
+
+  Future<int> getGithubTpmLimit() async {
+    final v = await _readString(_kGithubTpmLimit);
+    return int.tryParse(v ?? '') ?? 0;
+  }
+  Future<void> setGithubTpmLimit(int v) =>
+      _writeString(_kGithubTpmLimit, v.toString());
+
+  /// Whether the GitHub orchestrator should run in plain-chat mode
+  /// (skip the tool loop, don't send the `tools` array). Auto-toggled
+  /// by the Settings UI based on the selected model's catalog
+  /// `capabilities`, but the user can override.
+  Future<bool> getGithubDisableTools() async {
+    final v = await _readString(_kGithubDisableTools);
+    return v == '1' || v == 'true';
+  }
+  Future<void> setGithubDisableTools(bool v) =>
+      _writeString(_kGithubDisableTools, v ? '1' : '0');
 
   // ---------------------------------------------------------------------------
   // /api/generate backend settings

@@ -12,37 +12,48 @@ dependencies:
     sdk: flutter
 
   # HTTP client
-  dio: ^5.4.3+1
+  dio: any
 
   # Local database
-  sqflite: ^2.3.3+1
-  sqflite_common_ffi: ^2.3.3
-  path: ^1.9.0
-  path_provider: ^2.1.3
+  sqflite: any
+  sqflite_common_ffi: any
+  path: any
+  path_provider: any
 
   # Secure Storage
-  flutter_secure_storage: ^9.0.0
+  flutter_secure_storage: any
 
   # UUID for conversation/message IDs
-  uuid: ^4.4.0
+  uuid: any
 
   # Markdown rendering for AI answers
-  flutter_markdown: ^0.7.3
+  flutter_markdown: any
 
   # Syntax highlighting for code blocks
-  flutter_highlight: ^0.7.0
-  highlight: ^0.7.0
+  flutter_highlight: any
+  highlight: any
 
   # File picker for selecting project folders
-  file_picker: ^8.0.0
+  file_picker: any
+
+  # Native drag-and-drop targets on desktop (Windows / macOS / Linux).
+  # Used by the chat input so files dragged from the OS can be attached
+  # to the next prompt.
+  desktop_drop: any
+  cross_file: any
 
   # Clipboard is built-in via services, no extra dep needed
-  cupertino_icons: ^1.0.6
+  cupertino_icons: any
+
+  # HTML parser for the Ollama library scrape (ollama.com/library has no
+  # public JSON API — we extract model cards from the rendered HTML).
+  html: any
+  markdown: any
 
 dev_dependencies:
   flutter_test:
     sdk: flutter
-  flutter_lints: ^4.0.0
+  flutter_lints: any
 
 flutter:
   uses-material-design: true

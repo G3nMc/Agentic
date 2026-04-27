@@ -24,17 +24,4 @@ void main() {
       );
     });
   });
-
-  group('OpenRouterService.fallbackModels', () {
-    test('is not empty', () {
-      expect(OpenRouterService.fallbackModels, isNotEmpty);
-    });
-
-    test('contains provider-prefixed model ids', () {
-      for (final model in OpenRouterService.fallbackModels) {
-        expect(model, contains('/'));
-        expect(model, isNotEmpty);
-      }
-    });
-  });
 }

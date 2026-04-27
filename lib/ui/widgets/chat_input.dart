@@ -1,9 +1,14 @@
+import 'dart:convert';
 import 'dart:io';
 
+import 'package:cross_file/cross_file.dart';
+import 'package:desktop_drop/desktop_drop.dart';
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../../core/theme/app_theme.dart';
+import '../../services/orchestrator_manager.dart';
 import '../../services/project_service.dart';
 
 class ChatInput extends StatefulWidget {
@@ -14,12 +19,30 @@ class ChatInput extends StatefulWidget {
   /// Called when the user taps the stop button during generation.
   final VoidCallback? onStop;
 
+  /// Whether the orchestrator-log toggle button should be shown.
+  /// True only for orchestrator-backed backends.
+  final bool showLogToggle;
+
+  /// Current visibility state of the orchestrator log panel — drives
+  /// the icon (eye/eye-off) and tooltip text on the toggle button.
+  final bool logVisible;
+
+  /// Called when the user taps the log toggle button.
+  final VoidCallback? onToggleLog;
+
+  /// Called when the project folder is changed.
+  final VoidCallback? onProjectFolderChanged;
+
   const ChatInput({
     super.key,
     required this.enabled,
     required this.sending,
     required this.onSend,
     this.onStop,
+    this.showLogToggle = false,
+    this.logVisible = false,
+    this.onToggleLog,
+    this.onProjectFolderChanged,
   });
 
   @override
@@ -33,6 +56,19 @@ class _ChatInputState extends State<ChatInput> {
   String _currentProjectFolder = 'Select folder...';
   List<String> _branches = [];
   String _selectedBranch = '';
+
+  /// Files the user attached for the next send. Each entry holds its display
+  /// name, absolute path, and decoded text content. They are cleared
+  /// immediately after the send completes (success or failure).
+  final List<_Attachment> _attachments = [];
+
+  /// Per-file size cap when reading attachments. Larger files would blow
+  /// past the model's context window and the request would 400 anyway.
+  static const int _kMaxAttachmentBytes = 200 * 1024; // 200 KB
+
+  /// True while the user is actively dragging files over the input. Drives
+  /// a tinted border so they get visual feedback that the drop will land here.
+  bool _dragging = false;
 
   @override
   void initState() {
@@ -130,8 +166,39 @@ class _ChatInputState extends State<ChatInput> {
 
   Future<void> _pickProjectFolder() async {
     final newPath = await _projectService.pickProjectFolder();
-    if (newPath.isNotEmpty && mounted) {
+    if (newPath == null || !mounted) return;
+
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Change Project Folder'),
+        content: Text(
+          'Changing the project folder will restart the orchestrator. Do you want to continue?\n\n' 
+          'New folder: ${newPath.split(Platform.pathSeparator).last}',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Cancel'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('Confirm'),
+          ),
+        ],
+      ),
+    );
+
+    if (confirmed == true && mounted) {
+      _projectService.setProjectFolder(newPath);
       setState(() => _currentProjectFolder = newPath.split(Platform.pathSeparator).last);
+      
+      // Stop orchestrator to ensure it restarts with the new base path
+      await OrchestratorManager.instance.stop();
+      
+      // Notify parent to restart orchestrator if needed
+      widget.onProjectFolderChanged?.call();
+      
       // Reload branches for the new project folder
       await _loadGitBranches();
     }
@@ -144,12 +211,302 @@ class _ChatInputState extends State<ChatInput> {
     super.dispose();
   }
 
+  Future<void> _pickAttachments() async {
+    if (!widget.enabled || widget.sending) return;
+    try {
+      final result = await FilePicker.pickFiles(
+        allowMultiple: true,
+        withData: false, // we read manually so we control encoding & size
+      );
+      if (result == null || result.files.isEmpty) return;
+      final entries = <({String name, String? path})>[
+        for (final f in result.files) (name: f.name, path: f.path),
+      ];
+      await _addFilesFromEntries(entries);
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('File pick failed: $e')),
+      );
+    }
+  }
+
+  /// Called by `desktop_drop` when the user drops one or more OS files
+  /// onto the input. Routes them through the same loader as the picker.
+  Future<void> _onFilesDropped(List<XFile> files) async {
+    if (!widget.enabled || widget.sending || files.isEmpty) return;
+    final entries = <({String name, String? path})>[
+      for (final f in files) (name: f.name, path: f.path),
+    ];
+    await _addFilesFromEntries(entries);
+  }
+
+  /// Shared loader used by both the file picker and the drop target. Reads
+  /// each entry off disk (with size cap + UTF-8 decode + dedup), then
+  /// pushes the results into `_attachments`. Errors are batched into a
+  /// single snackbar so the user sees them all at once.
+  Future<void> _addFilesFromEntries(List<({String name, String? path})> entries) async {
+    final messenger = ScaffoldMessenger.of(context);
+    final added = <_Attachment>[];
+    final skipped = <String>[];
+
+    for (final f in entries) {
+      final p = f.path;
+      if (p == null) {
+        skipped.add('${f.name} (no path)');
+        continue;
+      }
+      // Reject directories — desktop_drop happily reports them but we only
+      // support text files. Folder ingestion would need recursion + filtering.
+      if (FileSystemEntity.isDirectorySync(p)) {
+        skipped.add('${f.name} (folder)');
+        continue;
+      }
+      // Skip duplicates by absolute path.
+      if (_attachments.any((a) => a.path == p) || added.any((a) => a.path == p)) {
+        continue;
+      }
+      try {
+        final file = File(p);
+        final size = await file.length();
+        String content;
+        bool truncated = false;
+        if (size > _kMaxAttachmentBytes) {
+          // Read only the prefix and mark the file as truncated so the
+          // model knows it didn't see the full file.
+          final raw = await file.openRead(0, _kMaxAttachmentBytes).fold<List<int>>(
+            <int>[],
+            (acc, chunk) => acc..addAll(chunk),
+          );
+          content = utf8.decode(raw, allowMalformed: true);
+          truncated = true;
+        } else {
+          try {
+            content = await file.readAsString();
+          } on FormatException {
+            // Binary or non-UTF-8 file.
+            skipped.add('${f.name} (not text)');
+            continue;
+          }
+        }
+        added.add(_Attachment(
+          name: f.name,
+          path: p,
+          content: content,
+          byteSize: size,
+          truncated: truncated,
+        ));
+      } catch (e) {
+        skipped.add('${f.name} ($e)');
+      }
+    }
+
+    if (added.isNotEmpty) {
+      setState(() => _attachments.addAll(added));
+    }
+    if (skipped.isNotEmpty && mounted) {
+      messenger.showSnackBar(
+        SnackBar(
+          content: Text('Skipped: ${skipped.join(', ')}'),
+          duration: const Duration(seconds: 3),
+        ),
+      );
+    }
+  }
+
+  void _removeAttachment(_Attachment a) {
+    setState(() => _attachments.removeWhere((x) => x.path == a.path));
+  }
+
+  Future<void> _showAttachmentPreview(_Attachment a) async {
+    await showDialog<void>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Row(
+          children: [
+            const Icon(Icons.description_outlined, size: 18),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Text(
+                a.name,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(fontSize: 14),
+              ),
+            ),
+            if (a.truncated)
+              const Padding(
+                padding: EdgeInsets.only(left: 8),
+                child: Tooltip(
+                  message: 'Truncated to first 200 KB',
+                  child: Icon(Icons.warning_amber_rounded, size: 16, color: Colors.orange),
+                ),
+              ),
+          ],
+        ),
+        content: SizedBox(
+          width: 760,
+          height: 520,
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Text(
+                '${a.path}  ·  ${_formatBytes(a.byteSize)}'
+                '${a.truncated ? '  ·  truncated' : ''}',
+                style: const TextStyle(fontSize: 11, color: AppTheme.textSecondary),
+              ),
+              const SizedBox(height: 8),
+              Expanded(
+                child: Container(
+                  padding: const EdgeInsets.all(10),
+                  decoration: BoxDecoration(
+                    color: AppTheme.bgSecondary,
+                    borderRadius: BorderRadius.circular(6),
+                    border: Border.all(color: AppTheme.border),
+                  ),
+                  child: Scrollbar(
+                    child: SingleChildScrollView(
+                      child: SelectableText(
+                        a.content,
+                        style: const TextStyle(
+                          fontFamily: 'monospace',
+                          fontSize: 12,
+                          height: 1.35,
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton.icon(
+            icon: const Icon(Icons.copy, size: 16),
+            label: const Text('Copy all'),
+            onPressed: () async {
+              await Clipboard.setData(ClipboardData(text: a.content));
+              if (!ctx.mounted) return;
+              ScaffoldMessenger.of(ctx).showSnackBar(
+                const SnackBar(
+                  content: Text('Copied to clipboard'),
+                  duration: Duration(seconds: 1),
+                ),
+              );
+            },
+          ),
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(),
+            child: const Text('Close'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  static String _formatBytes(int bytes) {
+    if (bytes < 1024) return '$bytes B';
+    if (bytes < 1024 * 1024) return '${(bytes / 1024).toStringAsFixed(1)} KB';
+    return '${(bytes / (1024 * 1024)).toStringAsFixed(2)} MB';
+  }
+
+  /// Build the final message sent to the model: the user's typed prompt,
+  /// followed by each attached file rendered as a fenced block. Format:
+  ///
+  ///   < user text >
+  ///
+  ///   --- File: lib/foo.dart ---
+  ///   ```dart
+  ///   <content>
+  ///   ```
+  ///
+  ///   --- File: README.md ---
+  ///   ```md
+  ///   <content>
+  ///   ```
+  ///
+  /// Same regardless of backend or tool support — the orchestrator just
+  /// sees a longer user message.
+  String _composeMessage(String userText) {
+    if (_attachments.isEmpty) return userText;
+    final buf = StringBuffer(userText.trimRight());
+    if (userText.trim().isNotEmpty) buf.write('\n\n');
+    for (final a in _attachments) {
+      final fence = _fenceLangFor(a.name);
+      buf.write('--- File: ${a.name} ---');
+      if (a.truncated) buf.write(' (truncated to first 200 KB)');
+      buf.write('\n```$fence\n');
+      buf.write(a.content);
+      if (!a.content.endsWith('\n')) buf.write('\n');
+      buf.write('```\n\n');
+    }
+    return buf.toString().trimRight();
+  }
+
+  static String _fenceLangFor(String filename) {
+    final dot = filename.lastIndexOf('.');
+    if (dot < 0 || dot == filename.length - 1) return '';
+    final ext = filename.substring(dot + 1).toLowerCase();
+    const map = {
+      'dart': 'dart',
+      'py': 'python',
+      'js': 'javascript',
+      'ts': 'typescript',
+      'tsx': 'tsx',
+      'jsx': 'jsx',
+      'json': 'json',
+      'yaml': 'yaml',
+      'yml': 'yaml',
+      'md': 'markdown',
+      'sh': 'bash',
+      'bash': 'bash',
+      'java': 'java',
+      'kt': 'kotlin',
+      'swift': 'swift',
+      'go': 'go',
+      'rs': 'rust',
+      'cpp': 'cpp',
+      'cc': 'cpp',
+      'c': 'c',
+      'h': 'c',
+      'hpp': 'cpp',
+      'cs': 'csharp',
+      'rb': 'ruby',
+      'php': 'php',
+      'html': 'html',
+      'css': 'css',
+      'sql': 'sql',
+      'xml': 'xml',
+      'toml': 'toml',
+      'ini': 'ini',
+    };
+    return map[ext] ?? '';
+  }
+
   Future<void> _handleSend() async {
     final text = _controller.text;
-    if (text.trim().isEmpty || !widget.enabled) return;
+    // Allow send when there's text OR when there's at least one attachment
+    // (e.g. "here's the file, take a look").
+    if (!widget.enabled) return;
+    if (text.trim().isEmpty && _attachments.isEmpty) return;
+
+    final composed = _composeMessage(text);
     _controller.clear();
-    await widget.onSend(text);
-    _focusNode.requestFocus();
+    final attachmentsSnapshot = List<_Attachment>.from(_attachments);
+    setState(() => _attachments.clear());
+
+    try {
+      await widget.onSend(composed);
+    } catch (_) {
+      // Restore attachments on failure so the user doesn't lose them.
+      if (mounted) setState(() => _attachments.addAll(attachmentsSnapshot));
+      rethrow;
+    }
+    if (mounted) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) _focusNode.requestFocus();
+      });
+    }
   }
 
   KeyEventResult _onKey(FocusNode node, KeyEvent event) {
@@ -163,104 +520,330 @@ class _ChatInputState extends State<ChatInput> {
   @override
   Widget build(BuildContext context) {
     return Container(
-      padding: const EdgeInsets.fromLTRB(20, 10, 20, 18),
+      padding: const EdgeInsets.fromLTRB(10, 10, 10, 10),
       color: AppTheme.bgPrimary,
       child: Center(
         child: SizedBox(
-          child: Container(
-            width: double.infinity,
-            decoration: BoxDecoration(
-              border: Border.all(color: AppTheme.border),
-              borderRadius: BorderRadius.circular(12),
-            ),
-            padding: const EdgeInsets.fromLTRB(8, 8, 8, 8),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.start,
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Expanded(
-                      child: ConstrainedBox(
-                        constraints: const BoxConstraints(minHeight: 50, maxHeight: 400),
-                        child: Focus(
-                          onKeyEvent: _onKey,
-                          child: TextField(
-                            controller: _controller,
-                            focusNode: _focusNode,
-                            enabled: widget.enabled,
-                            autofocus: true,
-                            minLines: 1,
-                            maxLines: 8,
-                            style: const TextStyle(
-                              fontSize: 14.5,
-                              color: AppTheme.textPrimary,
-                              height: 1.4,
+          child: DropTarget(
+            enable: widget.enabled && !widget.sending,
+            onDragEntered: (_) {
+              if (mounted) setState(() => _dragging = true);
+            },
+            onDragExited: (_) {
+              if (mounted) setState(() => _dragging = false);
+            },
+            onDragDone: (details) async {
+              if (mounted) setState(() => _dragging = false);
+              await _onFilesDropped(details.files);
+            },
+            child: Container(
+              width: double.infinity,
+              decoration: BoxDecoration(
+                border: Border.all(
+                  color: _dragging ? AppTheme.accent : AppTheme.border,
+                  width: _dragging ? 2 : 1,
+                ),
+                borderRadius: BorderRadius.circular(12),
+                color: _dragging ? AppTheme.accent.withAlpha(12) : null,
+              ),
+              padding: const EdgeInsets.fromLTRB(8, 8, 8, 8),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  if (_dragging)
+                    const Padding(
+                      padding: EdgeInsets.fromLTRB(4, 2, 4, 8),
+                      child: Row(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          Icon(Icons.file_download_outlined, size: 16, color: AppTheme.accent),
+                          SizedBox(width: 6),
+                          Text(
+                            'Drop files to attach',
+                            style: TextStyle(
+                              fontSize: 12,
+                              color: AppTheme.accent,
+                              fontWeight: FontWeight.w600,
                             ),
-                            decoration: const InputDecoration(
-                              hintText: 'Message...',
-                              hintStyle: TextStyle(color: AppTheme.textMuted),
-                              border: InputBorder.none,
-                              contentPadding: EdgeInsets.symmetric(vertical: 10),
+                          ),
+                        ],
+                      ),
+                    ),
+                  if (_attachments.isNotEmpty) ...[
+                    Padding(
+                      padding: const EdgeInsets.fromLTRB(4, 2, 4, 8),
+                      child: Wrap(
+                        spacing: 6,
+                        runSpacing: 6,
+                        children: _attachments
+                            .map((a) => _AttachmentChip(
+                                  attachment: a,
+                                  onTap: () => _showAttachmentPreview(a),
+                                  onRemove: () => _removeAttachment(a),
+                                ))
+                            .toList(),
+                      ),
+                    ),
+                  ],
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.start,
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      _AttachButton(
+                        enabled: widget.enabled && !widget.sending,
+                        onTap: _pickAttachments,
+                      ),
+                      const SizedBox(width: 10),
+                      Expanded(
+                        child: ConstrainedBox(
+                          constraints: const BoxConstraints(minHeight: 50, maxHeight: 400),
+                          child: Focus(
+                            onKeyEvent: _onKey,
+                            child: TextField(
+                              controller: _controller,
+                              focusNode: _focusNode,
+                              enabled: widget.enabled,
+                              autofocus: true,
+                              minLines: 1,
+                              maxLines: 8,
+                              style: const TextStyle(
+                                fontSize: 14.5,
+                                color: AppTheme.textPrimary,
+                                height: 1.4,
+                              ),
+                              decoration: const InputDecoration(
+                                hintText: 'Message...',
+                                hintStyle: TextStyle(color: AppTheme.textMuted),
+                                border: InputBorder.none,
+                                contentPadding: EdgeInsets.symmetric(horizontal: 15, vertical: 10),
+                              ),
                             ),
                           ),
                         ),
                       ),
-                    ),
-                    const SizedBox(width: 10),
-                    _SendButton(
-                      enabled: widget.enabled && !widget.sending,
-                      sending: widget.sending,
-                      onTap: _handleSend,
-                      onStop: widget.onStop,
-                    ),
-                  ],
-                ),
-                // const SizedBox(height: 8),
-                Row(
-                  children: [
-                    _ProjectFolderButton(
-                      folderName: _currentProjectFolder,
-                      onTap: _pickProjectFolder,
-                    ),
-                    const SizedBox(width: 8),
-                    if (_branches.isNotEmpty)
+                      const SizedBox(width: 10),
+                      _SendButton(
+                        enabled: widget.enabled && !widget.sending,
+                        sending: widget.sending,
+                        onTap: _handleSend,
+                        onStop: widget.onStop,
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 8),
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
                       Row(
                         mainAxisSize: MainAxisSize.min,
                         children: [
-                          const Text('Git: ', style: TextStyle(fontSize: 12, color: AppTheme.textSecondary)),
-                          const SizedBox(width: 5),
-                          DropdownButton<String>(
-                            value: _selectedBranch.isNotEmpty ? _selectedBranch : null,
-                            hint: const Text('Branch'),
-                            underline: const SizedBox(),
-                            items: [
-                              ..._branches.map((b) => DropdownMenuItem<String>(value: b, child: Text(b))),
-                              const DropdownMenuItem<String>(
-                                value: 'CREATE_NEW',
-                                child: Text('Create...', style: TextStyle(color: AppTheme.accent)),
-                              ),
-                            ],
-                            onChanged: (val) async {
-                              if (val == 'CREATE_NEW') {
-                                await _createBranch();
-                              } else if (val != null) {
-                                await _checkoutBranch(val);
-                              }
-                            },
+                          _ProjectFolderButton(
+                            folderName: _currentProjectFolder,
+                            onTap: _pickProjectFolder,
                           ),
+                          const SizedBox(width: 8),
+                          if (widget.showLogToggle) ...[
+                            _LogToggleButton(
+                              visible: widget.logVisible,
+                              onTap: widget.onToggleLog,
+                            ),
+                          ],
                         ],
                       ),
-                  ],
-                ),
-              ],
+                      if (_branches.isNotEmpty)
+                        Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 6),
+                            constraints: const BoxConstraints(maxHeight: 28),
+                            alignment: Alignment.centerRight,
+                            decoration: BoxDecoration(color: AppTheme.bgSecondary, borderRadius: BorderRadius.circular(6), border: Border.all(color: AppTheme.accent)),
+                            child: Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                const Text('Git: ', style: TextStyle(fontSize: 12, color: AppTheme.textSecondary)),
+                                const SizedBox(width: 5),
+                                DropdownButton<String>(
+                                  value: _selectedBranch.isNotEmpty ? _selectedBranch : null,
+                                  hint: const Align(alignment: Alignment.centerRight, child: Text('Branch', style: TextStyle(fontSize: 12 ))),
+                                  underline: const SizedBox(),
+                                  items: [
+                                    ..._branches.map((b) =>
+                                        DropdownMenuItem<String>(value: b, child: Align(alignment: Alignment.centerRight, child: Text(b, style: const TextStyle(fontWeight: FontWeight.normal, fontSize: 12))))),
+                                    const DropdownMenuItem<String>(
+                                      value: 'CREATE_NEW',
+                                      child: Align(alignment: Alignment.centerRight, child: Text('Create...', style: TextStyle(color: AppTheme.accent, fontSize: 12))),
+                                    ),
+                                  ],
+                                  onChanged: (val) async {
+                                    if (val == 'CREATE_NEW') {
+                                      await _createBranch();
+                                    } else if (val != null) {
+                                      await _checkoutBranch(val);
+                                    }
+                                  },
+                                ),
+                              ],
+                            )),
+                    ],
+                  ),
+                ],
+              ),
             ),
           ),
         ),
       ),
     );
   }
+}
+
+/// Plain-data record for an attached file held in [_ChatInputState].
+class _Attachment {
+  final String name;
+  final String path;
+  final String content;
+  final int byteSize;
+  final bool truncated;
+
+  const _Attachment({
+    required this.name,
+    required this.path,
+    required this.content,
+    required this.byteSize,
+    required this.truncated,
+  });
+}
+
+/// Paperclip icon at the left of the message input.
+class _AttachButton extends StatelessWidget {
+  final bool enabled;
+  final VoidCallback onTap;
+
+  const _AttachButton({required this.enabled, required this.onTap});
+
+  @override
+  Widget build(BuildContext context) => Tooltip(
+        message: 'Attach files (text)',
+        child: InkWell(
+          onTap: enabled ? onTap : null,
+          borderRadius: BorderRadius.circular(6),
+          child: Container(
+            width: 48,
+            height: 48,
+            padding: const EdgeInsets.all(6),
+            decoration: BoxDecoration(
+              color: AppTheme.bgSecondary,
+              borderRadius: BorderRadius.circular(6),
+              border: Border.all(color: AppTheme.border),
+            ),
+            child: Icon(
+              Icons.attach_file,
+              size: 18,
+              color: enabled ? AppTheme.textSecondary : AppTheme.textMuted,
+            ),
+          ),
+        ),
+      );
+}
+
+/// Chip rendered for each attached file. Tap → preview dialog. The little
+/// "x" removes the attachment from the pending send.
+class _AttachmentChip extends StatelessWidget {
+  final _Attachment attachment;
+  final VoidCallback onTap;
+  final VoidCallback onRemove;
+
+  const _AttachmentChip({
+    required this.attachment,
+    required this.onTap,
+    required this.onRemove,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Tooltip(
+      message: '${attachment.path}\nClick to preview',
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(6),
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+          decoration: BoxDecoration(
+            color: AppTheme.bgSecondary,
+            borderRadius: BorderRadius.circular(6),
+            border: Border.all(color: AppTheme.border),
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Icon(Icons.description_outlined, size: 14, color: AppTheme.textSecondary),
+              const SizedBox(width: 6),
+              ConstrainedBox(
+                constraints: const BoxConstraints(maxWidth: 220),
+                child: Text(
+                  attachment.name,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                    fontSize: 12,
+                    color: AppTheme.textPrimary,
+                    fontWeight: FontWeight.w500,
+                  ),
+                ),
+              ),
+              const SizedBox(width: 6),
+              Text(
+                _ChatInputState._formatBytes(attachment.byteSize),
+                style: const TextStyle(fontSize: 10, color: AppTheme.textMuted),
+              ),
+              if (attachment.truncated) ...[
+                const SizedBox(width: 4),
+                const Tooltip(
+                  message: 'Truncated to first 200 KB',
+                  child: Icon(Icons.warning_amber_rounded, size: 12, color: Colors.orange),
+                ),
+              ],
+              const SizedBox(width: 4),
+              InkWell(
+                onTap: onRemove,
+                borderRadius: BorderRadius.circular(10),
+                child: const Padding(
+                  padding: EdgeInsets.all(2),
+                  child: Icon(Icons.close, size: 12, color: AppTheme.textSecondary),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _LogToggleButton extends StatelessWidget {
+  final bool visible;
+  final VoidCallback? onTap;
+
+  const _LogToggleButton({required this.visible, required this.onTap});
+
+  @override
+  Widget build(BuildContext context) => Tooltip(
+        message: visible ? 'Hide orchestrator log' : 'Show orchestrator log',
+        child: InkWell(
+          onTap: onTap,
+          borderRadius: BorderRadius.circular(6),
+          child: Container(
+            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 4),
+            decoration: BoxDecoration(
+              color: visible ? AppTheme.accent.withAlpha(30) : AppTheme.bgSecondary,
+              borderRadius: BorderRadius.circular(6),
+              border: Border.all(color: AppTheme.accent),
+            ),
+            child: Icon(
+              visible ? Icons.terminal : Icons.terminal_outlined,
+              size: 16,
+              color: visible ? AppTheme.accent : AppTheme.textSecondary,
+            ),
+          ),
+        ),
+      );
 }
 
 class _ProjectFolderButton extends StatelessWidget {
@@ -285,7 +868,7 @@ class _ProjectFolderButton extends StatelessWidget {
             child: Row(mainAxisSize: MainAxisSize.min, children: [
               const Icon(Icons.folder, size: 14, color: AppTheme.textSecondary),
               const SizedBox(width: 4),
-              Text(folderName, style: const TextStyle(fontSize: 12, color: AppTheme.textPrimary, fontWeight: FontWeight.w500)),
+              Text(folderName, style: const TextStyle(fontSize: 12, color: AppTheme.textPrimary)),
               const SizedBox(width: 2),
               const Icon(Icons.keyboard_arrow_down, size: 14, color: AppTheme.textSecondary),
             ]),

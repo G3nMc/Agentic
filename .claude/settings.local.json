@@ -80,7 +80,15 @@
       "Bash(git add *)",
       "Bash(git commit -m ' *)",
       "Bash(git checkout *)",
-      "Bash(git merge *)"
+      "Bash(git merge *)",
+      "Bash(command -v flutter)",
+      "WebFetch(domain:docs.github.com)",
+      "Bash(where dart *)",
+      "Bash(python -c \"import py_compile; py_compile.compile\\(r'C:\\\\Users\\\\Gentian\\\\AsPro\\\\AI\\\\hf_chat_flutter\\\\bin\\\\orchestrator.py', doraise=True\\); print\\('OK'\\)\")",
+      "PowerShell(flutter analyze lib/services/openrouter_service.dart lib/ui/screens/settings_screen.dart 2>&1)",
+      "Bash(command -v flutter.bat)",
+      "Bash(python -B bin/orchestrator.py --help)",
+      "Bash(python -B -m compileall -q bin/orchestrator.py bin/agent/)"
     ]
   }
 }

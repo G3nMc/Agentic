@@ -89,7 +89,7 @@ class _QuickServerPanelState extends State<QuickServerPanel> {
                     color: AppTheme.accentMarrone,
                     borderRadius: BorderRadius.circular(4),
                   ),
-                  child: Text(
+                  child: const Text(
                     "Running",
                     style: TextStyle(
                       fontSize: 11,
