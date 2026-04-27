@@ -6,6 +6,7 @@ import '../../core/theme/app_theme.dart';
 import '../../data/models/conversation.dart';
 import '../../data/models/message.dart';
 import '../../data/repositories/agent_credentials_repository.dart';
+import '../../data/repositories/agent_role_settings_repository.dart';
 import '../../data/repositories/backend_settings_repository.dart';
 import '../../data/repositories/conversation_repository.dart';
 import '../../data/repositories/local_server_config_repository.dart';
@@ -24,6 +25,7 @@ import 'model_switcher.dart';
 import 'openrouter_usage_badge.dart';
 import 'orchestrator_log_panel.dart';
 import 'quick_server_panel.dart';
+import 'workflow_breadcrumb.dart';
 import 'sidebar.dart';
 
 class ChatView extends StatefulWidget {
@@ -649,12 +651,24 @@ class _ChatViewState extends StateManager<ChatView> with WidgetsBindingObserver 
           ),
           const OpenRouterUsageBadge(),
           const SizedBox(width: 8),
-          ModelSwitcher(
-            selectedModelId: conv.modelId ?? '',
-            onChanged: (newId) {
-              MethodListener<ChatView>().callMethod(
-                "modelChanged",
-                params: {"modelId": newId},
+          ValueListenableBuilder<bool>(
+            valueListenable:
+                AgentRoleSettingsRepository.instance.enabledNotifier,
+            builder: (ctx, multiAgent, _) {
+              if (multiAgent) {
+                // Multi-agent mode owns the per-role models in Settings,
+                // so the per-conversation model picker is replaced by a
+                // breadcrumb that shows the four roles + their models.
+                return const WorkflowBreadcrumb();
+              }
+              return ModelSwitcher(
+                selectedModelId: conv.modelId ?? '',
+                onChanged: (newId) {
+                  MethodListener<ChatView>().callMethod(
+                    "modelChanged",
+                    params: {"modelId": newId},
+                  );
+                },
               );
             },
           ),

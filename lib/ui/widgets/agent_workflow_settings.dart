@@ -1,18 +1,27 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 
 import '../../core/theme/app_theme.dart';
 import '../../data/repositories/agent_role_settings_repository.dart';
+import '../../data/repositories/backend_settings_repository.dart';
+import '../../data/repositories/settings_repository.dart';
+import '../../services/github_models_service.dart';
+import '../../services/groq_service.dart';
+import '../../services/ollama_service.dart';
+import '../../services/openrouter_service.dart';
 
 /// Settings panel for the multi-agent workflow.
 ///
-/// One row per role (router / shaper / reasoner / executor) with:
-///   * backend dropdown — same set Python's `build_backend` knows about,
-///   * model text field with suggestion presets,
-///   * temperature, max_tokens, tpm fields,
-///   * a master "Enable multi-agent mode" switch and a "Reset" button.
-///
-/// Persistence goes through [AgentRoleSettingsRepository] so the same JSON the
-/// Python orchestrator will read at launch time is what the user sees here.
+/// Architecture:
+///   * Holds a [WorkflowAgents] aggregate (the ORM-ish bag of all four role
+///     configs) and binds every form widget to it.
+///   * Persists on every change via a 400ms debounce + on focus loss, so the
+///     user never has to remember to press Enter.
+///   * Per-row "Refresh models" button calls the backend's live `listModels`
+///     endpoint; results are cached for the rest of the session.
+///   * Falls back to a static suggestions list when a backend has no API
+///     (Gemini, HuggingFace).
 class AgentWorkflowSettings extends StatefulWidget {
   const AgentWorkflowSettings({super.key});
 
@@ -23,11 +32,26 @@ class AgentWorkflowSettings extends StatefulWidget {
 class _AgentWorkflowSettingsState extends State<AgentWorkflowSettings> {
   bool _loading = true;
   bool _enabled = false;
-  final Map<String, AgentRoleConfig> _configs = {};
+
+  // The aggregate — single source of truth for the form.
+  WorkflowAgents _agents = WorkflowAgents({});
+
+  // Per-role text controllers (kept in sync with [_agents]).
   final Map<String, TextEditingController> _modelCtrls = {};
   final Map<String, TextEditingController> _maxTokensCtrls = {};
   final Map<String, TextEditingController> _tpmCtrls = {};
-  String? _saving; // role currently being persisted, for the snackbar feedback.
+  final Map<String, TextEditingController> _ollamaUrlCtrls = {};
+
+  // Per-role debounce timers — coalesce rapid edits into a single save.
+  final Map<String, Timer> _saveTimers = {};
+  // Per-role transient state for save-feedback indicator.
+  final Map<String, _SaveState> _saveState = {};
+
+  // Per-(backend,model-input) cached model list. Refreshes only on user
+  // request via the refresh button — never auto-fetched.
+  final Map<String, List<String>> _modelsCache = {};
+  // Per-role flag while a fetch is in-flight (drives the spinner).
+  final Map<String, bool> _modelsLoading = {};
 
   @override
   void initState() {
@@ -36,12 +60,16 @@ class _AgentWorkflowSettingsState extends State<AgentWorkflowSettings> {
       _modelCtrls[r] = TextEditingController();
       _maxTokensCtrls[r] = TextEditingController();
       _tpmCtrls[r] = TextEditingController();
+      _ollamaUrlCtrls[r] = TextEditingController();
     }
     _load();
   }
 
   @override
   void dispose() {
+    for (final t in _saveTimers.values) {
+      t.cancel();
+    }
     for (final c in _modelCtrls.values) {
       c.dispose();
     }
@@ -51,34 +79,72 @@ class _AgentWorkflowSettingsState extends State<AgentWorkflowSettings> {
     for (final c in _tpmCtrls.values) {
       c.dispose();
     }
+    for (final c in _ollamaUrlCtrls.values) {
+      c.dispose();
+    }
     super.dispose();
   }
 
+  // ─── Load / save plumbing ────────────────────────────────────────────────
   Future<void> _load() async {
     final enabled = await AgentRoleSettingsRepository.instance.isEnabled();
-    final all = await AgentRoleSettingsRepository.instance.getAll();
+    final agents = await WorkflowAgents.load();
+    // Gemini is the only backend with a *user-editable* saved list (in the
+    // Gemini Settings panel the user can add e.g. gemma4). Read it here so
+    // the role's model dropdown shows the same options the dedicated panel
+    // does, not just the hardcoded defaults.
+    final geminiSaved =
+        await BackendSettingsRepository.instance.getGeminiModels();
     if (!mounted) return;
     setState(() {
       _enabled = enabled;
-      _configs
-        ..clear()
-        ..addAll(all);
+      _agents = agents;
+      if (geminiSaved.isNotEmpty) _modelsCache['gemini'] = geminiSaved;
       for (final r in AgentRoleSettingsRepository.roles) {
-        _modelCtrls[r]!.text = all[r]?.model ?? '';
-        _maxTokensCtrls[r]!.text = (all[r]?.maxTokens ?? 1024).toString();
-        _tpmCtrls[r]!.text = (all[r]?.tpmLimit ?? 0).toString();
+        final cfg = agents.get(r);
+        _modelCtrls[r]!.text = cfg.model;
+        _maxTokensCtrls[r]!.text = cfg.maxTokens.toString();
+        _tpmCtrls[r]!.text = cfg.tpmLimit.toString();
+        _ollamaUrlCtrls[r]!.text = cfg.ollamaBaseUrl ?? '';
       }
       _loading = false;
     });
   }
 
+  void _scheduleSave(String role) {
+    _saveTimers[role]?.cancel();
+    setState(() => _saveState[role] = _SaveState.dirty);
+    _saveTimers[role] = Timer(const Duration(milliseconds: 400), () {
+      _persist(role);
+    });
+  }
+
+  Future<void> _persistImmediately(String role) async {
+    _saveTimers[role]?.cancel();
+    await _persist(role);
+  }
+
   Future<void> _persist(String role) async {
-    final cfg = _configs[role];
-    if (cfg == null) return;
-    setState(() => _saving = role);
-    await AgentRoleSettingsRepository.instance.set(role, cfg);
     if (!mounted) return;
-    setState(() => _saving = null);
+    setState(() => _saveState[role] = _SaveState.saving);
+    try {
+      await _agents.saveRole(role);
+      if (!mounted) return;
+      setState(() => _saveState[role] = _SaveState.saved);
+      // After 1.2s drop the "saved" tick.
+      Future.delayed(const Duration(milliseconds: 1200), () {
+        if (!mounted) return;
+        if (_saveState[role] == _SaveState.saved) {
+          setState(() => _saveState[role] = _SaveState.idle);
+        }
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => _saveState[role] = _SaveState.error);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Save failed for $role: $e')),
+      );
+    }
   }
 
   Future<void> _reset() async {
@@ -90,11 +156,92 @@ class _AgentWorkflowSettingsState extends State<AgentWorkflowSettings> {
     );
   }
 
+  // ─── Live model list fetching ────────────────────────────────────────────
+  String _cacheKey(String backend, String role) {
+    final cfg = _agents.get(role);
+    final extra = backend == 'ollama' ? '|${cfg.ollamaBaseUrl ?? ''}' : '';
+    return '$backend$extra';
+  }
+
+  List<String> _modelsFor(String role) {
+    final cfg = _agents.get(role);
+    final cached = _modelsCache[_cacheKey(cfg.backend, role)];
+    if (cached != null && cached.isNotEmpty) return cached;
+    return AgentRoleModelSuggestions.forBackend(cfg.backend);
+  }
+
+  Future<void> _refreshModels(String role) async {
+    final cfg = _agents.get(role);
+    final backend = cfg.backend;
+    final key = _cacheKey(backend, role);
+    setState(() => _modelsLoading[role] = true);
+    try {
+      final list = await _fetchLiveModels(backend, role);
+      if (!mounted) return;
+      setState(() {
+        if (list.isNotEmpty) _modelsCache[key] = list;
+        _modelsLoading[role] = false;
+      });
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(list.isEmpty
+                ? 'No models returned for $backend (using suggestions).'
+                : 'Loaded ${list.length} $backend models.'),
+            duration: const Duration(milliseconds: 1400),
+          ),
+        );
+      }
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => _modelsLoading[role] = false);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Refresh failed: $e')),
+      );
+    }
+  }
+
+  Future<List<String>> _fetchLiveModels(String backend, String role) async {
+    final settings = BackendSettingsRepository.instance;
+    switch (backend) {
+      case 'groq':
+        final key = await settings.getGroqApiKey() ?? '';
+        if (key.isEmpty) throw 'Groq API key not set in Backend Settings.';
+        return GroqService.instance.listModels(key);
+      case 'openrouter':
+        final key = await settings.getOpenRouterApiKey() ?? '';
+        if (key.isEmpty) throw 'OpenRouter API key not set.';
+        return OpenRouterService.instance.listModels(key);
+      case 'github':
+        final key = await settings.getGithubApiKey() ?? '';
+        if (key.isEmpty) throw 'GitHub PAT not set.';
+        return GithubModelsService.instance.listModels(key);
+      case 'ollama':
+        final cfg = _agents.get(role);
+        final url = (cfg.ollamaBaseUrl?.isNotEmpty ?? false)
+            ? cfg.ollamaBaseUrl!
+            : 'http://localhost:11434';
+        final apiKey = await settings.getOllamaApiKey() ?? '';
+        return OllamaService.instance
+            .listInstalledModels(baseUrl: url, apiKey: apiKey);
+      case 'gemini':
+        // Pull from the same persisted list the Gemini Settings panel
+        // edits, so user-added models (e.g. gemma4) show up here too.
+        // Falls back to the bundled defaults if the user never customised it.
+        final saved = await settings.getGeminiModels();
+        return saved.isEmpty ? BackendSettingsRepository.defaultGeminiModels : saved;
+      case 'huggingface':
+        // HF has no per-token model list; use suggestions.
+        return AgentRoleModelSuggestions.forBackend('huggingface');
+      default:
+        return const [];
+    }
+  }
+
+  // ─── Build ───────────────────────────────────────────────────────────────
   @override
   Widget build(BuildContext context) {
-    if (_loading) {
-      return const Center(child: CircularProgressIndicator());
-    }
+    if (_loading) return const Center(child: CircularProgressIndicator());
     return SingleChildScrollView(
       padding: const EdgeInsets.all(24),
       child: Center(
@@ -129,7 +276,6 @@ class _AgentWorkflowSettingsState extends State<AgentWorkflowSettings> {
     );
   }
 
-  // ─── Sections ─────────────────────────────────────────────────────────────
   Widget _header() {
     return const Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -146,7 +292,8 @@ class _AgentWorkflowSettingsState extends State<AgentWorkflowSettings> {
         Text(
           'Pick which model handles each role in the multi-agent pipeline. '
           'Cheap models for routing/shaping; the strong model only for '
-          'reasoning. API keys come from the Model Settings tab.',
+          'reasoning. API keys come from the Model Settings tab. Click ↻ to '
+          'fetch the live model list from each provider.',
           style: TextStyle(fontSize: 12.5, color: AppTheme.textMuted),
         ),
       ],
@@ -188,6 +335,7 @@ class _AgentWorkflowSettingsState extends State<AgentWorkflowSettings> {
             value: _enabled,
             onChanged: (v) async {
               await AgentRoleSettingsRepository.instance.setEnabled(v);
+              if (!mounted) return;
               setState(() => _enabled = v);
             },
           ),
@@ -197,8 +345,8 @@ class _AgentWorkflowSettingsState extends State<AgentWorkflowSettings> {
   }
 
   Widget _roleCard(String role) {
-    final cfg = _configs[role]!;
-    final saving = _saving == role;
+    final cfg = _agents.get(role);
+    final state = _saveState[role] ?? _SaveState.idle;
     return Container(
       decoration: BoxDecoration(
         border: Border.all(color: AppTheme.border),
@@ -221,39 +369,32 @@ class _AgentWorkflowSettingsState extends State<AgentWorkflowSettings> {
                 ),
               ),
               const SizedBox(width: 6),
-              Text(
-                _hintForRole(role),
-                style: const TextStyle(
-                  fontSize: 11.5,
-                  color: AppTheme.textMuted,
+              Expanded(
+                child: Text(
+                  _hintForRole(role),
+                  style: const TextStyle(
+                    fontSize: 11.5,
+                    color: AppTheme.textMuted,
+                  ),
+                  overflow: TextOverflow.ellipsis,
                 ),
               ),
-              const Spacer(),
-              if (saving)
-                const SizedBox(
-                  width: 14,
-                  height: 14,
-                  child: CircularProgressIndicator(strokeWidth: 1.6),
-                ),
+              _saveIndicator(state),
             ],
           ),
           const SizedBox(height: 10),
-          // Backend + model row.
           Row(
             children: [
-              Expanded(
-                flex: 2,
-                child: _backendDropdown(role, cfg),
-              ),
+              Expanded(flex: 2, child: _backendDropdown(role, cfg)),
               const SizedBox(width: 10),
-              Expanded(
-                flex: 3,
-                child: _modelField(role, cfg),
-              ),
+              Expanded(flex: 3, child: _modelDropdown(role, cfg)),
             ],
           ),
+          if (cfg.backend == 'ollama') ...[
+            const SizedBox(height: 10),
+            _ollamaUrlField(role),
+          ],
           const SizedBox(height: 10),
-          // Temperature + max tokens + TPM row.
           Row(
             children: [
               Expanded(child: _temperatureSlider(role, cfg)),
@@ -266,6 +407,31 @@ class _AgentWorkflowSettingsState extends State<AgentWorkflowSettings> {
         ],
       ),
     );
+  }
+
+  Widget _saveIndicator(_SaveState state) {
+    switch (state) {
+      case _SaveState.dirty:
+        return const Tooltip(
+          message: 'Pending save…',
+          child: Icon(Icons.edit_note, size: 18, color: AppTheme.textMuted),
+        );
+      case _SaveState.saving:
+        return const SizedBox(
+          width: 14,
+          height: 14,
+          child: CircularProgressIndicator(strokeWidth: 1.6),
+        );
+      case _SaveState.saved:
+        return const Tooltip(
+          message: 'Saved',
+          child: Icon(Icons.check_circle_outline, size: 18, color: Colors.green),
+        );
+      case _SaveState.error:
+        return const Icon(Icons.error_outline, size: 18, color: AppTheme.danger);
+      case _SaveState.idle:
+        return const SizedBox.shrink();
+    }
   }
 
   Widget _backendDropdown(String role, AgentRoleConfig cfg) {
@@ -283,59 +449,90 @@ class _AgentWorkflowSettingsState extends State<AgentWorkflowSettings> {
       ],
       onChanged: (v) async {
         if (v == null) return;
-        final updated = cfg.copyWith(backend: v);
-        setState(() => _configs[role] = updated);
-        // When the backend changes, surface the first suggested model so the
-        // text field doesn't keep an incompatible model name.
+        var updated = cfg.copyWith(backend: v);
+        // If the new backend doesn't list the current model, drop to the
+        // first suggestion so we never persist an obviously-incompatible
+        // pairing.
         final suggestions = AgentRoleModelSuggestions.forBackend(v);
-        if (suggestions.isNotEmpty &&
-            !suggestions.contains(_modelCtrls[role]!.text)) {
+        if (suggestions.isNotEmpty && !suggestions.contains(updated.model)) {
+          updated = updated.copyWith(model: suggestions.first);
           _modelCtrls[role]!.text = suggestions.first;
-          setState(() => _configs[role] =
-              _configs[role]!.copyWith(model: suggestions.first));
         }
-        await _persist(role);
+        setState(() => _agents.put(role, updated));
+        await _persistImmediately(role);
       },
     );
   }
 
-  Widget _modelField(String role, AgentRoleConfig cfg) {
-    final suggestions = AgentRoleModelSuggestions.forBackend(cfg.backend);
+  Widget _modelDropdown(String role, AgentRoleConfig cfg) {
+    final models = _modelsFor(role);
+    final loading = _modelsLoading[role] ?? false;
+
+    // Make sure the current model appears in the list — otherwise the
+    // dropdown would render with a blank value.
+    final all = <String>{...models};
+    if (cfg.model.isNotEmpty) all.add(cfg.model);
+    final items = all.toList()..sort();
+
     return Row(
       children: [
         Expanded(
-          child: TextField(
-            controller: _modelCtrls[role],
+          child: DropdownButtonFormField<String>(
+            // ignore: deprecated_member_use
+            value: cfg.model.isEmpty ? null : cfg.model,
+            isExpanded: true,
             decoration: const InputDecoration(
               labelText: 'Model',
               border: OutlineInputBorder(),
               isDense: true,
             ),
-            onChanged: (v) {
-              setState(
-                  () => _configs[role] = cfg.copyWith(model: v.trim()));
+            items: [
+              for (final m in items)
+                DropdownMenuItem(value: m, child: Text(m, overflow: TextOverflow.ellipsis)),
+            ],
+            onChanged: (v) async {
+              if (v == null) return;
+              setState(() => _agents.put(role, cfg.copyWith(model: v)));
+              _modelCtrls[role]!.text = v;
+              await _persistImmediately(role);
             },
-            onEditingComplete: () => _persist(role),
-            onSubmitted: (_) => _persist(role),
           ),
         ),
-        if (suggestions.isNotEmpty) ...[
-          const SizedBox(width: 4),
-          PopupMenuButton<String>(
-            tooltip: 'Suggested models',
-            icon: const Icon(Icons.expand_more, size: 18),
-            onSelected: (s) async {
-              _modelCtrls[role]!.text = s;
-              setState(() => _configs[role] = cfg.copyWith(model: s));
-              await _persist(role);
-            },
-            itemBuilder: (_) => [
-              for (final s in suggestions)
-                PopupMenuItem(value: s, child: Text(s)),
-            ],
-          ),
-        ],
+        const SizedBox(width: 4),
+        IconButton(
+          tooltip: 'Refresh model list from ${cfg.backend}',
+          icon: loading
+              ? const SizedBox(
+                  width: 16,
+                  height: 16,
+                  child: CircularProgressIndicator(strokeWidth: 1.6),
+                )
+              : const Icon(Icons.refresh, size: 18),
+          onPressed: loading ? null : () => _refreshModels(role),
+        ),
       ],
+    );
+  }
+
+  Widget _ollamaUrlField(String role) {
+    return Focus(
+      onFocusChange: (has) {
+        if (!has) _persistImmediately(role);
+      },
+      child: TextField(
+        controller: _ollamaUrlCtrls[role],
+        decoration: const InputDecoration(
+          labelText: 'Ollama base URL (e.g. http://localhost:11434 or https://ollama.com)',
+          border: OutlineInputBorder(),
+          isDense: true,
+        ),
+        onChanged: (v) {
+          final cfg = _agents.get(role);
+          setState(() => _agents.put(
+              role, cfg.copyWith(ollamaBaseUrl: v.trim().isEmpty ? null : v.trim())));
+          _scheduleSave(role);
+        },
+      ),
     );
   }
 
@@ -354,55 +551,62 @@ class _AgentWorkflowSettingsState extends State<AgentWorkflowSettings> {
           divisions: 40,
           label: cfg.temperature.toStringAsFixed(2),
           onChanged: (v) {
-            setState(() => _configs[role] = cfg.copyWith(temperature: v));
+            setState(() => _agents.put(role, cfg.copyWith(temperature: v)));
           },
-          onChangeEnd: (_) => _persist(role),
+          onChangeEnd: (_) => _persistImmediately(role),
         ),
       ],
     );
   }
 
   Widget _maxTokensField(String role) {
-    return TextField(
-      controller: _maxTokensCtrls[role],
-      keyboardType: TextInputType.number,
-      decoration: const InputDecoration(
-        labelText: 'Max tokens',
-        border: OutlineInputBorder(),
-        isDense: true,
-      ),
-      onChanged: (v) {
-        final parsed = int.tryParse(v.trim());
-        if (parsed == null) return;
-        setState(() => _configs[role] =
-            _configs[role]!.copyWith(maxTokens: parsed));
+    return Focus(
+      onFocusChange: (has) {
+        if (!has) _persistImmediately(role);
       },
-      onEditingComplete: () => _persist(role),
-      onSubmitted: (_) => _persist(role),
+      child: TextField(
+        controller: _maxTokensCtrls[role],
+        keyboardType: TextInputType.number,
+        decoration: const InputDecoration(
+          labelText: 'Max tokens',
+          border: OutlineInputBorder(),
+          isDense: true,
+        ),
+        onChanged: (v) {
+          final parsed = int.tryParse(v.trim());
+          if (parsed == null) return;
+          final cfg = _agents.get(role);
+          setState(() => _agents.put(role, cfg.copyWith(maxTokens: parsed)));
+          _scheduleSave(role);
+        },
+      ),
     );
   }
 
   Widget _tpmField(String role) {
-    return TextField(
-      controller: _tpmCtrls[role],
-      keyboardType: TextInputType.number,
-      decoration: const InputDecoration(
-        labelText: 'TPM (0=∞)',
-        border: OutlineInputBorder(),
-        isDense: true,
-      ),
-      onChanged: (v) {
-        final parsed = int.tryParse(v.trim());
-        if (parsed == null) return;
-        setState(() => _configs[role] =
-            _configs[role]!.copyWith(tpmLimit: parsed));
+    return Focus(
+      onFocusChange: (has) {
+        if (!has) _persistImmediately(role);
       },
-      onEditingComplete: () => _persist(role),
-      onSubmitted: (_) => _persist(role),
+      child: TextField(
+        controller: _tpmCtrls[role],
+        keyboardType: TextInputType.number,
+        decoration: const InputDecoration(
+          labelText: 'TPM (0=∞)',
+          border: OutlineInputBorder(),
+          isDense: true,
+        ),
+        onChanged: (v) {
+          final parsed = int.tryParse(v.trim());
+          if (parsed == null) return;
+          final cfg = _agents.get(role);
+          setState(() => _agents.put(role, cfg.copyWith(tpmLimit: parsed)));
+          _scheduleSave(role);
+        },
+      ),
     );
   }
 
-  // ─── Per-role copy ────────────────────────────────────────────────────────
   String _titleForRole(String role) {
     switch (role) {
       case 'router':
@@ -445,3 +649,10 @@ class _AgentWorkflowSettingsState extends State<AgentWorkflowSettings> {
     return Icons.smart_toy_outlined;
   }
 }
+
+enum _SaveState { idle, dirty, saving, saved, error }
+
+// Silence unused-import lint when SettingsRepository helpers aren't needed
+// directly by this file but are used via repositories.
+// ignore: unused_element
+SettingsRepository _unusedSettingsKeep() => SettingsRepository.instance;

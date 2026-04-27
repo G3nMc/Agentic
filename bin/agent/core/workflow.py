@@ -26,19 +26,19 @@ from __future__ import annotations
 
 import sys
 import uuid
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
-from ..policy import SecurityConfig
-from ..tools.registry import ToolRegistry
 from .agent_config import build_agents, SecretsResolver
 from .state import (ROUTE_REASONING, ROUTE_TRIVIAL, WorkflowState)
+from ..policy import SecurityConfig
+from ..tools.registry import ToolRegistry
 
 
 class Workflow:
     """Multi-agent dispatcher. Drop-in replacement for ``Orchestrator.run()``."""
 
     def __init__(self, agents: Dict[str, Any], tool_registry: ToolRegistry,
-                 *, max_iterations: int = 8,
+                 *, max_iterations: int = 8 * 3,
                  max_history_turns: int = 6):
         self.agents = agents
         self.tool_registry = tool_registry

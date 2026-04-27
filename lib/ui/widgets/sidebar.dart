@@ -3,6 +3,7 @@ import 'package:uuid/uuid.dart';
 
 import '../../core/theme/app_theme.dart';
 import '../../data/models/conversation.dart';
+import '../../data/repositories/agent_role_settings_repository.dart';
 import '../../data/repositories/backend_settings_repository.dart';
 import '../../data/repositories/conversation_repository.dart';
 import '../../data/repositories/settings_repository.dart';
@@ -42,6 +43,9 @@ class _SidebarState extends StateManager<Sidebar> {
 
   Future<void> _loadActiveBackend() async {
     final backend = await BackendSettingsRepository.instance.getActiveBackend();
+    // Hydrate the multi-agent toggle so the header decides correctly between
+    // the per-backend dropdown and the "Multi Agent" label on first paint.
+    await AgentRoleSettingsRepository.instance.isEnabled();
     if (!mounted) return;
     setState(() => _activeBackend = backend);
     // Reload conversations with the correct filter now that the backend
@@ -274,24 +278,53 @@ class _SidebarState extends StateManager<Sidebar> {
                     borderRadius: BorderRadius.circular(8),
                   ),
                   padding: const EdgeInsets.symmetric(horizontal: 10),
-                  child: DropdownButtonHideUnderline(
-                    child: DropdownButton<LlmBackend>(
-                      isExpanded: true,
-                      isDense: true,
-                      value: _activeBackend,
-                      hint: const Text(
-                        "HF Chat",
-                        style: TextStyle(
-                          fontSize: 13,
-                          fontWeight: FontWeight.w600,
-                          color: AppTheme.textPrimary,
-                        ),
-                      ),
-                      style: const TextStyle(
-                        fontSize: 13,
-                        fontWeight: FontWeight.w600,
-                        color: AppTheme.textPrimary,
-                      ),
+                  child: ValueListenableBuilder<bool>(
+                    valueListenable: AgentRoleSettingsRepository
+                        .instance.enabledNotifier,
+                    builder: (ctx, multiAgent, _) {
+                      if (multiAgent) {
+                        // Hide the per-conversation backend picker; the
+                        // workflow's roles each pick their own provider in
+                        // Settings → Workflow Agents. A static label keeps
+                        // the row's height/style identical to the dropdown
+                        // so the layout doesn't jump.
+                        return const Center(
+                          child: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Icon(Icons.account_tree_outlined,
+                                  size: 16, color: AppTheme.accent),
+                              SizedBox(width: 6),
+                              Text(
+                                'Multi Agent',
+                                style: TextStyle(
+                                  fontSize: 13,
+                                  fontWeight: FontWeight.w600,
+                                  color: AppTheme.textPrimary,
+                                ),
+                              ),
+                            ],
+                          ),
+                        );
+                      }
+                      return DropdownButtonHideUnderline(
+                        child: DropdownButton<LlmBackend>(
+                          isExpanded: true,
+                          isDense: true,
+                          value: _activeBackend,
+                          hint: const Text(
+                            "HF Chat",
+                            style: TextStyle(
+                              fontSize: 13,
+                              fontWeight: FontWeight.w600,
+                              color: AppTheme.textPrimary,
+                            ),
+                          ),
+                          style: const TextStyle(
+                            fontSize: 13,
+                            fontWeight: FontWeight.w600,
+                            color: AppTheme.textPrimary,
+                          ),
                       // Only orchestrator-backed options are exposed —
                       // the rest don't route through orchestrator.py and
                       // are intentionally hidden.
@@ -349,10 +382,12 @@ class _SidebarState extends StateManager<Sidebar> {
                         //   child: Text("Local Server (Python)"),
                         // ),
                       ],
-                      onChanged: (v) {
-                        if (v != null) _onBackendChanged(v);
-                      },
-                    ),
+                          onChanged: (v) {
+                            if (v != null) _onBackendChanged(v);
+                          },
+                        ),
+                      );
+                    },
                   ),
                 ),
               ),
