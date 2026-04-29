@@ -8,6 +8,7 @@ import 'package:path_provider/path_provider.dart';
 import 'package:uuid/uuid.dart';
 
 import '../../core/theme/app_theme.dart';
+import '../../core/utils/notification_helper.dart';
 import '../../data/models/conversation.dart';
 import '../../data/models/message.dart';
 import '../../data/repositories/agent_credentials_repository.dart';
@@ -55,7 +56,8 @@ class _CancelToken {
   void cancel() => _cancelled = true;
 }
 
-class _ChatViewState extends StateManager<ChatView> with WidgetsBindingObserver {
+class _ChatViewState extends StateManager<ChatView>
+    with WidgetsBindingObserver {
   // In-memory full history for the current chat session.
   // This is what gets sent to HF on every send() call, just like HF.html.
   final List<ChatMessage> _messages = [];
@@ -125,7 +127,8 @@ class _ChatViewState extends StateManager<ChatView> with WidgetsBindingObserver 
         final newModelId = methodData.methodParams?["modelId"] as String?;
         if (newModelId != null && _conversation != null) {
           _conversation = _conversation!.copyWith(modelId: newModelId);
-          ConversationRepository.instance.updateModel(_conversation!.id, newModelId);
+          ConversationRepository.instance
+              .updateModel(_conversation!.id, newModelId);
         }
         break;
       case "conversationUpdated":
@@ -167,7 +170,31 @@ class _ChatViewState extends StateManager<ChatView> with WidgetsBindingObserver 
       _loading = false;
     });
 
+    // Entering an existing chat should always ensure the orchestrator is up
+    // for orchestrator-backed modes so the next action is instant.
+    await _startOrchestratorForActiveBackend(silent: true);
+
     WidgetsBinding.instance.addPostFrameCallback((_) => _scrollToBottom());
+  }
+
+  bool _isOrchestratorBackend(LlmBackend backend) {
+    return backend == LlmBackend.orchestrator ||
+        backend == LlmBackend.ollamaOrchestrator ||
+        backend == LlmBackend.groqOrchestrator ||
+        backend == LlmBackend.geminiOrchestrator ||
+        backend == LlmBackend.openRouterOrchestrator ||
+        backend == LlmBackend.githubOrchestrator;
+  }
+
+  OrchestratorBackend _desiredOrchestratorBackend(LlmBackend backend) {
+    return switch (backend) {
+      LlmBackend.ollamaOrchestrator => OrchestratorBackend.ollama,
+      LlmBackend.groqOrchestrator => OrchestratorBackend.groq,
+      LlmBackend.geminiOrchestrator => OrchestratorBackend.gemini,
+      LlmBackend.openRouterOrchestrator => OrchestratorBackend.openrouter,
+      LlmBackend.githubOrchestrator => OrchestratorBackend.github,
+      _ => OrchestratorBackend.huggingface,
+    };
   }
 
   void _scrollToBottom() {
@@ -195,7 +222,9 @@ class _ChatViewState extends StateManager<ChatView> with WidgetsBindingObserver 
     final trimmed = text.trim();
     if (trimmed.isEmpty) return;
 
-    final safeText = trimmed.replaceAll('\u0000', '').replaceAll(RegExp(r'[\uD800-\uDFFF]'), '');
+    final safeText = trimmed
+        .replaceAll('\u0000', '')
+        .replaceAll(RegExp(r'[\uD800-\uDFFF]'), '');
 
     final backend = await BackendSettingsRepository.instance.getActiveBackend();
 
@@ -203,23 +232,32 @@ class _ChatViewState extends StateManager<ChatView> with WidgetsBindingObserver 
       setState(() => _activeBackend = backend);
     }
 
-    final agentCreds = await AgentCredentialsRepository.instance.getCredentials();
+    final agentCreds =
+        await AgentCredentialsRepository.instance.getCredentials();
 
-    final token = agentCreds?.hfToken ?? await SettingsRepository.instance.getHfToken();
+    final token =
+        agentCreds?.hfToken ?? await SettingsRepository.instance.getHfToken();
 
-    final serverUrl = await BackendSettingsRepository.instance.getLocalServerUrl();
+    final serverUrl =
+        await BackendSettingsRepository.instance.getLocalServerUrl();
 
-    final ollamaBaseUrl = await BackendSettingsRepository.instance.getOllamaBaseUrl();
+    final ollamaBaseUrl =
+        await BackendSettingsRepository.instance.getOllamaBaseUrl();
 
-    final ollamaModel = await BackendSettingsRepository.instance.getOllamaModel();
+    final ollamaModel =
+        await BackendSettingsRepository.instance.getOllamaModel();
 
-    final openRouterApiKey = await BackendSettingsRepository.instance.getOpenRouterApiKey();
+    final openRouterApiKey =
+        await BackendSettingsRepository.instance.getOpenRouterApiKey();
 
-    final openRouterModel = await BackendSettingsRepository.instance.getOpenRouterModel();
+    final openRouterModel =
+        await BackendSettingsRepository.instance.getOpenRouterModel();
 
-    final ollamaPythonBridgeUrl = await BackendSettingsRepository.instance.getOllamaPythonBridgeUrl();
+    final ollamaPythonBridgeUrl =
+        await BackendSettingsRepository.instance.getOllamaPythonBridgeUrl();
 
-    if (backend == LlmBackend.huggingFace || backend == LlmBackend.orchestrator) {
+    if (backend == LlmBackend.huggingFace ||
+        backend == LlmBackend.orchestrator) {
       if (token == null || token.trim().isEmpty) {
         setState(() {
           _sendError = "Set your Hugging Face token in Settings first.";
@@ -233,12 +271,18 @@ class _ChatViewState extends StateManager<ChatView> with WidgetsBindingObserver 
         });
         return;
       }
-    } else if (backend == LlmBackend.ollama || backend == LlmBackend.ollamaPython || backend == LlmBackend.ollamaOrchestrator) {
-      final resolvedModel = (conv.modelId != null && conv.modelId!.trim().isNotEmpty) ? conv.modelId! : ollamaModel;
+    } else if (backend == LlmBackend.ollama ||
+        backend == LlmBackend.ollamaPython ||
+        backend == LlmBackend.ollamaOrchestrator) {
+      final resolvedModel =
+          (conv.modelId != null && conv.modelId!.trim().isNotEmpty)
+              ? conv.modelId!
+              : ollamaModel;
 
       if (resolvedModel == null || resolvedModel.trim().isEmpty) {
         setState(() {
-          _sendError = "Select an Ollama model in Settings before sending a message.";
+          _sendError =
+              "Select an Ollama model in Settings before sending a message.";
         });
         return;
       }
@@ -257,7 +301,8 @@ class _ChatViewState extends StateManager<ChatView> with WidgetsBindingObserver 
 
       if (resolvedModel.trim().isEmpty) {
         setState(() {
-          _sendError = "Select an OpenRouter model in Settings before sending a message.";
+          _sendError =
+              "Select an OpenRouter model in Settings before sending a message.";
         });
         return;
       }
@@ -269,12 +314,20 @@ class _ChatViewState extends StateManager<ChatView> with WidgetsBindingObserver 
     }
 
     final modelId = switch (backend) {
-      LlmBackend.ollama || LlmBackend.ollamaPython || LlmBackend.ollamaOrchestrator => (conv.modelId != null && conv.modelId!.trim().isNotEmpty) ? conv.modelId! : (ollamaModel ?? ''),
+      LlmBackend.ollama ||
+      LlmBackend.ollamaPython ||
+      LlmBackend.ollamaOrchestrator =>
+        (conv.modelId != null && conv.modelId!.trim().isNotEmpty)
+            ? conv.modelId!
+            : (ollamaModel ?? ''),
       LlmBackend.openRouter => resolveOpenRouterModel(
           conv.modelId ?? '',
           openRouterModel ?? '',
         ),
-      LlmBackend.geminiOrchestrator => (conv.modelId != null && conv.modelId!.startsWith('gemini')) ? conv.modelId! : (geminiModel ?? BackendSettingsRepository.defaultGeminiModel),
+      LlmBackend.geminiOrchestrator =>
+        (conv.modelId != null && conv.modelId!.startsWith('gemini'))
+            ? conv.modelId!
+            : (geminiModel ?? BackendSettingsRepository.defaultGeminiModel),
       _ => conv.modelId ?? '',
     };
 
@@ -316,6 +369,10 @@ class _ChatViewState extends StateManager<ChatView> with WidgetsBindingObserver 
     }
 
     final history = List<ChatMessage>.unmodifiable(_messages);
+
+    if (_isOrchestratorBackend(backend)) {
+      await _startOrchestratorForActiveBackend(silent: true);
+    }
 
     try {
       final reply = await LlmService.instance.sendChat(
@@ -538,39 +595,36 @@ class _ChatViewState extends StateManager<ChatView> with WidgetsBindingObserver 
   Future<void> _handleResend(String messageId) async {
     if (_sending) return;
 
+    final backend = await BackendSettingsRepository.instance.getActiveBackend();
+    if (_isOrchestratorBackend(backend)) {
+      await _startOrchestratorForActiveBackend(silent: true);
+    }
+
     final idx = _messages.indexWhere((m) => m.id == messageId);
     if (idx == -1) return;
-
-    // Nothing to truncate if the selected message is already the last entry.
-    if (idx == _messages.length - 1) {
-      // Still re-send it without truncation.
-      _sendMessage(_messages[idx].content);
-      return;
-    }
 
     final conv = _conversation;
     if (conv == null) return;
 
-    // Collect IDs of messages that will be removed so we can delete them from
-    // the database. We delete from the end backwards to avoid index shifts.
-    final idsToRemove = _messages.sublist(idx + 1).map((m) => m.id).toList();
+    // Capture the content before we drop the message from the list.
+    final originalContent = _messages[idx].content;
 
-    // Truncate the in-memory history up to (and including) the selected message.
+    // Remove the selected user message *and* everything after it. _sendMessage
+    // will re-insert the user message itself; if we left it in place we would
+    // end up with two identical user turns in the history sent to the model
+    // (which previously caused the assistant to reply with a terse "OK.").
+    final idsToRemove = _messages.sublist(idx).map((m) => m.id).toList();
+
     setState(() {
-      _messages.removeRange(idx + 1, _messages.length);
-      _sending = true;
+      _messages.removeRange(idx, _messages.length);
       _sendError = null;
     });
 
-    // Persist the truncation in the database.
     for (final id in idsToRemove) {
       await MessageRepository.instance.deleteById(id);
     }
 
-    // Re-send the original user message — the UI is already updated; the
-    // new assistant reply will be appended in _sendMessage once it arrives.
-    final original = _messages[idx];
-    await _sendMessage(original.content);
+    await _sendMessage(originalContent);
   }
 
   String _autoTitleFrom(String firstMessage) {
@@ -661,6 +715,7 @@ class _ChatViewState extends StateManager<ChatView> with WidgetsBindingObserver 
           onToggleLog: () => setState(() => _logVisible = !_logVisible),
           onProjectFolderChanged: _startOrchestrator,
           onDownload: _downloadChatAsJson,
+          onCopyToClipboard: _copyChatToClipboard,
           onNewChatFromJson: _newChatFromJson,
         ),
         if (showServerPanel)
@@ -732,13 +787,21 @@ class _ChatViewState extends StateManager<ChatView> with WidgetsBindingObserver 
                 borderRadius: BorderRadius.circular(8),
               ),
               child: IconButton(
-                tooltip: OrchestratorManager.instance.isRunning ? "Stop orchestrator" : "Start orchestrator",
+                tooltip: OrchestratorManager.instance.isRunning
+                    ? "Stop orchestrator"
+                    : "Start orchestrator",
                 icon: Icon(
-                  OrchestratorManager.instance.isRunning ? Icons.stop_outlined : Icons.play_arrow_outlined,
+                  OrchestratorManager.instance.isRunning
+                      ? Icons.stop_outlined
+                      : Icons.play_arrow_outlined,
                   size: 20,
-                  color: OrchestratorManager.instance.isRunning ? AppTheme.danger : AppTheme.textSecondary,
+                  color: OrchestratorManager.instance.isRunning
+                      ? AppTheme.danger
+                      : AppTheme.textSecondary,
                 ),
-                onPressed: () => OrchestratorManager.instance.isRunning ? _stopOrchestrator() : _startOrchestrator(),
+                onPressed: () => OrchestratorManager.instance.isRunning
+                    ? _stopOrchestrator()
+                    : _startOrchestrator(),
               )),
           const SizedBox(width: 12),
           // Local server button (only for local backend)
@@ -746,15 +809,19 @@ class _ChatViewState extends StateManager<ChatView> with WidgetsBindingObserver 
             Builder(
               builder: (ctx) {
                 final modelId = conv.modelId ?? '';
-                final isRunning = LocalServerManager.instance.isServerRunning(modelId);
+                final isRunning =
+                    LocalServerManager.instance.isServerRunning(modelId);
                 return IconButton(
                   tooltip: isRunning ? "Server running" : "Start local server",
                   icon: Icon(
                     isRunning ? Icons.cloud_done : Icons.cloud_upload_outlined,
                     size: 16,
-                    color: isRunning ? AppTheme.accentMarrone : AppTheme.textSecondary,
+                    color: isRunning
+                        ? AppTheme.accentMarrone
+                        : AppTheme.textSecondary,
                   ),
-                  onPressed: isRunning ? null : () => _startLocalServer(modelId),
+                  onPressed:
+                      isRunning ? null : () => _startLocalServer(modelId),
                 );
               },
             ),
@@ -785,47 +852,32 @@ class _ChatViewState extends StateManager<ChatView> with WidgetsBindingObserver 
 
   Future<void> _startLocalServer(String modelId) async {
     try {
-      final config = await LocalServerConfigRepository.instance.getByModelId(modelId);
+      final config =
+          await LocalServerConfigRepository.instance.getByModelId(modelId);
 
       if (!mounted) return;
 
       if (config == null) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text("No configuration found. Configure the server in Settings > Model > Configure Local Server"),
-          ),
+        NotificationHelper.showError(
+          context,
+          'No configuration found. Configure the server in Settings > Model > Configure Local Server',
         );
         return;
       }
 
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text("Starting server..."),
-          duration: Duration(seconds: 1),
-        ),
-      );
+      NotificationHelper.showInfo(context, 'Starting server...');
 
       final serverUrl = await LocalServerManager.instance.startServer(config);
 
       if (!mounted) return;
 
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text("✓ Server running at $serverUrl"),
-          backgroundColor: AppTheme.accentMarrone,
-        ),
-      );
+      NotificationHelper.showSuccess(context, '✓ Server running at $serverUrl');
 
       setState(() {});
     } catch (e) {
       if (!mounted) return;
 
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text("Error: $e"),
-          backgroundColor: AppTheme.danger,
-        ),
-      );
+      NotificationHelper.showError(context, 'Error: $e');
     }
   }
 
@@ -870,14 +922,15 @@ class _ChatViewState extends StateManager<ChatView> with WidgetsBindingObserver 
   // }
 
   Future<void> _startOrchestrator() async {
-    return _startOrchestratorForActiveBackend();
+    await _startOrchestratorForActiveBackend();
   }
 
   Future<void> _downloadChatAsJson() async {
     final conv = _conversation;
     if (conv == null) return;
 
-    final messages = await MessageRepository.instance.listByConversation(conv.id);
+    final messages =
+        await MessageRepository.instance.listByConversation(conv.id);
 
     // Build an AI-model-friendly format: OpenAI chat-completion shape.
     // The top-level object contains metadata and a "messages" array where
@@ -930,21 +983,49 @@ class _ChatViewState extends StateManager<ChatView> with WidgetsBindingObserver 
 
       if (!mounted) return;
 
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('Saved to $savePath'),
-          backgroundColor: AppTheme.accentMarrone,
-          duration: const Duration(seconds: 3),
-        ),
-      );
+      NotificationHelper.showSuccess(context, 'Saved to $savePath');
     } catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('Failed to save JSON: $e'),
-          backgroundColor: AppTheme.danger,
-        ),
-      );
+      NotificationHelper.showError(context, 'Failed to save JSON: $e');
+    }
+  }
+
+  Future<void> _copyChatToClipboard() async {
+    final conv = _conversation;
+    if (conv == null) return;
+
+    final messages =
+        await MessageRepository.instance.listByConversation(conv.id);
+
+    // Build the same JSON structure as _downloadChatAsJson
+    final jsonData = {
+      "conversation": {
+        "id": conv.id,
+        "title": conv.title,
+        "modelId": conv.modelId,
+        "backend": conv.backend,
+        "createdAt": conv.createdAt,
+        "updatedAt": conv.updatedAt,
+      },
+      "messages": messages.map((msg) {
+        final entry = <String, dynamic>{
+          "role": msg.role.apiValue,
+          "content": msg.content,
+        };
+        if (msg.agent != null) entry["agent"] = msg.agent;
+        return entry;
+      }).toList(),
+    };
+
+    final jsonString = const JsonEncoder.withIndent('  ').convert(jsonData);
+
+    try {
+      await Clipboard.setData(ClipboardData(text: jsonString));
+      if (!mounted) return;
+      NotificationHelper.showSuccess(context, 'Chat JSON copied to clipboard');
+    } catch (e) {
+      if (!mounted) return;
+      NotificationHelper.showError(context, 'Failed to copy to clipboard: $e');
     }
   }
 
@@ -952,7 +1033,8 @@ class _ChatViewState extends StateManager<ChatView> with WidgetsBindingObserver 
     final conv = _conversation;
     if (conv == null) return;
 
-    final messages = await MessageRepository.instance.listByConversation(conv.id);
+    final messages =
+        await MessageRepository.instance.listByConversation(conv.id);
 
     // Build JSON like the download button, but we'll extract just messages
     final jsonData = {
@@ -967,6 +1049,7 @@ class _ChatViewState extends StateManager<ChatView> with WidgetsBindingObserver 
     };
 
     // Create a new conversation with the same metadata (excluding "conversation" node)
+    // Preserve groupId so the new chat appears in the same sidebar filter.
     final newConv = Conversation(
       id: const Uuid().v4(),
       title: 'New chat from JSON',
@@ -974,6 +1057,7 @@ class _ChatViewState extends StateManager<ChatView> with WidgetsBindingObserver 
       backend: conv.backend,
       createdAt: DateTime.now().millisecondsSinceEpoch,
       updatedAt: DateTime.now().millisecondsSinceEpoch,
+      groupId: conv.groupId,
     );
     await ConversationRepository.instance.insert(newConv);
 
@@ -996,126 +1080,182 @@ class _ChatViewState extends StateManager<ChatView> with WidgetsBindingObserver 
       await MessageRepository.instance.insert(chatMessage);
     }
 
-    // Navigate to the new conversation
     if (!mounted) return;
-    // Use MethodListener to notify Sidebar to refresh conversations
-    final sidebarListener = MethodListener<Sidebar>();
-    await sidebarListener.callMethod("refreshConversations");
-    
-    // Navigate to the new conversation via HomeScreen (which handles openConversation)
-    final homeListener = MethodListener<HomeScreen>();
-    homeListener.callMethod(
+
+    if (OrchestratorManager.instance.isRunning) {
+      await OrchestratorManager.instance.stop();
+    }
+
+    // Navigate to the new conversation via HomeScreen. The openConversation
+    // handler in HomeScreen also triggers a sidebar refresh, so the new
+    // chat will appear in the sidebar list automatically.
+    await MethodListener<HomeScreen>().callMethod(
       "openConversation",
       params: {"conversationId": newConv.id},
     );
 
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(
-        content: Text('New chat created from JSON context'),
-        backgroundColor: AppTheme.accentMarrone,
-        duration: Duration(seconds: 2),
-      ),
-    );
+    if (!mounted) return;
+    NotificationHelper.showInfo(context, 'New chat created from JSON context');
   }
 
   Future<void> _stopOrchestrator() async {
     try {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text("Stopping orchestrator..."),
-          duration: Duration(seconds: 1),
-        ),
-      );
+      NotificationHelper.showInfo(context, 'Stopping orchestrator...');
       await OrchestratorManager.instance.stop();
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text("Orchestrator stopped")),
-      );
+      NotificationHelper.showSuccess(context, 'Orchestrator stopped');
       setState(() {});
     } catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text("Error: $e"),
-          backgroundColor: AppTheme.danger,
-        ),
-      );
+      NotificationHelper.showError(context, 'Error: $e');
     }
   }
 
-  Future<void> _startOrchestratorForActiveBackend() async {
+  Future<bool> _startOrchestratorForActiveBackend({bool silent = false}) async {
     try {
-      final backend = await BackendSettingsRepository.instance.getActiveBackend();
-      final ollamaModel = await BackendSettingsRepository.instance.getOllamaModel();
-      final ollamaBaseUrl = await BackendSettingsRepository.instance.getOllamaBaseUrl();
+      final settings = BackendSettingsRepository.instance;
+      final backend = await settings.getActiveBackend();
+      if (mounted && _activeBackend != backend) {
+        setState(() => _activeBackend = backend);
+      }
 
-      if (!mounted) return;
+      if (!_isOrchestratorBackend(backend)) return false;
+
+      final desiredBackend = _desiredOrchestratorBackend(backend);
+      final convModelId = _conversation?.modelId?.trim() ?? '';
 
       String? token;
-      String? groqApiKey;
-      OrchestratorBackend desiredBackend;
       String? modelId;
+      String? ollamaBaseUrl;
+      String? groqApiKey;
+      String? geminiApiKey;
+      String? openRouterApiKey;
+      String? githubApiKey;
+      double? temperature;
+      int? maxTokens;
+      int? tpmLimit;
+      bool disableTools = false;
 
-      if (backend == LlmBackend.ollamaOrchestrator) {
-        desiredBackend = OrchestratorBackend.ollama;
-        modelId = ollamaModel;
-
-        if (modelId == null || modelId.isEmpty) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text("Select an Ollama model in Settings first")),
-          );
-          return;
-        }
-      } else if (backend == LlmBackend.groqOrchestrator) {
-        desiredBackend = OrchestratorBackend.groq;
-
-        groqApiKey = await BackendSettingsRepository.instance.getGroqApiKey();
-        modelId = await BackendSettingsRepository.instance.getGroqModel();
-
-        if (!mounted) return;
-
-        if (groqApiKey == null || groqApiKey.isEmpty) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text("Configure Groq API key in Settings first")),
-          );
-          return;
-        }
-      } else {
-        desiredBackend = OrchestratorBackend.huggingface;
-
-        final creds = await AgentCredentialsRepository.instance.getCredentials();
-        if (!mounted) return;
-
-        token = creds?.hfToken;
-        modelId = _conversation?.modelId;
-
-        if (token == null || token.isEmpty) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text("Configure HF token in Settings first")),
-          );
-          return;
-        }
+      switch (desiredBackend) {
+        case OrchestratorBackend.ollama:
+          ollamaBaseUrl = await settings.getOllamaBaseUrl();
+          final savedOllamaModel = await settings.getOllamaModel();
+          modelId = convModelId.isNotEmpty ? convModelId : savedOllamaModel;
+          if ((modelId ?? '').isEmpty) {
+            if (!silent && mounted) {
+              NotificationHelper.showError(context, 'Select an Ollama model in Settings first');
+            }
+            return false;
+          }
+          break;
+        case OrchestratorBackend.groq:
+          groqApiKey = await settings.getGroqApiKey() ?? '';
+          final savedGroqModel = await settings.getGroqModel() ?? '';
+          modelId = (convModelId.isNotEmpty && !convModelId.contains(':'))
+              ? convModelId
+              : (savedGroqModel.isNotEmpty ? savedGroqModel : convModelId);
+          temperature = await settings.getGroqTemperature();
+          maxTokens = await settings.getGroqMaxTokens();
+          tpmLimit = await settings.getGroqTpmLimit();
+          if (groqApiKey.isEmpty) {
+            if (!silent && mounted) {
+              NotificationHelper.showError(context, 'Configure Groq API key in Settings first');
+            }
+            return false;
+          }
+          break;
+        case OrchestratorBackend.gemini:
+          geminiApiKey = await settings.getGeminiApiKey() ?? '';
+          final savedGeminiModel = await settings.getGeminiModel() ?? '';
+          modelId = resolveGeminiModel(convModelId, savedGeminiModel);
+          temperature = await settings.getGeminiTemperature();
+          maxTokens = await settings.getGeminiMaxTokens();
+          tpmLimit = await settings.getGeminiTpmLimit();
+          if (geminiApiKey.isEmpty) {
+            if (!silent && mounted) {
+              NotificationHelper.showError(context, 'Configure Gemini API key in Settings first');
+            }
+            return false;
+          }
+          break;
+        case OrchestratorBackend.openrouter:
+          openRouterApiKey = await settings.getOpenRouterApiKey() ?? '';
+          final savedOpenRouterModel =
+              await settings.getOpenRouterModel() ?? '';
+          modelId = resolveOpenRouterModel(convModelId, savedOpenRouterModel);
+          temperature = await settings.getOpenRouterTemperature();
+          maxTokens = await settings.getOpenRouterMaxTokens();
+          tpmLimit = await settings.getOpenRouterTpmLimit();
+          if (openRouterApiKey.isEmpty) {
+            if (!silent && mounted) {
+              NotificationHelper.showError(context, 'Configure OpenRouter API key in Settings first');
+            }
+            return false;
+          }
+          break;
+        case OrchestratorBackend.github:
+          githubApiKey = await settings.getGithubApiKey() ?? '';
+          final savedGithubModel = await settings.getGithubModel() ?? '';
+          modelId = (convModelId.isNotEmpty && convModelId.contains('/'))
+              ? convModelId
+              : savedGithubModel;
+          temperature = await settings.getGithubTemperature();
+          maxTokens = await settings.getGithubMaxTokens();
+          tpmLimit = await settings.getGithubTpmLimit();
+          disableTools = await settings.getGithubDisableTools();
+          if (githubApiKey.isEmpty) {
+            if (!silent && mounted) {
+              NotificationHelper.showError(context, 'Configure GitHub API token in Settings first');
+            }
+            return false;
+          }
+          break;
+        case OrchestratorBackend.huggingface:
+          final creds =
+              await AgentCredentialsRepository.instance.getCredentials();
+          token =
+              creds?.hfToken ?? await SettingsRepository.instance.getHfToken();
+          modelId = convModelId;
+          if ((token ?? '').isEmpty) {
+            if (!silent && mounted) {
+              NotificationHelper.showError(context, 'Configure HF token in Settings first');
+            }
+            return false;
+          }
+          break;
       }
 
-      // Stop existing orchestrator if backend changed
-      if (OrchestratorManager.instance.isRunning && OrchestratorManager.instance.currentBackend != desiredBackend) {
+      // Already running on the desired backend -> nothing to do.
+      if (OrchestratorManager.instance.isRunning &&
+          OrchestratorManager.instance.currentBackend == desiredBackend) {
+        return true;
+      }
+
+      // Stop existing orchestrator if backend changed.
+      if (OrchestratorManager.instance.isRunning &&
+          OrchestratorManager.instance.currentBackend != desiredBackend) {
         await OrchestratorManager.instance.stop();
-        if (!mounted) return;
       }
 
-      // Start message
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(
-            desiredBackend == OrchestratorBackend.ollama
-                ? "Starting Ollama orchestrator..."
-                : desiredBackend == OrchestratorBackend.groq
-                    ? "Starting Groq orchestrator..."
-                    : "Starting orchestrator...",
-          ),
-          duration: const Duration(seconds: 1),
-        ),
-      );
+      // Rule: on any orchestrator start, open the output widget.
+      if (mounted && !_logVisible) {
+        setState(() => _logVisible = true);
+      }
+
+      if (!silent && mounted) {
+        NotificationHelper.showInfo(
+          context,
+          switch (desiredBackend) {
+            OrchestratorBackend.ollama => "Starting Ollama orchestrator...",
+            OrchestratorBackend.groq => "Starting Groq orchestrator...",
+            OrchestratorBackend.gemini => "Starting Gemini orchestrator...",
+            OrchestratorBackend.openrouter =>
+              "Starting OpenRouter orchestrator...",
+            OrchestratorBackend.github => "Starting GitHub orchestrator...",
+            OrchestratorBackend.huggingface => "Starting orchestrator...",
+          },
+        );
+      }
 
       final started = await OrchestratorManager.instance.start(
         hfToken: token,
@@ -1123,47 +1263,59 @@ class _ChatViewState extends StateManager<ChatView> with WidgetsBindingObserver 
         backend: desiredBackend,
         ollamaBaseUrl: ollamaBaseUrl,
         groqApiKey: groqApiKey,
+        geminiApiKey: geminiApiKey,
+        openRouterApiKey: openRouterApiKey,
+        githubApiKey: githubApiKey,
+        temperature: temperature,
+        maxTokens: maxTokens,
+        tpmLimit: tpmLimit,
+        disableTools: disableTools,
       );
 
-      if (!mounted) return;
+      if (!mounted) return started;
 
-      if (started) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text(
-              switch (desiredBackend) {
-                OrchestratorBackend.ollama => "Ollama orchestrator active",
-                OrchestratorBackend.groq => "Groq orchestrator active",
-                _ => "Orchestrator active",
-              },
-            ),
-            backgroundColor: const Color.fromARGB(255, 76, 175, 80),
-          ),
-        );
-        setState(() => _logVisible = true);
-      } else {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text(
-              switch (desiredBackend) {
-                OrchestratorBackend.ollama => "Failed to start Ollama orchestrator",
-                OrchestratorBackend.groq => "Failed to start Groq orchestrator",
-                _ => "Failed to start orchestrator",
-              },
-            ),
-            backgroundColor: AppTheme.danger,
-          ),
-        );
+      if (!silent) {
+        if (started) {
+          NotificationHelper.showSuccess(
+            context,
+            switch (desiredBackend) {
+              OrchestratorBackend.ollama => "Ollama orchestrator active",
+              OrchestratorBackend.groq => "Groq orchestrator active",
+              OrchestratorBackend.gemini => "Gemini orchestrator active",
+              OrchestratorBackend.openrouter =>
+                "OpenRouter orchestrator active",
+              OrchestratorBackend.github => "GitHub orchestrator active",
+              OrchestratorBackend.huggingface => "Orchestrator active",
+            },
+          );
+        } else {
+          NotificationHelper.showError(
+            context,
+            switch (desiredBackend) {
+              OrchestratorBackend.ollama =>
+                "Failed to start Ollama orchestrator",
+              OrchestratorBackend.groq =>
+                "Failed to start Groq orchestrator",
+              OrchestratorBackend.gemini =>
+                "Failed to start Gemini orchestrator",
+              OrchestratorBackend.openrouter =>
+                "Failed to start OpenRouter orchestrator",
+              OrchestratorBackend.github =>
+                "Failed to start GitHub orchestrator",
+              OrchestratorBackend.huggingface =>
+                "Failed to start orchestrator",
+            },
+          );
+        }
       }
-    } catch (e) {
-      if (!mounted) return;
 
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text("Error: $e"),
-          backgroundColor: AppTheme.danger,
-        ),
-      );
+      setState(() {});
+      return started;
+    } catch (e) {
+      if (!silent && mounted) {
+        NotificationHelper.showError(context, 'Error: $e');
+      }
+      return false;
     }
   }
 
@@ -1321,7 +1473,9 @@ class _ChatViewState extends StateManager<ChatView> with WidgetsBindingObserver 
         return MessageBubble(
           message: m,
           // Show resend only on user bubbles and only when not already sending.
-          onResend: (m.role == MessageRole.user && !_sending) ? () => _handleResend(m.id) : null,
+          onResend: (m.role == MessageRole.user && !_sending)
+              ? () => _handleResend(m.id)
+              : null,
         );
       },
     );
@@ -1347,12 +1501,7 @@ class _ChatViewState extends StateManager<ChatView> with WidgetsBindingObserver 
             onPressed: () async {
               await Clipboard.setData(ClipboardData(text: _sendError ?? ""));
               if (mounted) {
-                ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(
-                    content: Text("Error copied to clipboard"),
-                    duration: Duration(seconds: 1),
-                  ),
-                );
+                NotificationHelper.showInfo(context, "Error copied to clipboard");
               }
             },
             color: AppTheme.danger,
@@ -1436,7 +1585,9 @@ class _ChatViewState extends StateManager<ChatView> with WidgetsBindingObserver 
             onPressed: () {
               MethodListener<Sidebar>().callMethod("refreshConversations");
               ScaffoldMessenger.of(context).showSnackBar(
-                const SnackBar(content: Text("Please use the '+' button in the sidebar to start a new chat")),
+                const SnackBar(
+                    content: Text(
+                        "Please use the '+' button in the sidebar to start a new chat")),
               );
             },
           ),
@@ -1460,7 +1611,8 @@ class _TypingIndicator extends StatefulWidget {
   State<_TypingIndicator> createState() => _TypingIndicatorState();
 }
 
-class _TypingIndicatorState extends State<_TypingIndicator> with SingleTickerProviderStateMixin {
+class _TypingIndicatorState extends State<_TypingIndicator>
+    with SingleTickerProviderStateMixin {
   late final AnimationController _c;
 
   @override
@@ -1491,7 +1643,8 @@ class _TypingIndicatorState extends State<_TypingIndicator> with SingleTickerPro
               return Row(
                 children: List.generate(3, (i) {
                   final phase = (_c.value + i * 0.2) % 1.0;
-                  final opacity = 0.3 + 0.7 * (phase < 0.5 ? phase * 2 : (1 - phase) * 2);
+                  final opacity =
+                      0.3 + 0.7 * (phase < 0.5 ? phase * 2 : (1 - phase) * 2);
                   return Padding(
                     padding: const EdgeInsets.symmetric(horizontal: 3),
                     child: Opacity(

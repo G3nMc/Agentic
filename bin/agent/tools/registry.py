@@ -164,6 +164,23 @@ class ToolRegistry:
                 parts.append(f"{key}{suffix}:{type_name}")
             return ", ".join(parts)
 
+        def _tool_group(name: str) -> str:
+            n = (name or "").strip().lower()
+            if n in {"read_file", "write_file", "append_file", "delete_file",
+                     "patch_file", "move_file", "create_directory"}:
+                return "Filesystem"
+            if n in {"list_files", "list_files_recursive", "search_in_files", "find_files"}:
+                return "Search"
+            if n.startswith("git_"):
+                return "Git"
+            if n.startswith("flutter_"):
+                return "Flutter"
+            if n.startswith("python_"):
+                return "Python"
+            if n == "run_command":
+                return "Shell"
+            return "Other"
+
         lines = [
             "You are an autonomous coding agent with access to tools for file operations, code analysis, search, editing, and execution.",
             "",
@@ -261,9 +278,13 @@ class ToolRegistry:
             "EDITING RULES",
             "==================================================================",
             "- Always inspect the relevant file before changing it.",
-            "- Every time you modify code, run a language-appropriate validation tool before your final answer.",
-            "- For Flutter/Dart changes, run flutter_analyze and fix reported errors when possible.",
-            "- For Python changes, run python_check (and python_lint/python_test when relevant) and fix reported errors when possible.",
+            "- MANDATORY POST-EDIT VALIDATION:",
+            "    * After ANY tool call that writes or patches a `.dart` file, your IMMEDIATE next action MUST be a `flutter_analyze` tool call. No final answer is allowed until `flutter_analyze` has run on this turn.",
+            "    * After ANY tool call that writes or patches a `.py` file, your IMMEDIATE next action MUST be `python_check` (and `python_lint`/`python_test` when relevant). No final answer until the check has run on this turn.",
+            "    * If `flutter_analyze` reports errors, fix them with another tool call and re-run `flutter_analyze`. Repeat until clean OR until the same fix attempt fails twice (then explain the blocker).",
+            "    * Any phrase that asks the user to run validation is STRICTLY FORBIDDEN. This includes — but is NOT limited to — every variant of: \"you can run flutter analyze\", \"you can now run flutter analyze\", \"you'll/you will/you would/you may need to run flutter analyze\", \"you'll have to run flutter analyze\", \"please run flutter analyze\", \"run `flutter analyze` to verify\", \"run flutter analyze locally\", \"run flutter analyze on your end/machine/side\", \"run flutter analyze yourself\", \"run flutter analyze manually\", \"remember to run flutter analyze\", \"I suggest/recommend running flutter analyze\", and the equivalents for `python_check`/`python_lint`/`python_test`. BARE IMPERATIVES like \"Run `flutter analyze` locally to verify compilation\" are equally forbidden — dropping the word \"you\" does not make it acceptable.",
+            "    * Also FORBIDDEN are excuses such as \"the Flutter CLI isn't available in this environment\", \"I can't run flutter analyze here\", \"flutter is not installed\", or any claim that the validator is unreachable. The `flutter_analyze` tool IS available — it is listed in AVAILABLE TOOLS below. Call it. If the tool itself returns an error like 'flutter CLI not found on PATH', report THAT specific error verbatim — do NOT preemptively claim unavailability before trying.",
+            "    * The agent runs the validator, not the user. Period.",
             "- If a dedicated validation tool is unavailable, use run_command with the closest equivalent check.",
             "- Prefer the smallest safe edit that solves the problem.",
             "- Never ask the user to apply code changes manually when tools can do it.",
@@ -294,13 +315,37 @@ class ToolRegistry:
             "==================================================================",
             "AVAILABLE TOOLS",
             "==================================================================",
+            "(This section is populated dynamically at runtime from registered tool definitions.)",
         ]
+
+        groups: Dict[str, List[str]] = {
+            "Filesystem": [],
+            "Search": [],
+            "Git": [],
+            "Flutter": [],
+            "Python": [],
+            "Shell": [],
+            "Other": [],
+        }
 
         for d in self.definitions:
             fn = d.get("function", {})
             name = fn.get("name", "unknown_tool")
             description = (fn.get("description", "") or "").strip().replace("\n", " ")
             signature = _fmt_signature(fn)
-            lines.append(f"- {name}({signature}): {description}")
+            groups[_tool_group(name)].append(f"- {name}({signature}): {description}")
+
+        for group_name in ("Filesystem", "Search", "Git", "Flutter", "Python", "Shell", "Other"):
+            entries = groups.get(group_name) or []
+            if not entries:
+                continue
+            lines.append(f"[{group_name}]")
+            lines.extend(entries)
+            lines.append("")
+
+        if not any(groups.values()):
+            lines.append("- (no tool definitions registered)")
+            if self.tools:
+                lines.append("- Registered call targets: " + ", ".join(sorted(self.tools.keys())))
 
         return "\n".join(lines)

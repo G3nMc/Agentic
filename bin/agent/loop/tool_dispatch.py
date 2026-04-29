@@ -800,6 +800,52 @@ def _infer_tool_name_from_params(params: Dict[str, Any], tool_defs) -> Optional[
     return best_name
 
 
+def _decode_embedded_tool_call(name_value: Any) -> Optional[Tuple[str, Dict[str, Any]]]:
+    """Decode malformed tool-name payloads that embed a full call object.
+
+    Some models emit:
+      {"tool":"{\"name\":\"read_file\",\"arguments\":{\"path\":\"...\"}}","parameters":{}}
+    instead of:
+      {"tool":"read_file","parameters":{"path":"..."}}
+    This helper unwraps the embedded object when present.
+    """
+    if not isinstance(name_value, str):
+        return None
+
+    raw = name_value.strip()
+    if not (raw.startswith("{") and raw.endswith("}")):
+        return None
+
+    try:
+        embedded = json.loads(raw)
+    except json.JSONDecodeError:
+        return None
+
+    if not isinstance(embedded, dict):
+        return None
+
+    emb_name = embedded.get("name") or embedded.get("tool")
+    emb_params = (
+        embedded.get("arguments")
+        or embedded.get("parameters")
+        or embedded.get("args")
+        or {}
+    )
+
+    if isinstance(emb_params, str):
+        try:
+            emb_params = json.loads(emb_params)
+        except json.JSONDecodeError:
+            emb_params = {}
+
+    if not isinstance(emb_name, str) or not emb_name:
+        return None
+    if not isinstance(emb_params, dict):
+        emb_params = {}
+
+    return emb_name, emb_params
+
+
 def _normalize_tool_spec(data: Dict[str, Any], tool_defs) -> Optional[Tuple[str, Dict[str, Any]]]:
     """Normalize a JSON-like dict into (tool_name, parameters)."""
     if not isinstance(data, dict):
@@ -813,9 +859,22 @@ def _normalize_tool_spec(data: Dict[str, Any], tool_defs) -> Optional[Tuple[str,
             params = json.loads(params)
         except json.JSONDecodeError:
             params = {}
+    elif params is None:
+        params = {}
+    elif not isinstance(params, dict):
+        # Keep non-dict outer params from blocking embedded-call recovery.
+        params = {}
 
-    if not isinstance(params, dict):
-        return None
+    embedded = _decode_embedded_tool_call(name)
+    if embedded is not None:
+        emb_name, emb_params = embedded
+        if params:
+            merged = dict(emb_params)
+            merged.update(params)
+            params = merged
+        else:
+            params = emb_params
+        name = emb_name
 
     if not isinstance(name, str) or not name:
         name = _infer_tool_name_from_params(params, tool_defs)

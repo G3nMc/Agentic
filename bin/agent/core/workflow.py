@@ -26,13 +26,111 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import uuid
 from typing import Any, Dict, List, Optional
 
 from .agent_config import build_agents, SecretsResolver
 from .state import ROUTE_REASONING, ROUTE_TRIVIAL, WorkflowState
+from ..loop import tool_dispatch as _td
 from ..policy import SecurityConfig
 from ..tools.registry import ToolRegistry
+
+
+_WRITE_TOOLS = frozenset({"write_file", "append_file", "patch_file"})
+_DART_VALIDATORS = frozenset({"flutter_analyze"})
+_PY_VALIDATORS = frozenset({"python_check", "python_lint", "python_test"})
+
+# Punted-validation patterns the system prompt forbids:
+#   - "you can run flutter analyze locally"
+#   - "you'll need to run flutter analyze"
+#   - "you will need to / you would need to / you need to run flutter analyze"
+#   - "you'll have to run flutter analyze"
+#   - "please run flutter analyze"
+#   - "remember / don't forget to run flutter analyze"
+#   - "I suggest / recommend running flutter analyze"
+#   - "since flutter CLI isn't available, …"
+# All matched case-insensitively.
+_PUNT_LEAD = (
+    r"(?:"
+    # "you can/should/may/might/could/must run …"      (no "to")
+    r"you\s+(?:can|should|may|might|could|must)"
+    # "you'll / you will / you'd / you would (need|have|want) to run …"
+    r"|you(?:'?ll|'?d|\s+(?:will|would))(?:\s+(?:need|have|want)\s+to)?"
+    # "you need to / you have to run …"
+    r"|you\s+(?:need|have)\s+to"
+    r"|please|kindly"
+    r"|remember\s+to|don'?t\s+forget\s+to"
+    r"|(?:i\s+(?:suggest|recommend|advise))(?:\s+(?:that\s+)?you)?"
+    r")"
+)
+# Match the verb stem plus any inflection: run/runs/running/ran,
+# execute/executes/executing/executed, invoke/invokes/invoking/invoked, etc.
+# Trailing `\w*` instead of `\b` is what catches the gerund forms the model
+# loves to slip in ("by running flutter analyze locally").
+_PUNT_VERB = (
+    r"\b(?:ran|run|execut|invok|us|do|did|trigger|launch|fir|kick\s+off)\w*"
+)
+# "flutter analyze" with arbitrary spacing/backticks/dashes/underscores:
+#   `flutter analyze`, "flutter_analyze", "flutter — analyze".
+_DART_TOOL = r"`?\bflutter[\s`_\-]*analyze\b`?"
+_PY_TOOL = r"`?\bpython[\s`_\-]*(?:check|lint|test)\b`?"
+
+# Polite/punt-lead form: "you can run flutter analyze", "please run …", etc.
+_PUNTED_DART_LEAD_RE = re.compile(
+    rf"{_PUNT_LEAD}[^.\n]*?{_PUNT_VERB}[^.\n]*?{_DART_TOOL}",
+    re.IGNORECASE,
+)
+_PUNTED_PY_LEAD_RE = re.compile(
+    rf"{_PUNT_LEAD}[^.\n]*?{_PUNT_VERB}[^.\n]*?{_PY_TOOL}",
+    re.IGNORECASE,
+)
+
+# Bare-imperative form the model also loves: "Run flutter analyze locally to
+# verify", "Execute flutter analyze yourself", "Run `flutter analyze` on your
+# machine". Anchored at sentence start, terminated by a punt-anchor word
+# (locally|yourself|your machine|manually|to verify|to confirm…) so we don't
+# false-positive on legitimate "I ran flutter analyze and it passed".
+_PUNT_ANCHOR = (
+    r"\b(?:locally|yourself|on\s+your\s+(?:end|machine|side|computer)|"
+    r"manually|by\s+hand|"
+    r"to\s+(?:verify|confirm|check|test|validate|ensure|make\s+sure|see))\b"
+)
+_PUNTED_DART_BARE_RE = re.compile(
+    rf"(?:^|[.!?\n]\s*){_PUNT_VERB}[^.\n]*?{_DART_TOOL}[^.\n]*?{_PUNT_ANCHOR}",
+    re.IGNORECASE | re.MULTILINE,
+)
+_PUNTED_PY_BARE_RE = re.compile(
+    rf"(?:^|[.!?\n]\s*){_PUNT_VERB}[^.\n]*?{_PY_TOOL}[^.\n]*?{_PUNT_ANCHOR}",
+    re.IGNORECASE | re.MULTILINE,
+)
+
+
+def _is_punted_dart(text: str) -> bool:
+    return bool(_PUNTED_DART_LEAD_RE.search(text)) or bool(
+        _PUNTED_DART_BARE_RE.search(text)
+    )
+
+
+def _is_punted_py(text: str) -> bool:
+    return bool(_PUNTED_PY_LEAD_RE.search(text)) or bool(
+        _PUNTED_PY_BARE_RE.search(text)
+    )
+# Catches the "I can't run it / it isn't available in this environment" excuse,
+# which is just punting under a different mask.
+_EXCUSE_RE = re.compile(
+    r"(?:flutter(?:\s+cli)?|python(?:\s+cli)?)\s+(?:is(?:n'?t|\s+not)|not)\s+"
+    r"(?:available|installed|accessible|reachable|present)|"
+    r"(?:can'?t|cannot|unable\s+to)\s+(?:run|execute|invoke|access)\s+"
+    r"(?:flutter|python)|"
+    r"(?:no|without)\s+(?:access\s+to\s+)?(?:flutter|python)(?:\s+cli)?",
+    re.IGNORECASE,
+)
+
+
+def _path_from_call(call: Dict[str, Any]) -> str:
+    params = call.get("parameters") or {}
+    return str(params.get("path") or params.get("destination") or "")
 
 
 class Workflow:
@@ -185,7 +283,31 @@ class Workflow:
             except Exception as e:
                 self.logger.exception("Trivial path failed: %s", e)
                 state.final_answer = f"ERROR: {e}"
-            return self.finalize(state, user_input)
+
+            # Safety net: if the cheap "trivial" model emits a tool-like
+            # payload, do NOT leak it as plain text. Re-route to the normal
+            # reasoning/tool loop so calls are parsed and executed.
+            candidate = str(state.final_answer or "")
+            cleaned = _td.clean_history_text(candidate)
+            parsed_calls = _td.parse_all_tag_tool_calls(
+                cleaned,
+                self.tool_registry.definitions,
+            )
+            if parsed_calls or _td.looks_like_malformed_tool_call(cleaned):
+                self.logger.warning(
+                    "Trivial route emitted tool-like output; escalating to reasoning. "
+                    "parsed_calls=%s",
+                    parsed_calls,
+                )
+                state.add_trace(
+                    "workflow",
+                    output="route-corrected: trivial→reasoning",
+                    detail=(cleaned[:400] + ("..." if len(cleaned) > 400 else "")),
+                )
+                state.route = ROUTE_REASONING
+                state.final_answer = None
+            else:
+                return self.finalize(state, user_input)
 
         # 3. Shape
         shaper = self.agents.get("shaper")
@@ -212,6 +334,15 @@ class Workflow:
         last_failed_sig: Optional[str] = None
         consecutive_failures = 0
         empty_retries = 0
+
+        # Post-edit validation tracking — see _is_punted_dart above and the
+        # MANDATORY POST-EDIT VALIDATION block in the system prompt.
+        dart_edited = False
+        py_edited = False
+        dart_validated = False
+        py_validated = False
+        validation_nudges = 0
+        max_validation_nudges = 2
 
         def looks_like_plan(text: str) -> bool:
             if not text:
@@ -397,6 +528,23 @@ class Workflow:
                     continue
 
                 self.logger.info("Tool batch succeeded")
+
+                # Record what kind of work happened in this batch so the
+                # post-edit validation gate can enforce flutter_analyze /
+                # python_check before a final answer is accepted.
+                for c in pending_calls:
+                    tool = c.get("tool", "")
+                    if tool in _WRITE_TOOLS:
+                        p = _path_from_call(c).lower()
+                        if p.endswith(".dart"):
+                            dart_edited = True
+                        elif p.endswith(".py"):
+                            py_edited = True
+                    elif tool in _DART_VALIDATORS:
+                        dart_validated = True
+                    elif tool in _PY_VALIDATORS:
+                        py_validated = True
+
                 state.tool_calls = []
                 last_failed_sig = None
                 consecutive_failures = 0
@@ -407,8 +555,99 @@ class Workflow:
                 if not str(state.final_answer).strip():
                     self.logger.error("Empty final answer returned by model")
                     state.final_answer = "ERROR: Empty final answer"
-                else:
-                    self.logger.info("Final answer produced")
+                    break
+
+                # ── Post-edit validation gate ────────────────────────────
+                # If the agent edited Dart/Python files but never called the
+                # corresponding validator, OR its final answer punts the
+                # validation back to the user, push the loop forward with a
+                # corrective user turn instead of accepting the answer.
+                answer_text = str(state.final_answer)
+                excuses = bool(_EXCUSE_RE.search(answer_text))
+                needs_dart = (dart_edited and not dart_validated) \
+                    or _is_punted_dart(answer_text) \
+                    or (excuses and dart_edited and not dart_validated)
+                needs_py = (py_edited and not py_validated) \
+                    or _is_punted_py(answer_text) \
+                    or (excuses and py_edited and not py_validated)
+
+                if (needs_dart or needs_py) and validation_nudges < max_validation_nudges:
+                    validation_nudges += 1
+                    missing = []
+                    if needs_dart:
+                        missing.append("flutter_analyze")
+                    if needs_py:
+                        missing.append("python_check")
+
+                    # Two failure modes need different corrective messages:
+                    #  (a) Validator was NEVER called this turn → demand the call.
+                    #  (b) Validator WAS called but the answer still punts to
+                    #      the user (or invents excuses about CLI availability)
+                    #      → just demand a rewrite without the punt phrase.
+                    already_validated = (
+                        (needs_dart and dart_validated)
+                        or (needs_py and py_validated)
+                    )
+
+                    self.logger.warning(
+                        "Post-edit validation gate triggered | missing=%s "
+                        "dart_edited=%s dart_validated=%s py_edited=%s py_validated=%s "
+                        "already_validated=%s nudge=%s/%s",
+                        missing, dart_edited, dart_validated,
+                        py_edited, py_validated, already_validated,
+                        validation_nudges, max_validation_nudges,
+                    )
+                    state.add_trace(
+                        "workflow",
+                        output=(
+                            f"rewrite-required: {','.join(missing)}"
+                            if already_validated
+                            else f"validation-required: {','.join(missing)}"
+                        ),
+                        detail=answer_text[:400],
+                    )
+                    state.final_answer = None
+
+                    if already_validated:
+                        state.history.append({
+                            "role": "user",
+                            "content": (
+                                "Your final answer contains a forbidden phrase "
+                                "asking the user to run the validator (or claiming "
+                                "the validator is unavailable). The validator "
+                                f"({', '.join(missing)}) was already called this "
+                                "turn — that step is done.\n\n"
+                                "Rewrite your final answer with these rules:\n"
+                                "  - Do NOT tell the user to run flutter analyze, "
+                                "python_check, etc.\n"
+                                "  - Do NOT claim the validator is unavailable, "
+                                "missing, or unreachable.\n"
+                                "  - If the validator returned a real error "
+                                "(e.g. 'flutter CLI not found on PATH'), report "
+                                "that exact error verbatim ONCE and stop.\n"
+                                "  - If the validator passed cleanly, just say so.\n\n"
+                                "Reply with ONLY the rewritten final answer. No "
+                                "tool call this turn."
+                            ),
+                        })
+                    else:
+                        state.history.append({
+                            "role": "user",
+                            "content": (
+                                "You modified source files but did not validate "
+                                "them, or your reply asks the user to validate. "
+                                "That is not allowed.\n\n"
+                                "Your IMMEDIATE next response MUST be exactly ONE "
+                                f"tool call to: {', '.join(missing)}.\n"
+                                "No prose. No final answer yet. Just the tool call.\n"
+                                "After the validator runs, fix any reported errors "
+                                "with another tool call, re-validate, and only "
+                                "THEN produce the final answer."
+                            ),
+                        })
+                    continue
+
+                self.logger.info("Final answer produced")
                 break
 
         else:

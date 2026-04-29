@@ -33,12 +33,12 @@ The point of mixing is to put each role on the cheapest backend that's
 ### A. "Free everything" — zero-dollar test rig
 Best for first-time setup, kicking the tyres on a free key.
 
-| Role | Backend | Model | Notes |
-|------|---------|-------|-------|
-| Router | `openrouter` | `meta-llama/llama-3.2-3b-instruct:free` | sub-second classifier |
-| Shaper | `groq` | `llama-3.1-8b-instant` | Groq's free tier is fast |
-| Reasoner | `gemini` | `gemini-2.5-pro` | best free reasoning quota |
-| Executor | `groq` | `llama-3.3-70b-versatile` | strong tool-call adherence |
+| Role | Backend      | Model | Notes                             |
+|------|--------------|-------|-----------------------------------|
+| Router | `openrouter` | `meta-llama/llama-3.2-3b-instruct:free` | sub-second classifier             |
+| Shaper | `gemini`     | `gemma-4-31b-it` | Affidabile                        |
+| Reasoner | `ollama`          | `qwen3.5:397b-cloud` | Potente come reasoner su codice   |
+| Executor | `ollama`       | `glm-5.1:cloud` | Potente nella creazione di codice |
 
 Why it works: OpenRouter `:free` has terrible latency but the Router's job is
 trivial, so it doesn't matter. Groq carries Shaper + Executor (cheap, fast).

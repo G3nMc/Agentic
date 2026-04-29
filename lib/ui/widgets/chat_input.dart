@@ -8,6 +8,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../../core/theme/app_theme.dart';
+import '../../core/utils/notification_helper.dart';
 import '../../services/orchestrator_manager.dart';
 import '../../services/project_service.dart';
 
@@ -36,6 +37,9 @@ class ChatInput extends StatefulWidget {
   /// Callback to trigger download of the current chat as JSON.
   final VoidCallback? onDownload;
 
+  /// Callback to copy the current chat as JSON to clipboard.
+  final VoidCallback? onCopyToClipboard;
+
   /// Callback to create a new chat from JSON context (excluding conversation node).
   final VoidCallback? onNewChatFromJson;
 
@@ -50,6 +54,7 @@ class ChatInput extends StatefulWidget {
     this.onToggleLog,
     this.onProjectFolderChanged,
     this.onDownload,
+    this.onCopyToClipboard,
     this.onNewChatFromJson,
   });
 
@@ -157,9 +162,7 @@ class _ChatInputState extends State<ChatInput> {
       final result = await Process.run('git', ['-C', repoPath, ...args]);
       if (result.exitCode != 0) {
         if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text('Git error: ${result.stderr}')),
-          );
+          NotificationHelper.showError(context, 'Git error: ${result.stderr}');
         }
       }
     } catch (e) {
@@ -604,7 +607,8 @@ class _ChatInputState extends State<ChatInput> {
                       const SizedBox(width: 10),
                       _DownloadButton(
                         enabled: widget.enabled && !widget.sending,
-                        onTap: widget.onDownload,
+                        onDownload: widget.onDownload,
+                        onCopyToClipboard: widget.onCopyToClipboard,
                       ),
                       const SizedBox(width: 10),
                       _AttachButton(
@@ -953,17 +957,68 @@ class _SendButton extends StatelessWidget {
 }
 
 
-class _DownloadButton extends StatelessWidget {
+class _DownloadButton extends StatefulWidget {
   final bool enabled;
-  final VoidCallback? onTap;
+  final VoidCallback? onDownload;
+  final VoidCallback? onCopyToClipboard;
 
-  const _DownloadButton({required this.enabled, this.onTap});
+  const _DownloadButton({
+    required this.enabled,
+    this.onDownload,
+    this.onCopyToClipboard,
+  });
+
+  @override
+  State<_DownloadButton> createState() => _DownloadButtonState();
+}
+
+class _DownloadButtonState extends State<_DownloadButton> {
+  void _showMenu() {
+    final button = context.findRenderObject() as RenderBox;
+    final overlay = Overlay.of(context).context.findRenderObject() as RenderBox;
+    final position = RelativeRect.fromRect(
+      Rect.fromPoints(
+        button.localToGlobal(Offset.zero, ancestor: overlay),
+        button.localToGlobal(button.size.bottomRight(Offset.zero), ancestor: overlay),
+      ),
+      Offset.zero & overlay.size,
+    );
+
+    showMenu(
+      context: context,
+      position: position,
+      items: [
+        PopupMenuItem(
+          enabled: widget.enabled,
+          onTap: widget.onDownload,
+          child: const Row(
+            children: [
+              Icon(Icons.download_outlined, size: 18),
+              SizedBox(width: 12),
+              Text('Download as JSON'),
+            ],
+          ),
+        ),
+        PopupMenuItem(
+          enabled: widget.enabled,
+          onTap: widget.onCopyToClipboard,
+          child: const Row(
+            children: [
+              Icon(Icons.content_copy_outlined, size: 18),
+              SizedBox(width: 12),
+              Text('Copy to Clipboard as JSON'),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
 
   @override
   Widget build(BuildContext context) => Tooltip(
         message: 'Download chat as JSON',
         child: InkWell(
-          onTap: enabled ? onTap : null,
+          onTap: widget.enabled ? _showMenu : null,
           borderRadius: BorderRadius.circular(6),
           child: Container(
             width: 48,
@@ -977,7 +1032,7 @@ class _DownloadButton extends StatelessWidget {
             child: Icon(
               Icons.download_outlined,
               size: 18,
-              color: enabled ? AppTheme.textSecondary : AppTheme.textMuted,
+              color: widget.enabled ? AppTheme.textSecondary : AppTheme.textMuted,
             ),
           ),
         ),

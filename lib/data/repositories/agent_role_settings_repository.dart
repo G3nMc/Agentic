@@ -163,6 +163,11 @@ class AgentRoleSettingsRepository {
   /// Notifies when the active group changes — UI rebuilds bind to this.
   final ValueNotifier<String?> activeGroupNotifier = ValueNotifier<String?>(null);
 
+  /// Notifies when any group is mutated (rename / add / remove / reset).
+  /// The sidebar dropdown and WorkflowBreadcrumb listen to this so they
+  /// reflect renamed groups immediately when the user navigates back.
+  final ValueNotifier<int> groupsChangedNotifier = ValueNotifier<int>(0);
+
   /// Roles, in the order they should appear in the Settings UI.
   static const List<String> roles = ['router', 'shaper', 'reasoner', 'executor'];
 
@@ -327,6 +332,7 @@ class AgentRoleSettingsRepository {
     final next = [...groups];
     next[idx] = groups[idx].copyWith(title: newTitle.trim());
     await _saveGroupListFromWorkflowGroups(next);
+    groupsChangedNotifier.value++;
   }
 
   /// Removes a group and all its per-role keys. Refuses to remove the last
