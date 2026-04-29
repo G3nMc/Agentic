@@ -11,7 +11,7 @@ def register(registry) -> None:
 
     def list_files(path: str = ".") -> str:
         try:
-            target = registry._resolve_path(path)
+            target = registry.resolve_path(path)
             items = sorted(
                 p.name + ("/" if p.is_dir() else "") for p in target.iterdir()
             )
@@ -21,7 +21,7 @@ def register(registry) -> None:
 
     def read_file(path: str) -> str:
         try:
-            fp = registry._resolve_path(path)
+            fp = registry.resolve_path(path)
             if not fp.exists():
                 return json.dumps({"status": "error", "message": f"File not found: {path}"})
             content = fp.read_text(encoding="utf-8", errors="replace")
@@ -34,7 +34,7 @@ def register(registry) -> None:
         """Recursively list directory tree up to max_depth levels."""
         SKIP = {".git", "__pycache__", ".dart_tool", "build", "node_modules", ".gradle"}
         try:
-            target = registry._resolve_path(path)
+            target = registry.resolve_path(path)
             results = []
 
             def walk(p, depth):
@@ -61,7 +61,7 @@ def register(registry) -> None:
         """Grep-like search: find lines matching a regex in files. Returns file:line: content."""
         SKIP_DIRS = {".git", "__pycache__", ".dart_tool", "build", "node_modules"}
         try:
-            target = registry._resolve_path(path)
+            target = registry.resolve_path(path)
             compiled = re.compile(pattern)
             matches = []
             for fp in sorted(target.rglob("*")):
@@ -96,7 +96,7 @@ def register(registry) -> None:
         """Find files or directories whose name matches a glob pattern (e.g. *.dart)."""
         SKIP_DIRS = {".git", "__pycache__", ".dart_tool", "build", "node_modules"}
         try:
-            target = registry._resolve_path(path)
+            target = registry.resolve_path(path)
             matches = []
             for item in sorted(target.rglob("*")):
                 if any(part in SKIP_DIRS for part in item.parts):

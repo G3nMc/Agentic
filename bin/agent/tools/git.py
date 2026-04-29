@@ -50,7 +50,7 @@ def register(registry) -> None:
 
     def git_diff(path: str = ".") -> str:
         try:
-            target = str(registry._resolve_path(path))
+            target = str(registry.resolve_path(path))
             r = _git(["diff", "HEAD", "--", target])
             if r.returncode != 0:
                 return json.dumps({"status": "error", "message": r.stderr.strip()})

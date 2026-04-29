@@ -12,7 +12,7 @@ class AppDatabase {
   static final AppDatabase instance = AppDatabase._();
 
   static const String _dbName = "hf_chat.db";
-  static const int _dbVersion = 5;
+  static const int _dbVersion = 6;
 
   Database? _db;
   Completer<Database>? _opening;
@@ -228,6 +228,10 @@ class AppDatabase {
       // Migrate to v5: tag each assistant reply with the workflow agent
       // that produced it. Nullable so single-agent rows stay untouched.
       await db.execute('ALTER TABLE messages ADD COLUMN agent TEXT');
+    }
+    if (oldVersion < 6) {
+      // Migrate to v6: associate each conversation with a workflow group.
+      await db.execute('ALTER TABLE conversations ADD COLUMN group_id TEXT');
     }
   }
 

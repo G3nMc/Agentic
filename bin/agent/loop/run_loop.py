@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import re
 import sys
 import time
 from typing import Any, Dict, List, Optional
@@ -87,8 +88,11 @@ class Orchestrator:
         "[You have filesystem tools available. "
         "If this request needs file access or a command, emit ONE tool call: "
         '<tool>{"tool":"NAME","parameters":{...}}</tool>. '
-        "No explanation before or after it. Keep the JSON valid; prefer "
-        "single quotes inside shell commands. Otherwise reply normally.]\n\n"
+        "No explanation before or after it. Prefer dedicated tools "
+        "(read_file/search_in_files/list_files/flutter_analyze/python_check/"
+        "python_lint/python_test/git_*) and use run_command only as a fallback. "
+        "Keep the JSON valid; prefer single quotes inside shell commands. "
+        "Otherwise reply normally.]\n\n"
     )
 
     # Patterns that indicate file/code intent — trigger tool-enabled mode.
@@ -110,11 +114,36 @@ class Orchestrator:
         "project", "codebase", "repo", "error", "bug", "crash", "exception",
     )
 
+    # Deterministic "must-use-tools" patterns. These are evaluated before
+    # the general marker list so obvious tool tasks don't slip into chat mode.
+    _TOOL_INTENT_PATTERNS = (
+        r"\bflutter\s+analy[sz]e\b",
+        r"\bflutter\s+test\b",
+        r"\b(run|execute)\s+(a\s+)?command\b",
+        r"\b(get-content|select-string|findstr|dir|ls)\b",
+        r"\b(export|download|save)\b.*\b(chat|conversation|history)\b.*\bjson\b",
+        r"\b(read|open|search|find|list)\b.*\b(file|folder|directory|repo|project)\b",
+    )
+
     @classmethod
     def _needs_tools(cls, text: str) -> bool:
         """Return True when the message likely requires file/code access."""
-        t = text.lower()
+        t = (text or "").lower()
+        if any(re.search(pattern, t) for pattern in cls._TOOL_INTENT_PATTERNS):
+            return True
         return any(m in t for m in cls._CODE_INTENT_MARKERS)
+
+    def _should_escalate_chat_to_tools(self, user_input: str, model_reply: str) -> bool:
+        """True when a chat-mode response should be retried in tool mode."""
+        if self._needs_tools(user_input):
+            return True
+        if _td.parse_all_tag_tool_calls(model_reply, self.tool_registry.definitions):
+            return True
+        if _td.looks_like_malformed_tool_call(model_reply):
+            return True
+        if _td.looks_like_refusal(model_reply):
+            return True
+        return False
 
     # ------------------------------------------------------------------
     # Main loop
@@ -153,15 +182,28 @@ class Orchestrator:
                         self.conversation_history[-1].get("role") == "user":
                     self.conversation_history.pop()
                 return f"Model error: {e}"
-            self.conversation_history.append({
-                "role": "assistant",
-                "content": _td.clean_history_text(text or ""),
-            })
-            return _td.clean_final_answer(text or "")
+            text_clean = _td.clean_history_text(text or "")
+            if self._should_escalate_chat_to_tools(user_input, text_clean):
+                print(
+                    "[orch] Chat-mode reply looked tool-related; retrying in tool mode.",
+                    file=sys.stderr,
+                )
+                if self.conversation_history and \
+                        self.conversation_history[-1].get("role") == "user":
+                    self.conversation_history[-1]["content"] = (
+                        self._TOOL_REMINDER + user_input
+                    )
+                use_tools = True
+            else:
+                self.conversation_history.append({
+                    "role": "assistant",
+                    "content": text_clean,
+                })
+                return _td.clean_final_answer(text or "")
 
         refusal_retries = 0
         empty_retries = 0
-        truncation_retries = 2
+        truncation_retries = 0
         malformed_tool_retries = 0
 
         for iteration in range(self.max_iterations):

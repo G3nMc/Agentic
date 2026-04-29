@@ -33,6 +33,12 @@ class ChatInput extends StatefulWidget {
   /// Called when the project folder is changed.
   final VoidCallback? onProjectFolderChanged;
 
+  /// Callback to trigger download of the current chat as JSON.
+  final VoidCallback? onDownload;
+
+  /// Callback to create a new chat from JSON context (excluding conversation node).
+  final VoidCallback? onNewChatFromJson;
+
   const ChatInput({
     super.key,
     required this.enabled,
@@ -43,6 +49,8 @@ class ChatInput extends StatefulWidget {
     this.logVisible = false,
     this.onToggleLog,
     this.onProjectFolderChanged,
+    this.onDownload,
+    this.onNewChatFromJson,
   });
 
   @override
@@ -589,6 +597,16 @@ class _ChatInputState extends State<ChatInput> {
                     mainAxisAlignment: MainAxisAlignment.start,
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
+                      _NewChatFromJsonButton(
+                        enabled: widget.enabled && !widget.sending,
+                        onTap: widget.onNewChatFromJson,
+                      ),
+                      const SizedBox(width: 10),
+                      _DownloadButton(
+                        enabled: widget.enabled && !widget.sending,
+                        onTap: widget.onDownload,
+                      ),
+                      const SizedBox(width: 10),
                       _AttachButton(
                         enabled: widget.enabled && !widget.sending,
                         onTap: _pickAttachments,
@@ -932,4 +950,69 @@ class _SendButton extends StatelessWidget {
       ),
     );
   }
+}
+
+
+class _DownloadButton extends StatelessWidget {
+  final bool enabled;
+  final VoidCallback? onTap;
+
+  const _DownloadButton({required this.enabled, this.onTap});
+
+  @override
+  Widget build(BuildContext context) => Tooltip(
+        message: 'Download chat as JSON',
+        child: InkWell(
+          onTap: enabled ? onTap : null,
+          borderRadius: BorderRadius.circular(6),
+          child: Container(
+            width: 48,
+            height: 48,
+            padding: const EdgeInsets.all(6),
+            decoration: BoxDecoration(
+              color: AppTheme.bgSecondary,
+              borderRadius: BorderRadius.circular(6),
+              border: Border.all(color: AppTheme.border),
+            ),
+            child: Icon(
+              Icons.download_outlined,
+              size: 18,
+              color: enabled ? AppTheme.textSecondary : AppTheme.textMuted,
+            ),
+          ),
+        ),
+      );
+}
+
+/// Button to create a new chat from JSON context (excluding conversation node).
+/// Positioned to the left of the download button.
+class _NewChatFromJsonButton extends StatelessWidget {
+  final bool enabled;
+  final VoidCallback? onTap;
+
+  const _NewChatFromJsonButton({required this.enabled, this.onTap});
+
+  @override
+  Widget build(BuildContext context) => Tooltip(
+        message: 'New chat from JSON context',
+        child: InkWell(
+          onTap: enabled ? onTap : null,
+          borderRadius: BorderRadius.circular(6),
+          child: Container(
+            width: 48,
+            height: 48,
+            padding: const EdgeInsets.all(6),
+            decoration: BoxDecoration(
+              color: enabled ? AppTheme.accent.withAlpha(30) : AppTheme.bgSecondary,
+              borderRadius: BorderRadius.circular(6),
+              border: Border.all(color: enabled ? AppTheme.accent : AppTheme.border),
+            ),
+            child: Icon(
+              Icons.chat_outlined,
+              size: 18,
+              color: enabled ? AppTheme.accent : AppTheme.textMuted,
+            ),
+          ),
+        ),
+      );
 }

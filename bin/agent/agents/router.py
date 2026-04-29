@@ -51,6 +51,8 @@ _TOOL_MARKERS = (
     "lib/", "src/", "bin/", "test/", "pubspec",
     "git ", "commit", "branch", "merge", "diff",
     "run command", "shell", "build", "compile",
+    "flutter analyze", "flutter test", "get-content", "select-string",
+    "export chat", "download chat", "chat history", "conversation history",
 )
 
 
@@ -74,7 +76,15 @@ class RouterAgent(Agent):
                             detail="rule-match (no LLM call)")
             return state
         lowered = text.lower()
-        # Tool markers removed to ensure LLM classification
+        # Deterministic shortcut for obvious tool requests.
+        if any(marker in lowered for marker in _TOOL_MARKERS):
+            state.route = ROUTE_TOOL
+            state.add_trace(
+                self.name,
+                output=ROUTE_TOOL,
+                detail="marker-match (no LLM call)",
+            )
+            return state
 
         # Tier 2: cheap classifier.
         try:

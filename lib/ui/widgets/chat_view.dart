@@ -1,5 +1,10 @@
+import 'dart:convert';
+import 'dart:io';
+
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:path_provider/path_provider.dart';
 import 'package:uuid/uuid.dart';
 
 import '../../core/theme/app_theme.dart';
@@ -27,6 +32,7 @@ import 'orchestrator_log_panel.dart';
 import 'quick_server_panel.dart';
 import 'workflow_breadcrumb.dart';
 import 'sidebar.dart';
+import '../screens/home_screen.dart';
 
 class ChatView extends StatefulWidget {
   // Null = empty state (no conversation opened yet).
@@ -524,10 +530,53 @@ class _ChatViewState extends StateManager<ChatView> with WidgetsBindingObserver 
   //   }
   // }
 
+  /// Handles the "Resend" action on a user message bubble.
+  ///
+  /// Removes every entry that comes after the selected message (both user
+  /// prompts and model replies), then re-sends the original request so the
+  /// model generates a fresh response.
+  Future<void> _handleResend(String messageId) async {
+    if (_sending) return;
+
+    final idx = _messages.indexWhere((m) => m.id == messageId);
+    if (idx == -1) return;
+
+    // Nothing to truncate if the selected message is already the last entry.
+    if (idx == _messages.length - 1) {
+      // Still re-send it without truncation.
+      _sendMessage(_messages[idx].content);
+      return;
+    }
+
+    final conv = _conversation;
+    if (conv == null) return;
+
+    // Collect IDs of messages that will be removed so we can delete them from
+    // the database. We delete from the end backwards to avoid index shifts.
+    final idsToRemove = _messages.sublist(idx + 1).map((m) => m.id).toList();
+
+    // Truncate the in-memory history up to (and including) the selected message.
+    setState(() {
+      _messages.removeRange(idx + 1, _messages.length);
+      _sending = true;
+      _sendError = null;
+    });
+
+    // Persist the truncation in the database.
+    for (final id in idsToRemove) {
+      await MessageRepository.instance.deleteById(id);
+    }
+
+    // Re-send the original user message — the UI is already updated; the
+    // new assistant reply will be appended in _sendMessage once it arrives.
+    final original = _messages[idx];
+    await _sendMessage(original.content);
+  }
+
   String _autoTitleFrom(String firstMessage) {
-    final cleaned = firstMessage.replaceAll(RegExp(r"\s+"), " ").trim();
+    final cleaned = firstMessage.replaceAll(RegExp(r'\s+'), ' ').trim();
     if (cleaned.length <= 40) return cleaned;
-    return "${cleaned.substring(0, 40)}...";
+    return '${cleaned.substring(0, 40)}...';
   }
 
   Future<void> _editChatTitle(Conversation conv) async {
@@ -611,6 +660,8 @@ class _ChatViewState extends StateManager<ChatView> with WidgetsBindingObserver 
           logVisible: _logVisible,
           onToggleLog: () => setState(() => _logVisible = !_logVisible),
           onProjectFolderChanged: _startOrchestrator,
+          onDownload: _downloadChatAsJson,
+          onNewChatFromJson: _newChatFromJson,
         ),
         if (showServerPanel)
           QuickServerPanel(
@@ -820,6 +871,151 @@ class _ChatViewState extends StateManager<ChatView> with WidgetsBindingObserver 
 
   Future<void> _startOrchestrator() async {
     return _startOrchestratorForActiveBackend();
+  }
+
+  Future<void> _downloadChatAsJson() async {
+    final conv = _conversation;
+    if (conv == null) return;
+
+    final messages = await MessageRepository.instance.listByConversation(conv.id);
+
+    // Build an AI-model-friendly format: OpenAI chat-completion shape.
+    // The top-level object contains metadata and a "messages" array where
+    // each entry has "role" and "content" — exactly what most LLM APIs expect.
+    final jsonData = {
+      "conversation": {
+        "id": conv.id,
+        "title": conv.title,
+        "modelId": conv.modelId,
+        "backend": conv.backend,
+        "createdAt": conv.createdAt,
+        "updatedAt": conv.updatedAt,
+      },
+      "messages": messages.map((msg) {
+        final entry = <String, dynamic>{
+          "role": msg.role.apiValue,
+          "content": msg.content,
+        };
+        if (msg.agent != null) entry["agent"] = msg.agent;
+        return entry;
+      }).toList(),
+    };
+
+    final jsonString = const JsonEncoder.withIndent('  ').convert(jsonData);
+    final safeName = conv.title.replaceAll(RegExp(r'[\/:*?"<>|]'), '_');
+
+    try {
+      // Prefer a save dialog on platforms that support it (desktop).
+      String? savePath = await FilePicker.saveFile(
+        dialogTitle: 'Save chat as JSON',
+        fileName: '$safeName.json',
+        type: FileType.custom,
+        allowedExtensions: ['json'],
+      );
+
+      if (savePath == null && mounted) {
+        // User cancelled the save dialog.
+        return;
+      }
+
+      // If saveFile returned null (mobile / web fallback), write to a
+      // well-known directory so the user can retrieve it.
+      if (savePath == null) {
+        final dir = await getApplicationDocumentsDirectory();
+        savePath = '${dir.path}${Platform.pathSeparator}$safeName.json';
+      }
+
+      final file = File(savePath);
+      await file.writeAsString(jsonString, flush: true);
+
+      if (!mounted) return;
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Saved to $savePath'),
+          backgroundColor: AppTheme.accentMarrone,
+          duration: const Duration(seconds: 3),
+        ),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Failed to save JSON: $e'),
+          backgroundColor: AppTheme.danger,
+        ),
+      );
+    }
+  }
+
+  Future<void> _newChatFromJson() async {
+    final conv = _conversation;
+    if (conv == null) return;
+
+    final messages = await MessageRepository.instance.listByConversation(conv.id);
+
+    // Build JSON like the download button, but we'll extract just messages
+    final jsonData = {
+      "messages": messages.map((msg) {
+        final entry = <String, dynamic>{
+          "role": msg.role.apiValue,
+          "content": msg.content,
+        };
+        if (msg.agent != null) entry["agent"] = msg.agent;
+        return entry;
+      }).toList(),
+    };
+
+    // Create a new conversation with the same metadata (excluding "conversation" node)
+    final newConv = Conversation(
+      id: const Uuid().v4(),
+      title: 'New chat from JSON',
+      modelId: conv.modelId,
+      backend: conv.backend,
+      createdAt: DateTime.now().millisecondsSinceEpoch,
+      updatedAt: DateTime.now().millisecondsSinceEpoch,
+    );
+    await ConversationRepository.instance.insert(newConv);
+
+    // Insert messages into the new conversation (only "messages" array, no "conversation" node)
+    for (final msgData in jsonData['messages'] as List<dynamic>) {
+      final msg = msgData as Map<String, dynamic>;
+      final role = msg['role'] as String;
+      final content = msg['content'] as String;
+      final agent = msg['agent'] as String?;
+
+      final chatMessage = ChatMessage(
+        id: const Uuid().v4(),
+        conversationId: newConv.id,
+        role: MessageRole.fromString(role),
+        content: content,
+        createdAt: DateTime.now().millisecondsSinceEpoch,
+        agent: agent,
+      );
+
+      await MessageRepository.instance.insert(chatMessage);
+    }
+
+    // Navigate to the new conversation
+    if (!mounted) return;
+    // Use MethodListener to notify Sidebar to refresh conversations
+    final sidebarListener = MethodListener<Sidebar>();
+    await sidebarListener.callMethod("refreshConversations");
+    
+    // Navigate to the new conversation via HomeScreen (which handles openConversation)
+    final homeListener = MethodListener<HomeScreen>();
+    homeListener.callMethod(
+      "openConversation",
+      params: {"conversationId": newConv.id},
+    );
+
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text('New chat created from JSON context'),
+        backgroundColor: AppTheme.accentMarrone,
+        duration: Duration(seconds: 2),
+      ),
+    );
   }
 
   Future<void> _stopOrchestrator() async {
@@ -1125,7 +1321,7 @@ class _ChatViewState extends StateManager<ChatView> with WidgetsBindingObserver 
         return MessageBubble(
           message: m,
           // Show resend only on user bubbles and only when not already sending.
-          onResend: (m.role == MessageRole.user && !_sending) ? () => _sendMessage(m.content) : null,
+          onResend: (m.role == MessageRole.user && !_sending) ? () => _handleResend(m.id) : null,
         );
       },
     );

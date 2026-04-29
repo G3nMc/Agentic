@@ -17,7 +17,7 @@ def register(registry) -> None:
         result small enough for any context window.
         """
         try:
-            target = registry._resolve_path(path)
+            target = registry.resolve_path(path)
             rel = (str(target.relative_to(registry.base_path))
                    if target != registry.base_path else ".")
             # Use the locally-installed flutter binary (caller's PATH).

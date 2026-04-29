@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 import re
 import subprocess
+from pathlib import Path
 
 # Cap on captured stdout+stderr. Pytest in particular can emit megabytes
 # of tracebacks on a wide failure; truncating early saves the conversation.
@@ -29,6 +30,71 @@ def _truncate(output: str) -> tuple[str, bool]:
 
 
 def register(registry) -> None:
+    def python_check(path: str = ".", max_files: int = 2000) -> str:
+        """Compile Python source to detect syntax errors without writing files."""
+        try:
+            target = registry.resolve_path(path)
+            rel_root = (str(target.relative_to(registry.base_path))
+                        if target != registry.base_path else ".")
+
+            files: list[Path] = []
+            if target.is_file():
+                if target.suffix.lower() == ".py":
+                    files = [target]
+            elif target.is_dir():
+                files = sorted(p for p in target.rglob("*.py") if p.is_file())
+            else:
+                return json.dumps({
+                    "status": "error",
+                    "message": f"Path does not exist: {path}",
+                })
+
+            checked = 0
+            errors: list[dict] = []
+            truncated = False
+
+            for fp in files:
+                if checked >= max_files:
+                    truncated = True
+                    break
+
+                checked += 1
+                rel = str(fp.relative_to(registry.base_path))
+                try:
+                    source = fp.read_text(encoding="utf-8", errors="replace")
+                    compile(source, rel, "exec")
+                except SyntaxError as e:
+                    errors.append({
+                        "path": rel,
+                        "line": e.lineno or 0,
+                        "column": e.offset or 0,
+                        "message": str(e.msg or "Syntax error"),
+                        "text": (e.text or "").strip(),
+                    })
+                except Exception as e:
+                    errors.append({
+                        "path": rel,
+                        "line": 0,
+                        "column": 0,
+                        "message": str(e),
+                        "text": "",
+                    })
+
+                if len(errors) >= 200:
+                    truncated = True
+                    break
+
+            return json.dumps({
+                "status": "success" if not errors else "error",
+                "path": rel_root,
+                "checked_files": checked,
+                "error_count": len(errors),
+                "truncated": truncated,
+                "errors": errors,
+            })
+        except Exception as e:
+            return json.dumps({"status": "error", "message": str(e)})
+
     def python_lint(path: str = ".", timeout: int = 120) -> str:
         """Run `ruff check` on a file or directory and tally severities.
 
@@ -37,7 +103,7 @@ def register(registry) -> None:
         binary, but the output line format is grep-friendly the same way.
         """
         try:
-            target = registry._resolve_path(path)
+            target = registry.resolve_path(path)
             rel = (str(target.relative_to(registry.base_path))
                    if target != registry.base_path else ".")
             result = subprocess.run(
@@ -86,7 +152,7 @@ def register(registry) -> None:
             if registry.security_config.sandbox_mode:
                 return json.dumps({"status": "error",
                                    "message": "python_format is disabled in sandbox mode."})
-            target = registry._resolve_path(path)
+            target = registry.resolve_path(path)
             rel = (str(target.relative_to(registry.base_path))
                    if target != registry.base_path else ".")
             result = subprocess.run(
@@ -132,7 +198,7 @@ def register(registry) -> None:
             if registry.security_config.sandbox_mode:
                 return json.dumps({"status": "error",
                                    "message": "python_test is disabled in sandbox mode."})
-            target = registry._resolve_path(path)
+            target = registry.resolve_path(path)
             rel = (str(target.relative_to(registry.base_path))
                    if target != registry.base_path else ".")
             # `-q` keeps the output compact; `--no-header` drops the
@@ -190,12 +256,38 @@ def register(registry) -> None:
             return json.dumps({"status": "error", "message": str(e)})
 
     registry.tools.update({
+        "python_check": python_check,
         "python_lint": python_lint,
         "python_format": python_format,
         "python_test": python_test,
     })
 
     registry.definitions.extend([
+        {
+            "type": "function",
+            "function": {
+                "name": "python_check",
+                "description": (
+                    "Compile Python source files to detect syntax errors "
+                    "without writing artifacts. Read-only and safe in sandbox "
+                    "mode. Use after editing Python code to ensure it still parses."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "path": {
+                            "type": "string",
+                            "description": "Optional Python file or directory to check (default '.', the whole project)",
+                        },
+                        "max_files": {
+                            "type": "integer",
+                            "description": "Maximum number of .py files to parse before truncating (default 2000)",
+                        },
+                    },
+                    "required": [],
+                },
+            },
+        },
         {
             "type": "function",
             "function": {

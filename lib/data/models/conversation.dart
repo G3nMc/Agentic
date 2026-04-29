@@ -5,6 +5,7 @@ class Conversation {
   final String? backend;
   final int createdAt;
   final int updatedAt;
+  final String? groupId;
 
   Conversation({
     required this.id,
@@ -13,6 +14,7 @@ class Conversation {
     this.backend,
     required this.createdAt,
     required this.updatedAt,
+    this.groupId,
   });
 
   factory Conversation.fromMap(Map<String, Object?> map) {
@@ -23,6 +25,7 @@ class Conversation {
       backend: map["backend"] as String?,
       createdAt: (map["created_at"] as int?) ?? 0,
       updatedAt: (map["updated_at"] as int?) ?? 0,
+      groupId: map["group_id"] as String?,
     );
   }
 
@@ -34,6 +37,7 @@ class Conversation {
       "backend": backend,
       "created_at": createdAt,
       "updated_at": updatedAt,
+      "group_id": groupId,
     };
   }
 
@@ -44,6 +48,7 @@ class Conversation {
     String? backend,
     int? createdAt,
     int? updatedAt,
+    String? groupId,
   }) {
     return Conversation(
       id: id ?? this.id,
@@ -52,6 +57,7 @@ class Conversation {
       backend: backend ?? this.backend,
       createdAt: createdAt ?? this.createdAt,
       updatedAt: updatedAt ?? this.updatedAt,
+      groupId: groupId ?? this.groupId,
     );
   }
 }

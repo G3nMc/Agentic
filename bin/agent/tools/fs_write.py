@@ -11,7 +11,7 @@ def register(registry) -> None:
             if registry.security_config.sandbox_mode:
                 return json.dumps({"status": "error",
                                    "message": "write_file is disabled in sandbox mode."})
-            fp = registry._resolve_path(path)
+            fp = registry.resolve_path(path)
             size_bytes = len(content.encode("utf-8"))
             limit = registry.security_config.max_file_size_bytes
             if limit > 0 and size_bytes > limit:
@@ -31,7 +31,7 @@ def register(registry) -> None:
             if registry.security_config.sandbox_mode:
                 return json.dumps({"status": "error",
                                    "message": "append_file is disabled in sandbox mode."})
-            fp = registry._resolve_path(path)
+            fp = registry.resolve_path(path)
             chunk_bytes = len(content.encode("utf-8"))
             limit = registry.security_config.max_file_size_bytes
             if limit > 0:
@@ -54,7 +54,7 @@ def register(registry) -> None:
             if registry.security_config.sandbox_mode:
                 return json.dumps({"status": "error",
                                    "message": "delete_file is disabled in sandbox mode."})
-            fp = registry._resolve_path(path)
+            fp = registry.resolve_path(path)
             if not fp.exists():
                 return json.dumps({"status": "error", "message": f"File not found: {path}"})
             fp.unlink()
@@ -67,7 +67,7 @@ def register(registry) -> None:
         Safer than write_file for targeted edits — use this to change a specific
         function, class, or block without rewriting the entire file."""
         try:
-            fp = registry._resolve_path(path)
+            fp = registry.resolve_path(path)
             if not fp.exists():
                 return json.dumps({"status": "error", "message": f"File not found: {path}"})
             text = fp.read_text(encoding="utf-8")
@@ -89,8 +89,8 @@ def register(registry) -> None:
     def move_file(source: str, destination: str) -> str:
         """Move or rename a file or directory."""
         try:
-            src = registry._resolve_path(source)
-            dst = registry._resolve_path(destination)
+            src = registry.resolve_path(source)
+            dst = registry.resolve_path(destination)
             if not src.exists():
                 return json.dumps({"status": "error", "message": f"Source not found: {source}"})
             dst.parent.mkdir(parents=True, exist_ok=True)
@@ -102,7 +102,7 @@ def register(registry) -> None:
     def create_directory(path: str) -> str:
         """Create a directory (including any missing parent directories)."""
         try:
-            dp = registry._resolve_path(path)
+            dp = registry.resolve_path(path)
             dp.mkdir(parents=True, exist_ok=True)
             return json.dumps({"status": "success", "message": f"Directory created: {path}"})
         except Exception as e:

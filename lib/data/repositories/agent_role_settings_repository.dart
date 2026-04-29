@@ -49,13 +49,11 @@ class AgentRoleConfig {
         'tpm_limit': tpmLimit,
         'temperature': temperature,
         'max_tokens': maxTokens,
-        if (ollamaBaseUrl != null && ollamaBaseUrl!.isNotEmpty)
-          'ollama_base_url': ollamaBaseUrl,
+        if (ollamaBaseUrl != null && ollamaBaseUrl!.isNotEmpty) 'ollama_base_url': ollamaBaseUrl,
         if (ollamaNumCtx != null) 'ollama_num_ctx': ollamaNumCtx,
       };
 
-  factory AgentRoleConfig.fromJson(Map<String, Object?> json, {required String role}) =>
-      AgentRoleConfig(
+  factory AgentRoleConfig.fromJson(Map<String, Object?> json, {required String role}) => AgentRoleConfig(
         role: role,
         backend: json['backend'] as String? ?? 'gemini',
         model: json['model'] as String? ?? 'gemini-2.5-flash',
@@ -99,8 +97,7 @@ class WorkflowGroupInfo {
 
   Map<String, Object?> toJson() => {'id': id, 'title': title};
 
-  factory WorkflowGroupInfo.fromJson(Map<String, Object?> json) =>
-      WorkflowGroupInfo(
+  factory WorkflowGroupInfo.fromJson(Map<String, Object?> json) => WorkflowGroupInfo(
         id: json['id'] as String,
         title: json['title'] as String,
       );
@@ -128,8 +125,7 @@ class WorkflowGroup {
   factory WorkflowGroup.fromJson(Map<String, Object?> json) => WorkflowGroup(
         id: json['id'] as String,
         title: json['title'] as String,
-        roles: (json['roles'] as Map<String, Object?>)
-            .map((key, value) => MapEntry(key, AgentRoleConfig.fromJson(value as Map<String, Object?>, role: key))),
+        roles: (json['roles'] as Map<String, Object?>).map((key, value) => MapEntry(key, AgentRoleConfig.fromJson(value as Map<String, Object?>, role: key))),
       );
 
   WorkflowGroup copyWith({
@@ -156,8 +152,7 @@ class WorkflowGroup {
 class AgentRoleSettingsRepository {
   AgentRoleSettingsRepository._();
 
-  static final AgentRoleSettingsRepository instance =
-      AgentRoleSettingsRepository._();
+  static final AgentRoleSettingsRepository instance = AgentRoleSettingsRepository._();
 
   /// Reactive view of the master switch. Widgets that need to repaint when
   /// the user flips multi-agent mode on/off can wrap a `ValueListenableBuilder`
@@ -166,8 +161,7 @@ class AgentRoleSettingsRepository {
   final ValueNotifier<bool> enabledNotifier = ValueNotifier<bool>(false);
 
   /// Notifies when the active group changes — UI rebuilds bind to this.
-  final ValueNotifier<String?> activeGroupNotifier =
-      ValueNotifier<String?>(null);
+  final ValueNotifier<String?> activeGroupNotifier = ValueNotifier<String?>(null);
 
   /// Roles, in the order they should appear in the Settings UI.
   static const List<String> roles = ['router', 'shaper', 'reasoner', 'executor'];
@@ -319,9 +313,7 @@ class AgentRoleSettingsRepository {
     // Seed per-role configs.
     final rolesMap = <String, AgentRoleConfig>{};
     for (final r in roles) {
-      final cfg = seedFromGroupId == null
-          ? defaultFor(r)
-          : await getRole(seedFromGroupId, r);
+      final cfg = seedFromGroupId == null ? defaultFor(r) : await getRole(seedFromGroupId, r);
       await setRole(id, cfg, role: r);
       rolesMap[r] = cfg;
     }
@@ -537,8 +529,7 @@ class WorkflowAgents {
   final Map<String, AgentRoleConfig> byRole;
   final String groupId;
 
-  AgentRoleConfig get(String role) =>
-      byRole[role] ?? AgentRoleSettingsRepository.defaultFor(role);
+  AgentRoleConfig get(String role) => byRole[role] ?? AgentRoleSettingsRepository.defaultFor(role);
 
   void put(String role, AgentRoleConfig cfg) {
     byRole[role] = cfg;
@@ -557,8 +548,7 @@ class WorkflowAgents {
 
   /// Pull every role of a specific group.
   static Future<WorkflowAgents> loadGroup(String groupId) async {
-    final all = await AgentRoleSettingsRepository.instance
-        .getAllForGroup(groupId);
+    final all = await AgentRoleSettingsRepository.instance.getAllForGroup(groupId);
     return WorkflowAgents(all, groupId: groupId);
   }
 
@@ -574,14 +564,13 @@ class WorkflowAgents {
   Future<void> saveRole(String role) async {
     final cfg = byRole[role];
     if (cfg == null) return;
-    await AgentRoleSettingsRepository.instance
-        .setRole(groupId, cfg, role: role);
+    await AgentRoleSettingsRepository.instance.setRole(groupId, cfg, role: role);
   }
 }
 
-extension _Run<T> on T {
-  R run<R>(R Function(T) f) => f(this);
-}
+// extension _Run<T> on T {
+//   R run<R>(R Function(T) f) => f(this);
+// }
 
 /// Suggested model lists per backend. Used by the Settings UI to populate the
 /// per-role dropdowns without forcing the user to type the model name. The

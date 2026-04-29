@@ -121,8 +121,12 @@ class _SidebarState extends StateManager<Sidebar> {
   Future<void> _loadConversations() async {
     print('[DEBUG] _loadConversations() called');
     final backend = _activeBackend ?? await BackendSettingsRepository.instance.getActiveBackend();
-    final list = await ConversationRepository.instance.listByBackend(backend.name);
-    print('[DEBUG] _loadConversations() got ${list.length} conversations for ${backend.name}');
+    var list = await ConversationRepository.instance.listByBackend(backend.name);
+    // If a workflow group is active, filter conversations to that group only.
+    if (_activeGroupId.isNotEmpty) {
+      list = list.where((c) => c.groupId == _activeGroupId).toList();
+    }
+    print('[DEBUG] _loadConversations() got ${list.length} conversations for ${backend.name}' + (_activeGroupId.isNotEmpty ? ' in group $_activeGroupId' : ''));
     if (!mounted) return;
     setState(() {
       _conversations = list;
@@ -151,6 +155,7 @@ class _SidebarState extends StateManager<Sidebar> {
       backend: backend.name,
       createdAt: now,
       updatedAt: now,
+      groupId: _activeGroupId.isNotEmpty ? _activeGroupId : null,
     );
     await ConversationRepository.instance.insert(conversation);
     await _loadConversations();
@@ -297,8 +302,7 @@ class _SidebarState extends StateManager<Sidebar> {
                   ),
                   padding: const EdgeInsets.symmetric(horizontal: 10),
                   child: ValueListenableBuilder<bool>(
-                    valueListenable: AgentRoleSettingsRepository
-                        .instance.enabledNotifier,
+                    valueListenable: AgentRoleSettingsRepository.instance.enabledNotifier,
                     builder: (ctx, multiAgent, _) {
                       if (multiAgent) {
                         // Show workflow group dropdown instead of static label.
@@ -361,63 +365,63 @@ class _SidebarState extends StateManager<Sidebar> {
                             fontWeight: FontWeight.w600,
                             color: AppTheme.textPrimary,
                           ),
-                      // Only orchestrator-backed options are exposed —
-                      // the rest don't route through orchestrator.py and
-                      // are intentionally hidden.
-                      items: const [
-                        // DropdownMenuItem(
-                        //   value: LlmBackend.huggingFace,
-                        //   child: Text("Hugging Face (Direct)"),
-                        // ),
-                        DropdownMenuItem(
-                          value: LlmBackend.orchestrator,
-                          child: Text("HF + Orchestrator"),
-                        ),
-                        // DropdownMenuItem(
-                        //   value: LlmBackend.ollama,
-                        //   child: Text("Ollama (Direct)"),
-                        // ),
-                        DropdownMenuItem(
-                          value: LlmBackend.ollamaOrchestrator,
-                          child: Text("Ollama + Orchestrator"),
-                        ),
-                        // DropdownMenuItem(
-                        //   value: LlmBackend.ollamaPython,
-                        //   child: Text("Ollama (Python bridge)"),
-                        // ),
-                        // DropdownMenuItem(
-                        //   value: LlmBackend.ollamaGenerate,
-                        //   child: Text("Ollama /api/generate"),
-                        // ),
-                        // DropdownMenuItem(
-                        //   value: LlmBackend.groq,
-                        //   child: Text("Groq Cloud (Direct)"),
-                        // ),
-                        DropdownMenuItem(
-                          value: LlmBackend.groqOrchestrator,
-                          child: Text("Groq + Orchestrator"),
-                        ),
-                        DropdownMenuItem(
-                          value: LlmBackend.geminiOrchestrator,
-                          child: Text("Gemini + Orchestrator"),
-                        ),
-                        // DropdownMenuItem(
-                        //   value: LlmBackend.openRouter,
-                        //   child: Text("OpenRouter (Direct)"),
-                        // ),
-                        DropdownMenuItem(
-                          value: LlmBackend.openRouterOrchestrator,
-                          child: Text("OpenRouter + Orchestrator"),
-                        ),
-                        DropdownMenuItem(
-                          value: LlmBackend.githubOrchestrator,
-                          child: Text("GitHub + Orchestrator"),
-                        ),
-                        // DropdownMenuItem(
-                        //   value: LlmBackend.local,
-                        //   child: Text("Local Server (Python)"),
-                        // ),
-                      ],
+                          // Only orchestrator-backed options are exposed —
+                          // the rest don't route through orchestrator.py and
+                          // are intentionally hidden.
+                          items: const [
+                            // DropdownMenuItem(
+                            //   value: LlmBackend.huggingFace,
+                            //   child: Text("Hugging Face (Direct)"),
+                            // ),
+                            DropdownMenuItem(
+                              value: LlmBackend.orchestrator,
+                              child: Text("HF + Orchestrator"),
+                            ),
+                            // DropdownMenuItem(
+                            //   value: LlmBackend.ollama,
+                            //   child: Text("Ollama (Direct)"),
+                            // ),
+                            DropdownMenuItem(
+                              value: LlmBackend.ollamaOrchestrator,
+                              child: Text("Ollama + Orchestrator"),
+                            ),
+                            // DropdownMenuItem(
+                            //   value: LlmBackend.ollamaPython,
+                            //   child: Text("Ollama (Python bridge)"),
+                            // ),
+                            // DropdownMenuItem(
+                            //   value: LlmBackend.ollamaGenerate,
+                            //   child: Text("Ollama /api/generate"),
+                            // ),
+                            // DropdownMenuItem(
+                            //   value: LlmBackend.groq,
+                            //   child: Text("Groq Cloud (Direct)"),
+                            // ),
+                            DropdownMenuItem(
+                              value: LlmBackend.groqOrchestrator,
+                              child: Text("Groq + Orchestrator"),
+                            ),
+                            DropdownMenuItem(
+                              value: LlmBackend.geminiOrchestrator,
+                              child: Text("Gemini + Orchestrator"),
+                            ),
+                            // DropdownMenuItem(
+                            //   value: LlmBackend.openRouter,
+                            //   child: Text("OpenRouter (Direct)"),
+                            // ),
+                            DropdownMenuItem(
+                              value: LlmBackend.openRouterOrchestrator,
+                              child: Text("OpenRouter + Orchestrator"),
+                            ),
+                            DropdownMenuItem(
+                              value: LlmBackend.githubOrchestrator,
+                              child: Text("GitHub + Orchestrator"),
+                            ),
+                            // DropdownMenuItem(
+                            //   value: LlmBackend.local,
+                            //   child: Text("Local Server (Python)"),
+                            // ),
+                          ],
                           onChanged: (v) {
                             if (v != null) _onBackendChanged(v);
                           },
@@ -551,20 +555,19 @@ class _SidebarConversationTileState extends State<_SidebarConversationTile> {
       child: GestureDetector(
         onTap: widget.onTap,
         child: Container(
-          margin: const EdgeInsets.symmetric(vertical: 2),
           decoration: BoxDecoration(
             color: widget.isActive ? AppTheme.bgSecondary : (_hover ? AppTheme.bgSecondary : Colors.transparent),
             borderRadius: BorderRadius.circular(8),
           ),
           child: Padding(
             // Fixed padding, never changes
-            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+            padding: const EdgeInsets.symmetric(horizontal: 10),
             child: Row(
               children: [
                 Expanded(
                     child: Container(
                   alignment: AlignmentGeometry.centerLeft,
-                  constraints: const BoxConstraints(minHeight: 44),
+                  height: 42,
                   decoration: BoxDecoration(color: widget.isActive ? AppTheme.bgSecondary : Colors.transparent),
                   child: Text(
                     widget.conversation.title,
@@ -578,27 +581,32 @@ class _SidebarConversationTileState extends State<_SidebarConversationTile> {
                   ),
                 )),
                 if (showActions)
-                  PopupMenuButton<String>(
-                    tooltip: "More",
-                    icon: const Icon(Icons.more_horiz, size: 16, color: AppTheme.textSecondary),
-                    splashRadius: 14,
-                    padding: EdgeInsets.zero,
-                    onOpened: () {
-                      if (mounted) setState(() => _menuOpen = true);
-                    },
-                    onCanceled: () {
-                      if (mounted) setState(() => _menuOpen = false);
-                    },
-                    onSelected: (value) {
-                      if (mounted) setState(() => _menuOpen = false);
-                      if (value == "rename") widget.onRename();
-                      if (value == "delete") widget.onDelete();
-                    },
-                    itemBuilder: (ctx) => const [
-                      PopupMenuItem(value: "rename", child: Text("Rename")),
-                      PopupMenuItem(value: "delete", child: Text("Delete")),
-                    ],
-                  ),
+                  Container(
+                      decoration: BoxDecoration(
+                        borderRadius: BorderRadius.circular(20),
+                        border: Border.all(color: AppTheme.accent),
+                      ),
+                      child: PopupMenuButton<String>(
+                        tooltip: "More",
+                        icon: const Icon(Icons.more_horiz, size: 16, color: AppTheme.accent),
+                        splashRadius: 14,
+                        padding: EdgeInsets.zero,
+                        onOpened: () {
+                          if (mounted) setState(() => _menuOpen = true);
+                        },
+                        onCanceled: () {
+                          if (mounted) setState(() => _menuOpen = false);
+                        },
+                        onSelected: (value) {
+                          if (mounted) setState(() => _menuOpen = false);
+                          if (value == "rename") widget.onRename();
+                          if (value == "delete") widget.onDelete();
+                        },
+                        itemBuilder: (ctx) => const [
+                          PopupMenuItem(value: "rename", child: Text("Rename")),
+                          PopupMenuItem(value: "delete", child: Text("Delete")),
+                        ],
+                      )),
               ],
             ),
           ),
