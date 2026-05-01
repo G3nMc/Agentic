@@ -55,6 +55,7 @@ from agent.team.board import (                                             # noq
     write_board,
 )
 from agent.team.paths import TeamPaths                                     # noqa: E402
+from agent.team.soft_breaker import maybe_compact_section                  # noqa: E402
 from agent.team.status import Status                                       # noqa: E402
 # Imported at module level so tests can monkey-patch the symbol on
 # this module (rather than reaching into agent.core.workflow).
@@ -350,7 +351,21 @@ def main() -> int:
         artifact.status = status
 
     # Soft size cap on artifact
-    artifact.trim_to_budget()
+    trim_applied = artifact.trim_to_budget()
+    if trim_applied:
+        print(f"[worker:{group}] artifact trimmed: {','.join(trim_applied)}",
+              file=sys.stderr, flush=True)
+
+    # Soft breaker: roll older log entries before terminal stamp
+    try:
+        compacted, rolled = maybe_compact_section(paths, group)
+        if compacted:
+            print(f"[worker:{group}] section log compacted "
+                  f"(rolled {rolled} entries)",
+                  file=sys.stderr, flush=True)
+    except Exception as e:
+        print(f"[worker:{group}] section compaction failed (non-fatal): {e}",
+              file=sys.stderr, flush=True)
 
     try:
         write_artifact(paths.artifact_path(group), artifact)
