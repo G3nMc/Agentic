@@ -68,7 +68,9 @@ def build_worker_env(
     """Environment for a worker subprocess.
 
     Inherits the parent env (so API keys flow through) and overlays
-    the team-mode contract variables.
+    the team-mode contract variables. ``TEAM_SESSION_ID`` carries the
+    per-conversation isolation key so the worker rebuilds the same
+    ``TeamPaths`` the host uses.
     """
     env = dict(os.environ)
     env.update({
@@ -78,6 +80,7 @@ def build_worker_env(
         "TEAM_OWNER_MODEL": owner_model,
         "TEAM_DEPS": ",".join(deps),
         "TEAM_BASE_PATH": str(base_path),
+        "TEAM_SESSION_ID": paths.session_id,
         "PYTHONDONTWRITEBYTECODE": "1",
     })
     if extra:

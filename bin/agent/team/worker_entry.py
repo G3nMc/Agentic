@@ -276,8 +276,10 @@ def main() -> int:
     deps_raw = os.environ.get("TEAM_DEPS", "")
     deps = [d for d in (s.strip() for s in deps_raw.split(",")) if d]
     base_path = os.environ.get("TEAM_BASE_PATH", args.base_path)
+    session_id = os.environ.get("TEAM_SESSION_ID")
 
-    paths = TeamPaths.from_base(base_path)
+    paths = TeamPaths.for_session(base_path, session_id) if session_id \
+        else TeamPaths.from_base(base_path)
     paths.ensure_dirs()
 
     print(f"[worker:{group}] starting (owner_model={owner_model}, deps={deps})",

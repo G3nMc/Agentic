@@ -48,12 +48,17 @@ def _build_leader_backend(args, *, fallback_role_cfgs):
     return backend, args.model or args.backend
 
 
-def build_team_session_from_args(args) -> TeamSession:
+def build_team_session_from_args(args, *,
+                                 session_id: str | None = None) -> TeamSession:
     """Construct a fully wired ``TeamSession`` ready to ``run(user_task)``.
 
     Reuses the worker forwarding contract: the host's argv is repackaged
     into a small set of flags the worker subprocess accepts. API keys
     flow through env vars (already in ``os.environ`` at this point).
+
+    ``session_id`` is the conversation id from the Flutter chat — used
+    to isolate this session's board/artifacts/logs from sibling chats.
+    When omitted, falls back to the legacy shared ``_default`` folder.
     """
     if not args.agent_config:
         raise RuntimeError(
@@ -66,7 +71,8 @@ def build_team_session_from_args(args) -> TeamSession:
         args, fallback_role_cfgs=role_cfgs,
     )
 
-    paths = TeamPaths.from_base(args.base_path)
+    paths = TeamPaths.for_session(args.base_path, session_id) \
+        if session_id else TeamPaths.from_base(args.base_path)
     paths.ensure_dirs()
     leader = LeaderAgent(backend=leader_backend, paths=paths)
 

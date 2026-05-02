@@ -193,6 +193,54 @@ class PreFlightAbortTests(unittest.TestCase):
         self.assertEqual(list(self.paths.artifacts_dir.glob("*.json")), [])
 
 
+class SessionIsolationTests(unittest.TestCase):
+    """Two conversations running Team Mode must not clobber each other."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+
+    def test_two_conversations_get_independent_subfolders(self):
+        # Build two TeamSessions with different session_ids, run a clean
+        # group in each, verify they each have their own board + artifact
+        # and don't see each other's content.
+        from agent.team.paths import TeamPaths
+        guid_a = "69790e60-06fa-4c14-9729-39f7ba49c5e2"
+        guid_b = "c0ffee00-1234-5678-90ab-cdef00ba5e11"
+        for guid in (guid_a, guid_b):
+            paths = TeamPaths.for_session(self.tmp, guid)
+            paths.ensure_dirs()
+            backend = _ScriptedBackend([
+                _wrap("create_group",
+                      {"name": guid[:6], "owner_model": "mock",
+                       "plan_steps": ["x"]}),
+                "plan done",
+            ])
+            leader = LeaderAgent(backend=backend, paths=paths)
+            session = TeamSession(
+                paths=paths, leader=leader, base_path=self.tmp,
+                timeout_s=30.0, worker_entry=_MOCK_ENTRY,
+                worker_extra_env=_mock_env("clean"),
+            )
+            out = session.run(f"task for {guid}")
+            self.assertEqual(out["status"], "ok")
+
+        # Both folders exist and contain only their own group.
+        from agent.team.board import read_board
+        for guid in (guid_a, guid_b):
+            paths = TeamPaths.for_session(self.tmp, guid)
+            self.assertTrue(paths.board.exists())
+            bf = read_board(paths.board)
+            self.assertEqual([r.group for r in bf.status_rows], [guid[:6]])
+            self.assertTrue(paths.artifact_path(guid[:6]).exists())
+
+        # And: deleting one session leaves the other intact.
+        from agent.team.paths import delete_session
+        self.assertTrue(delete_session(self.tmp, guid_a))
+        self.assertFalse(TeamPaths.for_session(self.tmp, guid_a).board.exists())
+        self.assertTrue(TeamPaths.for_session(self.tmp, guid_b).board.exists())
+
+
 class CrashRecoveryTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.mkdtemp()

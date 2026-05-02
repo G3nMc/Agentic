@@ -35,7 +35,7 @@ from .board import (
     BOARD_HARD_LINES,
     BOARD_HARD_TOKENS,
 )
-from .paths import TeamPaths
+from .paths import TeamPaths, delete_session, session_dir_for
 
 __all__ = [
     "Status",
@@ -54,4 +54,6 @@ __all__ = [
     "BOARD_HARD_LINES",
     "BOARD_HARD_TOKENS",
     "TeamPaths",
+    "delete_session",
+    "session_dir_for",
 ]

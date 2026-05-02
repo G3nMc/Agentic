@@ -646,6 +646,12 @@ def _run_interactive_team(session, args) -> None:
             if req is None:
                 break
             prompt = (req.get("prompt") or "").strip()
+            # Per-conversation isolation: each chat has its own team
+            # subfolder so switching chats doesn't clobber state. The
+            # Flutter side passes the conversation guid as
+            # ``conversation_id``. Older clients that don't send it fall
+            # back to the shared ``_default`` folder.
+            conv_id = (req.get("conversation_id") or "").strip() or None
             if not prompt:
                 print(RESPONSE_SENTINEL)
                 sys.stdout.flush()
@@ -653,7 +659,9 @@ def _run_interactive_team(session, args) -> None:
             try:
                 # Each prompt = one team session.
                 from agent.team.bootstrap import build_team_session_from_args
-                fresh_session = build_team_session_from_args(args)
+                fresh_session = build_team_session_from_args(
+                    args, session_id=conv_id,
+                )
                 result = fresh_session.run(prompt)
                 payload = {
                     "response": result.get("summary", ""),
@@ -661,6 +669,7 @@ def _run_interactive_team(session, args) -> None:
                     "team": {
                         "results": result.get("results", []),
                         "status": result.get("status", "ok"),
+                        "session_id": conv_id or "_default",
                     },
                 }
             except Exception as e:  # noqa: BLE001
@@ -681,6 +690,7 @@ def _run_oneshot_team(session) -> None:
             "team": {
                 "results": result.get("results", []),
                 "status": result.get("status", "ok"),
+                "session_id": session.paths.session_id,
             },
         }
         print(json.dumps(payload))
