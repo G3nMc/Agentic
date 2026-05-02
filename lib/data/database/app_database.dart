@@ -12,7 +12,7 @@ class AppDatabase {
   static final AppDatabase instance = AppDatabase._();
 
   static const String _dbName = "hf_chat.db";
-  static const int _dbVersion = 6;
+  static const int _dbVersion = 8;
 
   Database? _db;
   Completer<Database>? _opening;
@@ -50,12 +50,13 @@ class AppDatabase {
 
   Future<Database> _openDatabase() async {
     final docsDir = await getApplicationDocumentsDirectory();
-    final appDir = Directory(p.join(docsDir.path, "hf_chat_flutter"));
+    final appDir = Directory(p.join(docsDir.path, "agentic"));
+
     if (!await appDir.exists()) {
       await appDir.create(recursive: true);
     }
-    final path = p.join(appDir.path, _dbName);
 
+    final path = p.join(appDir.path, _dbName);
     return databaseFactory.openDatabase(
       path,
       options: OpenDatabaseOptions(
@@ -100,7 +101,8 @@ class AppDatabase {
         model_id TEXT,
         backend TEXT,
         created_at INTEGER NOT NULL,
-        updated_at INTEGER NOT NULL
+        updated_at INTEGER NOT NULL,
+        group_id TEXT
       );
     ''');
 
@@ -113,6 +115,8 @@ class AppDatabase {
     // `agent` is nullable: legacy single-agent replies leave it NULL, the
     // multi-agent workflow sets it to the producing role (router/shaper/
     // reasoner/executor/workflow) so the UI can render per-step badges.
+    // `response_time_ms` is nullable: only assistant messages carry the
+    // time it took to generate the reply.
     batch.execute('''
       CREATE TABLE messages (
         id TEXT PRIMARY KEY,
@@ -121,6 +125,7 @@ class AppDatabase {
         content TEXT NOT NULL,
         created_at INTEGER NOT NULL,
         agent TEXT,
+        response_time_ms INTEGER,
         FOREIGN KEY (conversation_id)
           REFERENCES conversations(id)
           ON DELETE CASCADE
@@ -232,6 +237,30 @@ class AppDatabase {
     if (oldVersion < 6) {
       // Migrate to v6: associate each conversation with a workflow group.
       await db.execute('ALTER TABLE conversations ADD COLUMN group_id TEXT');
+    }
+    if (oldVersion < 7) {
+      // Defensive: earlier builds shipped a v6 _onCreate that omitted
+      // `group_id`, leaving fresh installs at v6 without the column. Add it
+      // if missing so those users recover without wiping the DB.
+      final cols = await db.rawQuery('PRAGMA table_info(conversations)');
+      final hasGroupId = cols.any((row) => row['name'] == 'group_id');
+      if (!hasGroupId) {
+        await db.execute('ALTER TABLE conversations ADD COLUMN group_id TEXT');
+      }
+    }
+    if (oldVersion < 8) {
+      // Migrate to v8: store assistant response time (ms) per message.
+      // Defensive: an earlier build added this column directly in
+      // _onCreate, leaving some installs already in possession of it
+      // before the version bump landed. Skip the ALTER in that case so
+      // the upgrade doesn't fault on "duplicate column".
+      final cols = await db.rawQuery('PRAGMA table_info(messages)');
+      final hasResponseTime =
+          cols.any((row) => row['name'] == 'response_time_ms');
+      if (!hasResponseTime) {
+        await db.execute(
+            'ALTER TABLE messages ADD COLUMN response_time_ms INTEGER');
+      }
     }
   }
 
