@@ -160,6 +160,10 @@ class AgentRoleSettingsRepository {
   /// `isEnabled()` call that loads from disk.
   final ValueNotifier<bool> enabledNotifier = ValueNotifier<bool>(false);
 
+  /// Reactive view of the Team Mode toggle. When true, the orchestrator
+  /// adds `--team-mode` to its CLI argv on launch.
+  final ValueNotifier<bool> teamModeNotifier = ValueNotifier<bool>(false);
+
   /// Notifies when the active group changes — UI rebuilds bind to this.
   final ValueNotifier<String?> activeGroupNotifier = ValueNotifier<String?>(null);
 
@@ -171,9 +175,21 @@ class AgentRoleSettingsRepository {
   /// Roles, in the order they should appear in the Settings UI.
   static const List<String> roles = ['router', 'shaper', 'reasoner', 'executor'];
 
+  /// Special role used only when Team Mode is on. Stored under the same
+  /// `agent.<groupId>.leader.<field>` keys as the regular roles, but kept
+  /// out of the main [roles] list so the standard Workflow Agents UI
+  /// continues to show only the four core roles.
+  static const String leaderRole = 'leader';
+
   /// Master switch. When false, the orchestrator launches in single-agent
   /// mode (the existing run-loop) regardless of the per-role assignments.
   static const String _kEnabled = 'agent.workflow.enabled';
+
+  /// Team Mode toggle. Independent from [_kEnabled]: Team Mode requires
+  /// multi-agent under the hood (each worker subprocess runs the
+  /// pipeline), but the host enables both flags when Team Mode is on.
+  static const String _kTeamMode = 'agent.workflow.teamMode';
+
   static const String _kGroups = 'agent.workflow.groups';
   static const String _kActive = 'agent.workflow.activeGroup';
 
@@ -218,6 +234,16 @@ class AgentRoleSettingsRepository {
           temperature: 0.4,
           maxTokens: 1024,
         );
+      case leaderRole:
+        // The team leader is light coordination — a fast model is fine.
+        // Users wanting smarter decomposition can pick a stronger one.
+        return const AgentRoleConfig(
+          role: leaderRole,
+          backend: 'gemini',
+          model: 'gemini-2.5-flash',
+          temperature: 0.2,
+          maxTokens: 1024,
+        );
       default:
         throw ArgumentError('Unknown agent role: $role');
     }
@@ -237,6 +263,30 @@ class AgentRoleSettingsRepository {
     await _write(_kEnabled, enabled ? '1' : '0');
     enabledNotifier.value = enabled;
   }
+
+  // ---------------------------------------------------------------------------
+  // Team Mode toggle
+  // ---------------------------------------------------------------------------
+  Future<bool> isTeamModeEnabled() async {
+    final v = await _read(_kTeamMode);
+    final on = v == '1' || v == 'true';
+    if (teamModeNotifier.value != on) teamModeNotifier.value = on;
+    return on;
+  }
+
+  Future<void> setTeamModeEnabled(bool enabled) async {
+    await _write(_kTeamMode, enabled ? '1' : '0');
+    teamModeNotifier.value = enabled;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Leader role getter/setter (group-scoped, like the four core roles)
+  // ---------------------------------------------------------------------------
+  Future<AgentRoleConfig> getLeader(String groupId) =>
+      getRole(groupId, leaderRole);
+
+  Future<void> setLeader(String groupId, AgentRoleConfig cfg) =>
+      setRole(groupId, cfg, role: leaderRole);
 
   // ---------------------------------------------------------------------------
   // Group registry
@@ -393,6 +443,10 @@ class AgentRoleSettingsRepository {
     if (cfg.ollamaNumCtx != null) {
       await _write('$p.ollama_num_ctx', cfg.ollamaNumCtx!.toString());
     }
+    // Notify any UI that mirrors role configs (e.g. WorkflowBreadcrumb) so it
+    // reloads — without this the breadcrumb keeps showing the model that was
+    // assigned at app start until restart.
+    groupsChangedNotifier.value++;
   }
 
   Future<Map<String, AgentRoleConfig>> getAllForGroup(String groupId) async {
@@ -431,6 +485,13 @@ class AgentRoleSettingsRepository {
     final body = <String, Object?>{};
     for (final entry in all.entries) {
       body[entry.key] = entry.value.toJson();
+    }
+    // If Team Mode is on, emit the optional `leader` role too. Python's
+    // load_role_configs ignores it when --team-mode isn't passed.
+    if (await isTeamModeEnabled()) {
+      final activeGroupId = await getActiveGroupId();
+      final leaderCfg = await getLeader(activeGroupId);
+      body[leaderRole] = leaderCfg.toJson();
     }
     final f = File(path);
     await f.parent.create(recursive: true);

@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:io';
 
 import 'package:flutter/material.dart';
 
@@ -10,6 +11,7 @@ import '../../services/github_models_service.dart';
 import '../../services/groq_service.dart';
 import '../../services/ollama_service.dart';
 import '../../services/openrouter_service.dart';
+import 'team_board_viewer.dart';
 
 /// Settings panel for the multi-agent workflow.
 ///
@@ -32,8 +34,16 @@ class AgentWorkflowSettings extends StatefulWidget {
 class _AgentWorkflowSettingsState extends State<AgentWorkflowSettings> {
   bool _loading = true;
   bool _enabled = false;
+  bool _teamMode = false;
   List<WorkflowGroup> _groups = [];
   String _activeGroupId = '';
+
+  // The four core roles plus the optional 'leader' role used by Team Mode.
+  // The leader's controllers/state share the same maps as the other roles
+  // — only the rendering is gated on [_teamMode].
+  static const _kAllRolesIncludingLeader = <String>[
+    'router', 'shaper', 'reasoner', 'executor', AgentRoleSettingsRepository.leaderRole,
+  ];
 
   // The aggregate — single source of truth for the form.
   WorkflowAgents _agents = WorkflowAgents({});
@@ -60,7 +70,7 @@ class _AgentWorkflowSettingsState extends State<AgentWorkflowSettings> {
   @override
   void initState() {
     super.initState();
-    for (final r in AgentRoleSettingsRepository.roles) {
+    for (final r in _kAllRolesIncludingLeader) {
       _modelCtrls[r] = TextEditingController();
       _maxTokensCtrls[r] = TextEditingController();
       _tpmCtrls[r] = TextEditingController();
@@ -93,9 +103,15 @@ class _AgentWorkflowSettingsState extends State<AgentWorkflowSettings> {
   // ─── Load / save plumbing ────────────────────────────────────────────────
   Future<void> _load() async {
     final enabled = await AgentRoleSettingsRepository.instance.isEnabled();
+    final teamMode = await AgentRoleSettingsRepository.instance.isTeamModeEnabled();
     final groups = await AgentRoleSettingsRepository.instance.listGroups();
     final activeGroupId = await AgentRoleSettingsRepository.instance.getActiveGroupId();
     final agents = await WorkflowAgents.loadGroup(activeGroupId);
+    // Load the leader role separately — it isn't in WorkflowAgents.byRole
+    // by default, but its controllers need a value either way so the UI
+    // doesn't flicker when the toggle flips on.
+    final leaderCfg = await AgentRoleSettingsRepository.instance.getLeader(activeGroupId);
+    agents.put(AgentRoleSettingsRepository.leaderRole, leaderCfg);
     // Gemini is the only backend with a *user-editable* saved list (in the
     // Gemini Settings panel the user can add e.g. gemma4). Read it here so
     // the role's model dropdown shows the same options the dedicated panel
@@ -104,11 +120,12 @@ class _AgentWorkflowSettingsState extends State<AgentWorkflowSettings> {
     if (!mounted) return;
     setState(() {
       _enabled = enabled;
+      _teamMode = teamMode;
       _groups = groups;
       _activeGroupId = activeGroupId;
       _agents = agents;
       if (geminiSaved.isNotEmpty) _modelsCache['gemini'] = geminiSaved;
-      for (final r in AgentRoleSettingsRepository.roles) {
+      for (final r in _kAllRolesIncludingLeader) {
         final cfg = agents.get(r);
         _modelCtrls[r]!.text = cfg.model;
         _maxTokensCtrls[r]!.text = cfg.maxTokens.toString();
@@ -358,11 +375,17 @@ class _AgentWorkflowSettingsState extends State<AgentWorkflowSettings> {
               _header(),
               const SizedBox(height: 16),
               _enableSwitch(),
+              const SizedBox(height: 12),
+              _teamModeSwitch(),
               const SizedBox(height: 16),
               _groupManagementControls(),
               const SizedBox(height: 24),
               for (final role in AgentRoleSettingsRepository.roles) ...[
                 _roleCard(role),
+                const SizedBox(height: 12),
+              ],
+              if (_teamMode) ...[
+                _roleCard(AgentRoleSettingsRepository.leaderRole),
                 const SizedBox(height: 12),
               ],
               const SizedBox(height: 8),
@@ -445,6 +468,81 @@ class _AgentWorkflowSettingsState extends State<AgentWorkflowSettings> {
               if (!mounted) return;
               setState(() => _enabled = v);
             },
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _teamModeSwitch() {
+    return Container(
+      decoration: BoxDecoration(
+        border: Border.all(color: AppTheme.border),
+        borderRadius: BorderRadius.circular(10),
+      ),
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+      child: Row(
+        children: [
+          const Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  'Enable Team Mode',
+                  style: TextStyle(
+                    fontSize: 14,
+                    fontWeight: FontWeight.w600,
+                    color: AppTheme.textPrimary,
+                  ),
+                ),
+                SizedBox(height: 2),
+                Text(
+                  'Splits heavy tasks across specialized workers. A team-leader '
+                  'model assigns work; each worker has its own context window '
+                  'and won\'t hit token limits on long jobs. Requires '
+                  'multi-agent mode (above) to be on.',
+                  style: TextStyle(fontSize: 12, color: AppTheme.textMuted),
+                ),
+              ],
+            ),
+          ),
+          Column(
+            crossAxisAlignment: CrossAxisAlignment.end,
+            children: [
+              Switch(
+                value: _teamMode,
+                onChanged: (v) async {
+                  await AgentRoleSettingsRepository.instance.setTeamModeEnabled(v);
+                  // Team Mode requires multi-agent — flip it on automatically
+                  // so the user doesn't get a silent no-op when only Team
+                  // Mode is set.
+                  if (v && !_enabled) {
+                    await AgentRoleSettingsRepository.instance.setEnabled(true);
+                  }
+                  if (!mounted) return;
+                  setState(() {
+                    _teamMode = v;
+                    if (v) _enabled = true;
+                  });
+                },
+              ),
+              if (_teamMode) ...[
+                const SizedBox(height: 4),
+                TextButton.icon(
+                  icon: const Icon(Icons.dashboard_outlined, size: 14),
+                  label: const Text('View Team Board',
+                      style: TextStyle(fontSize: 12)),
+                  onPressed: () {
+                    final basePath = Directory.current.path;
+                    Navigator.of(context).push(
+                      MaterialPageRoute(
+                        builder: (_) => TeamBoardViewer(basePath: basePath),
+                      ),
+                    );
+                  },
+                ),
+              ],
+            ],
           ),
         ],
       ),
@@ -814,6 +912,8 @@ class _AgentWorkflowSettingsState extends State<AgentWorkflowSettings> {
         return 'Reasoner';
       case 'executor':
         return 'Executor';
+      case AgentRoleSettingsRepository.leaderRole:
+        return 'Team Leader';
     }
     return role;
   }
@@ -828,6 +928,8 @@ class _AgentWorkflowSettingsState extends State<AgentWorkflowSettings> {
         return '— strong model, plans + decides';
       case 'executor':
         return '— runs tools, handles trivial replies';
+      case AgentRoleSettingsRepository.leaderRole:
+        return '— decomposes heavy tasks into worker groups';
     }
     return '';
   }
@@ -842,6 +944,8 @@ class _AgentWorkflowSettingsState extends State<AgentWorkflowSettings> {
         return Icons.psychology_outlined;
       case 'executor':
         return Icons.build_outlined;
+      case AgentRoleSettingsRepository.leaderRole:
+        return Icons.groups_2_outlined;
     }
     return Icons.smart_toy_outlined;
   }
