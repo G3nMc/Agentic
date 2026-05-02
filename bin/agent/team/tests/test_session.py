@@ -118,6 +118,81 @@ class RetryAndSkipTests(unittest.TestCase):
         self.assertIn("skip_with_partial", decision_kinds)
 
 
+class PreFlightAbortTests(unittest.TestCase):
+    """The board must be reset before each session AND the runner must
+    refuse to start when the leader fails to produce any groups."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        self.paths = TeamPaths.from_base(self.tmp)
+        self.paths.ensure_dirs()
+
+    def test_previous_session_content_is_wiped_at_start(self):
+        # Seed the board with stale content from a "prior session".
+        from agent.team.board import BoardFile, write_board
+        from agent.team.status import Status
+        stale = BoardFile(session_id="OLD", leader_model="OLD")
+        stale.add_group("legacy", "old-model", plan=["leftover step"])
+        stale.set_status("legacy", Status.DONE_CLEAN, last_step="1/1")
+        write_board(self.paths.board, stale)
+
+        # Leader produces ONE clean group for the new session.
+        leader_backend = _ScriptedBackend([
+            _wrap("create_group",
+                  {"name": "fresh", "owner_model": "mock",
+                   "plan_steps": ["x"]}),
+            "plan done",
+        ])
+        leader = LeaderAgent(backend=leader_backend, paths=self.paths)
+        session = TeamSession(
+            paths=self.paths, leader=leader, base_path=self.tmp,
+            timeout_s=30.0, worker_entry=_MOCK_ENTRY,
+            worker_extra_env=_mock_env("clean"),
+        )
+        out = session.run("a fresh task")
+        self.assertEqual(out["status"], "ok")
+
+        from agent.team.board import read_board
+        bf = read_board(self.paths.board)
+        # The stale group must be gone; only the new group remains.
+        groups = [r.group for r in bf.status_rows]
+        self.assertNotIn("legacy", groups)
+        self.assertEqual(groups, ["fresh"])
+        self.assertNotEqual(bf.session_id, "OLD")
+
+    def test_leader_produces_no_groups_aborts_without_workers(self):
+        # Leader replies 'plan done' without calling create_group at all.
+        leader_backend = _ScriptedBackend(["plan done"])
+        leader = LeaderAgent(backend=leader_backend, paths=self.paths)
+        session = TeamSession(
+            paths=self.paths, leader=leader, base_path=self.tmp,
+            timeout_s=30.0, worker_entry=_MOCK_ENTRY,
+            worker_extra_env=_mock_env("clean"),
+        )
+        out = session.run("vague task")
+        self.assertEqual(out["status"], "error")
+        self.assertIn("no groups", out["message"])
+        # No worker artifacts written — chain didn't start.
+        self.assertEqual(list(self.paths.artifacts_dir.glob("*.json")), [])
+
+    def test_leader_decompose_crash_aborts_cleanly(self):
+        class _BoomBackend:
+            model_id = "fake"
+            def chat(self, *, messages, max_tokens, temperature, tools):
+                raise RuntimeError("provider down")
+        leader = LeaderAgent(backend=_BoomBackend(), paths=self.paths)
+        session = TeamSession(
+            paths=self.paths, leader=leader, base_path=self.tmp,
+            timeout_s=30.0, worker_entry=_MOCK_ENTRY,
+            worker_extra_env=_mock_env("clean"),
+        )
+        out = session.run("any task")
+        self.assertEqual(out["status"], "error")
+        self.assertIn("leader reasoning failed", out["message"])
+        self.assertEqual(list(self.paths.artifacts_dir.glob("*.json")), [])
+
+
 class CrashRecoveryTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.mkdtemp()

@@ -67,8 +67,19 @@ class TeamSession:
 
     # ------------------------------------------------------------------
     def run(self, user_task: str) -> Dict[str, Any]:
-        """Plan → execute groups → summarize."""
-        # 0. Initialize the board.
+        """Plan → execute groups → summarize.
+
+        Pre-flight invariants — both must hold before any worker spawns:
+          (a) Reset the board to a fresh state. Stale content from a prior
+              session must NEVER leak into a new one. ``write_board`` is
+              atomic (write-temp-then-rename), so partial overwrites are
+              impossible.
+          (b) After the leader's decomposition, the board must contain
+              at least one group AND the in-memory ``order`` list must be
+              non-empty. If the leader fails reasoning, no worker chain
+              starts.
+        """
+        # (a) Wipe + initialize.
         self.paths.ensure_dirs()
         bf = BoardFile(
             session_id=f"{_utcnow_iso()}-{uuid.uuid4().hex[:6]}",
@@ -76,12 +87,32 @@ class TeamSession:
         )
         write_board(self.paths.board, bf)
 
-        # 1. Decompose
-        order = self.leader.decompose(user_task)
+        # (b) Decompose — bail out before runner if the leader produced
+        # nothing usable. We check BOTH the in-memory result and the
+        # board file on disk; if they disagree we still refuse to start.
+        try:
+            order = self.leader.decompose(user_task)
+        except Exception as e:  # noqa: BLE001
+            logger.exception("Leader.decompose crashed: %s", e)
+            return {"status": "error",
+                    "message": f"leader reasoning failed: {e}",
+                    "summary": "", "results": []}
+
         if not order:
             return {"status": "error",
                     "message": "leader produced no groups",
-                    "summary": ""}
+                    "summary": "", "results": []}
+
+        try:
+            on_disk = read_board(self.paths.board)
+        except FileNotFoundError:
+            return {"status": "error",
+                    "message": "board missing after decompose",
+                    "summary": "", "results": []}
+        if not on_disk.status_rows:
+            return {"status": "error",
+                    "message": "board is empty after decompose; refusing to start",
+                    "summary": "", "results": []}
 
         # 2. Build the runner
         runner = SequentialRunner(
