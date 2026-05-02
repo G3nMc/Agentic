@@ -56,6 +56,7 @@ from agent.backends.gemini import GeminiBackend
 from agent.backends.ollama import OllamaBackend
 from agent.core.workflow import build_workflow_from_args
 from agent.loop import Orchestrator
+from agent.path_filter import PathFilter
 from agent.policy import SecurityConfig
 from agent.utils.bootstrap import (
     BACKEND_REQUIRED_MODULES,
@@ -240,6 +241,31 @@ def main():
             "is set."
         ),
     )
+    parser.add_argument(
+        "--team-mode",
+        action="store_true",
+        help=(
+            "Enable Team Mode: a team-leader model decomposes heavy tasks "
+            "into worker groups that run sequentially in fresh subprocesses. "
+            "Each worker has its own context window and writes a handoff "
+            "artifact for the next group. Requires --agent-config; the "
+            "optional 'leader' role in agents.json picks the leader's model."
+        ),
+    )
+    parser.add_argument(
+        "--filters-config",
+        default="",
+        metavar="PATH",
+        help=(
+            "Optional path to a JSON file with user-configured filesystem "
+            "filters: exclude_dirs, include_dirs, exclude_files, "
+            "include_files (each a list of strings). When set, the discovery "
+            "tools (list_files, search_in_files, find_files, "
+            "list_files_recursive) hide entries matching the exclude rules "
+            "and re-show entries matching the include rules. Inclusion wins "
+            "over exclusion. read_file / write_file are NOT filtered."
+        ),
+    )
 
     args = parser.parse_args()
 
@@ -261,6 +287,41 @@ def main():
         print(f"[orch] Audit logging enabled -> {security_config.audit_log_path}",
               file=sys.stderr)
 
+    # Parse the user-configured filesystem filter (optional). Failures here
+    # are non-fatal: a corrupt config means the user gets the inert filter
+    # and a clear stderr line, instead of a refusing-to-start orchestrator.
+    path_filter = _load_path_filter(args.filters_config, args.base_path)
+    if path_filter is not None:
+        active = path_filter.summary_for_prompt(top=3) or "(none)"
+        print(f"[orch] Filesystem filter active:\n{active}",
+              file=sys.stderr)
+
+    # ------------------------------------------------------------------
+    # Team Mode path: decompose heavy tasks into worker subprocesses.
+    # Always wins over plain --multi-agent when both are set, because it
+    # USES the multi-agent pipeline internally (each worker runs a
+    # Workflow). Requires --agent-config.
+    # ------------------------------------------------------------------
+    if getattr(args, "team_mode", False):
+        if not args.agent_config:
+            print("[orch] --team-mode requires --agent-config <path>.",
+                  file=sys.stderr)
+            sys.exit(2)
+        try:
+            from agent.team.bootstrap import build_team_session_from_args
+            session = build_team_session_from_args(args)
+        except Exception as e:  # noqa: BLE001
+            print(f"[orch] Failed to build Team Mode session: {e}",
+                  file=sys.stderr)
+            sys.exit(2)
+        print("[orch] Team Mode ready. Heavy tasks will be decomposed by the leader.",
+              file=sys.stderr)
+        if args.interactive:
+            _run_interactive_team(session, args)
+        else:
+            _run_oneshot_team(session)
+        return
+
     # ------------------------------------------------------------------
     # Multi-agent path: read agents.json, build Workflow, drive the loop.
     # The single-agent path below stays untouched as a fallback.
@@ -275,6 +336,7 @@ def main():
                 args,
                 security_config=security_config,
                 base_path=args.base_path,
+                path_filter=path_filter,
             )
         except Exception as e:  # noqa: BLE001
             print(f"[orch] Failed to build multi-agent workflow: {e}",
@@ -323,6 +385,7 @@ def main():
         max_tokens=args.max_tokens,
         security_config=security_config,
         disable_tools=args.disable_tools,
+        path_filter=path_filter,
     )
     if args.disable_tools:
         print("[orch] Tools disabled — running in plain-chat mode.",
@@ -332,6 +395,35 @@ def main():
         _run_interactive_loop(orchestrator)
     else:
         _run_oneshot(orchestrator)
+
+
+def _load_path_filter(filters_config_path: str, base_path: str):
+    """Read the optional filters JSON file and build a PathFilter.
+
+    Returns None when the path is empty/missing or unreadable; the
+    ToolRegistry treats None as "filter off" (only the hardcoded baseline
+    of `.git`, `__pycache__`, etc. applies). Logs failures to stderr so
+    the user can spot a typo without the orchestrator refusing to start.
+    """
+    path = (filters_config_path or "").strip()
+    if not path:
+        return None
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            cfg = json.load(f)
+    except FileNotFoundError:
+        print(f"[orch] --filters-config '{path}' not found; ignoring.",
+              file=sys.stderr)
+        return None
+    except (json.JSONDecodeError, OSError) as e:
+        print(f"[orch] --filters-config could not be read ({e}); ignoring.",
+              file=sys.stderr)
+        return None
+    if not isinstance(cfg, dict):
+        print(f"[orch] --filters-config did not contain an object; ignoring.",
+              file=sys.stderr)
+        return None
+    return PathFilter.from_config(base_path, cfg)
 
 
 def _build_backend_for_args(args):
@@ -534,6 +626,63 @@ def _run_oneshot_workflow(workflow) -> None:
     prompt = sys.stdin.read().strip()
     if prompt:
         payload = workflow.run(prompt)
+        print(json.dumps(payload))
+        print(RESPONSE_SENTINEL)
+
+
+# ---------------------------------------------------------------------------
+# Team Mode loops.
+# Each prompt starts a fresh decomposition. Multi-turn inside a single
+# Team Mode session is intentionally NOT supported in this version —
+# heavy tasks are launched, run to completion, and the result is
+# delivered as one summary block.
+# ---------------------------------------------------------------------------
+def _run_interactive_team(session, args) -> None:
+    print("__READY__")
+    sys.stdout.flush()
+    try:
+        while True:
+            req = read_interactive_request(sys.stdin)
+            if req is None:
+                break
+            prompt = (req.get("prompt") or "").strip()
+            if not prompt:
+                print(RESPONSE_SENTINEL)
+                sys.stdout.flush()
+                continue
+            try:
+                # Each prompt = one team session.
+                from agent.team.bootstrap import build_team_session_from_args
+                fresh_session = build_team_session_from_args(args)
+                result = fresh_session.run(prompt)
+                payload = {
+                    "response": result.get("summary", ""),
+                    "trace": [],
+                    "team": {
+                        "results": result.get("results", []),
+                        "status": result.get("status", "ok"),
+                    },
+                }
+            except Exception as e:  # noqa: BLE001
+                payload = {"response": f"Error: {e}", "trace": []}
+            print(json.dumps(payload))
+            print(RESPONSE_SENTINEL)
+            sys.stdout.flush()
+    except KeyboardInterrupt:
+        print("[orch] Shutdown requested.", file=sys.stderr)
+
+
+def _run_oneshot_team(session) -> None:
+    prompt = sys.stdin.read().strip()
+    if prompt:
+        result = session.run(prompt)
+        payload = {
+            "response": result.get("summary", ""),
+            "team": {
+                "results": result.get("results", []),
+                "status": result.get("status", "ok"),
+            },
+        }
         print(json.dumps(payload))
         print(RESPONSE_SENTINEL)
 

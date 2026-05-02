@@ -31,7 +31,8 @@ from ..backends.backend_base import ModelBackend
 
 
 # Roles in the order the dispatcher evaluates them.
-AGENT_ROLES = ("router", "shaper", "reasoner", "executor")
+# "leader" is optional and only used when --team-mode is on.
+AGENT_ROLES = ("router", "shaper", "reasoner", "executor", "leader")
 
 # Defaults applied when the JSON omits a role or a field. Chosen for
 # "works out of the box if you only configured Gemini" — every role falls
