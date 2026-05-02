@@ -2,11 +2,12 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
-import 'package:hf_chat_flutter/services/project_service.dart';
+import 'package:agentic/services/project_service.dart';
 import 'package:path_provider/path_provider.dart';
 
 import '../data/repositories/agent_role_settings_repository.dart';
 import '../data/repositories/backend_settings_repository.dart';
+import '../data/repositories/dev_filters_repository.dart';
 import '../data/repositories/settings_repository.dart';
 
 // Inactivity timeout: if the orchestrator emits no output on stdout OR
@@ -18,7 +19,11 @@ const Duration _kOrchestratorInactivityTimeout = Duration(minutes: 10);
 
 // Absolute ceiling: even if the orchestrator keeps heart-beating, refuse to
 // wait longer than this for a single prompt. Prevents runaway tool chains.
-const Duration _kOrchestratorAbsoluteTimeout = Duration(minutes: 20);
+// Set high enough to cover long multi-agent chains where each role may take
+// multiple minutes (slow cloud reasoners, large file edits + repeated
+// flutter_analyze cycles). The inactivity timeout above still catches a
+// truly wedged process within 10 min of silence.
+const Duration _kOrchestratorAbsoluteTimeout = Duration(minutes: 120);
 
 /// Which model backend the orchestrator subprocess should use.
 ///
@@ -48,6 +53,10 @@ class OrchestratorManager {
   Process? _process;
   bool _isRunning = false;
   bool _isReady = false;
+  // Guards against concurrent start() calls before _isRunning flips true.
+  // Holds the in-flight start() future so overlapping callers await the same
+  // result instead of each spawning their own subprocess.
+  Future<bool>? _startingFuture;
   OrchestratorBackend _currentBackend = OrchestratorBackend.huggingface;
   final StringBuffer _stderrBuffer = StringBuffer();
 
@@ -108,14 +117,57 @@ class OrchestratorManager {
   DateTime? _requestStartedAt;
   String? _sessionKey;
 
+  /// The conversation id of the most recent prompt routed through this
+  /// orchestrator. Used by the Team Mode UI to point the board viewer
+  /// at the current chat's subfolder.
+  String? get currentSessionKey => _sessionKey;
+
   bool get isRunning => _isRunning;
   bool get isReady => _isReady;
   OrchestratorBackend get currentBackend => _currentBackend;
   String get stderrLog => _stderrBuffer.toString();
 
-  /// Platform-appropriate Python executable. Windows ships with `python`;
-  /// most Linux/macOS systems expose `python3`.
-  static String get pythonExecutable => Platform.isWindows ? 'python' : 'python3';
+  /// Platform-appropriate Python executable used as a fallback when the
+  /// user has not configured an explicit interpreter in Settings → Developer.
+  static String get defaultPythonExecutable =>
+      Platform.isWindows ? 'python' : 'python3';
+
+  /// Resolves the Python interpreter to launch the orchestrator with.
+  /// Honours the user-configured override in SettingsRepository, otherwise
+  /// falls back to the platform default (PATH lookup).
+  static Future<String> resolvePythonExecutable() async {
+    final configured = await SettingsRepository.instance.getPythonPath();
+    if (configured != null && configured.trim().isNotEmpty) {
+      return configured.trim();
+    }
+    return defaultPythonExecutable;
+  }
+
+  /// Builds the environment map handed to the orchestrator subprocess.
+  /// Always sets `PYTHONDONTWRITEBYTECODE=1` so the bundled Python sources
+  /// don't leave `__pycache__` directories scattered through the install —
+  /// has to be in the env (not just sys.dont_write_bytecode) because the
+  /// flag must be active before Python parses the entry script itself.
+  /// Prepends `<flutterSdkPath>/bin` to `PATH` when the user has configured
+  /// a Flutter SDK location, so `subprocess.run(["flutter", ...])` inside
+  /// the Python tools resolves without requiring system-wide PATH setup.
+  static Future<Map<String, String>> resolveSubprocessEnvironment() async {
+    final base = <String, String>{
+      ...Platform.environment,
+      'PYTHONDONTWRITEBYTECODE': '1',
+    };
+    final flutterSdk =
+        (await SettingsRepository.instance.getFlutterSdkPath())?.trim();
+    if (flutterSdk == null || flutterSdk.isEmpty) return base;
+    final flutterBin = '$flutterSdk${Platform.pathSeparator}bin';
+    final currentPath = base['PATH'] ?? '';
+    final sep = Platform.isWindows ? ';' : ':';
+    return {
+      ...base,
+      'PATH': '$flutterBin$sep$currentPath',
+      'FLUTTER_ROOT': flutterSdk,
+    };
+  }
 
   /// Absolute path to the bundled `bin/orchestrator.py` shipped with the app.
   /// Resolves relative to the current working directory because Flutter desktop
@@ -148,10 +200,11 @@ class OrchestratorManager {
       return false;
     }
 
-    onLine?.call('Running: $pythonExecutable ${script.path} --install-deps');
+    final python = await resolvePythonExecutable();
+    onLine?.call('Running: $python ${script.path} --install-deps');
     try {
       final proc = await Process.start(
-        pythonExecutable,
+        python,
         [script.path, '--install-deps'],
         workingDirectory: script.parent.path,
       );
@@ -174,10 +227,11 @@ class OrchestratorManager {
     String packageName, {
     void Function(String line)? onLine,
   }) async {
-    onLine?.call('Running: $pythonExecutable -m pip install --user $packageName');
+    final python = await resolvePythonExecutable();
+    onLine?.call('Running: $python -m pip install --user $packageName');
     try {
       final proc = await Process.start(
-        pythonExecutable,
+        python,
         ['-m', 'pip', 'install', '--user', packageName],
       );
 
@@ -220,8 +274,52 @@ class OrchestratorManager {
     int? tpmLimit,
     bool disableTools = false,
     bool? multiAgent,
+  }) {
+    if (_isRunning) return Future.value(false);
+    // Coalesce: a second caller while the first is still awaiting __READY__
+    // must NOT spawn a second subprocess. Return the in-flight future instead.
+    final inflight = _startingFuture;
+    if (inflight != null) return inflight;
+    final fut = _startInternal(
+      hfToken: hfToken,
+      modelId: modelId,
+      workingDirectory: workingDirectory,
+      backend: backend,
+      ollamaBaseUrl: ollamaBaseUrl,
+      ollamaNumCtx: ollamaNumCtx,
+      temperature: temperature,
+      maxTokens: maxTokens,
+      ollamaApiKey: ollamaApiKey,
+      groqApiKey: groqApiKey,
+      geminiApiKey: geminiApiKey,
+      openRouterApiKey: openRouterApiKey,
+      githubApiKey: githubApiKey,
+      tpmLimit: tpmLimit,
+      disableTools: disableTools,
+      multiAgent: multiAgent,
+    ).whenComplete(() => _startingFuture = null);
+    _startingFuture = fut;
+    return fut;
+  }
+
+  Future<bool> _startInternal({
+    String? hfToken,
+    String? modelId,
+    String? workingDirectory,
+    OrchestratorBackend backend = OrchestratorBackend.huggingface,
+    String? ollamaBaseUrl,
+    int? ollamaNumCtx,
+    double? temperature,
+    int? maxTokens,
+    String? ollamaApiKey,
+    String? groqApiKey,
+    String? geminiApiKey,
+    String? openRouterApiKey,
+    String? githubApiKey,
+    int? tpmLimit,
+    bool disableTools = false,
+    bool? multiAgent,
   }) async {
-    if (_isRunning) return false;
     // When the caller doesn't override, honour the toggle the user set in the
     // Workflow Agents settings panel. This way every existing start-button
     // wiring flips into multi-agent mode automatically once the user enables
@@ -302,11 +400,21 @@ class OrchestratorManager {
       _logLines.clear();
       _readyCompleter = Completer<void>();
 
+      final resolvedBasePath = workingDirectory ?? baseDirectory.path;
+      _appendLog('[manager] --base-path -> $resolvedBasePath');
+      if (!ProjectService().hasExplicitFolder && workingDirectory == null) {
+        _appendLog(
+          '[manager] WARNING: no project folder selected; falling back to '
+          'Directory.current ($resolvedBasePath). Pick a project folder from '
+          'the chat input so file tools resolve relative paths against your '
+          'project, not the app install directory.',
+        );
+      }
       final args = <String>[
         script.path,
         '--interactive',
         '--base-path',
-        workingDirectory ?? baseDirectory.path,
+        resolvedBasePath,
       ];
       switch (backend) {
         case OrchestratorBackend.huggingface:
@@ -371,21 +479,63 @@ class OrchestratorManager {
       if (effectiveMultiAgent) {
         try {
           final tmp = await getTemporaryDirectory();
-          final cfgPath = '${tmp.path}/hf_chat_flutter_agents.json';
+          final cfgPath = '${tmp.path}/agentic_agents.json';
           await AgentRoleSettingsRepository.instance
               .writeAgentConfigJson(cfgPath);
           args.addAll(['--multi-agent', '--agent-config', cfgPath]);
           _appendLog('[manager] Multi-agent config written -> $cfgPath');
+
+          // Team Mode rides on top of multi-agent: each worker subprocess
+          // boots its own Workflow from the same agents.json. The host
+          // process drives the leader and the sequential worker chain.
+          if (await AgentRoleSettingsRepository.instance.isTeamModeEnabled()) {
+            args.add('--team-mode');
+            _appendLog('[manager] Team Mode enabled — workers will run sequentially.');
+          }
         } catch (e) {
           _appendLog('[manager] Failed to write agents.json: $e');
           return false;
         }
       }
 
+      // User-configured filesystem filters: list of dirs/files to hide
+      // (or re-show) from the orchestrator's discovery tools. Written
+      // alongside agents.json so the Python side can mmap a single file
+      // at startup. Per-project: the lists are scoped to the current
+      // working directory hash inside DevFiltersRepository.
+      try {
+        final tmp = await getTemporaryDirectory();
+        final filtersPath = '${tmp.path}/agentic_filters.json';
+        final filtersJson = await DevFiltersRepository.instance
+            .toFiltersJson(resolvedBasePath);
+        await File(filtersPath).writeAsString(filtersJson, flush: true);
+        // Only attach the flag when the user has at least one rule
+        // configured — empty config means "no filters" and Python's
+        // default already covers that, no need for an extra arg.
+        final hasAnyRule = !filtersJson.contains('"exclude_dirs":[]') ||
+            !filtersJson.contains('"include_dirs":[]') ||
+            !filtersJson.contains('"exclude_files":[]') ||
+            !filtersJson.contains('"include_files":[]');
+        if (hasAnyRule) {
+          args.addAll(['--filters-config', filtersPath]);
+          _appendLog('[manager] Filesystem filters written -> $filtersPath');
+        }
+      } catch (e) {
+        _appendLog('[manager] Failed to write filters config: $e (continuing without filters)');
+      }
+
+      final python = await resolvePythonExecutable();
+      final env = await resolveSubprocessEnvironment();
+      _appendLog('[manager] Python -> $python');
+      final flutterRoot = env['FLUTTER_ROOT'];
+      if (flutterRoot != null) {
+        _appendLog('[manager] FLUTTER_ROOT -> $flutterRoot');
+      }
       _process = await Process.start(
-        pythonExecutable,
+        python,
         args,
         workingDirectory: script.parent.path,
+        environment: env,
       );
 
       _stdoutSub = _process!.stdout.transform(utf8.decoder).transform(const LineSplitter()).listen(_onStdoutLine, onError: _onStreamError, onDone: _onProcessExited);
@@ -397,10 +547,15 @@ class OrchestratorManager {
         _bumpInactivityTimer();
       });
 
-      // Wait up to 30s for the `__READY__` handshake. If the Python side
-      // is missing dependencies it will exit with code 2 — we detect that
-      // via _onProcessExited and complete the ready future with an error.
-      await _readyCompleter!.future.timeout(const Duration(seconds: 30));
+      // Wait for the `__READY__` handshake. If the Python side is missing
+      // dependencies it will exit with code 2 — we detect that via
+      // _onProcessExited and complete the ready future with an error.
+      // Multi-agent startup is heavier (loads + validates each role's
+      // backend before signalling ready), so give it a longer budget.
+      final readyTimeout = effectiveMultiAgent
+          ? const Duration(seconds: 90)
+          : const Duration(seconds: 30);
+      await _readyCompleter!.future.timeout(readyTimeout);
 
       _isRunning = true;
       _isReady = true;
@@ -465,6 +620,11 @@ class OrchestratorManager {
       'new_session': shouldResetSession,
       if (seedHistory.isNotEmpty) 'history': seedHistory,
       if (sessionKey != null && sessionKey.isNotEmpty) 'session_key': sessionKey,
+      // Sent explicitly so Team Mode can isolate per-chat board/artifacts.
+      // Same value as session_key — kept as a separate field so the
+      // Python side has a stable contract independent of the legacy
+      // session_key plumbing.
+      if (sessionKey != null && sessionKey.isNotEmpty) 'conversation_id': sessionKey,
     });
     try {
       _process!.stdin.writeln(request);
@@ -496,6 +656,14 @@ class OrchestratorManager {
     _inactivityTimer?.cancel();
     _inactivityTimer = Timer(_kOrchestratorInactivityTimeout, () {
       if (_activeCompleter == null || _activeCompleter!.isCompleted) return;
+      // If a complete JSON envelope already landed (sentinel just hadn't
+      // arrived), recover the parsed reply instead of clobbering it with a
+      // timeout string.
+      final recovered = _extractResponseFromBuffer();
+      if (recovered.isNotEmpty && recovered != _activeLines.join('\n').trim()) {
+        _activeCompleter!.complete(recovered);
+        return;
+      }
       final waited = _requestStartedAt == null ? 'unknown' : '${DateTime.now().difference(_requestStartedAt!).inSeconds}s';
       _activeCompleter!.complete(
         'Timeout: orchestrator was silent for '
@@ -511,9 +679,12 @@ class OrchestratorManager {
   }
 
   void _onStdoutLine(String line) {
-    // Handshake: Python prints `__READY__` exactly once at startup.
-    if (!_isReady && line.trim() == '__READY__') {
-      _readyCompleter?.complete();
+    // Handshake: Python prints `__READY__` once at startup. A second one
+    // means the subprocess respawned (crash + restart, or stop+start while
+    // a request was in flight) — never legitimate request payload, so drop
+    // it unconditionally rather than letting it leak into _activeLines.
+    if (line.trim() == '__READY__') {
+      if (!_isReady) _readyCompleter?.complete();
       return;
     }
 
@@ -523,37 +694,7 @@ class OrchestratorManager {
     _bumpInactivityTimer();
 
     if (line.trim() == '__RESPONSE_END__') {
-      final joined = _activeLines.join('\n').trim();
-      String response = joined;
-      // Orchestrator wraps the response in {"response": "..."} so embedded
-      // newlines survive the line-oriented protocol. In multi-agent mode the
-      // same payload also carries a `trace` array — surface it on the trace
-      // stream without changing the public sendPrompt contract.
-      if (joined.startsWith('{')) {
-        try {
-          final obj = jsonDecode(joined);
-          if (obj is Map) {
-            if (obj['response'] is String) {
-              response = obj['response'] as String;
-            }
-            final rawTrace = obj['trace'];
-            if (rawTrace is List) {
-              final entries = <Map<String, Object?>>[];
-              for (final e in rawTrace) {
-                if (e is Map) {
-                  entries.add(e.map((k, v) => MapEntry(k.toString(), v)));
-                }
-              }
-              _lastTrace = entries;
-              if (!_traceController.isClosed) _traceController.add(entries);
-            } else {
-              _lastTrace = const [];
-            }
-          }
-        } catch (_) {
-          // Not JSON — treat as raw text.
-        }
-      }
+      final response = _extractResponseFromBuffer();
       if (!_activeCompleter!.isCompleted) {
         _activeCompleter!.complete(response);
       }
@@ -561,6 +702,45 @@ class OrchestratorManager {
     }
 
     _activeLines.add(line);
+  }
+
+  /// Pull a clean user-facing reply out of `_activeLines`. Handles the normal
+  /// case (`{"response": "...", "trace": [...]}`) and tolerates stray lines
+  /// like a leftover `__READY__` from a respawn. Also publishes the trace
+  /// when present.
+  String _extractResponseFromBuffer() {
+    final cleaned = _activeLines
+        .where((l) => l.trim() != '__READY__')
+        .toList();
+    final joined = cleaned.join('\n').trim();
+    if (!joined.startsWith('{')) {
+      _lastTrace = const [];
+      return joined;
+    }
+    try {
+      final obj = jsonDecode(joined);
+      if (obj is Map) {
+        final rawTrace = obj['trace'];
+        if (rawTrace is List) {
+          final entries = <Map<String, Object?>>[];
+          for (final e in rawTrace) {
+            if (e is Map) {
+              entries.add(e.map((k, v) => MapEntry(k.toString(), v)));
+            }
+          }
+          _lastTrace = entries;
+          if (!_traceController.isClosed) _traceController.add(entries);
+        } else {
+          _lastTrace = const [];
+        }
+        if (obj['response'] is String) {
+          return obj['response'] as String;
+        }
+      }
+    } catch (_) {
+      // Not JSON — fall through.
+    }
+    return joined;
   }
 
   void _onStreamError(Object error) {
@@ -585,9 +765,16 @@ class OrchestratorManager {
       );
     }
     if (_activeCompleter != null && !_activeCompleter!.isCompleted) {
-      _activeCompleter!.complete(
-        'Error: orchestrator process exited. stderr: ${_stderrBuffer.toString()}',
-      );
+      // If the JSON envelope already arrived before the process died, prefer
+      // delivering the real reply over the generic "process exited" error.
+      final recovered = _extractResponseFromBuffer();
+      if (recovered.isNotEmpty && recovered.startsWith('{') == false) {
+        _activeCompleter!.complete(recovered);
+      } else {
+        _activeCompleter!.complete(
+          'Error: orchestrator process exited. stderr: ${_stderrBuffer.toString()}',
+        );
+      }
     }
   }
 

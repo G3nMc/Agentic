@@ -1,7 +1,10 @@
+import 'dart:io';
+
 import 'package:sqflite/sqflite.dart';
 
 import '../database/app_database.dart';
 import '../models/conversation.dart';
+import '../../services/project_service.dart';
 
 class ConversationRepository {
   ConversationRepository._();
@@ -111,6 +114,38 @@ class ConversationRepository {
     } catch (e) {
       print('[ERROR] Failed to delete conversation $id: $e');
       rethrow;
+    }
+
+    // Best-effort: also remove the per-conversation Team Mode folder so
+    // boards/artifacts/worker logs don't pile up after the chat is gone.
+    // Failure is non-fatal — the chat row is already gone and we don't
+    // want a filesystem error to look like a delete failure to the UI.
+    await _deleteTeamSessionFolder(id);
+  }
+
+  /// Remove `<project>/.agent/team/<conversation_id>/` if it exists.
+  /// Mirrors `bin/agent/team/paths.py:delete_session()` on the Python side.
+  Future<void> _deleteTeamSessionFolder(String conversationId) async {
+    if (conversationId.isEmpty) return;
+    // Apply the same sanitization the Python side uses — refuse to
+    // remove anything outside a sane single-segment session id, and
+    // never wipe the legacy `_default` folder via this path.
+    final safeRe = RegExp(r'^[A-Za-z0-9._-]+$');
+    if (!safeRe.hasMatch(conversationId)) return;
+    if (conversationId == '_default') return;
+
+    try {
+      final basePath = ProjectService().currentPath;
+      final sep = Platform.pathSeparator;
+      final folder = Directory(
+        '$basePath$sep.agent${sep}team$sep$conversationId',
+      );
+      if (await folder.exists()) {
+        await folder.delete(recursive: true);
+        print('[DEBUG] Removed team folder for conversation $conversationId');
+      }
+    } catch (e) {
+      print('[DEBUG] Team folder cleanup skipped for $conversationId: $e');
     }
   }
 }

@@ -649,9 +649,13 @@ def _run_interactive_team(session, args) -> None:
             # Per-conversation isolation: each chat has its own team
             # subfolder so switching chats doesn't clobber state. The
             # Flutter side passes the conversation guid as
-            # ``conversation_id``. Older clients that don't send it fall
-            # back to the shared ``_default`` folder.
-            conv_id = (req.get("conversation_id") or "").strip() or None
+            # ``conversation_id`` (preferred) or ``session_key`` (legacy).
+            # Older clients that send neither fall back to ``_default``.
+            conv_id = (
+                (req.get("conversation_id") or "").strip()
+                or (req.get("session_key") or "").strip()
+                or None
+            )
             if not prompt:
                 print(RESPONSE_SENTINEL)
                 sys.stdout.flush()
