@@ -71,10 +71,11 @@ def build_team_session_from_args(args) -> TeamSession:
     leader = LeaderAgent(backend=leader_backend, paths=paths)
 
     # Forward enough of the host's argv that the worker subprocess can
-    # rebuild the same Workflow. Keeps API keys out of the cmdline (they
-    # ride the inherited env), but does pass --base-path, --agent-config,
-    # --multi-agent, and --backend so the worker knows how to talk to the
-    # provider when env vars aren't set.
+    # rebuild the same Workflow. The Flutter manager passes provider API
+    # keys to THIS process via argv (not env), so we must forward them
+    # explicitly — otherwise the worker's SecretsResolver can't
+    # authenticate any backend and `build_workflow_from_args` raises
+    # before the worker can even write an artifact.
     worker_extra_args: List[str] = [
         "--multi-agent",
         "--agent-config", str(args.agent_config),
@@ -88,6 +89,25 @@ def build_team_session_from_args(args) -> TeamSession:
         worker_extra_args += ["--sandbox"]
     if getattr(args, "audit_log", None):
         worker_extra_args += ["--audit-log", args.audit_log]
+
+    # Provider auth + provider-specific flags. Iterate so adding a new
+    # backend later is a one-line change.
+    auth_flag_map = (
+        ("--hf-token",            "hf_token"),
+        ("--gemini-api-key",      "gemini_api_key"),
+        ("--groq-api-key",        "groq_api_key"),
+        ("--openrouter-api-key",  "openrouter_api_key"),
+        ("--github-api-key",      "github_api_key"),
+        ("--ollama-api-key",      "ollama_api_key"),
+        ("--ollama-base-url",     "ollama_base_url"),
+        ("--model",               "model"),
+    )
+    for flag, attr in auth_flag_map:
+        val = getattr(args, attr, None)
+        if val:
+            worker_extra_args += [flag, str(val)]
+    if getattr(args, "ollama_num_ctx", None):
+        worker_extra_args += ["--ollama-num-ctx", str(args.ollama_num_ctx)]
 
     return TeamSession(
         paths=paths,

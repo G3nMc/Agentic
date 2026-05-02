@@ -211,6 +211,31 @@ def _classify_response(response: str) -> Status:
     return Status.DONE_CLEAN
 
 
+def _write_failed_artifact(
+    paths: TeamPaths, group: str, owner_model: str, reason: str,
+) -> None:
+    """Write a minimal FAILED artifact so the host/leader can see WHY
+    a worker died, even when it dies before reaching the normal
+    artifact-write path. Best effort — never raises.
+    """
+    summary = (reason or "unknown error").strip()
+    if len(summary) > 1500:
+        summary = summary[:1497] + "..."
+    artifact = Artifact(
+        group=group, producer_model=owner_model,
+        status=Status.FAILED,
+        summary=f"ERROR: {summary}" if not summary.lower().startswith("error")
+        else summary,
+    )
+    try:
+        write_artifact(paths.artifact_path(group), artifact)
+    except Exception as e:
+        # Last-ditch — log to stderr so the worker_entry stderr file
+        # at least carries the original error.
+        print(f"[worker:{group}] failed to write FAILED artifact: {e}",
+              file=sys.stderr, flush=True)
+
+
 def _build_artifact_from_response(
     *, group: str, owner_model: str,
     response: str, status: Status,
@@ -278,6 +303,8 @@ def main() -> int:
               file=sys.stderr, flush=True)
         _stamp_terminal(paths, group, Status.FAILED, "0/?",
                         f"read inputs failed: {e}")
+        _write_failed_artifact(paths, group, owner_model,
+                               f"read inputs failed: {e}")
         return 1
 
     boot_prompt = _build_boot_prompt(
@@ -315,6 +342,8 @@ def main() -> int:
               file=sys.stderr, flush=True)
         _stamp_terminal(paths, group, Status.FAILED, "0/?",
                         f"workflow build failed: {e}")
+        _write_failed_artifact(paths, group, owner_model,
+                               f"workflow build failed: {e}")
         return 1
 
     # Run
@@ -327,6 +356,8 @@ def main() -> int:
               file=sys.stderr, flush=True)
         _stamp_terminal(paths, group, Status.FAILED, "0/?",
                         f"workflow.run crashed: {e}")
+        _write_failed_artifact(paths, group, owner_model,
+                               f"workflow.run crashed: {e}")
         return 1
 
     # Determine status from the response

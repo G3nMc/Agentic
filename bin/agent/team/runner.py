@@ -27,6 +27,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
+from .artifact import Artifact, read_artifact
 from .board import BoardFile, read_board, write_board
 from .paths import TeamPaths
 from .status import Status, is_terminal
@@ -221,6 +222,22 @@ def run_worker(
         current = Status.INTERRUPTED
         stamped_by_host = True
         notes.append(f"host-stamped-interrupted: {reason}")
+
+    # If the worker failed (or was interrupted), try to surface its
+    # artifact summary so the leader's review_after can see WHY rather
+    # than retrying blind. Worker writes a FAILED artifact even on
+    # early-error paths (see worker_entry._write_failed_artifact).
+    if current in (Status.FAILED, Status.INTERRUPTED):
+        artifact_path = paths.artifact_path(group)
+        if artifact_path.exists():
+            try:
+                a = read_artifact(artifact_path)
+                if a.summary:
+                    short = a.summary if len(a.summary) <= 400 \
+                        else a.summary[:397] + "..."
+                    notes.append(f"artifact-summary: {short}")
+            except Exception:  # noqa: BLE001
+                pass
 
     return WorkerResult(
         group=group, exit_code=exit_code, duration_s=duration,

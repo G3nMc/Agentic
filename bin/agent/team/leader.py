@@ -210,7 +210,9 @@ class LeaderAgent(Agent):
         Returns the user-visible summary string.
         """
         # Programmatic compact if needed (don't waste a turn for this).
+        from .artifact import read_artifact
         from .board import read_board, BOARD_HARD_LINES, BOARD_HARD_TOKENS
+        from .status import is_failure
         try:
             bf = read_board(self.paths.board)
             if bf.is_oversized(BOARD_HARD_LINES, BOARD_HARD_TOKENS):
@@ -232,13 +234,38 @@ class LeaderAgent(Agent):
             for r in bf.status_rows:
                 row_lines.append(f"  - {r.group}: {r.status.value}")
             body = "\n".join(row_lines) if row_lines else "(no groups)"
+
+            # Surface failed-group reasons so the user sees actionable
+            # context in chat instead of a bare "FAILED" list.
+            failure_lines: list = []
+            for r in bf.status_rows:
+                if not is_failure(r.status):
+                    continue
+                ap = self.paths.artifact_path(r.group)
+                if not ap.exists():
+                    failure_lines.append(
+                        f"  - {r.group}: {r.status.value} "
+                        f"(no artifact — worker died very early)")
+                    continue
+                try:
+                    a = read_artifact(ap)
+                    s = a.summary or "(no error message)"
+                    if len(s) > 300:
+                        s = s[:297] + "..."
+                    failure_lines.append(f"  - {r.group}: {s}")
+                except Exception as e:  # noqa: BLE001
+                    failure_lines.append(
+                        f"  - {r.group}: artifact unreadable ({e})")
         except FileNotFoundError:
             body = "(board missing)"
+            failure_lines = []
 
         summary = (summary_hint or "Team Mode session complete.").strip()
         if not ok:
             summary += f"\n\nPending groups: {', '.join(pending) or '—'}"
         summary += f"\n\nGroup outcomes:\n{body}"
+        if failure_lines:
+            summary += "\n\nFailure reasons:\n" + "\n".join(failure_lines)
 
         self.tools.execute("finalize", {"summary": summary})
         return summary

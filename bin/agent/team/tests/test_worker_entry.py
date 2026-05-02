@@ -166,5 +166,68 @@ class WorkerEntryTests(unittest.TestCase):
         self.assertEqual(bf.find_row("alpha").status, Status.FAILED)
 
 
+class FailedArtifactOnEarlyErrorTests(unittest.TestCase):
+    """Workers must leave a FAILED artifact behind even when they die
+    before the normal artifact-write step. Otherwise the host has no
+    visibility into the cause."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        self.paths = TeamPaths.from_base(self.tmp)
+        self.cfg = Path(self.tmp) / "agents.json"
+        self.cfg.write_text(
+            '{"reasoner": {"backend": "gemini", "model": "gemini-2.5-flash"}}',
+            encoding="utf-8",
+        )
+
+    def test_workflow_build_failure_writes_failed_artifact(self):
+        _seed_board(self.paths, "alpha", plan=["x"])
+
+        def _boom(*a, **kw):
+            raise RuntimeError("missing API key — Gemini auth failed")
+
+        with _argv("worker_entry.py", "--group", "alpha",
+                   "--multi-agent", "--agent-config", str(self.cfg),
+                   "--base-path", self.tmp), \
+             _envs(TEAM_BOARD_PATH=str(self.paths.board),
+                   TEAM_ARTIFACT_DIR=str(self.paths.artifacts_dir),
+                   TEAM_GROUP="alpha", TEAM_OWNER_MODEL="m",
+                   TEAM_DEPS="", TEAM_BASE_PATH=self.tmp), \
+             patch("agent.team.worker_entry.build_workflow_from_args",
+                   side_effect=_boom):
+            rc = worker_entry.main()
+        self.assertEqual(rc, 1)
+        # The artifact MUST exist with the failure reason embedded.
+        ap = self.paths.artifact_path("alpha")
+        self.assertTrue(ap.exists(),
+                        "Worker must write a FAILED artifact even on early errors")
+        artifact = read_artifact(ap)
+        self.assertEqual(artifact.status, Status.FAILED)
+        self.assertIn("missing API key", artifact.summary)
+
+    def test_workflow_run_crash_writes_failed_artifact(self):
+        _seed_board(self.paths, "alpha", plan=["x"])
+
+        class _BoomWf:
+            def run(self, prompt: str):
+                raise RuntimeError("provider returned 429")
+
+        with _argv("worker_entry.py", "--group", "alpha",
+                   "--multi-agent", "--agent-config", str(self.cfg),
+                   "--base-path", self.tmp), \
+             _envs(TEAM_BOARD_PATH=str(self.paths.board),
+                   TEAM_ARTIFACT_DIR=str(self.paths.artifacts_dir),
+                   TEAM_GROUP="alpha", TEAM_OWNER_MODEL="m",
+                   TEAM_DEPS="", TEAM_BASE_PATH=self.tmp), \
+             patch("agent.team.worker_entry.build_workflow_from_args",
+                   return_value=_BoomWf()):
+            rc = worker_entry.main()
+        self.assertEqual(rc, 1)
+        artifact = read_artifact(self.paths.artifact_path("alpha"))
+        self.assertEqual(artifact.status, Status.FAILED)
+        self.assertIn("429", artifact.summary)
+
+
 if __name__ == "__main__":
     unittest.main()
