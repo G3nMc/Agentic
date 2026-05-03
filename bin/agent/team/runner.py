@@ -22,10 +22,11 @@ import logging
 import os
 import subprocess
 import sys
+import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, TextIO
 
 from .artifact import Artifact, read_artifact
 from .board import BoardFile, read_board, write_board
@@ -124,6 +125,56 @@ def _stamp_interrupted(board_path: Path, group: str, reason: str) -> None:
 
 
 # ----------------------------------------------------------------------
+# Tee helper: drain a worker pipe to BOTH the per-group log file AND
+# the host's stderr (with a `[worker:group/stream]` prefix). Without
+# this, the host appears silent while a worker is running — the Flutter
+# UI's inactivity watchdog interprets that as "wedged" and kills the
+# orchestrator after 10 minutes, even when the worker is making real
+# progress.
+# ----------------------------------------------------------------------
+def _tee_pipe(
+    pipe,                 # subprocess pipe (text mode)
+    log_path: Path,
+    prefix: str,
+    host_stream: TextIO,
+) -> None:
+    """Read ``pipe`` line-by-line; mirror to ``log_path`` and ``host_stream``.
+
+    Daemon-friendly — exits when the pipe is closed by the subprocess.
+    """
+    try:
+        with open(log_path, "w", encoding="utf-8", newline="\n") as log_f:
+            for raw in pipe:
+                if not raw:
+                    continue
+                line = raw.decode("utf-8", errors="replace") \
+                    if isinstance(raw, bytes) else str(raw)
+                # Always persist the raw line.
+                try:
+                    log_f.write(line)
+                    log_f.flush()
+                except Exception:
+                    pass
+                stripped = line.rstrip("\r\n")
+                if not stripped:
+                    continue
+                # Prefix on the host stream so the Flutter log can
+                # distinguish leader vs worker output and the
+                # inactivity watchdog sees activity.
+                try:
+                    host_stream.write(f"{prefix} {stripped}\n")
+                    host_stream.flush()
+                except Exception:
+                    pass
+    except Exception as e:  # noqa: BLE001
+        try:
+            host_stream.write(f"{prefix} (tee error: {e})\n")
+            host_stream.flush()
+        except Exception:
+            pass
+
+
+# ----------------------------------------------------------------------
 # Sequential runner
 # ----------------------------------------------------------------------
 def run_worker(
@@ -163,43 +214,77 @@ def run_worker(
 
     logger.info("Spawning worker | group=%s argv=%s timeout=%.0fs",
                 group, argv, timeout_s)
+    # Visible breadcrumb on the host's stderr so the Flutter log shows
+    # workers starting/finishing in real time.
+    print(f"[team] starting worker '{group}' (timeout {timeout_s:.0f}s)",
+          file=sys.stderr, flush=True)
 
     notes: List[str] = []
     timed_out = False
     exit_code = -1
 
-    with open(stdout_path, "w", encoding="utf-8") as out_f, \
-            open(stderr_path, "w", encoding="utf-8") as err_f:
-        try:
-            proc = subprocess.Popen(
-                argv, env=env, cwd=cwd,
-                stdout=out_f, stderr=err_f,
-                stdin=subprocess.DEVNULL,
-            )
-        except Exception as e:
-            duration = time.monotonic() - started
-            logger.exception("Worker spawn failed | group=%s: %s", group, e)
-            _stamp_interrupted(paths.board, group, f"spawn failed: {e}")
-            return WorkerResult(
-                group=group, exit_code=-1, duration_s=duration,
-                timed_out=False, final_status=Status.INTERRUPTED,
-                stamped_by_host=True, notes=[f"spawn-failed: {e}"],
-            )
+    try:
+        proc = subprocess.Popen(
+            argv, env=env, cwd=cwd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            stdin=subprocess.DEVNULL,
+            bufsize=1,                # line-buffered
+            text=True,                # decode pipe output
+            encoding="utf-8",
+            errors="replace",
+        )
+    except Exception as e:
+        duration = time.monotonic() - started
+        logger.exception("Worker spawn failed | group=%s: %s", group, e)
+        _stamp_interrupted(paths.board, group, f"spawn failed: {e}")
+        return WorkerResult(
+            group=group, exit_code=-1, duration_s=duration,
+            timed_out=False, final_status=Status.INTERRUPTED,
+            stamped_by_host=True, notes=[f"spawn-failed: {e}"],
+        )
 
+    # Drain stdout + stderr in background threads so the worker can
+    # never block on a full OS pipe buffer, AND so each line reaches
+    # both the per-group log file and the host's stderr immediately.
+    out_thread = threading.Thread(
+        target=_tee_pipe,
+        args=(proc.stdout, stdout_path, f"[worker:{group}/out]", sys.stderr),
+        daemon=True, name=f"team-tee-stdout-{group}",
+    )
+    err_thread = threading.Thread(
+        target=_tee_pipe,
+        args=(proc.stderr, stderr_path, f"[worker:{group}/err]", sys.stderr),
+        daemon=True, name=f"team-tee-stderr-{group}",
+    )
+    out_thread.start()
+    err_thread.start()
+
+    try:
+        exit_code = proc.wait(timeout=timeout_s)
+    except subprocess.TimeoutExpired:
+        timed_out = True
+        notes.append(f"timeout after {timeout_s:.0f}s")
+        logger.warning("Worker timed out | group=%s", group)
         try:
-            exit_code = proc.wait(timeout=timeout_s)
-        except subprocess.TimeoutExpired:
-            timed_out = True
-            notes.append(f"timeout after {timeout_s:.0f}s")
-            logger.warning("Worker timed out | group=%s", group)
-            try:
-                proc.kill()
-                proc.wait(timeout=10)
-            except Exception:
-                pass
-            exit_code = proc.returncode if proc.returncode is not None else -9
+            proc.kill()
+            proc.wait(timeout=10)
+        except Exception:
+            pass
+        exit_code = proc.returncode if proc.returncode is not None else -9
+
+    # Let the tee threads drain any final lines before we measure
+    # duration. A 5s join cap keeps a misbehaving pipe from blocking
+    # the runner indefinitely.
+    out_thread.join(timeout=5)
+    err_thread.join(timeout=5)
 
     duration = time.monotonic() - started
+    print(
+        f"[team] worker '{group}' exited code={exit_code} "
+        f"({duration:.0f}s){' [TIMED OUT]' if timed_out else ''}",
+        file=sys.stderr, flush=True,
+    )
 
     # Inspect the board to see what status the worker (or its absence)
     # left behind.

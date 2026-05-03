@@ -110,6 +110,48 @@ class RunWorkerTests(unittest.TestCase):
         self.assertTrue(res.stamped_by_host)
 
 
+class TeeOutputTests(unittest.TestCase):
+    """Worker stdout/stderr must be tee'd to the host's stderr so the
+    Flutter inactivity watchdog sees activity and the user can see live
+    worker progress, not just the leader."""
+
+    def setUp(self):
+        import shutil
+        self._tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self._tmp, ignore_errors=True)
+
+    def test_worker_stderr_appears_on_host_stderr_with_prefix(self):
+        import io
+        import sys as _sys
+        from unittest.mock import patch
+
+        tp = TeamPaths.from_base(self._tmp)
+        _seed_board(tp, ["alpha"])
+
+        captured = io.StringIO()
+        with patch.object(_sys, "stderr", captured):
+            run_worker(
+                group="alpha",
+                paths=tp,
+                owner_model="mock",
+                deps=[],
+                base_path=self._tmp,
+                timeout_s=30.0,
+                worker_entry=_MOCK_ENTRY,
+                extra_env={
+                    "MOCK_BEHAVIOR": "clean",
+                    "PYTHONPATH": str(_BIN_DIR) + os.pathsep
+                                  + os.environ.get("PYTHONPATH", ""),
+                },
+            )
+        out = captured.getvalue()
+        # Lifecycle breadcrumbs from the host
+        self.assertIn("[team] starting worker 'alpha'", out)
+        self.assertIn("[team] worker 'alpha' exited", out)
+        # The log file is still populated (per-group debug record)
+        self.assertTrue(tp.worker_stderr("alpha").exists())
+
+
 class SequentialRunnerTests(unittest.TestCase):
     def test_three_clean_groups_in_order(self):
         with tempfile.TemporaryDirectory() as d:
