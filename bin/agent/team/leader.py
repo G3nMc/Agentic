@@ -228,37 +228,60 @@ class LeaderAgent(Agent):
         # Synthesize a summary instead of looping through model turns —
         # the leader's job here is bookkeeping, not prose. The text is
         # what the user sees in chat.
+        failure_lines: list = []
+        warning_lines: list = []
+        nothing_changed = True
         try:
             bf = read_board(self.paths.board)
             row_lines = []
             for r in bf.status_rows:
-                row_lines.append(f"  - {r.group}: {r.status.value}")
+                ap = self.paths.artifact_path(r.group)
+                files_count = 0
+                if ap.exists():
+                    try:
+                        a = read_artifact(ap)
+                        files_count = len(a.files_touched)
+                        if files_count > 0:
+                            nothing_changed = False
+                    except Exception:  # noqa: BLE001
+                        pass
+                if files_count > 0:
+                    suffix = f" ({files_count} file" \
+                             f"{'s' if files_count != 1 else ''} modified)"
+                else:
+                    suffix = " (0 files modified)"
+                row_lines.append(f"  - {r.group}: {r.status.value}{suffix}")
             body = "\n".join(row_lines) if row_lines else "(no groups)"
 
-            # Surface failed-group reasons so the user sees actionable
-            # context in chat instead of a bare "FAILED" list.
-            failure_lines: list = []
+            # Surface failed-group reasons + worker-prose-only warnings so
+            # the user sees actionable context instead of bare statuses.
             for r in bf.status_rows:
-                if not is_failure(r.status):
-                    continue
                 ap = self.paths.artifact_path(r.group)
-                if not ap.exists():
-                    failure_lines.append(
-                        f"  - {r.group}: {r.status.value} "
-                        f"(no artifact — worker died very early)")
-                    continue
-                try:
-                    a = read_artifact(ap)
-                    s = a.summary or "(no error message)"
-                    if len(s) > 300:
-                        s = s[:297] + "..."
-                    failure_lines.append(f"  - {r.group}: {s}")
-                except Exception as e:  # noqa: BLE001
-                    failure_lines.append(
-                        f"  - {r.group}: artifact unreadable ({e})")
+                if is_failure(r.status):
+                    if not ap.exists():
+                        failure_lines.append(
+                            f"  - {r.group}: {r.status.value} "
+                            f"(no artifact — worker died very early)")
+                        continue
+                    try:
+                        a = read_artifact(ap)
+                        s = a.summary or "(no error message)"
+                        if len(s) > 300:
+                            s = s[:297] + "..."
+                        failure_lines.append(f"  - {r.group}: {s}")
+                    except Exception as e:  # noqa: BLE001
+                        failure_lines.append(
+                            f"  - {r.group}: artifact unreadable ({e})")
+                elif r.status.value == "DONE_WITH_WARNINGS" and ap.exists():
+                    try:
+                        a = read_artifact(ap)
+                        if a.warnings:
+                            warning_lines.append(
+                                f"  - {r.group}: {a.warnings[0]}")
+                    except Exception:  # noqa: BLE001
+                        pass
         except FileNotFoundError:
             body = "(board missing)"
-            failure_lines = []
 
         summary = (summary_hint or "Team Mode session complete.").strip()
         if not ok:
@@ -266,6 +289,16 @@ class LeaderAgent(Agent):
         summary += f"\n\nGroup outcomes:\n{body}"
         if failure_lines:
             summary += "\n\nFailure reasons:\n" + "\n".join(failure_lines)
+        if warning_lines:
+            summary += "\n\nWarnings:\n" + "\n".join(warning_lines)
+        if nothing_changed:
+            summary += (
+                "\n\n⚠ NOTHING WAS CHANGED ON DISK. The workers reported "
+                "completion but no files were modified. The result is "
+                "likely hallucinated — check the artifacts under "
+                f".agent/team/{self.paths.session_id}/artifacts/ for "
+                "details, or re-run with a more capable worker model."
+            )
 
         self.tools.execute("finalize", {"summary": summary})
         return summary

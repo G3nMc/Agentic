@@ -158,6 +158,46 @@ class FinalizePhaseTests(unittest.TestCase):
         self.assertIn("All groups done", summary)
         self.assertIn("a:", summary)
 
+    def test_finalize_warns_when_nothing_changed(self):
+        # All groups DONE_CLEAN but no artifacts have files_touched —
+        # the chat reply must shout that nothing actually changed.
+        backend = _ScriptedBackend([])
+        leader = LeaderAgent(backend=backend, paths=self.paths)
+        summary = leader.finalize("Done.")
+        self.assertIn("NOTHING WAS CHANGED ON DISK", summary)
+        self.assertIn("0 files modified", summary)
+
+    def test_finalize_no_warning_when_files_were_modified(self):
+        # Drop a real artifact recording a write.
+        from agent.team.artifact import Artifact, write_artifact
+        a = Artifact(group="a", producer_model="m",
+                     status=Status.DONE_CLEAN, summary="ok",
+                     files_touched=[{"path": "lib/x.dart", "action": "wrote"}])
+        write_artifact(self.paths.artifact_path("a"), a)
+        backend = _ScriptedBackend([])
+        leader = LeaderAgent(backend=backend, paths=self.paths)
+        summary = leader.finalize("Done.")
+        self.assertNotIn("NOTHING WAS CHANGED", summary)
+        self.assertIn("1 file modified", summary)
+
+
+class LeaderPromptTests(unittest.TestCase):
+    """The leader's system prompt must teach concrete plan-step rules
+    so models stop generating purely conceptual steps."""
+
+    def test_prompt_lists_concrete_examples(self):
+        from agent.team.leader_tools import render_leader_system_prompt
+        prompt = render_leader_system_prompt()
+        # Concrete tool names appear in the GOOD examples
+        self.assertIn("read_file", prompt)
+        self.assertIn("flutter_analyze", prompt)
+        # Forbidden conceptual verbs are explicitly called out
+        self.assertIn("Document hardcoded colors", prompt)
+        self.assertIn("Verify accessibility", prompt)
+        self.assertIn("Run visual diff tests", prompt)
+        # And the rule itself is stated
+        self.assertIn("MUST imply at least one of those tools", prompt)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -453,13 +453,40 @@ def render_leader_system_prompt(*, max_tokens_per_group: int = 600) -> str:
         "",
         "STRICT RULES",
         "  - Each worker group must have a clear, narrow purpose and 3-7 plan steps.",
-        "  - Every plan step is an imperative ('design DAOs', 'write migration').",
         "  - You must NEVER add tools beyond the 7 listed below.",
         "  - You must NEVER ask the user questions or produce free-form prose "
         "    instead of a tool call. Each turn is exactly ONE tool call OR a "
         "    final answer that summarizes the run.",
         "  - Plan groups so each worker stays under ~"
             f"{max_tokens_per_group} tokens of context — split heavy work.",
+        "",
+        "PLAN STEPS MUST BE CONCRETE AND TOOL-MAPPABLE",
+        "  Workers have these tools available: read_file, write_file, "
+        "  patch_file, append_file, search_in_files, list_files, "
+        "  flutter_analyze, python_check, run_command, git_*.",
+        "  Every plan step you write MUST imply at least one of those tools.",
+        "",
+        "  GOOD steps (concrete, imperative, tool-mappable):",
+        "    - 'Read lib/ui/widgets/message_bubble.dart'",
+        "    - 'Replace AppTheme.userBubble with AppTheme.bgSecondary in message_bubble.dart'",
+        "    - 'Run flutter_analyze and fix any reported errors'",
+        "    - 'Patch the build() method to use AppTheme.textPrimary for the timestamp'",
+        "    - 'Search lib/ for hardcoded Color(0x... usages'",
+        "",
+        "  BAD steps (forbidden — purely conceptual, produce hallucinated 'work'):",
+        "    - 'Document hardcoded colors'        ← workers can't 'document'",
+        "    - 'Verify accessibility / contrast'  ← no contrast tool",
+        "    - 'Ensure backward compatibility'    ← vague, no action",
+        "    - 'Confirm coverage is complete'     ← meta-task",
+        "    - 'Review architecture'              ← no edit, no test",
+        "    - 'Specify migration path'           ← prose only",
+        "    - 'Run visual diff tests'            ← no such tool",
+        "    - 'Add unit tests for color rendering'  ← OK only if you "
+        "      include a follow-up step that writes the test file",
+        "",
+        "  If your task seems to need a 'verify' or 'document' step, replace "
+        "  it with the concrete check the worker would actually do "
+        "  ('Run flutter_analyze', 'Search for the new token usages').",
         "",
         "TOOL OUTPUT FORMAT",
         '  <tool>{"tool":"NAME","parameters":{...}}</tool>',

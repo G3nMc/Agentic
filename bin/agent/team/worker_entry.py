@@ -153,7 +153,17 @@ def _build_boot_prompt(
         "## Upstream dependency artifacts\n"
         f"{deps_block}\n\n"
         "## Instructions\n"
-        f"Execute every step of your plan for group `{group}`. "
+        f"Execute every step of your plan for group `{group}` USING TOOLS. "
+        "Reading files, editing files, searching, and running validators "
+        "all require tool calls — do NOT just describe what you would do. "
+        "Prose answers without tool usage are treated as a hallucinated "
+        "result and reported back to the user as a warning.\n\n"
+        "If a plan step is conceptual (e.g. 'verify' or 'document'), "
+        "interpret it concretely: replace 'verify' with `flutter_analyze` "
+        "or `search_in_files` to confirm the change; replace 'document' "
+        "with appending notes to the relevant file via `append_file`. If "
+        "no concrete interpretation is possible for a step, skip it "
+        "rather than fabricating progress.\n\n"
         "When all steps are done, produce a final answer that succinctly "
         "summarizes what you did, the files you touched, and any warnings. "
         "Do not start work on other groups."
@@ -202,13 +212,79 @@ def _load_dep_artifacts(paths: TeamPaths, deps: List[str]) -> Dict[str, Artifact
 # ----------------------------------------------------------------------
 # Result extraction from Workflow output
 # ----------------------------------------------------------------------
-def _classify_response(response: str) -> Status:
+# State-changing tools — a worker that called none of these did not
+# actually do any code-modification work.
+_STATE_CHANGING_TOOLS = frozenset({
+    "write_file", "append_file", "patch_file",
+    "delete_file", "move_file", "create_directory",
+})
+
+# Display-friendly action label per write tool.
+_TOOL_ACTION = {
+    "write_file": "wrote",
+    "append_file": "appended",
+    "patch_file": "patched",
+    "delete_file": "deleted",
+    "move_file": "moved",
+    "create_directory": "mkdir",
+}
+
+
+def _classify_response(response: str, tool_calls: List[Dict[str, Any]]) -> Status:
+    """Decide DONE_CLEAN / DONE_WITH_WARNINGS / FAILED for the worker.
+
+    Rules:
+      - Empty response → FAILED.
+      - Response starts with 'ERROR:' (or has 'error: ' early) → FAILED.
+      - Response is non-error AND the worker called ZERO tools → the
+        worker produced pure prose without engaging with the codebase.
+        Almost always means the 'work' was hallucinated. → DONE_WITH_WARNINGS.
+      - Otherwise → DONE_CLEAN.
+
+    Note: groups whose plan is explicitly read-only (audit, design) can
+    still hit DONE_CLEAN as long as they called at least one tool —
+    e.g. read_file / search_in_files. The warning is only for workers
+    that called nothing at all.
+    """
     if not response:
         return Status.FAILED
     lower = response.lower()
     if lower.startswith("error:") or "error: " in lower[:80]:
         return Status.FAILED
+    if not tool_calls:
+        return Status.DONE_WITH_WARNINGS
     return Status.DONE_CLEAN
+
+
+def _files_touched_from_tool_calls(
+    tool_calls: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """Reduce the workflow's tool history to the actual file mutations.
+
+    Filters to successful state-changing calls. Each entry shape matches
+    the artifact's ``files_touched`` schema: ``{"path", "action"}``.
+    """
+    out: List[Dict[str, Any]] = []
+    for c in tool_calls or []:
+        tool = c.get("tool")
+        if tool not in _STATE_CHANGING_TOOLS:
+            continue
+        if c.get("status") != "success":
+            continue
+        path = c.get("path") or "?"
+        out.append({"path": path, "action": _TOOL_ACTION.get(tool, tool)})
+    return out
+
+
+def _summarize_tool_usage(tool_calls: List[Dict[str, Any]]) -> Dict[str, int]:
+    """Compact ``{tool_name: success_count}`` for quick reporting."""
+    counts: Dict[str, int] = {}
+    for c in tool_calls or []:
+        if c.get("status") != "success":
+            continue
+        name = c.get("tool", "?")
+        counts[name] = counts.get(name, 0) + 1
+    return counts
 
 
 def _write_failed_artifact(
@@ -240,20 +316,25 @@ def _build_artifact_from_response(
     *, group: str, owner_model: str,
     response: str, status: Status,
     section: Optional[BoardSection],
+    tool_calls: Optional[List[Dict[str, Any]]] = None,
 ) -> Artifact:
     summary = (response or "").strip()
     if len(summary) > 1500:
         summary = summary[:1497] + "..."
-    files_touched: List[Dict[str, Any]] = []
+    # Authoritative source for files_touched: the workflow's tool_calls
+    # list. The earlier section-log heuristic missed everything because
+    # nothing populates the section log mid-workflow.
+    files_touched = _files_touched_from_tool_calls(tool_calls or [])
     warnings: List[str] = []
-    # Extract files-touched hints from the section log if present
+    if status == Status.DONE_WITH_WARNINGS and not files_touched and not (tool_calls or []):
+        warnings.append(
+            "Worker produced prose only — no tools were called. "
+            "The reported result is unreliable; verify nothing was "
+            "actually changed."
+        )
     if section is not None:
         for entry in section.log:
-            low = entry.lower()
-            if any(low.startswith(p) for p in ("wrote ", "patched ", "created ", "deleted ")):
-                files_touched.append({"path": entry.split(maxsplit=1)[-1],
-                                      "action": low.split()[0]})
-            if "warning" in low:
+            if "warning" in entry.lower():
                 warnings.append(entry)
     return Artifact(
         group=group, producer_model=owner_model,
@@ -352,6 +433,7 @@ def main() -> int:
     try:
         result = workflow.run(boot_prompt)
         response = str(result.get("response") or "")
+        tool_calls = list(result.get("tool_calls") or [])
     except Exception as e:
         tb = traceback.format_exc(limit=4)
         print(f"[worker:{group}] workflow.run crashed: {e}\n{tb}",
@@ -362,10 +444,14 @@ def main() -> int:
                                f"workflow.run crashed: {e}")
         return 1
 
-    # Determine status from the response
-    status = _classify_response(response)
+    # Determine status from response + actual tool usage. A non-error
+    # response with zero tool calls is a giveaway: the worker hallucinated
+    # progress without touching the codebase. Classify as DONE_WITH_WARNINGS
+    # so the chat summary tells the truth.
+    status = _classify_response(response, tool_calls)
+    tool_summary = _summarize_tool_usage(tool_calls)
     print(f"[worker:{group}] workflow finished | status={status.value} "
-          f"| response_chars={len(response)}",
+          f"| response_chars={len(response)} | tools={tool_summary}",
           file=sys.stderr, flush=True)
 
     # Read final section to attach files-touched hints
@@ -378,6 +464,7 @@ def main() -> int:
     artifact = _build_artifact_from_response(
         group=group, owner_model=owner_model,
         response=response, status=status, section=section,
+        tool_calls=tool_calls,
     )
     if artifact.warnings and status == Status.DONE_CLEAN:
         status = Status.DONE_WITH_WARNINGS

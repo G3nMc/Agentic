@@ -27,6 +27,8 @@ from __future__ import annotations
 import json
 import logging
 import re
+import sys
+import time
 import uuid
 from typing import Any, Dict, List, Optional
 
@@ -38,6 +40,55 @@ from ..tools.registry import ToolRegistry
 
 
 _WRITE_TOOLS = frozenset({"write_file", "append_file", "patch_file"})
+
+# Short confirmations / continuations that lack standalone meaning. When the
+# user sends one of these on a follow-up turn, the literal text is useless as
+# a spec — we need the shaper to re-shape with conversation history. Match
+# against the WHOLE message (with optional trailing punctuation/whitespace).
+_FOLLOWUP_RE = re.compile(
+    r"^\s*(?:"
+    r"ok(?:ay)?(?:\s+(?:proceed|go|do\s+it|continue|good))?"
+    r"|yes(?:\s+(?:proceed|go|do\s+it|continue|please))?"
+    r"|sure(?:\s+(?:do\s+it|go|proceed))?"
+    r"|proceed|continue|go\s+ahead|do\s+it|fix\s+it|please\s+continue"
+    r")[\s!.?]*$",
+    re.IGNORECASE,
+)
+
+
+def _is_short_followup(text: str) -> bool:
+    if not text:
+        return False
+    if _FOLLOWUP_RE.match(text):
+        return True
+    # Anything ≤25 non-whitespace chars without a strong noun marker is
+    # treated as needing re-shaping with history context.
+    stripped = text.strip()
+    return len(stripped) <= 25 and not any(
+        m in stripped.lower() for m in (".dart", ".py", "lib/", "bin/", "git ")
+    )
+
+# Phrases that mark a reply as a plan/announcement rather than an actual
+# action or final answer. Used both by the reasoning-loop guard and by the
+# trivial-path safety net so a router misclassification can't smuggle
+# "I'll run flutter analyze now" past the workflow.
+_PLAN_PHRASES = (
+    "i will",
+    "i'll",
+    "i am going to",
+    "next i will",
+    "let me",
+    "plan:",
+    "steps:",
+    "approach:",
+)
+
+
+def _looks_like_plan(text: str) -> bool:
+    if not text:
+        return False
+    t = text.lower()
+    return any(p in t for p in _PLAN_PHRASES)
 _DART_VALIDATORS = frozenset({"flutter_analyze"})
 _PY_VALIDATORS = frozenset({"python_check", "python_lint", "python_test"})
 
@@ -141,7 +192,7 @@ class Workflow:
             agents: Dict[str, Any],
             tool_registry: ToolRegistry,
             *,
-            max_iterations: int = 200,
+            max_iterations: int = 40,
             max_history_turns: int = 6,
             max_identical_failures: int = 10,
     ):
@@ -286,22 +337,30 @@ class Workflow:
 
             # Safety net: if the cheap "trivial" model emits a tool-like
             # payload, do NOT leak it as plain text. Re-route to the normal
-            # reasoning/tool loop so calls are parsed and executed.
+            # reasoning/tool loop so calls are parsed and executed. Same
+            # treatment for plan-style narrations ("I'll run flutter
+            # analyze now…") that promise an action but don't perform one
+            # — those would otherwise become the final answer because the
+            # trivial path skips the reasoning-loop's plan guard.
             candidate = str(state.final_answer or "")
             cleaned = _td.clean_history_text(candidate)
             parsed_calls = _td.parse_all_tag_tool_calls(
                 cleaned,
                 self.tool_registry.definitions,
             )
-            if parsed_calls or _td.looks_like_malformed_tool_call(cleaned):
+            tool_like = parsed_calls or _td.looks_like_malformed_tool_call(cleaned)
+            plan_like = _looks_like_plan(cleaned)
+            if tool_like or plan_like:
+                reason = "tool-like" if tool_like else "plan-like"
                 self.logger.warning(
-                    "Trivial route emitted tool-like output; escalating to reasoning. "
+                    "Trivial route emitted %s output; escalating to reasoning. "
                     "parsed_calls=%s",
+                    reason,
                     parsed_calls,
                 )
                 state.add_trace(
                     "workflow",
-                    output="route-corrected: trivial→reasoning",
+                    output=f"route-corrected: trivial→reasoning ({reason})",
                     detail=(cleaned[:400] + ("..." if len(cleaned) > 400 else "")),
                 )
                 state.route = ROUTE_REASONING
@@ -310,10 +369,23 @@ class Workflow:
                 return self.finalize(state, user_input)
 
         # 3. Shape
+        # Run the shaper on the very first turn AND on any subsequent turn
+        # whose user input is a short confirmation / continuation that has
+        # no standalone meaning (e.g. "Ok proceed", "yes do it"). Without
+        # this, follow-up turns send literal "[Spec] Ok proceed" to the
+        # reasoner, which forces it to guess intent from history alone.
         shaper = self.agents.get("shaper")
-        if shaper is not None and not self._shaped_this_session:
+        needs_reshape = (
+            not self._shaped_this_session
+            or _is_short_followup(user_input)
+        )
+        if shaper is not None and needs_reshape:
             try:
-                self.logger.info("Running shaper once for this session")
+                self.logger.info(
+                    "Running shaper | first_turn=%s short_followup=%s",
+                    not self._shaped_this_session,
+                    _is_short_followup(user_input),
+                )
                 shaper.run(state)
                 self.logger.debug(
                     "Shaper complete | shaped_prompt_present=%s",
@@ -344,25 +416,9 @@ class Workflow:
         validation_nudges = 0
         max_validation_nudges = 2
 
-        def looks_like_plan(text: str) -> bool:
-            if not text:
-                return False
-            t = text.lower()
-            return any(
-                x in t
-                for x in [
-                    "i will",
-                    "i'll",
-                    "i am going to",
-                    "next i will",
-                    "let me",
-                    "plan:",
-                    "steps:",
-                    "approach:",
-                ]
-            )
-
+        turn_start = time.monotonic()
         for iteration in range(self.max_iterations):
+            iter_start = time.monotonic()
             self.logger.debug(
                 "Loop iteration start | iteration=%s history=%s tool_results=%s",
                 iteration,
@@ -379,7 +435,19 @@ class Workflow:
                     "Calling reasoner=%s",
                     getattr(reasoner, "model_id", type(reasoner).__name__),
                 )
+                reasoner_start = time.monotonic()
                 reasoner.run(state)
+                reasoner_dt = time.monotonic() - reasoner_start
+                # Surface long reasoner calls to stderr so the user can
+                # see which model is dragging the wall time. Threshold of
+                # 30 s avoids spamming on quick local responses.
+                if reasoner_dt >= 30.0:
+                    print(
+                        f"[orch] iter {iteration}: reasoner took "
+                        f"{reasoner_dt:.1f}s (cumulative turn "
+                        f"{time.monotonic() - turn_start:.0f}s)",
+                        file=sys.stderr, flush=True,
+                    )
             except Exception as e:
                 self.logger.exception("Reasoner failed: %s", e)
                 state.final_answer = f"ERROR: Reasoner failed: {e}"
@@ -414,7 +482,7 @@ class Workflow:
                 continue
 
             # PLAN
-            if state.final_answer and looks_like_plan(state.final_answer):
+            if state.final_answer and _looks_like_plan(state.final_answer):
                 self.logger.warning("Plan-like final answer rejected: %r", state.final_answer)
                 state.final_answer = None
                 state.history.append(
@@ -655,6 +723,14 @@ class Workflow:
                 self.logger.error("Max iterations reached without final answer")
                 state.final_answer = "ERROR: Max iterations reached"
 
+        # Per-turn wall time + iteration count goes to stderr so the user
+        # can spot pathological turns at a glance from the orchestrator log.
+        total_dt = time.monotonic() - turn_start
+        print(
+            f"[orch] turn complete in {total_dt:.0f}s "
+            f"(iterations used: {iteration + 1}/{self.max_iterations})",
+            file=sys.stderr, flush=True,
+        )
         self.logger.info(
             "Run completed | route=%s final_answer=%r history_messages=%s",
             state.route,
@@ -662,6 +738,43 @@ class Workflow:
             len(state.history),
         )
         return self.finalize(state, user_input)
+
+    @staticmethod
+    def _summarize_tool_calls(results: List[Dict[str, Any]]) -> Optional[str]:
+        """Compact, model-facing recap of the tool calls executed this turn.
+
+        Each entry becomes one short line so the next turn's reasoner can
+        skim it without re-reading large file payloads. Only the tool name,
+        a one-line param preview, and the success/error status are kept.
+        """
+        if not results:
+            return None
+        lines: List[str] = []
+        for r in results:
+            tool = r.get("tool", "?")
+            params = r.get("parameters") or {}
+            try:
+                params_str = json.dumps(params, ensure_ascii=False)
+            except Exception:
+                params_str = str(params)
+            if len(params_str) > 160:
+                params_str = params_str[:160] + "…"
+
+            raw = r.get("result", "")
+            status = "?"
+            if isinstance(raw, dict):
+                status = str(raw.get("status", "?"))
+            elif isinstance(raw, str):
+                lower = raw.lower()
+                if '"status": "error"' in lower or '"status":"error"' in lower:
+                    status = "error"
+                elif '"status": "success"' in lower or '"status":"success"' in lower:
+                    status = "success"
+            lines.append(f"  - {tool}({params_str}) -> {status}")
+        return (
+            "[Prior turn tool history — already executed, do NOT repeat "
+            "identical calls]\n" + "\n".join(lines)
+        )
 
     @staticmethod
     def calls_signature(calls: List[Dict[str, Any]]) -> str:
@@ -758,16 +871,56 @@ class Workflow:
                 }
             )
 
+        # Persist a compact summary of the tools used this turn so the next
+        # turn's reasoner doesn't re-read files / re-run validators it has
+        # already inspected. Encoded as a `system` message because tool
+        # transcripts aren't user/assistant text — `Agent._build_messages`
+        # passes system messages through to the model.
+        tool_summary = self._summarize_tool_calls(
+            getattr(state, "tool_results", None) or []
+        )
+        if tool_summary:
+            self.conversation_history.append(
+                {
+                    "role": "system",
+                    "content": tool_summary,
+                }
+            )
+
+        # Compact list of tool calls executed this turn so callers (notably
+        # Team Mode workers) can decide whether real work happened — not
+        # just whether the response was non-error prose.
+        tool_calls_compact: List[Dict[str, Any]] = []
+        for r in (getattr(state, "tool_results", None) or []):
+            raw = r.get("result", "")
+            status = "?"
+            if isinstance(raw, dict):
+                status = str(raw.get("status", "?"))
+            elif isinstance(raw, str):
+                low = raw.lower()
+                if '"status": "error"' in low or '"status":"error"' in low:
+                    status = "error"
+                elif '"status": "success"' in low or '"status":"success"' in low:
+                    status = "success"
+            params = r.get("parameters") or {}
+            tool_calls_compact.append({
+                "tool": r.get("tool", "?"),
+                "path": str(params.get("path") or params.get("destination") or ""),
+                "status": status,
+            })
+
         payload = {
             "response": answer,
             "trace": state.trace_to_list(),
             "route": state.route,
+            "tool_calls": tool_calls_compact,
         }
 
         self.logger.debug(
-            "Finalize payload ready | trace_len=%s route=%s",
+            "Finalize payload ready | trace_len=%s route=%s tool_calls=%s",
             len(payload.get("trace", []) or []),
             payload.get("route"),
+            len(tool_calls_compact),
         )
         return payload
 
@@ -780,9 +933,14 @@ def build_workflow_from_args(
         *,
         security_config: SecurityConfig,
         base_path: str = ".",
+        path_filter: Optional[Any] = None,
 ) -> Workflow:
     """One-call helper: parse the agent config, build everything, return a Workflow."""
-    tool_registry = ToolRegistry(base_path=base_path, security_config=security_config)
+    tool_registry = ToolRegistry(
+        base_path=base_path,
+        security_config=security_config,
+        path_filter=path_filter,
+    )
     secrets = SecretsResolver(args)
     agents = build_agents(
         args.agent_config,
