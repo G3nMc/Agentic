@@ -7,7 +7,7 @@ import os
 from typing import Any, Dict, List
 
 from .backend_base import ModelBackend
-from ..utils.text import sanitize
+from ..utils.text import sanitize_for_agent
 
 
 class OllamaBackend(ModelBackend):
@@ -56,6 +56,13 @@ class OllamaBackend(ModelBackend):
         # all subsequent calls skip the tools= parameter automatically.
         # Same pattern as GroqBackend._tools_unsupported.
         self._tools_unsupported: bool = False
+
+    @property
+    def context_limit(self) -> int:
+        # Ollama runs the model with whatever num_ctx we passed in — that
+        # IS the effective limit, regardless of what the model could handle
+        # at a different num_ctx setting.
+        return int(self.num_ctx)
 
     def health_check(self) -> None:
         """Raise RuntimeError with a clear message if the endpoint or model
@@ -149,8 +156,8 @@ class OllamaBackend(ModelBackend):
             native_calls: List[Any] = []
 
 
-            messages = sanitize(messages)
-            tools = sanitize(tools)
+            messages = sanitize_for_agent(messages)
+            tools = sanitize_for_agent(tools)
 
             effective_tools = None if self._tools_unsupported else tools
 
@@ -180,14 +187,14 @@ class OllamaBackend(ModelBackend):
             for chunk in stream:
                 content = chunk.message.content or ""
 
-                # 🔥 CRITICAL FIX: sanitize streaming content per chunk
-                content = sanitize(content)
+                # Note: Output content is NOT sanitized here to preserve markdown
+                # formatting (emojis, icons, etc.) for the UI.
 
                 if content:
                     parts.append(content)
 
                 tcs = getattr(chunk.message, "tool_calls", None) or []
-                native_calls.extend(sanitize(tcs))
+                native_calls.extend(sanitize_for_agent(tcs))
 
                 chunk_count += 1
 
@@ -218,8 +225,8 @@ class OllamaBackend(ModelBackend):
                     name = getattr(fn, "name", None)
                     args = getattr(fn, "arguments", {}) or {}
 
-                    # 🔥 sanitize tool args too
-                    args = sanitize(args)
+                    # 🔥 sanitize tool args too (agent-safe)
+                    args = sanitize_for_agent(args)
 
                     if isinstance(args, str):
                         try:
@@ -248,14 +255,36 @@ class OllamaBackend(ModelBackend):
         except ResponseError as e:
             err_str = str(getattr(e, "error", e))
             status = getattr(e, "status_code", 0)
+            low = err_str.lower()
 
-            if (
-                    status == 400
-                    and effective_tools
-                    and "does not support tools" in err_str.lower()
-            ):
+            is_cloud_model = self.model_id.endswith("-cloud") or "-cloud:" in self.model_id
+
+            # 400: server explicitly says tools aren't supported.
+            # 500 + cloud + tools attached: the cloud endpoint silently
+            # rejects the tools= payload with a generic Internal Server
+            # Error instead of a helpful 400. We can't distinguish this
+            # from a real 500 server failure, but retrying once without
+            # tools is cheap — if the retry also fails we surface the
+            # real error to the user.
+            tools_likely_unsupported = (
+                effective_tools
+                and (
+                    (status == 400 and "does not support tools" in low)
+                    or (status >= 500 and is_cloud_model
+                        and "internal server error" in low)
+                )
+            )
+
+            if tools_likely_unsupported:
+                reason = (
+                    "explicitly unsupported"
+                    if status == 400
+                    else "500 from cloud endpoint — likely tools-incompatible"
+                )
                 print(
-                    f"[orch] '{self.model_id}' does not support tools; switching fallback.",
+                    f"[orch] '{self.model_id}' tools rejected ({reason}); "
+                    "retrying without tools, falling back to text-based "
+                    "<tool> protocol.",
                     file=sys.stderr,
                     flush=True,
                 )

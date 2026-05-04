@@ -24,6 +24,7 @@ class Orchestrator:
             max_tokens: int = 2048,
             security_config: Optional[SecurityConfig] = None,
             disable_tools: bool = False,
+            path_filter: Optional[Any] = None,
     ):
         self.backend = backend
         # When True, every request is routed as a plain chat call — the
@@ -34,7 +35,8 @@ class Orchestrator:
         # Expose model_id for logging/diagnostics; both backends carry one.
         self.model_id = getattr(backend, "model_id", "(unknown)")
         self.tool_registry = ToolRegistry(base_path=base_path,
-                                          security_config=security_config)
+                                          security_config=security_config,
+                                          path_filter=path_filter)
         # Model-level circuit breaker: open after 5 consecutive API failures,
         # probe again after 60 s so a temporary outage doesn't loop forever.
         self._model_circuit_breaker = CircuitBreaker(
@@ -46,8 +48,8 @@ class Orchestrator:
         self.temperature = temperature
         self.max_tokens = max_tokens
         # Cap tool-chain length. Each iteration is potentially a 60–120 s
-        # model call, so 6 bounds a single /sendPrompt at ~12 min worst case,
-        # comfortably inside the Dart-side absolute timeout (20 min).
+        # model call, so 30 bounds a single /sendPrompt at ~60 min worst case,
+        # comfortably inside the Dart-side absolute timeout (120 min).
         self.max_iterations = 30
         # Sliding-window history cap. Each "turn" = 1 user msg + 1 assistant msg.
         # 6 turns = 12 messages. Keeps total history well under 8 k-token cloud

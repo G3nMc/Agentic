@@ -96,7 +96,11 @@ class Agent(ABC):
         if history:
             for m in history:
                 role = m.get("role")
-                if role in ("user", "assistant"):
+                # Pass through "system" too — Workflow.finalize injects synthetic
+                # system messages summarizing the prior turn's tool calls and
+                # results so the next turn doesn't waste calls re-discovering
+                # state the previous turn already established.
+                if role in ("user", "assistant", "system"):
                     messages.append({"role": role, "content": m.get("content", "")})
         messages.append({"role": "user", "content": user_content})
         return messages

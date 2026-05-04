@@ -7,7 +7,7 @@ import os
 from typing import Any, Dict, List, Optional, Tuple
 
 from .backend_base import ModelBackend
-from ..utils.text import sanitize
+from ..utils.text import sanitize_for_agent
 
 
 class GeminiBackend(ModelBackend):
@@ -96,8 +96,8 @@ class GeminiBackend(ModelBackend):
         import json
         import sys
 
-        messages = sanitize(messages)
-        tools = sanitize(tools)
+        messages = sanitize_for_agent(messages)
+        tools = sanitize_for_agent(tools)
 
         system_instruction, contents = self._to_contents(messages)
         tool_defs = self._to_tool_definitions(tools, self._types)
@@ -108,7 +108,7 @@ class GeminiBackend(ModelBackend):
         }
 
         if system_instruction:
-            config_kwargs["system_instruction"] = sanitize(system_instruction)
+            config_kwargs["system_instruction"] = sanitize_for_agent(system_instruction)
 
         if tool_defs:
             config_kwargs["tools"] = tool_defs
@@ -126,7 +126,7 @@ class GeminiBackend(ModelBackend):
         try:
             response = self._client.models.generate_content(
                 model=self.model_id,
-                contents=sanitize(contents if contents else ""),
+                contents=contents if contents else "",
                 config=self._types.GenerateContentConfig(**config_kwargs),
             )
 
@@ -169,7 +169,7 @@ class GeminiBackend(ModelBackend):
             if args is None:
                 args = getattr(call, "args", None) or getattr(call, "arguments", None) or {}
 
-            args = sanitize(args)
+            args = sanitize_for_agent(args)
 
             if not isinstance(args, dict):
                 try:
@@ -193,7 +193,8 @@ class GeminiBackend(ModelBackend):
 
         text = getattr(response, "text", "") or ""
 
-        text = sanitize(text)
+        # Note: Output text is NOT sanitized here to preserve markdown
+        # formatting (emojis, icons, etc.) for the UI.
 
         return text.strip(), finish_reason
 

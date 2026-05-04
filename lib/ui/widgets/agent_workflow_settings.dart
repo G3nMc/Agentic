@@ -42,7 +42,11 @@ class _AgentWorkflowSettingsState extends State<AgentWorkflowSettings> {
   // The leader's controllers/state share the same maps as the other roles
   // — only the rendering is gated on [_teamMode].
   static const _kAllRolesIncludingLeader = <String>[
-    'router', 'shaper', 'reasoner', 'executor', AgentRoleSettingsRepository.leaderRole,
+    'router',
+    'shaper',
+    'reasoner',
+    'executor',
+    AgentRoleSettingsRepository.leaderRole,
   ];
 
   // The aggregate — single source of truth for the form.
@@ -53,6 +57,7 @@ class _AgentWorkflowSettingsState extends State<AgentWorkflowSettings> {
   final Map<String, TextEditingController> _maxTokensCtrls = {};
   final Map<String, TextEditingController> _tpmCtrls = {};
   final Map<String, TextEditingController> _ollamaUrlCtrls = {};
+  final Map<String, TextEditingController> _ollamaCtxCtrls = {};
 
   // Per-role debounce timers — coalesce rapid edits into a single save.
   final Map<String, Timer> _saveTimers = {};
@@ -75,9 +80,11 @@ class _AgentWorkflowSettingsState extends State<AgentWorkflowSettings> {
       _maxTokensCtrls[r] = TextEditingController();
       _tpmCtrls[r] = TextEditingController();
       _ollamaUrlCtrls[r] = TextEditingController();
+      _ollamaCtxCtrls[r] = TextEditingController();
     }
     _load();
-    AgentRoleSettingsRepository.instance.activeGroupNotifier.addListener(_onActiveGroupChanged);
+    AgentRoleSettingsRepository.instance.activeGroupNotifier
+        .addListener(_onActiveGroupChanged);
   }
 
   @override
@@ -97,26 +104,33 @@ class _AgentWorkflowSettingsState extends State<AgentWorkflowSettings> {
     for (final c in _ollamaUrlCtrls.values) {
       c.dispose();
     }
+    for (final c in _ollamaCtxCtrls.values) {
+      c.dispose();
+    }
     super.dispose();
   }
 
   // ─── Load / save plumbing ────────────────────────────────────────────────
   Future<void> _load() async {
     final enabled = await AgentRoleSettingsRepository.instance.isEnabled();
-    final teamMode = await AgentRoleSettingsRepository.instance.isTeamModeEnabled();
+    final teamMode =
+        await AgentRoleSettingsRepository.instance.isTeamModeEnabled();
     final groups = await AgentRoleSettingsRepository.instance.listGroups();
-    final activeGroupId = await AgentRoleSettingsRepository.instance.getActiveGroupId();
+    final activeGroupId =
+        await AgentRoleSettingsRepository.instance.getActiveGroupId();
     final agents = await WorkflowAgents.loadGroup(activeGroupId);
     // Load the leader role separately — it isn't in WorkflowAgents.byRole
     // by default, but its controllers need a value either way so the UI
     // doesn't flicker when the toggle flips on.
-    final leaderCfg = await AgentRoleSettingsRepository.instance.getLeader(activeGroupId);
+    final leaderCfg =
+        await AgentRoleSettingsRepository.instance.getLeader(activeGroupId);
     agents.put(AgentRoleSettingsRepository.leaderRole, leaderCfg);
     // Gemini is the only backend with a *user-editable* saved list (in the
     // Gemini Settings panel the user can add e.g. gemma4). Read it here so
     // the role's model dropdown shows the same options the dedicated panel
     // does, not just the hardcoded defaults.
-    final geminiSaved = await BackendSettingsRepository.instance.getGeminiModels();
+    final geminiSaved =
+        await BackendSettingsRepository.instance.getGeminiModels();
     if (!mounted) return;
     setState(() {
       _enabled = enabled;
@@ -131,6 +145,7 @@ class _AgentWorkflowSettingsState extends State<AgentWorkflowSettings> {
         _maxTokensCtrls[r]!.text = cfg.maxTokens.toString();
         _tpmCtrls[r]!.text = cfg.tpmLimit.toString();
         _ollamaUrlCtrls[r]!.text = cfg.ollamaBaseUrl ?? '';
+        _ollamaCtxCtrls[r]!.text = cfg.ollamaNumCtx?.toString() ?? '';
       }
       _loading = false;
     });
@@ -213,7 +228,8 @@ class _AgentWorkflowSettingsState extends State<AgentWorkflowSettings> {
       ),
     );
     if (name == null || name.trim().isEmpty) return;
-    await AgentRoleSettingsRepository.instance.renameGroup(_activeGroupId, name.trim());
+    await AgentRoleSettingsRepository.instance
+        .renameGroup(_activeGroupId, name.trim());
     await _load();
     if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
@@ -247,7 +263,8 @@ class _AgentWorkflowSettingsState extends State<AgentWorkflowSettings> {
       ),
     );
     if (confirm != true) return;
-    final removed = await AgentRoleSettingsRepository.instance.removeGroup(_activeGroupId);
+    final removed =
+        await AgentRoleSettingsRepository.instance.removeGroup(_activeGroupId);
     if (!removed) return;
     await _load();
     if (!mounted) return;
@@ -312,7 +329,9 @@ class _AgentWorkflowSettingsState extends State<AgentWorkflowSettings> {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text(list.isEmpty ? 'No models returned for $backend (using suggestions).' : 'Loaded ${list.length} $backend models.'),
+            content: Text(list.isEmpty
+                ? 'No models returned for $backend (using suggestions).'
+                : 'Loaded ${list.length} $backend models.'),
             duration: const Duration(milliseconds: 1400),
           ),
         );
@@ -343,15 +362,20 @@ class _AgentWorkflowSettingsState extends State<AgentWorkflowSettings> {
         return GithubModelsService.instance.listModels(key);
       case 'ollama':
         final cfg = _agents.get(role);
-        final url = (cfg.ollamaBaseUrl?.isNotEmpty ?? false) ? cfg.ollamaBaseUrl! : 'http://localhost:11434';
+        final url = (cfg.ollamaBaseUrl?.isNotEmpty ?? false)
+            ? cfg.ollamaBaseUrl!
+            : 'http://localhost:11434';
         final apiKey = await settings.getOllamaApiKey() ?? '';
-        return OllamaService.instance.listInstalledModels(baseUrl: url, apiKey: apiKey);
+        return OllamaService.instance
+            .listInstalledModels(baseUrl: url, apiKey: apiKey);
       case 'gemini':
         // Pull from the same persisted list the Gemini Settings panel
         // edits, so user-added models (e.g. gemma4) show up here too.
         // Falls back to the bundled defaults if the user never customised it.
         final saved = await settings.getGeminiModels();
-        return saved.isEmpty ? BackendSettingsRepository.defaultGeminiModels : saved;
+        return saved.isEmpty
+            ? BackendSettingsRepository.defaultGeminiModels
+            : saved;
       case 'huggingface':
         // HF has no per-token model list; use suggestions.
         return AgentRoleModelSuggestions.forBackend('huggingface');
@@ -407,10 +431,10 @@ class _AgentWorkflowSettingsState extends State<AgentWorkflowSettings> {
   }
 
   Widget _header() {
-    return const Column(
+    return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        Text(
+        const Text(
           'Workflow Agents',
           style: TextStyle(
             fontSize: 18,
@@ -418,15 +442,54 @@ class _AgentWorkflowSettingsState extends State<AgentWorkflowSettings> {
             color: AppTheme.textPrimary,
           ),
         ),
-        SizedBox(height: 4),
-        Text(
+        const SizedBox(height: 4),
+        const Text(
           'Pick which model handles each role in the multi-agent pipeline. '
           'Cheap models for routing/shaping; the strong model only for '
           'reasoning. API keys come from the Model Settings tab. Click ↻ to '
           'fetch the live model list from each provider.',
           style: TextStyle(fontSize: 12.5, color: AppTheme.textMuted),
         ),
+        const SizedBox(height: 12),
+        _infoBanner(),
       ],
+    );
+  }
+
+  Widget _infoBanner() {
+    return Container(
+      decoration: BoxDecoration(
+        color: AppTheme.bgSecondary,
+        border: Border.all(color: AppTheme.border),
+        borderRadius: BorderRadius.circular(8),
+      ),
+      padding: const EdgeInsets.all(10),
+      child: const Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(Icons.info_outline, size: 16, color: AppTheme.accent),
+              SizedBox(width: 6),
+              Text(
+                'Max Tokens vs Context Window (Ollama)',
+                style: TextStyle(
+                  fontSize: 13,
+                  fontWeight: FontWeight.w600,
+                  color: AppTheme.textPrimary,
+                ),
+              ),
+            ],
+          ),
+          SizedBox(height: 6),
+          Text(
+            '• Max tokens: output length limit (how much the model can generate).\n'
+            '• Context window (num_ctx): total tokens for input + output. '
+            'Must be ≥ max_tokens. For Ollama backends, set this to 32768+ for long files.',
+            style: TextStyle(fontSize: 11.5, color: AppTheme.textMuted),
+          ),
+        ],
+      ),
     );
   }
 
@@ -512,7 +575,8 @@ class _AgentWorkflowSettingsState extends State<AgentWorkflowSettings> {
               Switch(
                 value: _teamMode,
                 onChanged: (v) async {
-                  await AgentRoleSettingsRepository.instance.setTeamModeEnabled(v);
+                  await AgentRoleSettingsRepository.instance
+                      .setTeamModeEnabled(v);
                   // Team Mode requires multi-agent — flip it on automatically
                   // so the user doesn't get a silent no-op when only Team
                   // Mode is set.
@@ -562,7 +626,8 @@ class _AgentWorkflowSettingsState extends State<AgentWorkflowSettings> {
         children: [
           Row(
             children: [
-              const Icon(Icons.layers_outlined, size: 18, color: AppTheme.accent),
+              const Icon(Icons.layers_outlined,
+                  size: 18, color: AppTheme.accent),
               const SizedBox(width: 8),
               const Text(
                 'Workflow Group',
@@ -609,7 +674,7 @@ class _AgentWorkflowSettingsState extends State<AgentWorkflowSettings> {
               ),
               IconButton(
                 tooltip: 'Delete current group',
-                icon: const Icon(Icons.delete_outline, size: 20, color: AppTheme.danger),
+                icon: const Icon(Icons.delete_outline, size: 20),
                 onPressed: _deleteGroup,
               ),
             ],
@@ -691,6 +756,8 @@ class _AgentWorkflowSettingsState extends State<AgentWorkflowSettings> {
           if (cfg.backend == 'ollama') ...[
             const SizedBox(height: 10),
             _ollamaUrlField(role),
+            const SizedBox(height: 10),
+            _ollamaCtxField(role),
           ],
           const SizedBox(height: 10),
           Row(
@@ -723,10 +790,12 @@ class _AgentWorkflowSettingsState extends State<AgentWorkflowSettings> {
       case _SaveState.saved:
         return const Tooltip(
           message: 'Saved',
-          child: Icon(Icons.check_circle_outline, size: 18, color: Colors.green),
+          child:
+              Icon(Icons.check_circle_outline, size: 18, color: Colors.green),
         );
       case _SaveState.error:
-        return const Icon(Icons.error_outline, size: 18, color: AppTheme.danger);
+        return const Icon(Icons.error_outline,
+            size: 18, color: AppTheme.danger);
       case _SaveState.idle:
         return const SizedBox.shrink();
     }
@@ -742,7 +811,8 @@ class _AgentWorkflowSettingsState extends State<AgentWorkflowSettings> {
         isDense: true,
       ),
       items: [
-        for (final b in AgentRoleSettingsRepository.supportedBackends) DropdownMenuItem(value: b, child: Text(b)),
+        for (final b in AgentRoleSettingsRepository.supportedBackends)
+          DropdownMenuItem(value: b, child: Text(b)),
       ],
       onChanged: (v) async {
         if (v == null) return;
@@ -784,7 +854,9 @@ class _AgentWorkflowSettingsState extends State<AgentWorkflowSettings> {
               isDense: true,
             ),
             items: [
-              for (final m in items) DropdownMenuItem(value: m, child: Text(m, overflow: TextOverflow.ellipsis)),
+              for (final m in items)
+                DropdownMenuItem(
+                    value: m, child: Text(m, overflow: TextOverflow.ellipsis)),
             ],
             onChanged: (v) async {
               if (v == null) return;
@@ -818,13 +890,41 @@ class _AgentWorkflowSettingsState extends State<AgentWorkflowSettings> {
       child: TextField(
         controller: _ollamaUrlCtrls[role],
         decoration: const InputDecoration(
-          labelText: 'Ollama base URL (e.g. http://localhost:11434 or https://ollama.com)',
+          labelText:
+              'Ollama base URL (e.g. http://localhost:11434 or https://ollama.com)',
           border: OutlineInputBorder(),
           isDense: true,
         ),
         onChanged: (v) {
           final cfg = _agents.get(role);
-          setState(() => _agents.put(role, cfg.copyWith(ollamaBaseUrl: v.trim().isEmpty ? null : v.trim())));
+          setState(() => _agents.put(role,
+              cfg.copyWith(ollamaBaseUrl: v.trim().isEmpty ? null : v.trim())));
+          _scheduleSave(role);
+        },
+      ),
+    );
+  }
+
+  Widget _ollamaCtxField(String role) {
+    return Focus(
+      onFocusChange: (has) {
+        if (!has) _persistImmediately(role);
+      },
+      child: TextField(
+        controller: _ollamaCtxCtrls[role],
+        keyboardType: TextInputType.number,
+        decoration: const InputDecoration(
+          labelText: 'Context window (num_ctx)',
+          hintText: 'e.g. 32768',
+          border: OutlineInputBorder(),
+          isDense: true,
+          helperText:
+              'Total context (input + output). Default: 4096. Set to 32768+ for long documents.',
+        ),
+        onChanged: (v) {
+          final parsed = int.tryParse(v.trim());
+          final cfg = _agents.get(role);
+          setState(() => _agents.put(role, cfg.copyWith(ollamaNumCtx: parsed)));
           _scheduleSave(role);
         },
       ),

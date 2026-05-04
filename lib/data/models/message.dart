@@ -39,6 +39,9 @@ class ChatMessage {
   /// `executor`, `workflow`. Persisted in the same row so re-opening a
   /// chat keeps the badges visible.
   final String? agent;
+  /// Time in milliseconds it took for the assistant to generate this
+  /// response. Null for user messages or legacy data.
+  final int? responseTimeMs;
 
   ChatMessage({
     required this.id,
@@ -47,6 +50,7 @@ class ChatMessage {
     required this.content,
     required this.createdAt,
     this.agent,
+    this.responseTimeMs,
   });
 
   factory ChatMessage.fromMap(Map<String, Object?> map) {
@@ -57,6 +61,7 @@ class ChatMessage {
       content: (map["content"] as String?) ?? "",
       createdAt: (map["created_at"] as int?) ?? 0,
       agent: map["agent"] as String?,
+      responseTimeMs: map["response_time_ms"] as int?,
     );
   }
 
@@ -68,6 +73,7 @@ class ChatMessage {
       "content": content,
       "created_at": createdAt,
       if (agent != null) "agent": agent,
+      if (responseTimeMs != null) "response_time_ms": responseTimeMs,
     };
   }
 
@@ -86,6 +92,7 @@ class ChatMessage {
     String? content,
     int? createdAt,
     String? agent,
+    int? responseTimeMs,
   }) {
     return ChatMessage(
       id: id ?? this.id,
@@ -94,6 +101,7 @@ class ChatMessage {
       content: content ?? this.content,
       createdAt: createdAt ?? this.createdAt,
       agent: agent ?? this.agent,
+      responseTimeMs: responseTimeMs ?? this.responseTimeMs,
     );
   }
 }

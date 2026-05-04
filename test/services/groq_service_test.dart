@@ -1,5 +1,5 @@
 import 'package:flutter_test/flutter_test.dart';
-import 'package:hf_chat_flutter/services/groq_service.dart';
+import 'package:agentic/services/groq_service.dart';
 
 void main() {
   group('GroqService.stripThink', () {

@@ -1,12 +1,14 @@
-# HF Chat Flutter
+# Agentic
 
-Minimal, Claude-style chat client that talks directly to the Hugging Face Router
-API (`https://router.huggingface.co/v1/chat/completions`). Replaces the original
-`HF.html` reference with a proper Flutter desktop/mobile application, adds
-conversation history, sidebar, SQLite persistence, and model management.
+Multi-backend LLM chat and orchestrator workbench. Originally a minimal,
+Claude-style chat client for the Hugging Face Router API, the project has
+grown into a Flutter desktop/mobile application that drives Hugging Face,
+Groq, Gemini, OpenRouter, GitHub Models, and a local Python orchestrator —
+with conversation history, sidebar, SQLite persistence, and per-conversation
+model management.
 
-No backend is required: the Flutter app is the client, Hugging Face is the
-backend.
+No backend is required: the Flutter app is the client, the LLM provider you
+pick is the backend.
 
 ---
 
@@ -26,7 +28,7 @@ backend.
 ## Project layout
 
 ```
-hf_chat_flutter/
+agentic/
   pubspec.yaml
   analysis_options.yaml
   lib/
@@ -79,8 +81,8 @@ hf_chat_flutter/
    `windows/`, `linux/`, `macos/`, `web/`) in place:
 
    ```bash
-   cd hf_chat_flutter
-   flutter create . --project-name hf_chat_flutter \
+   cd agentic
+   flutter create . --project-name agentic \
      --platforms=windows,macos,linux,android,ios
    ```
 

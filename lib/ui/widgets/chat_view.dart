@@ -25,15 +25,16 @@ import '../../services/orchestrator_manager.dart';
 import '../../statemanagement/method_data.dart';
 import '../../statemanagement/method_listener.dart';
 import '../../statemanagement/state_manager.dart';
+import '../screens/home_screen.dart';
 import 'chat_input.dart';
 import 'message_bubble.dart';
 import 'model_switcher.dart';
 import 'openrouter_usage_badge.dart';
 import 'orchestrator_log_panel.dart';
 import 'quick_server_panel.dart';
-import 'workflow_breadcrumb.dart';
+import 'resize_handle.dart';
 import 'sidebar.dart';
-import '../screens/home_screen.dart';
+import 'workflow_breadcrumb.dart';
 
 class ChatView extends StatefulWidget {
   // Null = empty state (no conversation opened yet).
@@ -56,8 +57,7 @@ class _CancelToken {
   void cancel() => _cancelled = true;
 }
 
-class _ChatViewState extends StateManager<ChatView>
-    with WidgetsBindingObserver {
+class _ChatViewState extends StateManager<ChatView> with WidgetsBindingObserver {
   // In-memory full history for the current chat session.
   // This is what gets sent to HF on every send() call, just like HF.html.
   final List<ChatMessage> _messages = [];
@@ -76,6 +76,9 @@ class _ChatViewState extends StateManager<ChatView>
   /// Toggled by the log button in [ChatInput] and auto-set to true when the
   /// orchestrator successfully starts.
   bool _logVisible = false;
+
+  /// Current height of the orchestrator log panel when visible.
+  double _logPanelHeight = 220.0;
 
   /// Token for the currently in-flight send. Non-null only while [_sending].
   _CancelToken? _currentCancel;
@@ -127,8 +130,7 @@ class _ChatViewState extends StateManager<ChatView>
         final newModelId = methodData.methodParams?["modelId"] as String?;
         if (newModelId != null && _conversation != null) {
           _conversation = _conversation!.copyWith(modelId: newModelId);
-          ConversationRepository.instance
-              .updateModel(_conversation!.id, newModelId);
+          ConversationRepository.instance.updateModel(_conversation!.id, newModelId);
         }
         break;
       case "conversationUpdated":
@@ -222,9 +224,9 @@ class _ChatViewState extends StateManager<ChatView>
     final trimmed = text.trim();
     if (trimmed.isEmpty) return;
 
-    final safeText = trimmed
-        .replaceAll('\u0000', '')
-        .replaceAll(RegExp(r'[\uD800-\uDFFF]'), '');
+    // Only remove null bytes - preserve emoji and unicode for proper display
+    // and markdown formatting. Sanitization for API calls happens in Python.
+    final safeText = trimmed.replaceAll('\u0000', '');
 
     final backend = await BackendSettingsRepository.instance.getActiveBackend();
 
@@ -232,32 +234,23 @@ class _ChatViewState extends StateManager<ChatView>
       setState(() => _activeBackend = backend);
     }
 
-    final agentCreds =
-        await AgentCredentialsRepository.instance.getCredentials();
+    final agentCreds = await AgentCredentialsRepository.instance.getCredentials();
 
-    final token =
-        agentCreds?.hfToken ?? await SettingsRepository.instance.getHfToken();
+    final token = agentCreds?.hfToken ?? await SettingsRepository.instance.getHfToken();
 
-    final serverUrl =
-        await BackendSettingsRepository.instance.getLocalServerUrl();
+    final serverUrl = await BackendSettingsRepository.instance.getLocalServerUrl();
 
-    final ollamaBaseUrl =
-        await BackendSettingsRepository.instance.getOllamaBaseUrl();
+    final ollamaBaseUrl = await BackendSettingsRepository.instance.getOllamaBaseUrl();
 
-    final ollamaModel =
-        await BackendSettingsRepository.instance.getOllamaModel();
+    final ollamaModel = await BackendSettingsRepository.instance.getOllamaModel();
 
-    final openRouterApiKey =
-        await BackendSettingsRepository.instance.getOpenRouterApiKey();
+    final openRouterApiKey = await BackendSettingsRepository.instance.getOpenRouterApiKey();
 
-    final openRouterModel =
-        await BackendSettingsRepository.instance.getOpenRouterModel();
+    final openRouterModel = await BackendSettingsRepository.instance.getOpenRouterModel();
 
-    final ollamaPythonBridgeUrl =
-        await BackendSettingsRepository.instance.getOllamaPythonBridgeUrl();
+    final ollamaPythonBridgeUrl = await BackendSettingsRepository.instance.getOllamaPythonBridgeUrl();
 
-    if (backend == LlmBackend.huggingFace ||
-        backend == LlmBackend.orchestrator) {
+    if (backend == LlmBackend.huggingFace || backend == LlmBackend.orchestrator) {
       if (token == null || token.trim().isEmpty) {
         setState(() {
           _sendError = "Set your Hugging Face token in Settings first.";
@@ -271,18 +264,12 @@ class _ChatViewState extends StateManager<ChatView>
         });
         return;
       }
-    } else if (backend == LlmBackend.ollama ||
-        backend == LlmBackend.ollamaPython ||
-        backend == LlmBackend.ollamaOrchestrator) {
-      final resolvedModel =
-          (conv.modelId != null && conv.modelId!.trim().isNotEmpty)
-              ? conv.modelId!
-              : ollamaModel;
+    } else if (backend == LlmBackend.ollama || backend == LlmBackend.ollamaPython || backend == LlmBackend.ollamaOrchestrator) {
+      final resolvedModel = (conv.modelId != null && conv.modelId!.trim().isNotEmpty) ? conv.modelId! : ollamaModel;
 
       if (resolvedModel == null || resolvedModel.trim().isEmpty) {
         setState(() {
-          _sendError =
-              "Select an Ollama model in Settings before sending a message.";
+          _sendError = "Select an Ollama model in Settings before sending a message.";
         });
         return;
       }
@@ -301,8 +288,7 @@ class _ChatViewState extends StateManager<ChatView>
 
       if (resolvedModel.trim().isEmpty) {
         setState(() {
-          _sendError =
-              "Select an OpenRouter model in Settings before sending a message.";
+          _sendError = "Select an OpenRouter model in Settings before sending a message.";
         });
         return;
       }
@@ -314,20 +300,12 @@ class _ChatViewState extends StateManager<ChatView>
     }
 
     final modelId = switch (backend) {
-      LlmBackend.ollama ||
-      LlmBackend.ollamaPython ||
-      LlmBackend.ollamaOrchestrator =>
-        (conv.modelId != null && conv.modelId!.trim().isNotEmpty)
-            ? conv.modelId!
-            : (ollamaModel ?? ''),
+      LlmBackend.ollama || LlmBackend.ollamaPython || LlmBackend.ollamaOrchestrator => (conv.modelId != null && conv.modelId!.trim().isNotEmpty) ? conv.modelId! : (ollamaModel ?? ''),
       LlmBackend.openRouter => resolveOpenRouterModel(
           conv.modelId ?? '',
           openRouterModel ?? '',
         ),
-      LlmBackend.geminiOrchestrator =>
-        (conv.modelId != null && conv.modelId!.startsWith('gemini'))
-            ? conv.modelId!
-            : (geminiModel ?? BackendSettingsRepository.defaultGeminiModel),
+      LlmBackend.geminiOrchestrator => (conv.modelId != null && conv.modelId!.startsWith('gemini')) ? conv.modelId! : (geminiModel ?? BackendSettingsRepository.defaultGeminiModel),
       _ => conv.modelId ?? '',
     };
 
@@ -346,6 +324,10 @@ class _ChatViewState extends StateManager<ChatView>
 
     final cancelToken = _CancelToken();
     _currentCancel = cancelToken;
+
+    // Capture the moment the request is dispatched so we can measure
+    // how long the assistant takes to reply.
+    final sendStartMs = DateTime.now().millisecondsSinceEpoch;
 
     setState(() {
       _messages.add(userMsg);
@@ -389,12 +371,15 @@ class _ChatViewState extends StateManager<ChatView>
 
       if (cancelToken.isCancelled) return;
 
+      final responseTimeMs = DateTime.now().millisecondsSinceEpoch - sendStartMs;
+
       final assistantMsg = ChatMessage(
         id: const Uuid().v4(),
         conversationId: conv.id,
         role: MessageRole.assistant,
-        content: reply,
+        content: _sanitizeAssistantReply(reply),
         createdAt: DateTime.now().millisecondsSinceEpoch,
+        responseTimeMs: responseTimeMs,
       );
 
       await MessageRepository.instance.insert(assistantMsg);
@@ -627,10 +612,58 @@ class _ChatViewState extends StateManager<ChatView>
     await _sendMessage(originalContent);
   }
 
+  /// Handles the "Delete" action on a message bubble.
+  ///
+  /// Removes the selected message from the conversation history.
+  Future<void> _handleDeleteMessage(String messageId) async {
+    final idx = _messages.indexWhere((m) => m.id == messageId);
+    if (idx == -1) return;
+
+    final conv = _conversation;
+    if (conv == null) return;
+
+    // Remove the message from the list
+    setState(() {
+      _messages.removeAt(idx);
+    });
+
+    // Remove the message from the database
+    await MessageRepository.instance.deleteById(messageId);
+
+    // Update the conversation's updated time
+    await ConversationRepository.instance.touch(conv.id);
+    
+    // Refresh conversations in sidebar
+    await MethodListener<Sidebar>().callMethod("refreshConversations");
+  }
+
   String _autoTitleFrom(String firstMessage) {
     final cleaned = firstMessage.replaceAll(RegExp(r'\s+'), ' ').trim();
     if (cleaned.length <= 40) return cleaned;
     return '${cleaned.substring(0, 40)}...';
+  }
+
+  /// Defensive last-mile cleanup before persisting an assistant reply.
+  /// Strips orchestrator wire-protocol artifacts (`__READY__` handshake,
+  /// `{"response": "...", "trace": [...]}` envelope) that should normally be
+  /// peeled off in OrchestratorManager but may slip through on edge cases
+  /// (subprocess respawn, missing `__RESPONSE_END__`, legacy data path).
+  String _sanitizeAssistantReply(String reply) {
+    var text = reply;
+    // Drop a stray leading handshake line.
+    text = text.replaceFirst(RegExp(r'^\s*__READY__\s*\n?'), '');
+    final trimmed = text.trim();
+    if (trimmed.startsWith('{')) {
+      try {
+        final obj = jsonDecode(trimmed);
+        if (obj is Map && obj['response'] is String) {
+          return obj['response'] as String;
+        }
+      } catch (_) {
+        // Not JSON — keep the trimmed text.
+      }
+    }
+    return trimmed.isNotEmpty ? trimmed : reply;
   }
 
   Future<void> _editChatTitle(Conversation conv) async {
@@ -723,7 +756,15 @@ class _ChatViewState extends StateManager<ChatView>
             modelId: _conversation!.modelId ?? '',
             onServerStatusChanged: () => setState(() {}),
           ),
-        if (showOrchestratorLog && _logVisible) const OrchestratorLogPanel(),
+        if (showOrchestratorLog && _logVisible) ...[
+          ResizeHandle(
+            height: _logPanelHeight,
+            onHeightChanged: (newHeight) => setState(() => _logPanelHeight = newHeight),
+            minHeight: 40.0,
+            maxHeight: 600.0,
+          ),
+          OrchestratorLogPanel(height: _logPanelHeight),
+        ],
       ],
     );
   }
@@ -758,14 +799,13 @@ class _ChatViewState extends StateManager<ChatView>
           const OpenRouterUsageBadge(),
           const SizedBox(width: 8),
           ValueListenableBuilder<bool>(
-            valueListenable:
-                AgentRoleSettingsRepository.instance.enabledNotifier,
+            valueListenable: AgentRoleSettingsRepository.instance.enabledNotifier,
             builder: (ctx, multiAgent, _) {
               if (multiAgent) {
                 // Multi-agent mode owns the per-role models in Settings,
                 // so the per-conversation model picker is replaced by a
                 // breadcrumb that shows the four roles + their models.
-                return const WorkflowBreadcrumb();
+                return WorkflowBreadcrumb(sending: _sending);
               }
               return ModelSwitcher(
                 selectedModelId: conv.modelId ?? '',
@@ -783,25 +823,17 @@ class _ChatViewState extends StateManager<ChatView>
               width: 46,
               height: 46,
               decoration: BoxDecoration(
-                border: Border.all(color: AppTheme.accentDarkMarrone, width: 1),
+                border: Border.all(color: AppTheme.accentMarrone, width: 1),
                 borderRadius: BorderRadius.circular(8),
               ),
               child: IconButton(
-                tooltip: OrchestratorManager.instance.isRunning
-                    ? "Stop orchestrator"
-                    : "Start orchestrator",
+                tooltip: OrchestratorManager.instance.isRunning ? "Stop orchestrator" : "Start orchestrator",
                 icon: Icon(
-                  OrchestratorManager.instance.isRunning
-                      ? Icons.stop_outlined
-                      : Icons.play_arrow_outlined,
+                  OrchestratorManager.instance.isRunning ? Icons.stop_outlined : Icons.play_arrow_outlined,
                   size: 20,
-                  color: OrchestratorManager.instance.isRunning
-                      ? AppTheme.danger
-                      : AppTheme.textSecondary,
+                  color: OrchestratorManager.instance.isRunning ? AppTheme.accentMarrone : AppTheme.accent,
                 ),
-                onPressed: () => OrchestratorManager.instance.isRunning
-                    ? _stopOrchestrator()
-                    : _startOrchestrator(),
+                onPressed: () => OrchestratorManager.instance.isRunning ? _stopOrchestrator() : _startOrchestrator(),
               )),
           const SizedBox(width: 12),
           // Local server button (only for local backend)
@@ -809,19 +841,15 @@ class _ChatViewState extends StateManager<ChatView>
             Builder(
               builder: (ctx) {
                 final modelId = conv.modelId ?? '';
-                final isRunning =
-                    LocalServerManager.instance.isServerRunning(modelId);
+                final isRunning = LocalServerManager.instance.isServerRunning(modelId);
                 return IconButton(
                   tooltip: isRunning ? "Server running" : "Start local server",
                   icon: Icon(
                     isRunning ? Icons.cloud_done : Icons.cloud_upload_outlined,
                     size: 16,
-                    color: isRunning
-                        ? AppTheme.accentMarrone
-                        : AppTheme.textSecondary,
+                    color: isRunning ? AppTheme.accentMarrone : AppTheme.textSecondary,
                   ),
-                  onPressed:
-                      isRunning ? null : () => _startLocalServer(modelId),
+                  onPressed: isRunning ? null : () => _startLocalServer(modelId),
                 );
               },
             ),
@@ -852,8 +880,7 @@ class _ChatViewState extends StateManager<ChatView>
 
   Future<void> _startLocalServer(String modelId) async {
     try {
-      final config =
-          await LocalServerConfigRepository.instance.getByModelId(modelId);
+      final config = await LocalServerConfigRepository.instance.getByModelId(modelId);
 
       if (!mounted) return;
 
@@ -925,12 +952,28 @@ class _ChatViewState extends StateManager<ChatView>
     await _startOrchestratorForActiveBackend();
   }
 
+  /// When the multi-agent workflow is enabled, returns the title of the
+  /// workflow group bound to [conv] (falling back to the currently active
+  /// group when [conv] has no `groupId`). Returns null otherwise — single
+  /// backend conversations don't carry a workflow.
+  Future<String?> _resolveWorkflowTitle(Conversation conv) async {
+    final repo = AgentRoleSettingsRepository.instance;
+    if (!await repo.isEnabled()) return null;
+    final groups = await repo.listGroups();
+    if (groups.isEmpty) return null;
+    final targetId = conv.groupId ?? await repo.getActiveGroupId();
+    for (final g in groups) {
+      if (g.id == targetId) return g.title;
+    }
+    return null;
+  }
+
   Future<void> _downloadChatAsJson() async {
     final conv = _conversation;
     if (conv == null) return;
 
-    final messages =
-        await MessageRepository.instance.listByConversation(conv.id);
+    final messages = await MessageRepository.instance.listByConversation(conv.id);
+    final workflowTitle = await _resolveWorkflowTitle(conv);
 
     // Build an AI-model-friendly format: OpenAI chat-completion shape.
     // The top-level object contains metadata and a "messages" array where
@@ -941,6 +984,7 @@ class _ChatViewState extends StateManager<ChatView>
         "title": conv.title,
         "modelId": conv.modelId,
         "backend": conv.backend,
+        if (workflowTitle != null) "workflow": workflowTitle,
         "createdAt": conv.createdAt,
         "updatedAt": conv.updatedAt,
       },
@@ -994,8 +1038,8 @@ class _ChatViewState extends StateManager<ChatView>
     final conv = _conversation;
     if (conv == null) return;
 
-    final messages =
-        await MessageRepository.instance.listByConversation(conv.id);
+    final messages = await MessageRepository.instance.listByConversation(conv.id);
+    final workflowTitle = await _resolveWorkflowTitle(conv);
 
     // Build the same JSON structure as _downloadChatAsJson
     final jsonData = {
@@ -1004,6 +1048,7 @@ class _ChatViewState extends StateManager<ChatView>
         "title": conv.title,
         "modelId": conv.modelId,
         "backend": conv.backend,
+        if (workflowTitle != null) "workflow": workflowTitle,
         "createdAt": conv.createdAt,
         "updatedAt": conv.updatedAt,
       },
@@ -1033,8 +1078,7 @@ class _ChatViewState extends StateManager<ChatView>
     final conv = _conversation;
     if (conv == null) return;
 
-    final messages =
-        await MessageRepository.instance.listByConversation(conv.id);
+    final messages = await MessageRepository.instance.listByConversation(conv.id);
 
     // Build JSON like the download button, but we'll extract just messages
     final jsonData = {
@@ -1151,9 +1195,7 @@ class _ChatViewState extends StateManager<ChatView>
         case OrchestratorBackend.groq:
           groqApiKey = await settings.getGroqApiKey() ?? '';
           final savedGroqModel = await settings.getGroqModel() ?? '';
-          modelId = (convModelId.isNotEmpty && !convModelId.contains(':'))
-              ? convModelId
-              : (savedGroqModel.isNotEmpty ? savedGroqModel : convModelId);
+          modelId = (convModelId.isNotEmpty && !convModelId.contains(':')) ? convModelId : (savedGroqModel.isNotEmpty ? savedGroqModel : convModelId);
           temperature = await settings.getGroqTemperature();
           maxTokens = await settings.getGroqMaxTokens();
           tpmLimit = await settings.getGroqTpmLimit();
@@ -1180,8 +1222,7 @@ class _ChatViewState extends StateManager<ChatView>
           break;
         case OrchestratorBackend.openrouter:
           openRouterApiKey = await settings.getOpenRouterApiKey() ?? '';
-          final savedOpenRouterModel =
-              await settings.getOpenRouterModel() ?? '';
+          final savedOpenRouterModel = await settings.getOpenRouterModel() ?? '';
           modelId = resolveOpenRouterModel(convModelId, savedOpenRouterModel);
           temperature = await settings.getOpenRouterTemperature();
           maxTokens = await settings.getOpenRouterMaxTokens();
@@ -1196,9 +1237,7 @@ class _ChatViewState extends StateManager<ChatView>
         case OrchestratorBackend.github:
           githubApiKey = await settings.getGithubApiKey() ?? '';
           final savedGithubModel = await settings.getGithubModel() ?? '';
-          modelId = (convModelId.isNotEmpty && convModelId.contains('/'))
-              ? convModelId
-              : savedGithubModel;
+          modelId = (convModelId.isNotEmpty && convModelId.contains('/')) ? convModelId : savedGithubModel;
           temperature = await settings.getGithubTemperature();
           maxTokens = await settings.getGithubMaxTokens();
           tpmLimit = await settings.getGithubTpmLimit();
@@ -1211,10 +1250,8 @@ class _ChatViewState extends StateManager<ChatView>
           }
           break;
         case OrchestratorBackend.huggingface:
-          final creds =
-              await AgentCredentialsRepository.instance.getCredentials();
-          token =
-              creds?.hfToken ?? await SettingsRepository.instance.getHfToken();
+          final creds = await AgentCredentialsRepository.instance.getCredentials();
+          token = creds?.hfToken ?? await SettingsRepository.instance.getHfToken();
           modelId = convModelId;
           if ((token ?? '').isEmpty) {
             if (!silent && mounted) {
@@ -1226,14 +1263,12 @@ class _ChatViewState extends StateManager<ChatView>
       }
 
       // Already running on the desired backend -> nothing to do.
-      if (OrchestratorManager.instance.isRunning &&
-          OrchestratorManager.instance.currentBackend == desiredBackend) {
+      if (OrchestratorManager.instance.isRunning && OrchestratorManager.instance.currentBackend == desiredBackend) {
         return true;
       }
 
       // Stop existing orchestrator if backend changed.
-      if (OrchestratorManager.instance.isRunning &&
-          OrchestratorManager.instance.currentBackend != desiredBackend) {
+      if (OrchestratorManager.instance.isRunning && OrchestratorManager.instance.currentBackend != desiredBackend) {
         await OrchestratorManager.instance.stop();
       }
 
@@ -1249,8 +1284,7 @@ class _ChatViewState extends StateManager<ChatView>
             OrchestratorBackend.ollama => "Starting Ollama orchestrator...",
             OrchestratorBackend.groq => "Starting Groq orchestrator...",
             OrchestratorBackend.gemini => "Starting Gemini orchestrator...",
-            OrchestratorBackend.openrouter =>
-              "Starting OpenRouter orchestrator...",
+            OrchestratorBackend.openrouter => "Starting OpenRouter orchestrator...",
             OrchestratorBackend.github => "Starting GitHub orchestrator...",
             OrchestratorBackend.huggingface => "Starting orchestrator...",
           },
@@ -1282,8 +1316,7 @@ class _ChatViewState extends StateManager<ChatView>
               OrchestratorBackend.ollama => "Ollama orchestrator active",
               OrchestratorBackend.groq => "Groq orchestrator active",
               OrchestratorBackend.gemini => "Gemini orchestrator active",
-              OrchestratorBackend.openrouter =>
-                "OpenRouter orchestrator active",
+              OrchestratorBackend.openrouter => "OpenRouter orchestrator active",
               OrchestratorBackend.github => "GitHub orchestrator active",
               OrchestratorBackend.huggingface => "Orchestrator active",
             },
@@ -1292,18 +1325,12 @@ class _ChatViewState extends StateManager<ChatView>
           NotificationHelper.showError(
             context,
             switch (desiredBackend) {
-              OrchestratorBackend.ollama =>
-                "Failed to start Ollama orchestrator",
-              OrchestratorBackend.groq =>
-                "Failed to start Groq orchestrator",
-              OrchestratorBackend.gemini =>
-                "Failed to start Gemini orchestrator",
-              OrchestratorBackend.openrouter =>
-                "Failed to start OpenRouter orchestrator",
-              OrchestratorBackend.github =>
-                "Failed to start GitHub orchestrator",
-              OrchestratorBackend.huggingface =>
-                "Failed to start orchestrator",
+              OrchestratorBackend.ollama => "Failed to start Ollama orchestrator",
+              OrchestratorBackend.groq => "Failed to start Groq orchestrator",
+              OrchestratorBackend.gemini => "Failed to start Gemini orchestrator",
+              OrchestratorBackend.openrouter => "Failed to start OpenRouter orchestrator",
+              OrchestratorBackend.github => "Failed to start GitHub orchestrator",
+              OrchestratorBackend.huggingface => "Failed to start orchestrator",
             },
           );
         }
@@ -1451,9 +1478,49 @@ class _ChatViewState extends StateManager<ChatView>
                 ),
               ),
               const SizedBox(height: 6),
-              Text(
-                "Model: ${_conversation?.modelId ?? ''}",
-                style: const TextStyle(color: AppTheme.textMuted, fontSize: 13),
+              ValueListenableBuilder<bool>(
+                valueListenable: AgentRoleSettingsRepository.instance.enabledNotifier,
+                builder: (ctx, multiAgent, _) {
+                  if (multiAgent) {
+                    return ValueListenableBuilder<String?>(
+                      valueListenable:
+                          AgentRoleSettingsRepository.instance.activeGroupNotifier,
+                      builder: (ctx, activeId, _) {
+                        return ValueListenableBuilder<int>(
+                          valueListenable: AgentRoleSettingsRepository
+                              .instance.groupsChangedNotifier,
+                          builder: (ctx, _, __) {
+                            return FutureBuilder<List<WorkflowGroup>>(
+                              future: AgentRoleSettingsRepository.instance
+                                  .listGroups(),
+                              builder: (ctx, snap) {
+                                final groups = snap.data;
+                                String title = '';
+                                if (groups != null && groups.isNotEmpty) {
+                                  final match = groups.firstWhere(
+                                    (g) => g.id == activeId,
+                                    orElse: () => groups.first,
+                                  );
+                                  title = match.title;
+                                }
+                                return Text(
+                                  "Workflow: $title",
+                                  style: const TextStyle(
+                                      color: AppTheme.textMuted, fontSize: 13),
+                                );
+                              },
+                            );
+                          },
+                        );
+                      },
+                    );
+                  }
+                  return Text(
+                    "Model: ${_conversation?.modelId ?? ''}",
+                    style: const TextStyle(
+                        color: AppTheme.textMuted, fontSize: 13),
+                  );
+                },
               ),
             ],
           ),
@@ -1471,11 +1538,12 @@ class _ChatViewState extends StateManager<ChatView>
         }
         final m = _messages[i];
         return MessageBubble(
-          message: m,
+          message: m.content,
+          timeInSeconds: (m.responseTimeMs ?? 0) / 1000.0,
+          isUser: m.role == MessageRole.user,
           // Show resend only on user bubbles and only when not already sending.
-          onResend: (m.role == MessageRole.user && !_sending)
-              ? () => _handleResend(m.id)
-              : null,
+          onResend: (m.role == MessageRole.user && !_sending) ? () => _handleResend(m.id) : null,
+          onDelete: () => _handleDeleteMessage(m.id),
         );
       },
     );
@@ -1546,13 +1614,13 @@ class _ChatViewState extends StateManager<ChatView>
             height: 40,
             alignment: Alignment.center,
             decoration: BoxDecoration(
-              border: Border.all(color: AppTheme.accentDarkMarrone, width: 1),
+              border: Border.all(color: AppTheme.accentMarrone, width: 1),
               borderRadius: BorderRadius.circular(20),
             ),
             child: const Icon(
               Icons.keyboard_arrow_down_rounded,
               size: 30,
-              color: AppTheme.accent,
+              color: AppTheme.accentMarrone,
             ),
           ),
         ),
@@ -1583,11 +1651,9 @@ class _ChatViewState extends StateManager<ChatView>
             icon: const Icon(Icons.add, size: 16),
             label: const Text("New chat"),
             onPressed: () {
-              MethodListener<Sidebar>().callMethod("refreshConversations");
+              MethodListener<Sidebar>().callMethod("newConversation");
               ScaffoldMessenger.of(context).showSnackBar(
-                const SnackBar(
-                    content: Text(
-                        "Please use the '+' button in the sidebar to start a new chat")),
+                const SnackBar(content: Text("Please use the '+' button in the sidebar to start a new chat")),
               );
             },
           ),
@@ -1611,8 +1677,7 @@ class _TypingIndicator extends StatefulWidget {
   State<_TypingIndicator> createState() => _TypingIndicatorState();
 }
 
-class _TypingIndicatorState extends State<_TypingIndicator>
-    with SingleTickerProviderStateMixin {
+class _TypingIndicatorState extends State<_TypingIndicator> with SingleTickerProviderStateMixin {
   late final AnimationController _c;
 
   @override
@@ -1643,8 +1708,7 @@ class _TypingIndicatorState extends State<_TypingIndicator>
               return Row(
                 children: List.generate(3, (i) {
                   final phase = (_c.value + i * 0.2) % 1.0;
-                  final opacity =
-                      0.3 + 0.7 * (phase < 0.5 ? phase * 2 : (1 - phase) * 2);
+                  final opacity = 0.3 + 0.7 * (phase < 0.5 ? phase * 2 : (1 - phase) * 2);
                   return Padding(
                     padding: const EdgeInsets.symmetric(horizontal: 3),
                     child: Opacity(

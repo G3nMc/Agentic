@@ -1,7 +1,7 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
-import 'package:hf_chat_flutter/statemanagement/method_listener.dart';
+import 'package:agentic/statemanagement/method_listener.dart';
 
 import '../../core/theme/app_theme.dart';
 import '../../services/orchestrator_manager.dart';

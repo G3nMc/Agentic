@@ -7,7 +7,7 @@ import re
 from typing import Any, Dict, List
 
 from .backend_base import ModelBackend
-from ..utils.text import sanitize
+from ..utils.text import sanitize_for_agent
 
 
 class GroqBackend(ModelBackend):
@@ -39,8 +39,8 @@ class GroqBackend(ModelBackend):
         import sys
         import json
 
-        messages = sanitize(messages)
-        tools = sanitize(tools)
+        messages = sanitize_for_agent(messages)
+        tools = sanitize_for_agent(tools)
 
         effective_tools = None if self._tools_unsupported else tools
 

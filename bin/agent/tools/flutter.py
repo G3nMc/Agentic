@@ -2,8 +2,39 @@
 from __future__ import annotations
 
 import json
+import os
 import re
+import shutil
 import subprocess
+import sys
+
+
+def _find_flutter() -> str | None:
+    """Locate the Flutter CLI on this machine.
+
+    On Windows the binary is `flutter.bat`; `subprocess.run(["flutter", ...])`
+    with `shell=False` does NOT honour PATHEXT, so a bare `"flutter"` lookup
+    fails even when `flutter.bat` is on PATH. `shutil.which` does honour
+    PATHEXT, so it finds the `.bat`. As a last resort we fall back to
+    `$FLUTTER_ROOT/bin/flutter[.bat]` — the manager always exports
+    `FLUTTER_ROOT` when the user has configured an SDK path.
+    """
+    found = shutil.which("flutter")
+    if found:
+        return found
+    root = os.environ.get("FLUTTER_ROOT")
+    if root:
+        candidates = (
+            [os.path.join(root, "bin", "flutter.bat"),
+             os.path.join(root, "bin", "flutter.exe"),
+             os.path.join(root, "bin", "flutter")]
+            if sys.platform == "win32"
+            else [os.path.join(root, "bin", "flutter")]
+        )
+        for c in candidates:
+            if os.path.isfile(c):
+                return c
+    return None
 
 
 def register(registry) -> None:
@@ -20,8 +51,18 @@ def register(registry) -> None:
             target = registry.resolve_path(path)
             rel = (str(target.relative_to(registry.base_path))
                    if target != registry.base_path else ".")
-            # Use the locally-installed flutter binary (caller's PATH).
-            cmd = ["flutter", "analyze", "--no-pub"]
+            flutter_bin = _find_flutter()
+            if flutter_bin is None:
+                return json.dumps({
+                    "status": "error",
+                    "message": (
+                        "flutter CLI not found. Set the Flutter SDK path in "
+                        "Settings (or add `flutter` to PATH / set FLUTTER_ROOT) "
+                        "so the orchestrator subprocess can locate it."
+                    ),
+                })
+            # Use the resolved flutter binary (handles `flutter.bat` on Windows).
+            cmd = [flutter_bin, "analyze", "--no-pub"]
             if rel != ".":
                 cmd.append(rel)
             result = subprocess.run(

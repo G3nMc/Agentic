@@ -20,7 +20,7 @@ class CodeBlockBuilder extends MarkdownElementBuilder {
         text: TextSpan(
           text: text,
           style: const TextStyle(
-            backgroundColor: AppTheme.accentDarkMarrone,
+            backgroundColor: AppTheme.codeDarkBlue,
             fontFamily: "monospace",
             color: AppTheme.textPrimary,
             fontSize: 13.5,
@@ -77,7 +77,7 @@ class _CodeBlockView extends StatelessWidget {
           ),
           Container(
             height: 1,
-            color: AppTheme.textMuted.withAlpha(30),
+            color: AppTheme.textMuted,
           ),
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 6),

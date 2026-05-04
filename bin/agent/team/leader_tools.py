@@ -197,16 +197,37 @@ class LeaderTools:
     # ------------------------------------------------------------------
     # Public dispatch
     # ------------------------------------------------------------------
+    # Some models (gpt-oss, older OpenAI-style fine-tunes) emit tool
+    # names with a namespacing prefix like ``tool.create_group``,
+    # ``functions.create_group``. Strip those before lookup so the
+    # dispatcher tolerates the quirk instead of rejecting every call.
+    _NAME_PREFIXES = ("tool.", "tools.", "function.", "functions.",
+                      "namespace.", "leader.", "team.")
+
     def execute(self, name: str, params: Dict[str, Any]) -> Dict[str, Any]:
-        if name not in LEADER_TOOL_NAMES:
-            return {"status": "error", "message": f"Unknown leader tool: {name}"}
-        method: Callable = getattr(self, f"_do_{name}")
+        canonical = self._canonicalize_name(name)
+        if canonical not in LEADER_TOOL_NAMES:
+            return {"status": "error",
+                    "message": f"Unknown leader tool: {name!r}. "
+                               f"Valid names: {sorted(LEADER_TOOL_NAMES)}"}
+        method: Callable = getattr(self, f"_do_{canonical}")
         try:
             return method(**(params or {}))
         except TypeError as e:
             return {"status": "error", "message": f"Invalid params: {e}"}
         except Exception as e:  # noqa: BLE001
             return {"status": "error", "message": str(e)}
+
+    @classmethod
+    def _canonicalize_name(cls, name: str) -> str:
+        if not name:
+            return name
+        s = str(name).strip()
+        lowered = s.lower()
+        for pfx in cls._NAME_PREFIXES:
+            if lowered.startswith(pfx):
+                return s[len(pfx):]
+        return s
 
     # ------------------------------------------------------------------
     # Helpers

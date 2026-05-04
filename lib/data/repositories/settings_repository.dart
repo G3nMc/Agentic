@@ -11,6 +11,26 @@ class SettingsRepository {
   static const String keyHfToken = "hf_token";
   static const String keySelectedModelId = "selected_model_id";
 
+  /// Absolute path to the Flutter SDK root (the directory that contains
+  /// `bin/flutter`). When set, the orchestrator subprocess is launched
+  /// with `<flutter_sdk_path>/bin` prepended to PATH so tools like
+  /// `flutter analyze` resolve without depending on the user's shell PATH.
+  static const String keyFlutterSdkPath = "flutter_sdk_path";
+
+  /// Absolute path to the Python interpreter used to launch the
+  /// orchestrator subprocess. When set, overrides the platform default
+  /// (`python` on Windows, `python3` elsewhere). Useful when the PATH
+  /// Python is the wrong version or missing dependencies.
+  static const String keyPythonPath = "python_path";
+
+  Future<String?> getFlutterSdkPath() => get(keyFlutterSdkPath);
+  Future<void> setFlutterSdkPath(String path) => set(keyFlutterSdkPath, path);
+  Future<void> clearFlutterSdkPath() => delete(keyFlutterSdkPath);
+
+  Future<String?> getPythonPath() => get(keyPythonPath);
+  Future<void> setPythonPath(String path) => set(keyPythonPath, path);
+  Future<void> clearPythonPath() => delete(keyPythonPath);
+
   /// Generic methods for non-sensitive settings still using the DB
   Future<String?> get(String key) async {
     final db = await AppDatabase.instance.database;

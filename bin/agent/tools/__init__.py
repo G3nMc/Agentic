@@ -12,6 +12,9 @@ read_file.
 """
 from __future__ import annotations
 
+import sys as _sys
+_sys.dont_write_bytecode = True
+
 
 def collect_all_tools(registry) -> None:
     """Populate ``registry.tools`` and ``registry.definitions`` in-place."""

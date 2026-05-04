@@ -1,5 +1,5 @@
-name: hf_chat_flutter
-description: Minimal Claude-style chat client for Hugging Face Router API.
+name: agentic
+description: Agentic — multi-backend LLM chat and orchestrator workbench.
 publish_to: "none"
 version: 1.0.0+1
 

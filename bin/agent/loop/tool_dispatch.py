@@ -384,6 +384,7 @@ from __future__ import annotations
 import ast
 import json
 import re
+import sys
 from typing import Any, Dict, List, Optional, Tuple
 
 # ---------------------------------------------------------------------------
@@ -846,12 +847,155 @@ def _decode_embedded_tool_call(name_value: Any) -> Optional[Tuple[str, Dict[str,
     return emb_name, emb_params
 
 
+# Wrapper keys models love to leak INTO the parameters dict. None of these
+# should ever be a real tool parameter — if they show up, it's a model
+# hallucination (the wrapper structure bleeding into the inner payload).
+# Examples seen in real traces from qwen, glm, gpt-oss:
+#   read_file({"path": "x", "parameters": {}})    <- empty wrapper leak
+#   read_file({"path": "x", "tool": "read_file"}) <- name leak
+#   read_file({"parameters": {"path": "x"}})      <- whole payload double-wrapped
+_WRAPPER_LEAK_KEYS = ("parameters", "arguments", "args", "tool", "name", "function")
+
+
+def _allowed_param_names(tool_name: str, tool_defs) -> Optional[set]:
+    """Return the set of valid parameter names for ``tool_name``.
+
+    Returns ``None`` if the tool isn't found or has no schema — that
+    signals "don't strip unknown keys" so we don't accidentally drop
+    legitimate params on tools whose schema we can't see.
+    """
+    if not tool_name or not tool_defs:
+        return None
+    for td in tool_defs:
+        fn = td.get("function") or {}
+        if fn.get("name") == tool_name:
+            spec = fn.get("parameters") or {}
+            props = spec.get("properties") or {}
+            return set(props.keys()) if props else None
+    return None
+
+
+def _sanitize_params(
+    params: Dict[str, Any],
+    tool_name: str,
+    tool_defs,
+) -> Dict[str, Any]:
+    """Strip wrapper-key leaks and double-nesting before kwarg expansion.
+
+    Models under context pressure routinely emit malformed tool calls
+    where the wrapper structure leaks into the parameters dict. Without
+    this sanitizer those calls die at ``read_file(**params)`` with
+    'unexpected keyword argument'. Three shapes handled:
+
+    1. **Whole-payload wrap**: ``{"parameters": {<real params>}}`` —
+       unwrap one level. Same for ``arguments``/``args``.
+    2. **Wrapper-leak siblings**: ``{"path": "x", "parameters": {}}`` —
+       drop the wrapper key when its value is empty/redundant.
+    3. **Schema-aware filtering**: when ``tool_defs`` carries the
+       tool's JSON schema, drop any param whose name isn't declared.
+       Skipped for tools without a discoverable schema so we don't
+       break things we can't see.
+
+    Returns a NEW dict (doesn't mutate the input). Logs each strip to
+    stderr so trace consumers can see what was sanitized.
+    """
+    if not isinstance(params, dict):
+        return {} if params is None else params
+
+    # ── Pass 1: whole-payload unwrap.
+    # If the only meaningful key is a wrapper key whose value is itself
+    # a dict, the model wrapped the actual params one level too deep.
+    # Unwrap exactly once. Don't loop — that risks unwrapping a real
+    # tool that happens to take a param named 'parameters'.
+    for wrapper in ("parameters", "arguments", "args"):
+        if wrapper not in params:
+            continue
+        inner = params[wrapper]
+        if not isinstance(inner, dict) or not inner:
+            continue
+        # Other keys that are NOT also wrapper-leaks → don't unwrap,
+        # the model just leaked an empty wrapper sibling (handled in
+        # pass 2 below).
+        non_wrapper_keys = [
+            k for k in params
+            if k not in _WRAPPER_LEAK_KEYS
+        ]
+        if non_wrapper_keys:
+            continue
+        # Sole key is a wrapper with a non-empty dict inside — unwrap.
+        params = dict(inner)
+        break
+
+    # ── Pass 2: drop wrapper-leak SIBLINGS.
+    # ``{"path": "x", "parameters": {}}`` is a leak if 'parameters' is
+    # not a real param of the tool. Same for tool/name/arguments/args/
+    # function. Only drop when we're confident the key is NOT a real
+    # param of this tool (i.e. either we know the schema and it's not
+    # in there, OR the value is empty so nothing useful is lost).
+    allowed = _allowed_param_names(tool_name, tool_defs)
+    cleaned: Dict[str, Any] = {}
+    dropped: list = []
+    for k, v in params.items():
+        if k in _WRAPPER_LEAK_KEYS:
+            # Real-param exception: if the schema explicitly lists this
+            # key as a valid param, KEEP it. (Example: a hypothetical
+            # tool that genuinely takes a 'name' argument.)
+            if allowed is not None and k in allowed:
+                cleaned[k] = v
+                continue
+            # Drop if empty (definitely a leak) OR if we know the
+            # schema and the key isn't there (also definitely a leak).
+            is_empty = (
+                v in (None, "", {}, [])
+                or (isinstance(v, str) and not v.strip())
+            )
+            if is_empty or allowed is not None:
+                dropped.append(k)
+                continue
+            # Schema unknown AND value non-empty: keep it. We'd rather
+            # surface a clean "unexpected keyword" error than silently
+            # discard data we can't verify.
+            cleaned[k] = v
+        else:
+            cleaned[k] = v
+
+    # ── Pass 3 (optional): schema-aware unknown-key strip.
+    # When we have the tool's schema, drop ANY remaining key not in
+    # the allowed set. This catches one-off hallucinations the wrapper
+    # rules above wouldn't (e.g. ``line_start`` on a tool that takes
+    # ``offset``). We always keep keys that ARE in the schema even if
+    # they look wrapper-ish, so the order of operations matters.
+    if allowed is not None:
+        unknown = [k for k in cleaned if k not in allowed]
+        for k in unknown:
+            dropped.append(k)
+            cleaned.pop(k, None)
+
+    if dropped:
+        try:
+            print(
+                f"[tool-dispatch] sanitized {tool_name}({list(cleaned.keys())}); "
+                f"dropped hallucinated keys: {dropped}",
+                file=sys.stderr, flush=True,
+            )
+        except Exception:  # noqa: BLE001
+            pass
+
+    return cleaned
+
+
 def _normalize_tool_spec(data: Dict[str, Any], tool_defs) -> Optional[Tuple[str, Dict[str, Any]]]:
     """Normalize a JSON-like dict into (tool_name, parameters)."""
     if not isinstance(data, dict):
         return None
 
     name = data.get("tool") or data.get("name")
+    # Strip common hallucinated prefixes from tool names
+    if isinstance(name, str):
+        for prefix in ("functions/", "tools/", "tool/", "func/"):
+            if name.startswith(prefix):
+                name = name[len(prefix):]
+                break
     params = data.get("parameters") or data.get("arguments") or data.get("args") or {}
 
     if isinstance(params, str):
@@ -880,6 +1024,11 @@ def _normalize_tool_spec(data: Dict[str, Any], tool_defs) -> Optional[Tuple[str,
         name = _infer_tool_name_from_params(params, tool_defs)
 
     if isinstance(name, str) and name:
+        # Sanitize against wrapper-key leaks, double-nesting, and
+        # schema-unknown keys before handing off to the executor. Without
+        # this, 'parameters': {} sibling-leaks (and similar hallucinations)
+        # crash with TypeError: unexpected keyword argument.
+        params = _sanitize_params(params, name, tool_defs)
         return name, params
 
     return None

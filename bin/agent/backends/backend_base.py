@@ -12,7 +12,7 @@ import re
 from typing import Any, Dict, List, Optional, Tuple
 
 from ..utils.rate_limit import TokenBucket, estimate_tokens
-from ..utils.text import sanitize
+from ..utils.text import sanitize_for_agent
 
 
 class ModelBackend:
@@ -26,6 +26,19 @@ class ModelBackend:
             tools: Optional[List[Dict[str, Any]]] = None,
     ) -> Tuple[str, str]:
         raise NotImplementedError
+
+    @property
+    def context_limit(self) -> int:
+        """Token capacity of the underlying model.
+
+        Backends that know the limit precisely (Ollama via ``num_ctx``)
+        override this. The default delegates to a model-id lookup table
+        so every cloud backend gets a sensible value without duplicated
+        tables. Used by the workflow compactor to decide when to
+        summarize before sending a request.
+        """
+        from ..core.context_limits import lookup_context_limit
+        return lookup_context_limit(getattr(self, "model_id", ""))
 
 
 class RateLimitedBackend(ModelBackend):
@@ -44,26 +57,30 @@ class RateLimitedBackend(ModelBackend):
         # methods the orchestrator setup calls.
         return getattr(self.inner, name)
 
+    @property
+    def context_limit(self) -> int:
+        return self.inner.context_limit
+
 
     def chat(self, messages, max_tokens, temperature, tools=None):
         import sys
 
-        # 🔥 CRITICAL FIX: sanitize BEFORE ANY logic
-        messages = sanitize(messages)
-        tools = sanitize(tools)
+        # 🔥 CRITICAL FIX: sanitize BEFORE ANY logic (agent-safe, removes emoji)
+        messages = sanitize_for_agent(messages)
+        tools = sanitize_for_agent(tools)
 
         if self.bucket.tpm_limit <= 0:
             return self.inner.chat(messages, max_tokens, temperature, tools)
 
         # 🔥 CRITICAL FIX: safe estimation
-        estimated = estimate_tokens(sanitize(messages), max_tokens)
+        estimated = estimate_tokens(sanitize_for_agent(messages), max_tokens)
         limit = self.bucket.effective_limit()
 
         if estimated > limit:
             messages = self._trim_to_fit(messages, max_tokens, limit)
 
             # 🔥 sanitize AFTER trimming too (VERY IMPORTANT)
-            messages = sanitize(messages)
+            messages = sanitize_for_agent(messages)
 
             estimated = estimate_tokens(messages, max_tokens)
 
@@ -91,8 +108,9 @@ class RateLimitedBackend(ModelBackend):
                 tools,
             )
 
-            # 🔥 CRITICAL FIX: sanitize output BEFORE storing or re-feeding
-            content = sanitize(content)
+            # Note: Output content is NOT sanitized here to preserve markdown
+            # formatting (emojis, icons, etc.) for the UI. Sanitization only
+            # applies to inputs (messages/tools) sent to agents.
 
         except Exception as e:
             requested = self._parse_requested_tokens(str(e))

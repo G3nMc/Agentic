@@ -16,7 +16,12 @@ import '../../services/orchestrator_manager.dart';
 /// always emits a fresh array per turn, so tracking "the last agent in the
 /// most recent array" is enough).
 class WorkflowBreadcrumb extends StatefulWidget {
-  const WorkflowBreadcrumb({super.key});
+  /// When [sending] transitions from true → false the breadcrumb immediately
+  /// clears any active highlight and cancels the pending queue, so the tiles
+  /// stop flashing once the final response has been delivered.
+  final bool sending;
+
+  const WorkflowBreadcrumb({super.key, this.sending = false});
 
   @override
   State<WorkflowBreadcrumb> createState() => _WorkflowBreadcrumbState();
@@ -46,6 +51,28 @@ class _WorkflowBreadcrumbState extends State<WorkflowBreadcrumb> {
       RegExp(r'\[agent:([a-zA-Z_]+)(?:[→←]|->|<-|\])');
 
   @override
+  void didUpdateWidget(WorkflowBreadcrumb oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    // When the parent signals that sending has finished, immediately clear
+    // any active highlight and cancel the pending queue so the tiles stop
+    // flashing after the final response has been delivered.
+    if (oldWidget.sending && !widget.sending) {
+      _clearHighlight();
+    }
+  }
+
+  /// Immediately resets the active highlight and cancels all pending timers.
+  void _clearHighlight() {
+    _highlightResetTimer?.cancel();
+    _queueTimer?.cancel();
+    _pendingRoles.clear();
+    _lastTransitionAt = null;
+    if (_activeRole != null && mounted) {
+      setState(() => _activeRole = null);
+    }
+  }
+
+  @override
   void initState() {
     super.initState();
     _loadAgents();
@@ -53,6 +80,7 @@ class _WorkflowBreadcrumbState extends State<WorkflowBreadcrumb> {
         OrchestratorManager.instance.traceStream.listen(_onTrace);
     _logSub = OrchestratorManager.instance.logStream.listen(_onLogLine);
     AgentRoleSettingsRepository.instance.groupsChangedNotifier.addListener(_onGroupsChanged);
+    AgentRoleSettingsRepository.instance.activeGroupNotifier.addListener(_onGroupsChanged);
   }
 
   @override
@@ -62,6 +90,7 @@ class _WorkflowBreadcrumbState extends State<WorkflowBreadcrumb> {
     _highlightResetTimer?.cancel();
     _queueTimer?.cancel();
     AgentRoleSettingsRepository.instance.groupsChangedNotifier.removeListener(_onGroupsChanged);
+    AgentRoleSettingsRepository.instance.activeGroupNotifier.removeListener(_onGroupsChanged);
     super.dispose();
   }
 

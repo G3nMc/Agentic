@@ -79,6 +79,61 @@ class _ChatInputState extends State<ChatInput> {
   /// past the model's context window and the request would 400 anyway.
   static const int _kMaxAttachmentBytes = 200 * 1024; // 200 KB
 
+  /// Whether the model-friendly template is currently active in the input.
+  bool _templateActive = false;
+
+  /// Pre-written Markdown template designed for model-friendly, context-compliant
+  /// prompts. Uses clear section headers, bullet-point placeholders, and structured
+  /// guidance so the model receives maximum context with minimal ambiguity.
+  static const String _kModelTemplate = '''# Context
+- What is the current state? Describe the existing behavior, files involved, or relevant background.
+- Include error messages, logs, or screenshots if applicable.
+
+# Goal
+- What needs to be achieved? Be specific and measurable.
+- Prioritize: must-have vs nice-to-have.
+
+# Constraints
+- Technology stack / framework versions to respect.
+- Files or modules that must NOT be modified.
+- Performance, compatibility, or security requirements.
+
+# Implementation Details
+- Step-by-step approach or algorithm to follow.
+- Edge cases and error-handling expectations.
+- Naming conventions or patterns to align with.
+
+# Rules
+- Always read files before editing them.
+- Make the smallest safe edit that solves the problem.
+- Run validation (flutter analyze / python check) after every code change.
+- Never modify unrelated files.
+- Prefer targeted patches over full file rewrites.
+
+# Output Format
+- Describe the expected response structure (e.g., JSON schema, Markdown sections, code blocks).
+- Specify language for code fences (e.g., ```dart, ```python).
+- State whether explanations, diffs, or full files are expected.''';
+
+  /// Toggles the model-friendly template in the input field.
+  /// If the template is not active, inserts it and sets the cursor at the end.
+  /// If the template is already active, clears the input (toggle off).
+  void _toggleTemplate() {
+    if (!widget.enabled || widget.sending) return;
+    if (_templateActive) {
+      // Toggle off — clear the input
+      _controller.clear();
+      setState(() => _templateActive = false);
+    } else {
+      // Insert the template
+      _controller.text = _kModelTemplate;
+      setState(() => _templateActive = true);
+      // Move cursor to end so the user can start editing
+      _controller.selection = TextSelection.collapsed(offset: _controller.text.length);
+      _focusNode.requestFocus();
+    }
+  }
+
   /// True while the user is actively dragging files over the input. Drives
   /// a tinted border so they get visual feedback that the drop will land here.
   bool _dragging = false;
@@ -91,6 +146,13 @@ class _ChatInputState extends State<ChatInput> {
   }
 
   void _loadProjectInfo() {
+    if (!_projectService.hasExplicitFolder) {
+      // No folder picked yet — make it obvious so the user picks one before
+      // sending requests, otherwise --base-path falls back to Directory.current
+      // (the app install dir on Windows installer builds).
+      setState(() => _currentProjectFolder = 'Select folder...');
+      return;
+    }
     final path = _projectService.currentPath;
     final folderName = path.split(Platform.pathSeparator).last;
     if (folderName.isNotEmpty) {
@@ -201,7 +263,7 @@ class _ChatInputState extends State<ChatInput> {
     );
 
     if (confirmed == true && mounted) {
-      _projectService.setProjectFolder(newPath);
+      await _projectService.setProjectFolder(newPath);
       setState(() => _currentProjectFolder = newPath.split(Platform.pathSeparator).last);
       
       // Stop orchestrator to ensure it restarts with the new base path
@@ -503,6 +565,7 @@ class _ChatInputState extends State<ChatInput> {
 
     final composed = _composeMessage(text);
     _controller.clear();
+    _templateActive = false;
     final attachmentsSnapshot = List<_Attachment>.from(_attachments);
     setState(() => _attachments.clear());
 
@@ -616,6 +679,12 @@ class _ChatInputState extends State<ChatInput> {
                         onTap: _pickAttachments,
                       ),
                       const SizedBox(width: 10),
+                      _TemplateButton(
+                        enabled: widget.enabled && !widget.sending,
+                        active: _templateActive,
+                        onTap: _toggleTemplate,
+                      ),
+                      const SizedBox(width: 10),
                       Expanded(
                         child: ConstrainedBox(
                           constraints: const BoxConstraints(minHeight: 50, maxHeight: 400),
@@ -677,7 +746,7 @@ class _ChatInputState extends State<ChatInput> {
                             padding: const EdgeInsets.symmetric(horizontal: 6),
                             constraints: const BoxConstraints(maxHeight: 28),
                             alignment: Alignment.centerRight,
-                            decoration: BoxDecoration(color: AppTheme.bgSecondary, borderRadius: BorderRadius.circular(6), border: Border.all(color: AppTheme.accent)),
+                            decoration: BoxDecoration(color: AppTheme.bgSecondary, borderRadius: BorderRadius.circular(6), border: Border.all(color: AppTheme.accentMarrone)),
                             child: Row(
                               mainAxisSize: MainAxisSize.min,
                               children: [
@@ -854,14 +923,14 @@ class _LogToggleButton extends StatelessWidget {
           child: Container(
             padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 4),
             decoration: BoxDecoration(
-              color: visible ? AppTheme.accent.withAlpha(30) : AppTheme.bgSecondary,
+
               borderRadius: BorderRadius.circular(6),
-              border: Border.all(color: AppTheme.accent),
+              border: Border.all(color: AppTheme.accentMarrone),
             ),
             child: Icon(
               visible ? Icons.terminal : Icons.terminal_outlined,
               size: 16,
-              color: visible ? AppTheme.accent : AppTheme.textSecondary,
+              color: visible ? AppTheme.accentDarkMarrone : AppTheme.textSecondary,
             ),
           ),
         ),
@@ -885,7 +954,7 @@ class _ProjectFolderButton extends StatelessWidget {
             decoration: BoxDecoration(
               color: AppTheme.bgSecondary,
               borderRadius: BorderRadius.circular(6),
-              border: Border.all(color: AppTheme.accent),
+              border: Border.all(color: AppTheme.accentMarrone),
             ),
             child: Row(mainAxisSize: MainAxisSize.min, children: [
               const Icon(Icons.folder, size: 14, color: AppTheme.textSecondary),
@@ -919,7 +988,7 @@ class _SendButton extends StatelessWidget {
       return Tooltip(
         message: 'Stop generation',
         child: Material(
-          color: const Color(0xFFE53935),
+          color: AppTheme.danger,
           borderRadius: BorderRadius.circular(8),
           child: InkWell(
             borderRadius: BorderRadius.circular(8),
@@ -936,7 +1005,7 @@ class _SendButton extends StatelessWidget {
     }
     // Normal send button.
     return Material(
-      color: enabled ? AppTheme.accent : AppTheme.border,
+      color: enabled ? AppTheme.accentMarrone : AppTheme.border,
       borderRadius: BorderRadius.circular(8),
       child: InkWell(
         borderRadius: BorderRadius.circular(8),
@@ -948,7 +1017,7 @@ class _SendButton extends StatelessWidget {
           child: Icon(
             Icons.arrow_upward,
             size: 18,
-            color: enabled ? Colors.white : AppTheme.textMuted,
+            color: enabled ? Colors.brown[900] : AppTheme.textSecondary,
           ),
         ),
       ),
@@ -1039,6 +1108,47 @@ class _DownloadButtonState extends State<_DownloadButton> {
       );
 }
 
+/// Toggle button that inserts/clears a model-friendly Markdown template
+/// in the chat input. When active the icon is highlighted; tapping again
+/// clears the input and deactivates.
+class _TemplateButton extends StatelessWidget {
+  final bool enabled;
+  final bool active;
+  final VoidCallback onTap;
+
+  const _TemplateButton({
+    required this.enabled,
+    required this.active,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) => Tooltip(
+        message: active ? 'Clear template' : 'Insert model-friendly template',
+        child: InkWell(
+          onTap: enabled ? onTap : null,
+          borderRadius: BorderRadius.circular(6),
+          child: Container(
+            width: 48,
+            height: 48,
+            padding: const EdgeInsets.all(6),
+            decoration: BoxDecoration(
+              color: active ? AppTheme.accent.withAlpha(30) : AppTheme.bgSecondary,
+              borderRadius: BorderRadius.circular(6),
+              border: Border.all(color: active ? AppTheme.accent : AppTheme.border),
+            ),
+            child: Icon(
+              Icons.description_outlined,
+              size: 18,
+              color: active
+                  ? AppTheme.accent
+                  : (enabled ? AppTheme.textSecondary : AppTheme.textMuted),
+            ),
+          ),
+        ),
+      );
+}
+
 /// Button to create a new chat from JSON context (excluding conversation node).
 /// Positioned to the left of the download button.
 class _NewChatFromJsonButton extends StatelessWidget {
@@ -1060,12 +1170,12 @@ class _NewChatFromJsonButton extends StatelessWidget {
             decoration: BoxDecoration(
               color: enabled ? AppTheme.accent.withAlpha(30) : AppTheme.bgSecondary,
               borderRadius: BorderRadius.circular(6),
-              border: Border.all(color: enabled ? AppTheme.accent : AppTheme.border),
+              border: Border.all(color: enabled ? AppTheme.accentDarkMarrone : AppTheme.border),
             ),
             child: Icon(
               Icons.chat_outlined,
               size: 18,
-              color: enabled ? AppTheme.accent : AppTheme.textMuted,
+              color: enabled ? AppTheme.accentDarkMarrone : AppTheme.textMuted,
             ),
           ),
         ),

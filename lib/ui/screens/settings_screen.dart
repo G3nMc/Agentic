@@ -3,6 +3,8 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:dio/dio.dart' show CancelToken;
+import 'package:file_picker/file_picker.dart';
+import 'package:flutter/foundation.dart' show kDebugMode;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:path_provider/path_provider.dart';
@@ -13,8 +15,10 @@ import '../../data/models/agent_credentials.dart';
 import '../../data/models/hf_model.dart';
 import '../../data/repositories/agent_credentials_repository.dart';
 import '../../data/repositories/backend_settings_repository.dart';
+import '../../data/repositories/dev_filters_repository.dart';
 import '../../data/repositories/model_repository.dart';
 import '../../data/repositories/settings_repository.dart';
+import '../../services/project_service.dart';
 import '../../services/groq_service.dart';
 import '../../services/llm_service.dart';
 import '../../services/ollama_generate_service.dart';
@@ -49,8 +53,34 @@ class _SettingsScreenState extends State<SettingsScreen> {
   LlmBackend _activeBackend = LlmBackend.huggingFace;
   String? _localServerUrl;
 
-  // Settings side-nav: 0 = Model Settings, 1 = Orchestrator
+  // Settings side-nav: 0 = Model Settings, 1 = Orchestrator,
+  // 2 = Workflow Agents, 3 = Developer (debug-only).
   int _settingsSection = 0;
+
+  // Developer / installer panel state.
+  bool _installerBusy = false;
+  final List<String> _installerLog = [];
+  final ScrollController _installerLogScroll = ScrollController();
+
+  // External-tools paths (Flutter SDK + Python interpreter). Loaded from
+  // SettingsRepository when the Developer panel opens; saved on demand.
+  final TextEditingController _flutterSdkPathController =
+      TextEditingController();
+  final TextEditingController _pythonPathController = TextEditingController();
+  bool _externalPathsLoaded = false;
+
+  // Filesystem filter lists (per working directory). Loaded once when the
+  // Developer panel opens; saved per-list when the user clicks Save on
+  // that list's row. The four categories drive the orchestrator's
+  // discovery tools (list_files / search_in_files / find_files /
+  // list_files_recursive). read_file and write_file are NOT filtered —
+  // explicit paths the user mentions still work even if matched here.
+  List<String> _excludeDirs = [];
+  List<String> _includeDirs = [];
+  List<String> _excludeFiles = [];
+  List<String> _includeFiles = [];
+  bool _filtersLoaded = false;
+  String? _filtersWorkingDir;
 
   // Orchestrator log persistence
   List<String> _persistedLog = [];
@@ -237,6 +267,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
     _agentTokenController.dispose();
     _newModelController.dispose();
     _localServerUrlController.dispose();
+    _flutterSdkPathController.dispose();
+    _pythonPathController.dispose();
     _ollamaUrlController.dispose();
     _ollamaApiKeyController.dispose();
     _ollamaPullController.dispose();
@@ -2269,7 +2301,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
     );
   }
 
-  String get pythonExecutableLabel => OrchestratorManager.pythonExecutable;
+  String get pythonExecutableLabel =>
+      OrchestratorManager.defaultPythonExecutable;
 
   Widget _generateControlPanel() {
     return _section(
@@ -3764,7 +3797,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
                       ? _buildModelSettings()
                       : _settingsSection == 1
                           ? _buildOrchestratorPanel()
-                          : _buildAgentWorkflowPanel(),
+                          : _settingsSection == 2
+                              ? _buildAgentWorkflowPanel()
+                              : _buildDeveloperPanel(),
                 ),
               ],
             ),
@@ -3785,6 +3820,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
           _navItem("Orchestrator", 1, Icons.memory_outlined),
           const SizedBox(height: 4),
           _navItem("Workflow Agents", 2, Icons.account_tree_outlined),
+          const SizedBox(height: 4),
+          _navItem("Developer", 3, Icons.developer_mode_outlined),
         ],
       ),
     );
@@ -6007,5 +6044,1016 @@ class _SettingsScreenState extends State<SettingsScreen> {
         backgroundColor: started ? AppTheme.accentMarrone : AppTheme.danger,
       ),
     );
+  }
+
+  // ---- Developer panel (side-nav section 3) ---------------------------------
+
+  Widget _buildDeveloperPanel() {
+    // Lazy-load the persisted external-tools paths the first time the panel
+    // is built — keeps initState lean for users who never open Developer.
+    if (!_externalPathsLoaded) {
+      _externalPathsLoaded = true;
+      _loadExternalToolPaths();
+    }
+    // Lazy-load filesystem filter lists the first time the panel opens.
+    if (!_filtersLoaded) {
+      _filtersLoaded = true;
+      _loadFilters();
+    }
+    return SingleChildScrollView(
+      padding: const EdgeInsets.all(24),
+      child: Center(
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 720),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              _buildExternalToolsSection(),
+              const SizedBox(height: 24),
+              _buildFilesystemFiltersSection(),
+              const SizedBox(height: 24),
+              if (kDebugMode) _buildInnoSetupSection(),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildExternalToolsSection() {
+    return _section(
+      title: "External Tools",
+      subtitle:
+          "Tell the orchestrator subprocess where to find the Flutter SDK and "
+          "the Python interpreter. The Flutter SDK path is prepended to the "
+          "subprocess PATH so tools like `flutter analyze` resolve without "
+          "needing system-wide PATH setup. The Python path overrides the "
+          "default interpreter used to launch the orchestrator. Leave a field "
+          "blank to fall back to the system default.",
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          _pathField(
+            label: "Flutter SDK path",
+            hint: r"e.g. C:\src\flutter   (the folder that contains bin\flutter)",
+            controller: _flutterSdkPathController,
+            onPick: () => _pickFlutterSdkPath(),
+            onSave: () => _saveFlutterSdkPath(),
+            onClear: () => _clearFlutterSdkPath(),
+          ),
+          const SizedBox(height: 16),
+          _pathField(
+            label: "Python interpreter path",
+            hint: Platform.isWindows
+                ? r"e.g. C:\Python312\python.exe"
+                : "e.g. /usr/bin/python3.12",
+            controller: _pythonPathController,
+            onPick: () => _pickPythonPath(),
+            onSave: () => _savePythonPath(),
+            onClear: () => _clearPythonPath(),
+          ),
+          const SizedBox(height: 8),
+          const Text(
+            "Changes take effect the next time the orchestrator subprocess starts.",
+            style: TextStyle(fontSize: 12, color: AppTheme.textMuted),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _pathField({
+    required String label,
+    required String hint,
+    required TextEditingController controller,
+    required VoidCallback onPick,
+    required VoidCallback onSave,
+    required VoidCallback onClear,
+  }) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          label,
+          style: const TextStyle(
+            fontSize: 13,
+            fontWeight: FontWeight.w600,
+            color: AppTheme.textPrimary,
+          ),
+        ),
+        const SizedBox(height: 6),
+        Row(
+          children: [
+            Expanded(
+              child: TextField(
+                controller: controller,
+                style: const TextStyle(fontFamily: 'monospace', fontSize: 13),
+                decoration: InputDecoration(
+                  hintText: hint,
+                  hintStyle: const TextStyle(
+                    fontFamily: 'monospace',
+                    fontSize: 12,
+                    color: AppTheme.textMuted,
+                  ),
+                  isDense: true,
+                  contentPadding: const EdgeInsets.symmetric(
+                      horizontal: 12, vertical: 12),
+                  border: const OutlineInputBorder(),
+                ),
+              ),
+            ),
+            const SizedBox(width: 8),
+            IconButton(
+              tooltip: "Browse...",
+              onPressed: onPick,
+              icon: const Icon(Icons.folder_open_outlined, size: 20),
+            ),
+            IconButton(
+              tooltip: "Save",
+              onPressed: onSave,
+              icon: const Icon(Icons.save_outlined, size: 20),
+            ),
+            IconButton(
+              tooltip: "Clear (use system default)",
+              onPressed: onClear,
+              icon: const Icon(Icons.clear, size: 20),
+            ),
+          ],
+        ),
+      ],
+    );
+  }
+
+  Future<void> _loadExternalToolPaths() async {
+    final flutter =
+        await SettingsRepository.instance.getFlutterSdkPath() ?? '';
+    final python = await SettingsRepository.instance.getPythonPath() ?? '';
+    if (!mounted) return;
+    setState(() {
+      _flutterSdkPathController.text = flutter;
+      _pythonPathController.text = python;
+    });
+  }
+
+  Future<void> _pickFlutterSdkPath() async {
+    final path = await FilePicker.getDirectoryPath(
+      dialogTitle: "Select Flutter SDK root (folder containing bin/flutter)",
+    );
+    if (path == null || !mounted) return;
+    setState(() => _flutterSdkPathController.text = path);
+    await _saveFlutterSdkPath();
+  }
+
+  Future<void> _pickPythonPath() async {
+    final result = await FilePicker.pickFiles(
+      dialogTitle: "Select Python interpreter",
+      type: FileType.any,
+    );
+    final path = result?.files.single.path;
+    if (path == null || !mounted) return;
+    setState(() => _pythonPathController.text = path);
+    await _savePythonPath();
+  }
+
+  Future<void> _saveFlutterSdkPath() async {
+    final value = _flutterSdkPathController.text.trim();
+    if (value.isEmpty) {
+      await SettingsRepository.instance.clearFlutterSdkPath();
+    } else {
+      await SettingsRepository.instance.setFlutterSdkPath(value);
+    }
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text("Flutter SDK path saved"),
+        duration: Duration(seconds: 2),
+      ),
+    );
+  }
+
+  Future<void> _savePythonPath() async {
+    final value = _pythonPathController.text.trim();
+    if (value.isEmpty) {
+      await SettingsRepository.instance.clearPythonPath();
+    } else {
+      await SettingsRepository.instance.setPythonPath(value);
+    }
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text("Python path saved"),
+        duration: Duration(seconds: 2),
+      ),
+    );
+  }
+
+  Future<void> _clearFlutterSdkPath() async {
+    await SettingsRepository.instance.clearFlutterSdkPath();
+    if (!mounted) return;
+    setState(() => _flutterSdkPathController.text = '');
+  }
+
+  Future<void> _clearPythonPath() async {
+    await SettingsRepository.instance.clearPythonPath();
+    if (!mounted) return;
+    setState(() => _pythonPathController.text = '');
+  }
+
+  // ---- Filesystem filters (Developer panel) --------------------------------
+
+  Future<void> _loadFilters() async {
+    final workingDir = ProjectService().currentPath;
+    final excludeDirs = await DevFiltersRepository.instance.getList(workingDir, DevFiltersRepository.kExcludeDirs);
+    final includeDirs = await DevFiltersRepository.instance.getList(workingDir, DevFiltersRepository.kIncludeDirs);
+    final excludeFiles = await DevFiltersRepository.instance.getList(workingDir, DevFiltersRepository.kExcludeFiles);
+    final includeFiles = await DevFiltersRepository.instance.getList(workingDir, DevFiltersRepository.kIncludeFiles);
+    if (!mounted) return;
+    setState(() {
+      _filtersWorkingDir = workingDir;
+      _excludeDirs = List<String>.from(excludeDirs);
+      _includeDirs = List<String>.from(includeDirs);
+      _excludeFiles = List<String>.from(excludeFiles);
+      _includeFiles = List<String>.from(includeFiles);
+    });
+  }
+
+  Future<void> _saveFilterList(String category) async {
+    final workingDir = _filtersWorkingDir ?? ProjectService().currentPath;
+    List<String> items;
+    switch (category) {
+      case DevFiltersRepository.kExcludeDirs:
+        items = _excludeDirs;
+        break;
+      case DevFiltersRepository.kIncludeDirs:
+        items = _includeDirs;
+        break;
+      case DevFiltersRepository.kExcludeFiles:
+        items = _excludeFiles;
+        break;
+      case DevFiltersRepository.kIncludeFiles:
+        items = _includeFiles;
+        break;
+      default:
+        return;
+    }
+    await DevFiltersRepository.instance.setList(workingDir, category, items);
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text('Filters saved'),
+        duration: Duration(seconds: 2),
+      ),
+    );
+  }
+
+  /// Shared add/edit dialog. Includes a Browse button that opens a folder
+  /// picker for directory categories and a file picker for file
+  /// categories — the picked path is dropped into the text field, where
+  /// the user can still tweak it (e.g. trim to a relative basename, or
+  /// switch a concrete file path to a `*.ext` glob) before confirming.
+  Future<String?> _promptFilterValue({
+    required String category,
+    required String submitLabel,
+    String initial = '',
+  }) async {
+    final controller = TextEditingController(text: initial);
+    final label = _filterLabel(category);
+    final isDirCategory = category == DevFiltersRepository.kExcludeDirs ||
+        category == DevFiltersRepository.kIncludeDirs;
+
+    Future<void> browse() async {
+      if (isDirCategory) {
+        final picked = await FilePicker.getDirectoryPath(
+          dialogTitle: 'Select directory',
+          initialDirectory:
+              _filtersWorkingDir ?? ProjectService().currentPath,
+        );
+        if (picked != null && picked.isNotEmpty) {
+          controller.text = picked;
+        }
+      } else {
+        final result = await FilePicker.pickFiles(
+          dialogTitle: 'Select file',
+          initialDirectory:
+              _filtersWorkingDir ?? ProjectService().currentPath,
+          type: FileType.any,
+        );
+        final picked = result?.files.single.path;
+        if (picked != null && picked.isNotEmpty) {
+          controller.text = picked;
+        }
+      }
+    }
+
+    return showDialog<String>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text(
+          submitLabel == 'Add' ? 'Add $label entry' : 'Edit $label entry',
+        ),
+        content: SizedBox(
+          width: 480,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Expanded(
+                    child: TextField(
+                      controller: controller,
+                      autofocus: true,
+                      style: const TextStyle(
+                          fontFamily: 'monospace', fontSize: 13),
+                      decoration: InputDecoration(
+                        hintText: _filterHint(category),
+                        helperText: _filterHelper(category),
+                        helperMaxLines: 2,
+                      ),
+                      onSubmitted: (_) {
+                        final v = controller.text.trim();
+                        if (v.isEmpty) return;
+                        Navigator.of(ctx).pop<String>(v);
+                      },
+                    ),
+                  ),
+                  const SizedBox(width: 6),
+                  IconButton(
+                    tooltip: isDirCategory
+                        ? 'Browse for a directory'
+                        : 'Browse for a file (type *.ext for an extension instead)',
+                    icon: Icon(
+                      isDirCategory
+                          ? Icons.folder_open_outlined
+                          : Icons.upload_file_outlined,
+                      size: 20,
+                    ),
+                    onPressed: browse,
+                  ),
+                ],
+              ),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(),
+            child: const Text('Cancel'),
+          ),
+          ElevatedButton(
+            onPressed: () {
+              final value = controller.text.trim();
+              if (value.isEmpty) return;
+              Navigator.of(ctx).pop<String>(value);
+            },
+            child: Text(submitLabel),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _addFilterEntry(String category) {
+    _promptFilterValue(category: category, submitLabel: 'Add').then((value) {
+      if (value == null || value.isEmpty) return;
+      setState(() {
+        switch (category) {
+          case DevFiltersRepository.kExcludeDirs:
+            _excludeDirs = [..._excludeDirs, value];
+            break;
+          case DevFiltersRepository.kIncludeDirs:
+            _includeDirs = [..._includeDirs, value];
+            break;
+          case DevFiltersRepository.kExcludeFiles:
+            _excludeFiles = [..._excludeFiles, value];
+            break;
+          case DevFiltersRepository.kIncludeFiles:
+            _includeFiles = [..._includeFiles, value];
+            break;
+        }
+      });
+      _saveFilterList(category);
+    });
+  }
+
+  void _editFilterEntry(String category, int index) {
+    final current = _filterListFor(category)[index];
+    _promptFilterValue(
+      category: category,
+      submitLabel: 'Save',
+      initial: current,
+    ).then((value) {
+      if (value == null || value.isEmpty) return;
+      setState(() {
+        switch (category) {
+          case DevFiltersRepository.kExcludeDirs:
+            _excludeDirs = [..._excludeDirs]..[index] = value;
+            break;
+          case DevFiltersRepository.kIncludeDirs:
+            _includeDirs = [..._includeDirs]..[index] = value;
+            break;
+          case DevFiltersRepository.kExcludeFiles:
+            _excludeFiles = [..._excludeFiles]..[index] = value;
+            break;
+          case DevFiltersRepository.kIncludeFiles:
+            _includeFiles = [..._includeFiles]..[index] = value;
+            break;
+        }
+      });
+      _saveFilterList(category);
+    });
+  }
+
+  void _removeFilterEntry(String category, int index) {
+    setState(() {
+      switch (category) {
+        case DevFiltersRepository.kExcludeDirs:
+          _excludeDirs = [..._excludeDirs]..removeAt(index);
+          break;
+        case DevFiltersRepository.kIncludeDirs:
+          _includeDirs = [..._includeDirs]..removeAt(index);
+          break;
+        case DevFiltersRepository.kExcludeFiles:
+          _excludeFiles = [..._excludeFiles]..removeAt(index);
+          break;
+        case DevFiltersRepository.kIncludeFiles:
+          _includeFiles = [..._includeFiles]..removeAt(index);
+          break;
+      }
+    });
+    _saveFilterList(category);
+  }
+
+  List<String> _filterListFor(String category) {
+    switch (category) {
+      case DevFiltersRepository.kExcludeDirs:
+        return _excludeDirs;
+      case DevFiltersRepository.kIncludeDirs:
+        return _includeDirs;
+      case DevFiltersRepository.kExcludeFiles:
+        return _excludeFiles;
+      case DevFiltersRepository.kIncludeFiles:
+        return _includeFiles;
+      default:
+        return const [];
+    }
+  }
+
+  String _filterLabel(String category) {
+    switch (category) {
+      case DevFiltersRepository.kExcludeDirs:
+        return 'excluded directory';
+      case DevFiltersRepository.kIncludeDirs:
+        return 'included directory';
+      case DevFiltersRepository.kExcludeFiles:
+        return 'excluded file/extension';
+      case DevFiltersRepository.kIncludeFiles:
+        return 'included file/extension';
+      default:
+        return 'filter';
+    }
+  }
+
+  String _filterHint(String category) {
+    switch (category) {
+      case DevFiltersRepository.kExcludeDirs:
+      case DevFiltersRepository.kIncludeDirs:
+        return 'e.g. node_modules, .git, build';
+      case DevFiltersRepository.kExcludeFiles:
+      case DevFiltersRepository.kIncludeFiles:
+        return 'e.g. *.exe, *.png, README';
+      default:
+        return '';
+    }
+  }
+
+  String _filterHelper(String category) {
+    switch (category) {
+      case DevFiltersRepository.kExcludeDirs:
+        return 'Bare names match any dir (e.g. build). '
+            'Absolute paths match exactly.';
+      case DevFiltersRepository.kIncludeDirs:
+        return 'Explicitly visible dirs override excludes. '
+            'Bare names or absolute paths.';
+      case DevFiltersRepository.kExcludeFiles:
+        return 'Use *.ext for extensions (e.g. *.exe). '
+            'Bare names match exact filenames.';
+      case DevFiltersRepository.kIncludeFiles:
+        return 'Explicitly visible files override excludes. '
+            'Use *.ext or bare names.';
+      default:
+        return '';
+    }
+  }
+
+  IconData _filterIcon(String category) {
+    switch (category) {
+      case DevFiltersRepository.kExcludeDirs:
+        return Icons.folder_off_outlined;
+      case DevFiltersRepository.kIncludeDirs:
+        return Icons.folder_outlined;
+      case DevFiltersRepository.kExcludeFiles:
+        return Icons.insert_drive_file_outlined;
+      case DevFiltersRepository.kIncludeFiles:
+        return Icons.description_outlined;
+      default:
+        return Icons.filter_list;
+    }
+  }
+
+  Widget _buildFilesystemFiltersSection() {
+    final workingDir = _filtersWorkingDir ?? ProjectService().currentPath;
+    return _section(
+      title: 'Filesystem Filters',
+      subtitle: 'Control which directories and files the agent sees in '
+          'discovery tools (list_files, search_in_files, find_files, '
+          'list_files_recursive). Read/write tools are NOT blocked \u2014 '
+          'you can still ask the model to read or edit a specific excluded '
+          'path. Inclusion always overrides exclusion. Filters are scoped '
+          'to the current project folder.',
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+            decoration: BoxDecoration(
+              color: AppTheme.bgSecondary,
+              borderRadius: BorderRadius.circular(6),
+              border: Border.all(color: AppTheme.border),
+            ),
+            child: Row(
+              children: [
+                const Icon(Icons.folder_open, size: 16, color: AppTheme.textMuted),
+                const SizedBox(width: 6),
+                Expanded(
+                  child: Text(
+                    workingDir,
+                    style: const TextStyle(
+                      fontFamily: 'monospace',
+                      fontSize: 12,
+                      color: AppTheme.textSecondary,
+                    ),
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 16),
+          _filterListCard(
+            category: DevFiltersRepository.kExcludeDirs,
+            title: 'Excluded Directories',
+            description: 'Directories hidden from discovery. Bare names '
+                '(e.g. node_modules) match anywhere; absolute paths match exactly.',
+          ),
+          const SizedBox(height: 12),
+          _filterListCard(
+            category: DevFiltersRepository.kIncludeDirs,
+            title: 'Included Directories',
+            description: 'Directories always visible, overriding excludes. '
+                'Use to un-hide a subdirectory inside an excluded tree.',
+          ),
+          const SizedBox(height: 12),
+          _filterListCard(
+            category: DevFiltersRepository.kExcludeFiles,
+            title: 'Excluded Files / Extensions',
+            description: 'Files hidden from discovery. Use *.ext for '
+                'extensions (e.g. *.exe) or bare names (e.g. README).',
+          ),
+          const SizedBox(height: 12),
+          _filterListCard(
+            category: DevFiltersRepository.kIncludeFiles,
+            title: 'Included Files / Extensions',
+            description: 'Files always visible, overriding excludes. '
+                'Use *.ext or bare names.',
+          ),
+          const SizedBox(height: 8),
+          const Text(
+            'Changes are saved immediately. Restart the orchestrator '
+            'for changes to take effect in the next session.',
+            style: TextStyle(fontSize: 12, color: AppTheme.textMuted),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _filterListCard({
+    required String category,
+    required String title,
+    required String description,
+  }) {
+    final items = _filterListFor(category);
+    final icon = _filterIcon(category);
+    return Container(
+      decoration: BoxDecoration(
+        border: Border.all(color: AppTheme.border),
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Padding(
+            padding: const EdgeInsets.fromLTRB(12, 10, 12, 4),
+            child: Row(
+              children: [
+                Icon(icon, size: 18, color: AppTheme.accentMarrone),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    title,
+                    style: const TextStyle(
+                      fontSize: 13,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                ),
+                IconButton(
+                  tooltip: 'Add entry',
+                  onPressed: () => _addFilterEntry(category),
+                  icon: const Icon(Icons.add, size: 18),
+                  padding: EdgeInsets.zero,
+                  constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
+                ),
+              ],
+            ),
+          ),
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 12),
+            child: Text(
+              description,
+              style: const TextStyle(fontSize: 11.5, color: AppTheme.textMuted),
+            ),
+          ),
+          const SizedBox(height: 6),
+          if (items.isEmpty)
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+              child: Text(
+                'No entries \u2014 default behaviour applies.',
+                style: TextStyle(
+                  fontSize: 12,
+                  color: Colors.grey[500],
+                  fontStyle: FontStyle.italic,
+                ),
+              ),
+            )
+          else
+            ConstrainedBox(
+              constraints: const BoxConstraints(maxHeight: 300),
+              child: ListView.separated(
+                shrinkWrap: true,
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                itemCount: items.length,
+                separatorBuilder: (_, __) => Divider(
+                  height: 1,
+                  thickness: 1,
+                  color: AppTheme.border.withAlpha(80),
+                ),
+                itemBuilder: (ctx, i) {
+                  return ListTile(
+                    dense: true,
+                    visualDensity: VisualDensity.compact,
+                    contentPadding: const EdgeInsets.symmetric(horizontal: 8),
+                    title: Text(
+                      items[i],
+                      style: const TextStyle(
+                        fontFamily: 'monospace',
+                        fontSize: 12.5,
+                      ),
+                    ),
+                    trailing: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        IconButton(
+                          tooltip: 'Edit',
+                          onPressed: () => _editFilterEntry(category, i),
+                          icon: const Icon(Icons.edit_outlined, size: 16),
+                          padding: EdgeInsets.zero,
+                          constraints: const BoxConstraints(minWidth: 28, minHeight: 28),
+                        ),
+                        IconButton(
+                          tooltip: 'Remove',
+                          onPressed: () => _removeFilterEntry(category, i),
+                          icon: const Icon(Icons.delete_outline, size: 16, color: AppTheme.danger),
+                          padding: EdgeInsets.zero,
+                          constraints: const BoxConstraints(minWidth: 28, minHeight: 28),
+                        ),
+                      ],
+                    ),
+                  );
+                },
+              ),
+            ),
+          const SizedBox(height: 4),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildInnoSetupSection() {
+    return _section(
+      title: "Windows Installer",
+      subtitle: "Build a release of the Windows app and package it "
+          "as an Inno Setup installer. The /bin folder ships with "
+          "the installer and is placed under "
+          r"%LOCALAPPDATA%\Programs\Agentic\bin "
+          "(user-writable, no admin required).",
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Row(
+            children: [
+              ElevatedButton.icon(
+                onPressed:
+                    _installerBusy ? null : _createInnoSetupInstaller,
+                icon: _installerBusy
+                    ? const SizedBox(
+                        width: 14,
+                        height: 14,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    : const Icon(Icons.archive_outlined, size: 16),
+                label: Text(_installerBusy
+                    ? "Building..."
+                    : "Create Inno Setup Installer"),
+              ),
+              const SizedBox(width: 12),
+              if (!_installerBusy && _installerLog.isNotEmpty)
+                TextButton.icon(
+                  onPressed: () =>
+                      setState(() => _installerLog.clear()),
+                  icon: const Icon(Icons.clear_all, size: 16),
+                  label: const Text("Clear log"),
+                ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          Container(
+            height: 280,
+            decoration: BoxDecoration(
+              color: AppTheme.bgSecondary,
+              border: Border.all(color: AppTheme.border),
+              borderRadius: BorderRadius.circular(8),
+            ),
+            padding: const EdgeInsets.all(10),
+            child: Scrollbar(
+              controller: _installerLogScroll,
+              child: SelectionArea(
+                child: ListView.builder(
+                  controller: _installerLogScroll,
+                  itemCount: _installerLog.length,
+                  itemBuilder: (context, i) => Text(
+                    _installerLog[i],
+                    style: const TextStyle(
+                      fontFamily: 'monospace',
+                      fontSize: 12,
+                      color: AppTheme.textSecondary,
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _appendInstallerLog(String line) {
+    if (!mounted) return;
+    setState(() => _installerLog.add(line));
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (_installerLogScroll.hasClients) {
+        _installerLogScroll.jumpTo(
+            _installerLogScroll.position.maxScrollExtent);
+      }
+    });
+  }
+
+  Future<Directory?> _findProjectRoot() async {
+    var dir = Directory.current;
+    for (var i = 0; i < 6; i++) {
+      if (await File('${dir.path}${Platform.pathSeparator}pubspec.yaml')
+          .exists()) {
+        return dir;
+      }
+      final parent = dir.parent;
+      if (parent.path == dir.path) break;
+      dir = parent;
+    }
+    return null;
+  }
+
+  Future<String?> _findIscc() async {
+    final candidates = <String>[
+      r'C:\Program Files (x86)\Inno Setup 6\ISCC.exe',
+      r'C:\Program Files\Inno Setup 6\ISCC.exe',
+      r'C:\Program Files (x86)\Inno Setup 5\ISCC.exe',
+      r'C:\Program Files\Inno Setup 5\ISCC.exe',
+    ];
+    for (final c in candidates) {
+      if (await File(c).exists()) return c;
+    }
+    try {
+      final res = await Process.run('where', ['iscc'], runInShell: true);
+      if (res.exitCode == 0) {
+        final out = (res.stdout as String).split(RegExp(r'\r?\n'));
+        for (final l in out) {
+          final t = l.trim();
+          if (t.isNotEmpty && File(t).existsSync()) return t;
+        }
+      }
+    } catch (_) {}
+    return null;
+  }
+
+  Future<int> _runStreamed(
+    String exe,
+    List<String> args, {
+    String? workingDir,
+  }) async {
+    _appendInstallerLog('> $exe ${args.join(' ')}');
+    final proc = await Process.start(
+      exe,
+      args,
+      workingDirectory: workingDir,
+      runInShell: true,
+    );
+    proc.stdout.transform(const SystemEncoding().decoder).listen((d) {
+      for (final l in const LineSplitter().convert(d)) {
+        if (l.isNotEmpty) _appendInstallerLog(l);
+      }
+    });
+    proc.stderr.transform(const SystemEncoding().decoder).listen((d) {
+      for (final l in const LineSplitter().convert(d)) {
+        if (l.isNotEmpty) _appendInstallerLog(l);
+      }
+    });
+    return proc.exitCode;
+  }
+
+  Future<void> _createInnoSetupInstaller() async {
+    if (!Platform.isWindows) {
+      _appendInstallerLog('Inno Setup builds are only supported on Windows.');
+      return;
+    }
+    setState(() {
+      _installerBusy = true;
+      _installerLog.clear();
+    });
+
+    try {
+      final root = await _findProjectRoot();
+      if (root == null) {
+        _appendInstallerLog(
+            'ERROR: could not locate project root (pubspec.yaml not found).');
+        return;
+      }
+      _appendInstallerLog('Project root: ${root.path}');
+
+      // 1) flutter build windows --release
+      _appendInstallerLog('Running: flutter build windows --release');
+      final buildExit = await _runStreamed(
+        'flutter',
+        ['build', 'windows', '--release'],
+        workingDir: root.path,
+      );
+      if (buildExit != 0) {
+        _appendInstallerLog('flutter build failed (exit $buildExit).');
+        return;
+      }
+
+      // 2) Resolve build output directory.
+      final candidates = <Directory>[
+        Directory('${root.path}\\build\\windows\\x64\\runner\\Release'),
+        Directory('${root.path}\\build\\windows\\runner\\Release'),
+      ];
+      Directory? releaseDir;
+      for (final c in candidates) {
+        if (await c.exists()) {
+          releaseDir = c;
+          break;
+        }
+      }
+      if (releaseDir == null) {
+        _appendInstallerLog(
+            'ERROR: could not find Flutter Windows release output.');
+        return;
+      }
+      _appendInstallerLog('Release output: ${releaseDir.path}');
+
+      // 3) /bin folder.
+      final binDir = Directory('${root.path}\\bin');
+      if (!await binDir.exists()) {
+        _appendInstallerLog(
+            'WARN: bin folder not found at ${binDir.path} (continuing without it).');
+      }
+
+      // 4) installer/ directory.
+      final installerDir = Directory('${root.path}\\installer');
+      if (!await installerDir.exists()) await installerDir.create();
+      final outputDir = Directory('${installerDir.path}\\Output');
+      if (!await outputDir.exists()) await outputDir.create();
+
+      const appName = 'Agentic';
+      const appId = '{{A6E2B7D3-1F4E-4B2A-8C5D-AGENTICAPP00001}}';
+      const exeName = 'agentic.exe';
+      final issPath = '${installerDir.path}\\agentic.iss';
+
+      final iss = StringBuffer()
+        ..writeln('; Auto-generated by Agentic — Developer panel')
+        ..writeln('[Setup]')
+        ..writeln('AppId=$appId')
+        ..writeln('AppName=$appName')
+        ..writeln('AppVersion=1.0.0')
+        ..writeln('AppPublisher=Agentic')
+        // Install under %LOCALAPPDATA%\Programs\Agentic so no admin/UAC
+        // prompt is required and the orchestrator in /bin can write logs
+        // and session files. The \Programs\ subfolder matches the Microsoft
+        // convention for per-user app installs (VS Code User, Chrome,
+        // Signal, etc.) — separates executables from cache/data that other
+        // apps drop directly under LocalAppData.
+        ..writeln(r'DefaultDirName={localappdata}\Programs\Agentic')
+        ..writeln('DefaultGroupName=$appName')
+        ..writeln('DisableProgramGroupPage=yes')
+        ..writeln('PrivilegesRequired=lowest')
+        ..writeln('PrivilegesRequiredOverridesAllowed=dialog')
+        ..writeln('OutputDir=${outputDir.path}')
+        ..writeln('OutputBaseFilename=AgenticSetup')
+        ..writeln('Compression=lzma2/max')
+        ..writeln('SolidCompression=yes')
+        ..writeln('WizardStyle=modern')
+        ..writeln('ArchitecturesInstallIn64BitMode=x64')
+        ..writeln('UninstallDisplayIcon={app}\\$exeName')
+        ..writeln()
+        ..writeln('[Languages]')
+        ..writeln(
+            'Name: "english"; MessagesFile: "compiler:Default.isl"')
+        ..writeln()
+        ..writeln('[Files]')
+        // Flutter app binaries go into {app} (= {localappdata}\Programs\Agentic).
+        ..writeln(
+            'Source: "${releaseDir.path}\\*"; DestDir: "{app}"; '
+            'Flags: ignoreversion recursesubdirs createallsubdirs');
+      if (await binDir.exists()) {
+        // /bin is shipped under {app}\bin — same install root, which is
+        // already a writable user location ({localappdata}\Programs\Agentic).
+        iss.writeln(
+            'Source: "${binDir.path}\\*"; DestDir: "{app}\\bin"; '
+            'Flags: ignoreversion recursesubdirs createallsubdirs');
+      }
+      iss
+        ..writeln()
+        ..writeln('[Icons]')
+        ..writeln(
+            'Name: "{group}\\$appName"; Filename: "{app}\\$exeName"')
+        ..writeln(
+            'Name: "{userdesktop}\\$appName"; Filename: "{app}\\$exeName"; Tasks: desktopicon')
+        ..writeln()
+        ..writeln('[Tasks]')
+        ..writeln(
+            'Name: "desktopicon"; Description: "Create a &desktop icon"; GroupDescription: "Additional icons:"; Flags: unchecked')
+        ..writeln()
+        ..writeln('[Run]')
+        ..writeln(
+            'Filename: "{app}\\$exeName"; Description: "Launch $appName"; Flags: nowait postinstall skipifsilent');
+
+      await File(issPath).writeAsString(iss.toString());
+      _appendInstallerLog('Wrote Inno Setup script: $issPath');
+
+      // 5) Run ISCC if available.
+      final iscc = await _findIscc();
+      if (iscc == null) {
+        _appendInstallerLog(
+            'ISCC.exe not found. Install Inno Setup 6 from https://jrsoftware.org/isinfo.php');
+        _appendInstallerLog(
+            'Then compile manually: "<InnoSetup>\\ISCC.exe" "$issPath"');
+        return;
+      }
+      _appendInstallerLog('Found Inno Setup compiler: $iscc');
+      final isccExit = await _runStreamed(iscc, [issPath]);
+      if (isccExit != 0) {
+        _appendInstallerLog('ISCC failed (exit $isccExit).');
+        return;
+      }
+      _appendInstallerLog(
+          'Installer built: ${outputDir.path}\\AgenticSetup.exe');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+                'Installer built at ${outputDir.path}\\AgenticSetup.exe'),
+            backgroundColor: AppTheme.accentMarrone,
+          ),
+        );
+      }
+    } catch (e, st) {
+      _appendInstallerLog('ERROR: $e');
+      _appendInstallerLog(st.toString());
+    } finally {
+      if (mounted) setState(() => _installerBusy = false);
+    }
   }
 }

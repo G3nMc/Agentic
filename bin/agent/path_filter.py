@@ -52,6 +52,7 @@ Baseline
 from __future__ import annotations
 
 import sys as _sys
+
 _sys.dont_write_bytecode = True
 
 import os
@@ -59,13 +60,12 @@ from dataclasses import dataclass, field
 from pathlib import Path, PurePath
 from typing import Iterable, List, Optional, Sequence, Tuple
 
-
 # Hardcoded noise baseline. Always added to the exclude side unless the
 # user explicitly includes the same name. Kept tight on purpose — the
 # bigger SKIP_EXT/SKIP_DIRS sets that used to live in fs_read.py are now
 # the user's responsibility to add (we no longer assume what they want).
 _BASELINE_EXCLUDE_DIRS: Tuple[str, ...] = (
-    ".git", "__pycache__", ".dart_tool", "build", "node_modules", ".gradle",
+    ".git", ".idea", "__pycache__" ".dart_tool", "build", "node_modules", ".gradle",
 )
 
 
@@ -154,9 +154,9 @@ class PathFilter:
 
     @classmethod
     def from_config(
-        cls,
-        base_path: Path,
-        config: Optional[dict],
+            cls,
+            base_path: Path,
+            config: Optional[dict],
     ) -> "PathFilter":
         """Build a filter from a JSON-like config dict (or None).
 
@@ -265,7 +265,7 @@ class PathFilter:
         return False
 
     def _is_ancestor_of_any_include(
-        self, dir_path: Path, includes: list,
+            self, dir_path: Path, includes: list,
     ) -> bool:
         """True when dir_path is a parent of any include target.
 
@@ -388,6 +388,7 @@ class PathFilter:
         Lists at most ``top`` entries per bucket so a user with hundreds
         of rules doesn't blow up every call's token count.
         """
+
         def bucket(name: str, items: Sequence[str]) -> str:
             if not items:
                 return f"  {name}: (none)"

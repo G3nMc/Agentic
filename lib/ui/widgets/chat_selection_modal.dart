@@ -416,7 +416,7 @@ class _ConversationTileState extends State<_ConversationTile> {
                     vertical: 2,
                   ),
                   decoration: BoxDecoration(
-                    color: AppTheme.accent.withOpacity(0.15),
+                    color: AppTheme.accent.withValues(alpha: 0.15),
                     borderRadius: BorderRadius.circular(4),
                   ),
                   child: const Text(

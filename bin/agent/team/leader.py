@@ -95,10 +95,18 @@ class LeaderAgent(Agent):
 
         Returns the list of group names in the order the runner should
         spawn them. The order is the order create_group was called.
+
+        Bails out early when the same call fails twice in a row — some
+        models (notably gpt-oss variants) get stuck emitting an
+        unrecognised tool name and would otherwise burn the entire
+        ``_DECOMPOSE_MAX_TURNS`` budget on the same broken call.
         """
         history: List[Dict[str, Any]] = []
         prompt = self._decompose_prompt(user_task)
         order: List[str] = []
+        last_failed_sig: Optional[str] = None
+        consecutive_failures = 0
+        _MAX_IDENTICAL_FAILURES = 2
 
         for turn in range(_DECOMPOSE_MAX_TURNS):
             text = self._chat_once(history, prompt if turn == 0 else "")
@@ -121,6 +129,39 @@ class LeaderAgent(Agent):
                 result = self.tools.execute(name, params or {})
                 if name == "create_group" and result.get("status") == "success":
                     order.append(result.get("group", ""))
+
+                # Anti-loop: if the same call signature fails repeatedly,
+                # stop and return what we have. Better to abort with a
+                # partial plan than to hammer the same broken call.
+                sig = json.dumps(
+                    {"tool": name, "params": params or {}},
+                    sort_keys=True, ensure_ascii=False,
+                )
+                if result.get("status") == "error":
+                    if sig == last_failed_sig:
+                        consecutive_failures += 1
+                    else:
+                        consecutive_failures = 1
+                        last_failed_sig = sig
+                    if consecutive_failures >= _MAX_IDENTICAL_FAILURES:
+                        logger.warning(
+                            "Leader stuck on identical failing call "
+                            "(%s) — aborting decompose",
+                            name,
+                        )
+                        history.append({
+                            "role": "user",
+                            "content": (
+                                "You repeated the same failing call. "
+                                "Stop. If no more groups can be created, "
+                                "say 'plan done'."
+                            ),
+                        })
+                        return [g for g in order if g]
+                else:
+                    last_failed_sig = None
+                    consecutive_failures = 0
+
                 history.append({"role": "assistant", "content":
                     f'<tool>{json.dumps({"tool": name, "parameters": params}, ensure_ascii=False)}</tool>'})
                 history.append({

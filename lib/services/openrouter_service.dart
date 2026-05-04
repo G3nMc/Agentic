@@ -10,7 +10,7 @@ class OpenRouterService {
   OpenRouterService._();
   static final OpenRouterService instance = OpenRouterService._();
 
-  static const String _appTitle = 'HF Chat Flutter';
+  static const String _appTitle = 'Agentic';
 
   final Dio _dio = Dio(
     BaseOptions(

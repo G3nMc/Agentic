@@ -20,6 +20,12 @@ _SHAPER_SYSTEM_PROMPT = (
     "reasoning agent can act on. Do NOT answer the request. Do NOT add new "
     "tasks. Preserve the user's intent exactly.\n"
     "\n"
+    "If the user's latest message is a short confirmation or follow-up "
+    "(\"ok\", \"ok proceed\", \"yes do it\", \"go ahead\", \"continue\", "
+    "\"fix it\", \"now do X\"), use the prior conversation in the message "
+    "history to infer what concretely needs to be done next, and produce a "
+    "spec for THAT — not for the literal short reply.\n"
+    "\n"
     "Output format — exactly these sections, in this order:\n"
     "  Goal: <one sentence describing what the user wants>\n"
     "  Constraints: <any limits the user mentioned, or 'none'>\n"
@@ -43,7 +49,12 @@ class ShaperAgent(Agent):
     # ------------------------------------------------------------------
     def run(self, state: WorkflowState) -> WorkflowState:
         try:
-            messages = self._build_messages(state.user_input)
+            # Pass conversation history so the shaper can resolve short
+            # follow-ups ("Ok proceed", "yes do it") against the prior turn.
+            messages = self._build_messages(
+                state.user_input,
+                history=state.history,
+            )
             text, _ = self._chat(messages)
         except Exception as e:  # noqa: BLE001
             print(f"[shaper] failed ({e}); falling back to raw input.",

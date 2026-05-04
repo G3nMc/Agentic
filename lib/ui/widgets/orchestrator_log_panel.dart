@@ -12,7 +12,10 @@ import '../../services/orchestrator_manager.dart';
 /// [OrchestratorManager.logStream] so it updates in real time as the
 /// subprocess emits progress lines.
 class OrchestratorLogPanel extends StatefulWidget {
-  const OrchestratorLogPanel({super.key});
+  /// Optional fixed height for the panel. If null, uses internal collapsed/expanded heights.
+  final double? height;
+
+  const OrchestratorLogPanel({super.key, this.height});
 
   @override
   State<OrchestratorLogPanel> createState() => _OrchestratorLogPanelState();
@@ -66,6 +69,10 @@ class _OrchestratorLogPanelState extends State<OrchestratorLogPanel> {
     final hasContent = _lines.isNotEmpty || OrchestratorManager.instance.isRunning;
     if (!hasContent) return const SizedBox.shrink();
 
+    // When height is provided (drag mode), use it directly.
+    // Otherwise, use internal collapsed/expanded heights (toggle mode).
+    final contentHeight = widget.height ?? (_expanded ? _expandedHeight : _collapsedHeight);
+
     return Container(
       margin: const EdgeInsets.fromLTRB(10, 0, 10, 10),
       decoration: BoxDecoration(
@@ -77,7 +84,7 @@ class _OrchestratorLogPanelState extends State<OrchestratorLogPanel> {
         mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          // ── Header bar ──────────────────────────────────────────────────
+          // ── Header bar ─────────────────────────────────────────────────────
           InkWell(
             borderRadius: const BorderRadius.vertical(top: Radius.circular(8)),
             onTap: () => setState(() => _expanded = !_expanded),
@@ -140,21 +147,24 @@ class _OrchestratorLogPanelState extends State<OrchestratorLogPanel> {
                       ),
                     ),
                   const SizedBox(width: 4),
-                  Icon(
-                    _expanded ? Icons.keyboard_arrow_down : Icons.keyboard_arrow_up,
-                    size: 14,
-                    color: const Color(0xFF6C7086),
-                  ),
+                  // Only show expand/collapse icon when not in drag mode
+                  if (widget.height == null) ...[
+                    Icon(
+                      _expanded ? Icons.keyboard_arrow_down : Icons.keyboard_arrow_up,
+                      size: 14,
+                      color: const Color(0xFF6C7086),
+                    ),
+                  ],
                 ],
               ),
             ),
           ),
 
-          // ── Log lines ───────────────────────────────────────────────────
+          // ── Log lines ──────────────────────────────────────────────────────
           AnimatedContainer(
-            duration: const Duration(milliseconds: 200),
+            duration: widget.height != null ? const Duration(milliseconds: 50) : const Duration(milliseconds: 200),
             curve: Curves.easeInOut,
-            height: _expanded ? _expandedHeight : _collapsedHeight,
+            height: contentHeight,
             child: _lines.isEmpty
                 ? const Center(
                     child: Text(

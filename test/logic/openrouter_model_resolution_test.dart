@@ -1,7 +1,7 @@
 library;
 
 import 'package:flutter_test/flutter_test.dart';
-import 'package:hf_chat_flutter/services/llm_service.dart';
+import 'package:agentic/services/llm_service.dart';
 
 void main() {
   group('OpenRouter model resolution', () {

@@ -1,5 +1,5 @@
 import 'package:flutter_test/flutter_test.dart';
-import 'package:hf_chat_flutter/services/openrouter_service.dart';
+import 'package:agentic/services/openrouter_service.dart';
 
 void main() {
   group('OpenRouterService.stripThink', () {

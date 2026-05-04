@@ -4,7 +4,7 @@ from __future__ import annotations
 from typing import Any, Dict, List
 
 from .backend_base import ModelBackend
-from ..utils.text import sanitize
+from ..utils.text import sanitize_for_agent
 
 
 class GitHubModelsBackend(ModelBackend):
@@ -52,8 +52,8 @@ class GitHubModelsBackend(ModelBackend):
         import threading
         import time
 
-        messages = sanitize(messages)
-        tools = sanitize(tools)
+        messages = sanitize_for_agent(messages)
+        tools = sanitize_for_agent(tools)
 
         payload: Dict[str, Any] = {
             "model": self.model_id,
@@ -186,7 +186,7 @@ class GitHubModelsBackend(ModelBackend):
                 name = fn.get("name")
                 args = fn.get("arguments") or "{}"
 
-                args = sanitize(args)
+                args = sanitize_for_agent(args)
 
                 if isinstance(args, str):
                     try:

@@ -11,15 +11,17 @@ class AppTheme {
   static const Color textPrimary = Color(0xFFE1E1E1);
   static const Color textSecondary = Color(0xFFB0B0B0);
   static const Color textMuted = Color(0xFF757575);
-  static const Color accent = Color(0xFFBE5A46);
-  static const Color accentMarrone = Color(0xFFBE5046);
-  static const Color accentDarkMarrone = Color(0xFF823232);
+  static const Color accent = Color(0xFFBEA082);
+  static const Color accentMarrone = Color(0xFFA08264);
+  static const Color accentDarkMarrone = Color(0xFF967364);
+  static const Color codeDarkBlue = Color(0xFF283C50);
   static const Color accentHover = Color(0xFFD7B7FD);
   static const Color userBubble = Color(0xFF2C2C2C);
+  static const Color bgCode = Color(0xFF373737);
   static const Color aiBubble = Color(0xFF1E1E1E);
   static const Color codeBg = Color(0xFF000000);
   static const Color codeText = Color(0xFFD4D4D4);
-  static const Color danger = Color(0xFFCF6679);
+  static const Color danger = Color(0xFFFF3C64);
 
   static ThemeData darkTheme() {
     const baseFont = "SystemFont";

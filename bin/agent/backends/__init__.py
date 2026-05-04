@@ -8,6 +8,9 @@ Adding a backend is a two-step change:
 """
 from __future__ import annotations
 
+import sys as _sys
+_sys.dont_write_bytecode = True
+
 from .backend_base import ModelBackend, RateLimitedBackend
 
 __all__ = [

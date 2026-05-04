@@ -1,13 +1,16 @@
 from __future__ import annotations
+
 import json
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Set, TypeVar, cast
+from typing import Any, Callable, Dict, List, Optional, TypeVar
 
+from ..path_filter import PathFilter
 from ..policy import SecurityConfig
 from ..utils.audit import audit_log, setup_audit_logger
 from ..utils.circuit_breaker import CircuitBreaker
 
 T = TypeVar('T')
+
 
 class ToolRegistry:
     """
@@ -19,9 +22,14 @@ class ToolRegistry:
             self,
             base_path: str = ".",
             security_config: Optional[SecurityConfig] = None,
+            path_filter: Optional[PathFilter] = None,
     ):
         self.base_path = Path(base_path).resolve()
         self.security_config = security_config or SecurityConfig()
+        # User-configurable filesystem filter applied by discovery tools.
+        # When None, filters are inert (only the hardcoded baseline of
+        # `.git`, `__pycache__`, etc. is enforced — see PathFilter).
+        self.path_filter = path_filter or PathFilter(base_path=self.base_path)
         self._audit_logger = setup_audit_logger(self.security_config)
         self._tool_circuit_breakers: Dict[str, CircuitBreaker] = {}
         self.tools: Dict[str, Callable] = {}
@@ -213,6 +221,15 @@ class ToolRegistry:
             "==================================================================",
             "SEARCH DISCIPLINE",
             "==================================================================",
+            *(
+                [
+                    "==================================================================",
+                    *self.path_filter.summary_for_prompt(top=10).splitlines(),
+                    "==================================================================",
+                ]
+                if self.path_filter.summary_for_prompt(top=10)
+                else []
+            ),
             "- Search only when necessary.",
             "- Never run generic filesystem discovery across the whole machine.",
             "- Do not use recursive broad scans like 'dir /s /b', 'find /', 'tree', or full-disk grep patterns.",
@@ -297,7 +314,7 @@ class ToolRegistry:
             "==================================================================",
             "DANGEROUS OR UNWANTED ACTIONS",
             "==================================================================",
-            "- Do not inspect session dumps, logs, cache folders, build output folders, dependency folders, or system metadata unless the user explicitly asks for that exact file.",
+            "- Respect the FILESYSTEM FILTERS section above (when present): treat its exclude lists as the source of truth for what to avoid, and treat its include lists as explicit user permission to inspect that path even if it would normally look like noise. When no filters are configured, default to avoiding session dumps, logs, cache folders, build output folders, dependency folders, and system metadata unless the user explicitly asks for that exact file.",
             "- Do not run shell commands that enumerate the entire filesystem or jump outside the workspace.",
             "- Do not use run_command for generic discovery when a direct file search is enough.",
             "- Do not read every file in the project just to understand a simple issue.",

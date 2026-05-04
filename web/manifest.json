@@ -1,11 +1,11 @@
 {
-    "name": "hf_chat_flutter",
-    "short_name": "hf_chat_flutter",
+    "name": "Agentic",
+    "short_name": "Agentic",
     "start_url": ".",
     "display": "standalone",
     "background_color": "#0175C2",
     "theme_color": "#0175C2",
-    "description": "A new Flutter project.",
+    "description": "Agentic — multi-backend LLM chat and orchestrator workbench.",
     "orientation": "portrait-primary",
     "prefer_related_applications": false,
     "icons": [

@@ -32,7 +32,7 @@ from ..backends.backend_base import ModelBackend
 
 # Roles in the order the dispatcher evaluates them.
 # "leader" is optional and only used when --team-mode is on.
-AGENT_ROLES = ("router", "shaper", "reasoner", "executor", "leader")
+AGENT_ROLES = ("router", "shaper", "reasoner", "executor", "leader", "summarizer")
 
 # Defaults applied when the JSON omits a role or a field. Chosen for
 # "works out of the box if you only configured Gemini" — every role falls
@@ -200,7 +200,7 @@ def build_agents(config_path: str | Path,
     # Local import: agents/__init__.py imports from this module via
     # build_backend, so we keep this lazy to avoid an import cycle.
     from ..agents import (ExecutorAgent, ReasonerAgent, RouterAgent,
-                          ShaperAgent)
+                          ShaperAgent, SummarizerAgent)
 
     cfgs = load_role_configs(config_path)
     cache: Dict[str, ModelBackend] = {}
@@ -229,6 +229,12 @@ def build_agents(config_path: str | Path,
     if "executor" in cfgs:
         c = cfgs["executor"]
         agents["executor"] = ExecutorAgent(
+            build_backend_for_role(c, secrets, cache),
+            temperature=c.temperature, max_tokens=c.max_tokens,
+        )
+    if "summarizer" in cfgs:
+        c = cfgs["summarizer"]
+        agents["summarizer"] = SummarizerAgent(
             build_backend_for_role(c, secrets, cache),
             temperature=c.temperature, max_tokens=c.max_tokens,
         )
