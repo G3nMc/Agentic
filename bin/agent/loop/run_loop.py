@@ -15,6 +15,15 @@ from . import history as _history
 from . import tool_dispatch as _td
 
 
+# Maximum characters of a tool result to keep in conversation history.
+# Tool results (read_file, list_files_recursive, etc.) can be tens of KB;
+# embedding them verbatim blows the model's context window after a few
+# iterations.  12 000 chars ≈ 3 000 tokens — enough context for the model
+# to understand the result and decide the next step, while keeping the
+# total history well within typical context limits even after many turns.
+_MAX_TOOL_RESULT_CHARS = 12_000
+
+
 class Orchestrator:
     def __init__(
             self,
@@ -208,6 +217,14 @@ class Orchestrator:
         truncation_retries = 0
         malformed_tool_retries = 0
 
+        # Rough character budget for the entire conversation history sent to
+        # the model on each call.  When exceeded we force a trim so the next
+        # _call_model() stays within the backend's context limit.  200K chars
+        # ≈ 50K tokens — generous for 8K–32K context models, and still safe
+        # for 1M-token models because tool results are already capped at
+        # _MAX_TOOL_RESULT_CHARS per message.
+        _HISTORY_CHAR_BUDGET = 200_000
+
         for iteration in range(self.max_iterations):
             # Dynamic Iteration Limit: Extend budget if progress is being made.
             if iteration == self.max_iterations - 1:
@@ -223,6 +240,24 @@ class Orchestrator:
                         file=sys.stderr,
                     )
                     continue
+
+            # Enforce the character budget: if history has grown past the
+            # limit, trim older non-system messages so the next model call
+            # stays within context.
+            total_chars = sum(len(m.get("content", "")) for m in self.conversation_history)
+            if total_chars > _HISTORY_CHAR_BUDGET:
+                system = [m for m in self.conversation_history if m.get("role") == "system"]
+                non_system = [m for m in self.conversation_history if m.get("role") != "system"]
+                # Drop oldest non-system messages until under budget.
+                while non_system and total_chars > _HISTORY_CHAR_BUDGET:
+                    dropped = non_system.pop(0)
+                    total_chars -= len(dropped.get("content", ""))
+                self.conversation_history = system + non_system
+                print(
+                    f"[orch] History over char budget; trimmed to "
+                    f"{len(non_system)} non-system messages.",
+                    file=sys.stderr,
+                )
 
             try:
                 text, finish_reason = self._call_model()
@@ -251,18 +286,33 @@ class Orchestrator:
                     print(f"[orch] -> tool {name}({params})", file=sys.stderr)
                     result = self.tool_registry.execute(name, params)
 
+                    # Truncate oversized tool results before they bloat the
+                    # conversation history and blow the model's context window.
+                    # Head+tail strategy: keep the first and last halves so the
+                    # model sees both file headers/imports AND the implementation
+                    # at the bottom — the middle is usually less critical.
+                    display_result = result
+                    if len(display_result) > _MAX_TOOL_RESULT_CHARS:
+                        half = _MAX_TOOL_RESULT_CHARS // 2
+                        trunc_len = len(display_result) - _MAX_TOOL_RESULT_CHARS
+                        display_result = (
+                            display_result[:half]
+                            + f"\n[... {trunc_len} chars truncated from middle ...]\n"
+                            + display_result[-half:]
+                        )
+
                     # On the last two iterations force a final answer — no more tools.
                     is_last_chance = iteration >= self.max_iterations - 2
                     if is_last_chance:
                         follow_up = (
-                            f"Tool `{name}` returned:\n{result}\n\n"
+                            f"Tool `{name}` returned:\n{display_result}\n\n"
                             "[INTERNAL: FINAL ANSWER REQUIRED. Do NOT call any more tools. "
                             "Write only your plain-text answer to the user now. "
                             "Do NOT echo this instruction back to the user.]"
                         )
                     else:
                         follow_up = (
-                            f"Tool `{name}` returned:\n{result}\n\n"
+                            f"Tool `{name}` returned:\n{display_result}\n\n"
                             "[INTERNAL: Continue. Either call another tool or give the final answer. "
                             "Do NOT echo this instruction back to the user.]"
                         )

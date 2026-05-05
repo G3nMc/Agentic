@@ -246,7 +246,7 @@ class _ChatInputState extends State<ChatInput> {
       builder: (ctx) => AlertDialog(
         title: const Text('Change Project Folder'),
         content: Text(
-          'Changing the project folder will restart the orchestrator. Do you want to continue?\n\n' 
+          'Changing the project folder will restart the orchestrator. Do you want to continue?\n\n'
           'New folder: ${newPath.split(Platform.pathSeparator).last}',
         ),
         actions: [
@@ -265,13 +265,13 @@ class _ChatInputState extends State<ChatInput> {
     if (confirmed == true && mounted) {
       await _projectService.setProjectFolder(newPath);
       setState(() => _currentProjectFolder = newPath.split(Platform.pathSeparator).last);
-      
+
       // Stop orchestrator to ensure it restarts with the new base path
       await OrchestratorManager.instance.stop();
-      
+
       // Notify parent to restart orchestrator if needed
       widget.onProjectFolderChanged?.call();
-      
+
       // Reload branches for the new project folder
       await _loadGitBranches();
     }
@@ -754,11 +754,11 @@ class _ChatInputState extends State<ChatInput> {
                                 const SizedBox(width: 5),
                                 DropdownButton<String>(
                                   value: _selectedBranch.isNotEmpty ? _selectedBranch : null,
-                                  hint: const Align(alignment: Alignment.centerRight, child: Text('Branch', style: TextStyle(fontSize: 12 ))),
+                                  hint: const Align(alignment: Alignment.centerRight, child: Text('Branch', style: TextStyle(fontSize: 12))),
                                   underline: const SizedBox(),
                                   items: [
-                                    ..._branches.map((b) =>
-                                        DropdownMenuItem<String>(value: b, child: Align(alignment: Alignment.centerRight, child: Text(b, style: const TextStyle(fontWeight: FontWeight.normal, fontSize: 12))))),
+                                    ..._branches.map((b) => DropdownMenuItem<String>(
+                                        value: b, child: Align(alignment: Alignment.centerRight, child: Text(b, style: const TextStyle(fontWeight: FontWeight.normal, fontSize: 12))))),
                                     const DropdownMenuItem<String>(
                                       value: 'CREATE_NEW',
                                       child: Align(alignment: Alignment.centerRight, child: Text('Create...', style: TextStyle(color: AppTheme.accent, fontSize: 12))),
@@ -923,7 +923,6 @@ class _LogToggleButton extends StatelessWidget {
           child: Container(
             padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 4),
             decoration: BoxDecoration(
-
               borderRadius: BorderRadius.circular(6),
               border: Border.all(color: AppTheme.accentMarrone),
             ),
@@ -1024,7 +1023,6 @@ class _SendButton extends StatelessWidget {
     );
   }
 }
-
 
 class _DownloadButton extends StatefulWidget {
   final bool enabled;
@@ -1140,9 +1138,7 @@ class _TemplateButton extends StatelessWidget {
             child: Icon(
               Icons.description_outlined,
               size: 18,
-              color: active
-                  ? AppTheme.accent
-                  : (enabled ? AppTheme.textSecondary : AppTheme.textMuted),
+              color: active ? AppTheme.accent : (enabled ? AppTheme.textSecondary : AppTheme.textMuted),
             ),
           ),
         ),
@@ -1170,12 +1166,12 @@ class _NewChatFromJsonButton extends StatelessWidget {
             decoration: BoxDecoration(
               color: enabled ? AppTheme.accent.withAlpha(30) : AppTheme.bgSecondary,
               borderRadius: BorderRadius.circular(6),
-              border: Border.all(color: enabled ? AppTheme.accentDarkMarrone : AppTheme.border),
+              border: Border.all(color: enabled ? AppTheme.accentMarrone : AppTheme.border),
             ),
             child: Icon(
               Icons.chat_outlined,
               size: 18,
-              color: enabled ? AppTheme.accentDarkMarrone : AppTheme.textMuted,
+              color: enabled ? AppTheme.accentMarrone : AppTheme.textMuted,
             ),
           ),
         ),

@@ -63,15 +63,15 @@ class _MessageBubbleState extends State<MessageBubble> {
     return Align(
       alignment: widget.isUser ? Alignment.centerRight : Alignment.centerLeft,
       child: ConstrainedBox(
-        constraints: const BoxConstraints(maxWidth: 720),
+        constraints: const BoxConstraints(maxWidth: 700),
         child: Container(
-          margin: const EdgeInsets.symmetric(vertical: 8, horizontal: 12),
-          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+          margin: EdgeInsets.only(bottom: 16, left: widget.isUser ? 16 : 0, right: widget.isUser ? 0 : 16),
+          padding: const EdgeInsets.symmetric(vertical: 16, horizontal: 16),
           decoration: BoxDecoration(
             color: widget.isUser ? AppTheme.userBubble : AppTheme.aiBubble,
             border: Border.all(
               width: 0.5,
-              color: widget.isUser ? Colors.transparent : AppTheme.border,
+              color: widget.isUser ? AppTheme.aiBubble : AppTheme.userBubble,
             ),
             borderRadius: BorderRadius.only(
               topLeft: Radius.circular(widget.isUser ? 16 : 4),
@@ -93,7 +93,7 @@ class _MessageBubbleState extends State<MessageBubble> {
                     style: const TextStyle(
                       fontSize: 11,
                       fontWeight: FontWeight.w700,
-                      color: AppTheme.textMuted,
+                      color: AppTheme.accentMarrone,
                       letterSpacing: 0.5,
                     ),
                   ),
@@ -103,7 +103,7 @@ class _MessageBubbleState extends State<MessageBubble> {
                       child: const Icon(
                         Icons.delete_outline,
                         size: 14,
-                        color: AppTheme.textMuted,
+                        color: AppTheme.accentMarrone,
                       ),
                     ),
                 ],
@@ -145,7 +145,7 @@ class _MessageBubbleState extends State<MessageBubble> {
                       timeLabel,
                       style: const TextStyle(
                         fontSize: 11,
-                        color: AppTheme.textMuted,
+                        color: AppTheme.accentMarrone,
                       ),
                     ),
                     const SizedBox(width: 8),
@@ -154,7 +154,7 @@ class _MessageBubbleState extends State<MessageBubble> {
                       child: Icon(
                         _copied ? Icons.check : Icons.copy,
                         size: 14,
-                        color: _copied ? AppTheme.accentMarrone : AppTheme.textMuted,
+                        color: _copied ? AppTheme.textMuted : AppTheme.accentMarrone,
                       ),
                     ),
                     if (widget.onResend != null) ...[
@@ -164,7 +164,7 @@ class _MessageBubbleState extends State<MessageBubble> {
                         child: const Icon(
                           Icons.refresh,
                           size: 14,
-                          color: AppTheme.textMuted,
+                          color: AppTheme.accentMarrone,
                         ),
                       ),
                     ],

@@ -76,7 +76,7 @@ class _OrchestratorLogPanelState extends State<OrchestratorLogPanel> {
     return Container(
       margin: const EdgeInsets.fromLTRB(10, 0, 10, 10),
       decoration: BoxDecoration(
-        color: const Color(0xFF2D2A2A),
+        color: AppTheme.aiBubble,
         borderRadius: BorderRadius.circular(8),
         border: Border.all(color: AppTheme.border),
       ),

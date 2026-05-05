@@ -43,9 +43,11 @@ class _ResizeHandleState extends State<ResizeHandle> {
       onEnter: (_) => setState(() => _isHovering = true),
       onExit: (_) {
         setState(() => _isHovering = false);
-        _isDragging = false;
-        _startY = null;
-        _startHeight = null;
+        // Do NOT reset drag state here — the pointer is still captured by
+        // GestureDetector and onPanUpdate/onPanEnd will keep firing.  Resetting
+        // _startY/_startHeight here caused every onPanUpdate after the cursor
+        // left the 8 px hit-area to be a no-op, making the handle feel
+        // unresponsive (cursor moved 10× further than the panel resized).
       },
       child: GestureDetector(
         onPanStart: (details) {
