@@ -1061,19 +1061,81 @@ def _sanitize_params(
     return cleaned
 
 
+def _normalize_alternative_tool_keys(data: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Convert alternative tool-call key formats to the standard format.
+    
+    Handles common model mistakes:
+      - {"type": "...", "params": {...}} → {"tool": "...", "parameters": {...}}
+      - {"function": "...", "args": {...}} → {"tool": "...", "parameters": {...}}
+      - {"name": "...", "input": {...}} → {"tool": "...", "parameters": {...}}
+      - Nested formats from OpenAI/Anthropic API responses
+    
+    This is CRITICAL for small models that hallucinate key names.
+    """
+    if not isinstance(data, dict):
+        return data
+    
+    result = {}
+    
+    # Extract tool name from any of the possible keys
+    tool_name = (
+        data.get("tool") or 
+        data.get("type") or      # Common mistake: "type" instead of "tool"
+        data.get("name") or 
+        data.get("function") or  # OpenAI nested format
+        (data.get("function_call") or {}).get("name")
+    )
+    
+    if tool_name:
+        result["tool"] = tool_name
+    
+    # Extract parameters from any of the possible keys
+    params = (
+        data.get("parameters") or
+        data.get("params") or     # Common mistake: "params" instead of "parameters"
+        data.get("arguments") or  # OpenAI format
+        data.get("args") or       # Python-style
+        data.get("input") or      # Anthropic format
+        {}
+    )
+    
+    # Handle stringified JSON (models sometimes double-encode)
+    if isinstance(params, str):
+        try:
+            params = json.loads(params)
+        except json.JSONDecodeError:
+            params = {}
+    
+    if isinstance(params, dict):
+        result["parameters"] = params
+    
+    # Copy any other top-level keys that aren't the renamed ones
+    skip_keys = {"tool", "type", "name", "function", "function_call", 
+                 "parameters", "params", "arguments", "args", "input"}
+    for key, value in data.items():
+        if key not in skip_keys:
+            result[key] = value
+    
+    return result
+
+
 def _normalize_tool_spec(data: Dict[str, Any], tool_defs) -> Optional[Tuple[str, Dict[str, Any]]]:
     """Normalize a JSON-like dict into (tool_name, parameters)."""
     if not isinstance(data, dict):
         return None
-
-    name = data.get("tool") or data.get("name") or data.get("type") or data.get("function")
+    
+    # CRITICAL: First normalize alternative key formats
+    data = _normalize_alternative_tool_keys(data)
+    
+    name = data.get("tool")
     # Strip common hallucinated prefixes from tool names
     if isinstance(name, str):
         for prefix in ("functions/", "tools/", "tool/", "func/"):
             if name.startswith(prefix):
                 name = name[len(prefix):]
                 break
-    params = data.get("parameters") or data.get("arguments") or data.get("args") or data.get("params") or {}
+    params = data.get("parameters", {})
 
     if isinstance(params, str):
         try:

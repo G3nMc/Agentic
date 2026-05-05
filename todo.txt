@@ -1,1 +1,15 @@
-Da aggiungere un bottone nel bubble chats che permette di eliminare quel messaggio e rimuoverlo dalla lista dei messaggi di quella chat.
+ 
+Before something like this comes out as plain text { "type": "read_file", "params": { "path": "lib/ui/widgets/chat_selection_modal.dart" } },
+Look at this pseudo code: 
+
+If it looks like tool:
+	Analyze that tool,
+		If malformed / or not json.dump(tool_string_command):		
+			Tell to the model is malformed, give me that tool in this format MAKE AN ABSOLUTE REGEX FORMAT IN ORDER TO BE SERVED BY ALL MODEL/AGENTS.
+			
+	FOR x if it is not executed in N:
+		REPLACE that claim to the agent: HEY MY FRIEND, THE TOOL FORMAT IS THIS
+		
+Obviously, you should make better the pseudo code, i hope I gave you the idea. 
+Where can be a multiple format tool execution to try.
+Analyze all *.py files where tools being managed executed  in order to understand why sometimes the tool command like this: { "type": "read_file", "params": { "path": "lib/ui/widgets/chat_selection_modal.dart" } } become a final answer instead of being executed		
