@@ -270,7 +270,7 @@ class OllamaBackend(ModelBackend):
                 effective_tools
                 and (
                     (status == 400 and "does not support tools" in low)
-                    or (status >= 500 and is_cloud_model
+                    or (is_cloud_model
                         and "internal server error" in low)
                 )
             )

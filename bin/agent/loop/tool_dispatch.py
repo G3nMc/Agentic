@@ -483,23 +483,100 @@ def looks_like_unclosed_tool(text: str) -> bool:
     return False
 
 
-def looks_like_malformed_tool_call(text: str) -> bool:
-    """True when the model appears to be attempting a tool call, but the
-    parser could not extract a valid one."""
+def looks_like_malformed_tool_call(text: str) -> tuple[bool, str | None]:
+    """Check if the model appears to be attempting a tool call, but the
+    format is malformed.
+    
+    Returns:
+        Tuple of (is_malformed, error_message)
+        - (False, None) if the text doesn't look like a tool call attempt
+        - (True, error_message) if it looks like a malformed tool call
+    """
     if not text:
-        return False
+        return False, None
+    
     low = text.lower()
+    
+    # Check if it looks like a tool call attempt
+    is_tool_attempt = False
     if "<tool" in low:
-        return True
+        is_tool_attempt = True
     if "<tool_call" in low or "<function_call" in low or "<function" in low:
-        return True
+        is_tool_attempt = True
     if '"tool"' in text or "'tool'" in text:
-        return True
+        is_tool_attempt = True
     if ("```json" in low or "```tool" in low) and "parameters" in low:
-        return True
+        is_tool_attempt = True
     if "<parameter=" in low:
-        return True
-    return False
+        is_tool_attempt = True
+    
+    if not is_tool_attempt:
+        return False, None
+    
+    # Correct tool call format explanation
+    correct_format = (
+        'Correct format: {"tool":"tool_name","parameters":{"key":"value"}} '
+        'or <tool>{"tool":"tool_name","parameters":{...}}</tool>'
+    )
+    
+    # Check for specific malformed patterns
+    
+    # 1. Detect "key"> instead of "key": (e.g., "tool":"search">pattern")
+    # This catches cases like "tool":"name">pattern" where > replaces :
+    if re.search(r'"\w+"\s*>', text):
+        return True, (
+            f"Malformed tool call: JSON syntax error. Found '\"key\">' instead of '\"key\":'. "
+            f"{correct_format}"
+        )
+    
+    # 2. Detect unclosed JSON objects (starts with {"tool" but doesn't end with })
+    if re.search(r'\{{\s*["\']tool["\']', text) and not text.rstrip().endswith("}"):
+        return True, (
+            f"Malformed tool call: Unclosed JSON object. "
+            f"The tool call starts with '{{' but doesn't end with '}}'. "
+            f"{correct_format}"
+        )
+    
+    # 3. Detect mixed JSON/XML syntax (JSON object using > instead of :)
+    if re.search(r'\{{[^}}]*"\w+"\s*>', text):
+        return True, (
+            f"Malformed tool call: Invalid JSON syntax. "
+            f"Found '>' instead of ':' as key-value separator. "
+            f"{correct_format}"
+        )
+    
+    # 4. Detect missing colon after "tool" key
+    if re.search(r'"tool"\s*"[a-zA-Z_]+"', text) and '"tool":' not in text:
+        return True, (
+            f"Malformed tool call: Missing colon after 'tool' key. "
+            f"{correct_format}"
+        )
+    
+    # 5. Detect XML-style tool tags without proper closure
+    if "<tool" in text and "</tool>" not in text:
+        return True, (
+            f"Malformed tool call: Unclosed <tool> tag. "
+            f"Either close with </tool> or use JSON format. {correct_format}"
+        )
+    
+    # 6. Detect JSON with missing closing braces (brace imbalance)
+    brace_count = text.count("{") - text.count("}")
+    if brace_count > 0 and '"tool"' in text:
+        return True, (
+            f"Malformed tool call: Missing {brace_count} closing brace(s). "
+            f"{correct_format}"
+        )
+    
+    # 7. Detect parameters key with > instead of :
+    if re.search(r'"parameters"\s*>', text):
+        return True, (
+            f"Malformed tool call: Invalid syntax after 'parameters' key. "
+            f"Use ':' not '>'. {correct_format}"
+        )
+    
+    # If it looks like a tool attempt but no specific pattern matched,
+    # it might still be malformed (parser will determine)
+    return False, None
 
 
 # Heuristic patterns that strongly suggest the model has ignored the
@@ -989,14 +1066,14 @@ def _normalize_tool_spec(data: Dict[str, Any], tool_defs) -> Optional[Tuple[str,
     if not isinstance(data, dict):
         return None
 
-    name = data.get("tool") or data.get("name")
+    name = data.get("tool") or data.get("name") or data.get("type") or data.get("function")
     # Strip common hallucinated prefixes from tool names
     if isinstance(name, str):
         for prefix in ("functions/", "tools/", "tool/", "func/"):
             if name.startswith(prefix):
                 name = name[len(prefix):]
                 break
-    params = data.get("parameters") or data.get("arguments") or data.get("args") or {}
+    params = data.get("parameters") or data.get("arguments") or data.get("args") or data.get("params") or {}
 
     if isinstance(params, str):
         try:
@@ -1079,9 +1156,9 @@ def _gather_candidates(response: str, tool_defs) -> List[str]:
         for obj in extract_json_objects(m.group(1)):
             add_candidate(obj)
 
-    # 3. Any JSON-looking object in free text that mentions tool/name.
+    # 3. Any JSON-looking object in free text that mentions tool/name/type.
     for obj in extract_json_objects(response):
-        if '"tool"' in obj or '"name"' in obj:
+        if '"tool"' in obj or '"name"' in obj or '"type"' in obj:
             add_candidate(obj)
 
     # 4. Python-style call: tool_name("arg") or tool_name(param="value").

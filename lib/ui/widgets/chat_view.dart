@@ -632,7 +632,7 @@ class _ChatViewState extends StateManager<ChatView> with WidgetsBindingObserver 
 
     // Update the conversation's updated time
     await ConversationRepository.instance.touch(conv.id);
-    
+
     // Refresh conversations in sidebar
     await MethodListener<Sidebar>().callMethod("refreshConversations");
   }
@@ -1483,16 +1483,13 @@ class _ChatViewState extends StateManager<ChatView> with WidgetsBindingObserver 
                 builder: (ctx, multiAgent, _) {
                   if (multiAgent) {
                     return ValueListenableBuilder<String?>(
-                      valueListenable:
-                          AgentRoleSettingsRepository.instance.activeGroupNotifier,
+                      valueListenable: AgentRoleSettingsRepository.instance.activeGroupNotifier,
                       builder: (ctx, activeId, _) {
                         return ValueListenableBuilder<int>(
-                          valueListenable: AgentRoleSettingsRepository
-                              .instance.groupsChangedNotifier,
+                          valueListenable: AgentRoleSettingsRepository.instance.groupsChangedNotifier,
                           builder: (ctx, _, __) {
                             return FutureBuilder<List<WorkflowGroup>>(
-                              future: AgentRoleSettingsRepository.instance
-                                  .listGroups(),
+                              future: AgentRoleSettingsRepository.instance.listGroups(),
                               builder: (ctx, snap) {
                                 final groups = snap.data;
                                 String title = '';
@@ -1505,8 +1502,7 @@ class _ChatViewState extends StateManager<ChatView> with WidgetsBindingObserver 
                                 }
                                 return Text(
                                   "Workflow: $title",
-                                  style: const TextStyle(
-                                      color: AppTheme.textMuted, fontSize: 13),
+                                  style: const TextStyle(color: AppTheme.textMuted, fontSize: 13),
                                 );
                               },
                             );
@@ -1517,8 +1513,7 @@ class _ChatViewState extends StateManager<ChatView> with WidgetsBindingObserver 
                   }
                   return Text(
                     "Model: ${_conversation?.modelId ?? ''}",
-                    style: const TextStyle(
-                        color: AppTheme.textMuted, fontSize: 13),
+                    style: const TextStyle(color: AppTheme.textMuted, fontSize: 13),
                   );
                 },
               ),
@@ -1717,7 +1712,7 @@ class _TypingIndicatorState extends State<_TypingIndicator> with SingleTickerPro
                         width: 6,
                         height: 6,
                         decoration: const BoxDecoration(
-                          color: AppTheme.textMuted,
+                          color: AppTheme.accentMarrone,
                           shape: BoxShape.circle,
                         ),
                       ),
@@ -1730,7 +1725,7 @@ class _TypingIndicatorState extends State<_TypingIndicator> with SingleTickerPro
           const SizedBox(width: 10),
           const Text(
             "Working...",
-            style: TextStyle(color: AppTheme.textMuted, fontSize: 13),
+            style: TextStyle(color: AppTheme.accentMarrone, fontSize: 13),
           ),
         ],
       ),

@@ -78,7 +78,7 @@ class _OrchestratorLogPanelState extends State<OrchestratorLogPanel> {
       decoration: BoxDecoration(
         color: AppTheme.aiBubble,
         borderRadius: BorderRadius.circular(8),
-        border: Border.all(color: AppTheme.border),
+        border: Border.all(color: AppTheme.userBubble),
       ),
       child: Column(
         mainAxisSize: MainAxisSize.min,

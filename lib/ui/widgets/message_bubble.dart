@@ -145,7 +145,7 @@ class _MessageBubbleState extends State<MessageBubble> {
                       timeLabel,
                       style: const TextStyle(
                         fontSize: 11,
-                        color: AppTheme.accentMarrone,
+                        color: AppTheme.accent,
                       ),
                     ),
                     const SizedBox(width: 8),

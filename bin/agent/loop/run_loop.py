@@ -7,13 +7,12 @@ import sys
 import time
 from typing import Any, Dict, List, Optional
 
+from . import history as _history
+from . import tool_dispatch as _td
 from ..backends.backend_base import ModelBackend
 from ..policy import SecurityConfig
 from ..tools.registry import ToolRegistry
 from ..utils.circuit_breaker import CircuitBreaker
-from . import history as _history
-from . import tool_dispatch as _td
-
 
 # Maximum characters of a tool result to keep in conversation history.
 # Tool results (read_file, list_files_recursive, etc.) can be tens of KB;
@@ -59,7 +58,12 @@ class Orchestrator:
         # Cap tool-chain length. Each iteration is potentially a 60–120 s
         # model call, so 30 bounds a single /sendPrompt at ~60 min worst case,
         # comfortably inside the Dart-side absolute timeout (120 min).
-        self.max_iterations = 30
+        # Dynamic scaling: starts at 30, can extend to 100+ for complex tasks.
+        self.max_iterations = 100
+        self._initial_max_iterations = 100
+        self._max_iteration_cap = 150  # Absolute ceiling to prevent runaway costs
+        self._successful_tool_count = 0  # Track progress for dynamic extension
+        self._files_modified = set()  # Track unique files touched
         # Sliding-window history cap. Each "turn" = 1 user msg + 1 assistant msg.
         # 6 turns = 12 messages. Keeps total history well under 8 k-token cloud
         # limits (system prompt ~700 tok + 12 msgs * ~300 tok avg + max_tokens
@@ -150,7 +154,8 @@ class Orchestrator:
             return True
         if _td.parse_all_tag_tool_calls(model_reply, self.tool_registry.definitions):
             return True
-        if _td.looks_like_malformed_tool_call(model_reply):
+        is_malformed, _ = _td.looks_like_malformed_tool_call(model_reply)
+        if is_malformed:
             return True
         if _td.looks_like_refusal(model_reply):
             return True
@@ -202,7 +207,7 @@ class Orchestrator:
                 if self.conversation_history and \
                         self.conversation_history[-1].get("role") == "user":
                     self.conversation_history[-1]["content"] = (
-                        self._TOOL_REMINDER + user_input
+                            self._TOOL_REMINDER + user_input
                     )
                 use_tools = True
             else:
@@ -226,17 +231,48 @@ class Orchestrator:
         _HISTORY_CHAR_BUDGET = 200_000
 
         for iteration in range(self.max_iterations):
-            # Dynamic Iteration Limit: Extend budget if progress is being made.
-            if iteration == self.max_iterations - 1:
-                # Check if the last few turns involved successful tool executions.
+            print(f"[orch] Progress detected | iter={iteration}")
+            # === DYNAMIC ITERATION LIMIT ===
+            # Extend budget proactively when progress is detected, not just at the end.
+            # Check every 5 iterations and when approaching the limit.
+            should_check_extension = (
+                    iteration % 5 == 0  # Periodic check
+                    or iteration >= self.max_iterations - 3  # Approaching limit
+            )
+            if should_check_extension and self.max_iterations < self._max_iteration_cap:
+                # Measure progress: count successful tool calls in recent history
                 recent_history = "".join(
-                    [m.get("content", "") for m in self.conversation_history[-5:]]
+                    [m.get("content", "") for m in self.conversation_history[-8:]]
                 )
-                if recent_history and '"status": "success"' in recent_history:
-                    self.max_iterations += 10
+                success_count = recent_history.count('"status": "success"')
+                error_count = recent_history.count('"status": "error"')
+
+                # Calculate extension multiplier based on progress rate
+                if success_count > 0 and success_count > error_count:
+                    # Good progress: extend by 5-15 based on success rate
+                    extension = min(
+                        5 + (success_count * 2),  # More successes = larger extension
+                        self._max_iteration_cap - self.max_iterations  # Don't exceed cap
+                    )
+                    old_limit = self.max_iterations
+                    self.max_iterations += extension
                     print(
-                        f"[orch] Progress detected. Extending max_iterations "
-                        f"to {self.max_iterations}",
+                        f"[orch] Progress detected | iter={iteration} | "
+                        f"successes={success_count} errors={error_count} | "
+                        f"Extending max_iterations {old_limit} -> {self.max_iterations}",
+                        file=sys.stderr,
+                    )
+                    continue
+
+                # Detect complex multi-file operations: extend more aggressively
+                files_touched = len(set(re.findall(r'\b[a-zA-Z_][\w/.-]*\.(?:dart|py|yaml|json|md)\b', recent_history)))
+                if files_touched >= 3 and self._successful_tool_count >= 5:
+                    extension = min(20, self._max_iteration_cap - self.max_iterations)
+                    old_limit = self.max_iterations
+                    self.max_iterations += extension
+                    print(
+                        f"[orch] Complex multi-file operation detected | "
+                        f"files={files_touched} | Extending max_iterations {old_limit} -> {self.max_iterations}",
                         file=sys.stderr,
                     )
                     continue
@@ -286,6 +322,15 @@ class Orchestrator:
                     print(f"[orch] -> tool {name}({params})", file=sys.stderr)
                     result = self.tool_registry.execute(name, params)
 
+                    # Track successful tool executions for dynamic iteration extension
+                    if '"status": "success"' in result or '"status":"success"' in result:
+                        self._successful_tool_count += 1
+                        # Track modified files for complexity detection
+                        if name in ("write_file", "patch_file", "append_file"):
+                            file_path = params.get("path", "")
+                            if file_path:
+                                self._files_modified.add(file_path)
+
                     # Truncate oversized tool results before they bloat the
                     # conversation history and blow the model's context window.
                     # Head+tail strategy: keep the first and last halves so the
@@ -296,9 +341,9 @@ class Orchestrator:
                         half = _MAX_TOOL_RESULT_CHARS // 2
                         trunc_len = len(display_result) - _MAX_TOOL_RESULT_CHARS
                         display_result = (
-                            display_result[:half]
-                            + f"\n[... {trunc_len} chars truncated from middle ...]\n"
-                            + display_result[-half:]
+                                display_result[:half]
+                                + f"\n[... {trunc_len} chars truncated from middle ...]\n"
+                                + display_result[-half:]
                         )
 
                     # On the last two iterations force a final answer — no more tools.
@@ -319,11 +364,11 @@ class Orchestrator:
                     self.conversation_history.append({"role": "user", "content": follow_up})
                 continue
 
-            if (_td.looks_like_malformed_tool_call(text_clean)
-                    and malformed_tool_retries < 2):
+            is_malformed, malformed_error = _td.looks_like_malformed_tool_call(text_clean)
+            if is_malformed and malformed_tool_retries < 2:
                 malformed_tool_retries += 1
                 print(
-                    f"[orch] Malformed tool call detected (retry {malformed_tool_retries}).",
+                    f"[orch] Malformed tool call detected (retry {malformed_tool_retries}): {malformed_error}",
                     file=sys.stderr,
                 )
                 print(
@@ -334,9 +379,10 @@ class Orchestrator:
                 self.conversation_history.append({
                     "role": "user",
                     "content": (
-                        "Your previous reply attempted a tool call but the "
-                        "format was invalid. Reply with EXACTLY ONE valid "
-                        "tool call on a single line in this format:\n"
+                        f"Your previous reply attempted a tool call but the "
+                        f"format was invalid. {malformed_error}\n"
+                        "Reply with EXACTLY ONE valid tool call on a single "
+                        "line in this format:\n"
                         '<tool>{"tool":"NAME","parameters":{...}}</tool>\n'
                         "No explanation, no markdown, no backticks. Keep the "
                         "JSON valid. If a shell command contains quotes, "
