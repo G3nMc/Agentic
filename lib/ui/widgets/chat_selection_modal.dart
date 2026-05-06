@@ -221,15 +221,10 @@ class _ChatSelectionModalState extends State<ChatSelectionModal> {
       return;
     }
 
-    // Close the modal first
-    if (!mounted) return;
-    Navigator.of(context).pop(true);
-
-    // Show loading indicator
-    if (!mounted) return;
-    NotificationHelper.showInfo(context, 'Loading conversations...');
-
     try {
+      // Show loading indicator
+      NotificationHelper.showInfo(context, 'Loading conversations...');
+
       // Load all selected conversations with their messages
       final conversationsData = <Map<String, dynamic>>[];
 
@@ -253,6 +248,7 @@ class _ChatSelectionModalState extends State<ChatSelectionModal> {
       }
 
       if (conversationsData.isEmpty) {
+        if (!mounted) return;
         NotificationHelper.showError(context, 'No conversations found');
         return;
       }
@@ -311,12 +307,13 @@ $conversationsJson''';
       await MessageRepository.instance.insert(userMsg);
 
       // Navigate to the new conversation
-      if (!mounted) return;
       await MethodListener<HomeScreen>().callMethod(
         'openConversation',
         params: {'conversationId': newConv.id},
       );
 
+      if (!mounted) return;
+      Navigator.of(context).pop(true);
       NotificationHelper.showSuccess(context, 'New summary chat created');
     } catch (e) {
       if (!mounted) return;

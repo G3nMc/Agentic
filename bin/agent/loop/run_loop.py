@@ -391,6 +391,21 @@ class Orchestrator:
                 })
                 continue
 
+            # If malformed but retries exhausted, do NOT treat as final answer.
+            # Return an error message instead of leaking broken tool-call syntax.
+            if is_malformed:
+                print(
+                    f"[orch] Malformed tool call: retries exhausted. "
+                    f"Error: {malformed_error}",
+                    file=sys.stderr,
+                )
+                return (
+                    "The model failed to emit a valid tool call after multiple "
+                    "attempts. The request may be too ambiguous or the model may "
+                    "not support tool-use. Try rephrasing your request or using "
+                    "a different model."
+                )
+
             # --- Truncation detection ---
             # The reply claims to start a tool call (`<tool>` or fenced JSON)
             # but was cut off by max_tokens before the matching `</tool>` /

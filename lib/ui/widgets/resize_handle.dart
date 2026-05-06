@@ -75,7 +75,7 @@ class _ResizeHandleState extends State<ResizeHandle> {
         },
         child: Container(
           height: 8,
-          margin: const EdgeInsets.symmetric(horizontal: 10),
+          margin: const EdgeInsets.symmetric(horizontal: 40),
           decoration: BoxDecoration(
             color: _isHovering || _isDragging
                 ? AppTheme.accent.withAlpha(40)

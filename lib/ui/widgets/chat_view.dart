@@ -761,7 +761,6 @@ class _ChatViewState extends StateManager<ChatView> with WidgetsBindingObserver 
             height: _logPanelHeight,
             onHeightChanged: (newHeight) => setState(() => _logPanelHeight = newHeight),
             minHeight: 40.0,
-            maxHeight: 600.0,
           ),
           OrchestratorLogPanel(height: _logPanelHeight),
         ],

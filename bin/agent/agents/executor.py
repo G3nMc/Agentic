@@ -12,6 +12,8 @@ The Executor has TWO modes:
 """
 from __future__ import annotations
 
+import concurrent.futures
+
 import json
 import sys
 from typing import Any, Dict, Optional
@@ -61,15 +63,21 @@ class ExecutorAgent(Agent):
 
         results: list[dict] = []
         previews: list[str] = []
-        for call in state.tool_calls:
+
+        def _exec(call):
             tool = call.get("tool", "")
             params = call.get("parameters") or {}
             try:
                 raw = self.tool_registry.execute(tool, params)
             except Exception as e:  # noqa: BLE001
                 raw = json.dumps({"status": "error", "message": str(e)})
-            results.append({"tool": tool, "parameters": params, "result": raw})
-            previews.append(self._preview(tool, raw))
+            return {"tool": tool, "parameters": params, "result": raw}
+
+        with concurrent.futures.ThreadPoolExecutor() as pool:
+            results = list(pool.map(_exec, state.tool_calls))
+
+        for r in results:
+            previews.append(self._preview(r['tool'], r['result']))
 
         # Accumulate across iterations so the Reasoner sees the full history
         # of what it tried this turn — critical for weak/non-tool-tuned models

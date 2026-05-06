@@ -225,7 +225,7 @@ class OllamaBackend(ModelBackend):
                     name = getattr(fn, "name", None)
                     args = getattr(fn, "arguments", {}) or {}
 
-                    # 🔥 sanitize tool args too (agent-safe)
+
                     args = sanitize_for_agent(args)
 
                     if isinstance(args, str):
