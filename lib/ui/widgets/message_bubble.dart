@@ -97,6 +97,10 @@ class _MessageBubbleState extends State<MessageBubble> {
                       letterSpacing: 0.5,
                     ),
                   ),
+                  Container(
+                      height: 1,
+                      width: double.infinity,
+                      color: AppTheme.accentDarkMarrone),
                   if (widget.onDelete != null)
                     GestureDetector(
                       onTap: widget.onDelete,

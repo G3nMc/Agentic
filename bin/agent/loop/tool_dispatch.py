@@ -16,7 +16,7 @@ from typing import Any, Dict, List, Optional, Tuple
 # ---------------------------------------------------------------------------
 
 JUNK_TAG_PATTERN = re.compile(
-    r"</?(?:plaintext|pre|code|html|body|p|span|div|tool|tool_call|function_call|function|parameter)\b[^>]*>",
+    r"</?(?:plaintext|pre|code|html|body|p|span|div|tool|tool_call|function_call|function|parameter|parameters)\b[^>]*>",
     re.IGNORECASE,
 )
 
@@ -51,7 +51,6 @@ def clean_final_answer(text: str) -> str:
     cleaned = STRAY_THINK_CLOSE_PATTERN.sub("", cleaned)
     cleaned = re.sub(r"\n{3,}", "\n\n", cleaned).strip()
 
-    # Strip a single surrounding quoted string, if the whole answer is wrapped.
     if (
             len(cleaned) >= 2
             and cleaned[0] == '"'
@@ -67,27 +66,37 @@ def clean_final_answer(text: str) -> str:
 # Tool-call detection
 # ---------------------------------------------------------------------------
 
+def _count_exact_tag(text: str, tag: str) -> int:
+    if not text:
+        return 0
+    return len(re.findall(rf"<\s*{re.escape(tag)}(?=[\s>/=:]|$)", text, re.IGNORECASE))
+
+
 def looks_like_unclosed_tool(text: str) -> bool:
     """True if the reply opens a tool tag or tool JSON without closing it."""
     if not text:
         return False
 
-    opens = text.count("<tool>")
-    closes = text.count("</tool>")
+    opens = _count_exact_tag(text, "tool")
+    closes = len(re.findall(r"</\s*tool\s*>", text, re.IGNORECASE))
     if opens > closes:
         return True
 
-    if text.count("<tool_call>") > text.count("</tool_call>"):
+    opens = _count_exact_tag(text, "tool_call")
+    closes = len(re.findall(r"</\s*tool_call\s*>", text, re.IGNORECASE))
+    if opens > closes:
         return True
 
-    if text.count("<function_call>") > text.count("</function_call>"):
+    opens = _count_exact_tag(text, "function_call")
+    closes = len(re.findall(r"</\s*function_call\s*>", text, re.IGNORECASE))
+    if opens > closes:
         return True
 
     if "```json" in text.lower() and text.count("```") % 2 == 1:
-        if '"tool"' in text or "'tool'" in text:
+        if re.search(r'["\']tool["\']', text):
             return True
 
-    if '"tool"' in text and text.count("{") > text.count("}"):
+    if re.search(r'["\']tool["\']\s*:\s*', text) and text.count("{") > text.count("}"):
         return True
 
     return False
@@ -119,20 +128,21 @@ def looks_like_refusal(text: str) -> bool:
 def _looks_like_tool_attempt(text: str) -> bool:
     if not text:
         return False
-    low = text.lower()
 
-    if "<tool" in low or "<tool_call" in low or "<function_call" in low or "<function" in low:
+    if re.search(r"<\s*(?:tool|tool_call|function_call|function)(?=[\s>/=:]|$)", text, re.IGNORECASE):
         return True
-    if '"tool"' in text or "'tool'" in text:
+    if re.search(r"</\s*(?:tool|tool_call|function_call|function)\s*>", text, re.IGNORECASE):
         return True
-    if '"parameters"' in text or "'parameters'" in text:
+
+    if re.search(r'["\'](?:tool|function_call|function|parameters|arguments|args|input)["\']\s*:', text):
         return True
-    if "```json" in low or "```tool" in low:
+
+    if re.search(r"\b(?:tool_call|function_call)\s*[:=]", text, re.IGNORECASE):
         return True
-    if "<parameter" in low or "<parameters" in low:
+
+    if re.search(r"```(?:json|tool)\b", text, re.IGNORECASE):
         return True
-    if re.search(r"\b(tool|function|function_call|tool_call)\s*[:=]", low):
-        return True
+
     return False
 
 
@@ -144,7 +154,6 @@ def looks_like_malformed_tool_call(text: str) -> Tuple[bool, str | None]:
     if not _looks_like_tool_attempt(text):
         return False, None
 
-    # If we can already parse a valid tool call, it is not malformed.
     if parse_all_tag_tool_calls(text):
         return False, None
 
@@ -153,7 +162,6 @@ def looks_like_malformed_tool_call(text: str) -> Tuple[bool, str | None]:
         'or <tool>{"tool":"tool_name","parameters":{...}}</tool>'
     )
 
-    # Common syntax mistakes.
     if re.search(r'"\w+"\s*>', text):
         return True, (
             f"Malformed tool call: JSON syntax error. Found '\"key\">' instead of '\"key\":'. "
@@ -177,23 +185,18 @@ def looks_like_malformed_tool_call(text: str) -> Tuple[bool, str | None]:
             f"Malformed tool call: Missing colon after 'tool' key. {correct_format}"
         )
 
-    if "<tool" in text and "</tool>" not in text:
+    if re.search(r"<\s*(?:tool|tool_call|function_call|function)(?=[\s>/=:]|$)", text, re.IGNORECASE) and not re.search(
+            r"</\s*(?:tool|tool_call|function_call|function)\s*>", text, re.IGNORECASE
+    ):
         return True, (
-            f"Malformed tool call: Unclosed <tool> tag. Either close it with </tool> or use JSON format. {correct_format}"
+            f"Malformed tool call: Unclosed tool tag. Either close it properly or use JSON format. {correct_format}"
         )
 
-    if '"parameters"' in text and '"tool"' in text and text.count("{") > text.count("}"):
-        missing = text.count("{") - text.count("}")
-        return True, (
-            f"Malformed tool call: Missing {missing} closing brace(s). {correct_format}"
-        )
-
-    if re.search(r'"parameters"\s*>', text):
+    if re.search(r'["\']parameters["\']\s*>', text):
         return True, (
             f"Malformed tool call: Invalid syntax after 'parameters' key. Use ':' not '>'. {correct_format}"
         )
 
-    # Strong tool attempt, but parser could not make sense of it.
     return True, (
         f"Malformed tool call: The reply looks like a tool invocation but could not be parsed. "
         f"{correct_format}"
@@ -280,7 +283,6 @@ def _maybe_parse_scalar(value: str) -> Any:
         except Exception:
             pass
 
-    # A couple of common Python-ish fallbacks.
     lowered = s.lower()
     if lowered == "true":
         return True
@@ -293,21 +295,22 @@ def _maybe_parse_scalar(value: str) -> Any:
 
 
 _OPEN_TAG_RE = re.compile(
-    r"<(?P<tag>tool|tool_call|function_call|function)"
+    r"<(?P<tag>tool|tool_call|function_call|function)(?=[\s>/=:]|$)"
     r"(?:\s*(?:=|:)\s*(?P<name>[a-zA-Z_][\w\-]*))?[^>]*>",
     re.IGNORECASE,
 )
 
 _PARAM_TAG_RE = re.compile(
-    r"<parameter(?:\s*(?:=|:)\s*(?P<name>[a-zA-Z_][\w\-]*))\s*>"
+    r"<(?P<tag>parameter|parameters)(?=[\s>/=:]|$)"
+    r"(?:\s*(?:=|:)\s*(?P<name>[a-zA-Z_][\w\-]*))?\s*>"
     r"(?P<value>.*?)"
-    r"</parameter>",
+    r"</\s*(?P=tag)\s*>",
     re.IGNORECASE | re.DOTALL,
     )
 
 _HYBRID_RE = re.compile(
     r'["\']?(?:tool|name)["\']?\s*["\':=]\s*["\']([a-zA-Z_][\w\-]*)["\']'
-    r'[^<{]*?<\s*(?:parameters|parameter)\s*>?\s*(\{.*?\})',
+    r'[^<{]*?<\s*(?:parameters|parameter)\b[^>]*>\s*(\{.*?\})',
     re.DOTALL | re.IGNORECASE,
     )
 
@@ -342,9 +345,7 @@ def _iter_xmlish_blocks(text: str):
 
 
 def _tool_defs_iter(tool_defs):
-    if not tool_defs:
-        return []
-    return tool_defs
+    return tool_defs or []
 
 
 def _tool_name_and_schema(defn: Dict[str, Any]) -> Tuple[Optional[str], Optional[Dict[str, Any]]]:
@@ -408,6 +409,9 @@ def _infer_tool_name_from_params(params: Dict[str, Any], tool_defs) -> Optional[
         if required and not required.issubset(param_keys):
             continue
 
+        if overlap < 2 and len(prop_keys) > 2 and not required:
+            continue
+
         score = overlap * 10 + (5 if param_keys.issubset(prop_keys) else 0)
         if score > best_score:
             best_score = score
@@ -417,9 +421,7 @@ def _infer_tool_name_from_params(params: Dict[str, Any], tool_defs) -> Optional[
 
 
 def _decode_embedded_tool_call(name_value: Any) -> Optional[Tuple[str, Dict[str, Any]]]:
-    """
-    Decode malformed tool-name payloads that embed a full call object.
-    """
+    """Decode malformed tool-name payloads that embed a full call object."""
     if not isinstance(name_value, str):
         return None
 
@@ -436,12 +438,7 @@ def _decode_embedded_tool_call(name_value: Any) -> Optional[Tuple[str, Dict[str,
         return None
 
     emb_name = embedded.get("name") or embedded.get("tool")
-    emb_params = (
-            embedded.get("arguments")
-            or embedded.get("parameters")
-            or embedded.get("args")
-            or {}
-    )
+    emb_params = embedded.get("arguments") or embedded.get("parameters") or embedded.get("args") or {}
 
     if isinstance(emb_params, str):
         try:
@@ -466,7 +463,6 @@ def _sanitize_params(
     if not isinstance(params, dict):
         return {} if params is None else params
 
-    # Pass 1: unwrap the whole payload if the only useful content is nested.
     for wrapper in ("parameters", "arguments", "args"):
         if wrapper not in params:
             continue
@@ -540,19 +536,22 @@ def _normalize_alternative_tool_keys(data: Dict[str, Any]) -> Dict[str, Any]:
 
     result: Dict[str, Any] = {}
 
-    # Tool name.
-    tool_name = data.get("tool") or data.get("name")
+    tool_name = data.get("tool") if isinstance(data.get("tool"), str) else None
+    if not tool_name and isinstance(data.get("name"), str):
+        tool_name = data.get("name")
 
     function_call = data.get("function_call")
     if isinstance(function_call, dict):
-        tool_name = tool_name or function_call.get("name")
+        if not tool_name and isinstance(function_call.get("name"), str):
+            tool_name = function_call.get("name")
         if "arguments" in function_call and "parameters" not in data:
             data = dict(data)
             data["parameters"] = function_call.get("arguments")
 
     function_obj = data.get("function")
     if isinstance(function_obj, dict):
-        tool_name = tool_name or function_obj.get("name")
+        if not tool_name and isinstance(function_obj.get("name"), str):
+            tool_name = function_obj.get("name")
         if "arguments" in function_obj and "parameters" not in data:
             data = dict(data)
             data["parameters"] = function_obj.get("arguments")
@@ -560,20 +559,21 @@ def _normalize_alternative_tool_keys(data: Dict[str, Any]) -> Dict[str, Any]:
             data = dict(data)
             data["parameters"] = function_obj.get("parameters")
     elif isinstance(function_obj, str) and function_obj:
-        tool_name = tool_name or function_obj
+        if not tool_name:
+            tool_name = function_obj
 
     type_value = data.get("type")
-    if isinstance(type_value, str) and type_value not in {
-        "function",
-        "tool_call",
-        "function_call",
-    }:
-        tool_name = tool_name or type_value
+    if isinstance(type_value, str):
+        normalized_type = type_value.lower()
+        if normalized_type not in {"function", "tool_call", "function_call"}:
+            if not tool_name and any(
+                    k in data for k in ("parameters", "params", "arguments", "args", "input")
+            ):
+                tool_name = type_value
 
     if isinstance(tool_name, str) and tool_name:
         result["tool"] = tool_name
 
-    # Parameters.
     params = (
             data.get("parameters")
             or data.get("params")
@@ -673,6 +673,37 @@ def _maybe_parse_jsonish(text: str) -> Optional[Any]:
         return None
 
 
+def _is_explicit_tool_dict(data: Any) -> bool:
+    if not isinstance(data, dict):
+        return False
+
+    keys = set(data.keys())
+    has_tool = isinstance(data.get("tool"), str) and bool(data.get("tool").strip())
+    has_name = isinstance(data.get("name"), str) and bool(data.get("name").strip())
+    has_function_call = isinstance(data.get("function_call"), dict)
+    has_function_obj = isinstance(data.get("function"), dict) or isinstance(data.get("function"), str)
+    has_params = any(k in keys for k in ("parameters", "params", "arguments", "args", "input"))
+    type_value = data.get("type")
+    known_type = isinstance(type_value, str) and type_value.lower() in {"function", "tool_call", "function_call"}
+
+    if has_function_call or has_function_obj:
+        return True
+
+    if has_tool and (has_params or has_name):
+        return True
+
+    if has_name and has_params:
+        return True
+
+    if known_type and (has_tool or has_name or has_params):
+        return True
+
+    if has_tool and keys <= {"tool", "name", "type"}:
+        return True
+
+    return False
+
+
 def repair_hybrid_tool_call(text: str) -> Optional[str]:
     """
     Repair common malformed patterns where a model mixes JSON and XML.
@@ -682,16 +713,14 @@ def repair_hybrid_tool_call(text: str) -> Optional[str]:
         return None
 
     low = text.lower()
-    if "<parameter" not in low and "<parameters" not in low:
+    if not re.search(r"<\s*(?:parameter|parameters)\b", low):
         return None
 
-    # Case 1: JSON-ish tool/name + XML-ish parameters.
     m = _HYBRID_RE.search(text)
     if m:
         name = m.group(1)
         params_raw = m.group(2)
 
-        # Trim params_raw to the first balanced object.
         depth = 0
         end = -1
         for i, ch in enumerate(params_raw):
@@ -710,7 +739,6 @@ def repair_hybrid_tool_call(text: str) -> Optional[str]:
         if isinstance(params_obj, dict):
             return json.dumps({"tool": name, "parameters": params_obj})
 
-    # Case 2: XML-ish `<parameter=...>` blocks plus a known opener.
     open_m = _OPEN_TAG_RE.search(text)
     if not open_m:
         return None
@@ -737,6 +765,16 @@ def repair_hybrid_tool_call(text: str) -> Optional[str]:
     return None
 
 
+def _is_standalone_python_call_context(text: str, start: int, end: int) -> bool:
+    before = text[:start].strip()
+    after = text[end:].strip()
+    if not before and not after:
+        return True
+    if re.fullmatch(r"[\s`]*", text[:start]) and re.fullmatch(r"[\s`]*", text[end:]):
+        return True
+    return False
+
+
 def _gather_candidates(response: str, tool_defs) -> List[str]:
     """Collect all candidate tool-call fragments from the model reply."""
     candidates: List[str] = []
@@ -748,7 +786,6 @@ def _gather_candidates(response: str, tool_defs) -> List[str]:
             seen_fragments.add(fragment)
             candidates.append(fragment)
 
-    # 1. XML-ish blocks.
     for tag, opener_name, body in _iter_xmlish_blocks(response):
         repaired = repair_hybrid_tool_call(
             f"<{tag}{'=' + opener_name if opener_name else ''}>{body}</{tag}>"
@@ -757,7 +794,9 @@ def _gather_candidates(response: str, tool_defs) -> List[str]:
             add_candidate(repaired)
 
         for obj in extract_json_objects(body):
-            add_candidate(obj)
+            parsed = _maybe_parse_jsonish(obj)
+            if isinstance(parsed, dict) and _is_explicit_tool_dict(parsed):
+                add_candidate(obj)
 
         params: Dict[str, Any] = {}
         for pm in _PARAM_TAG_RE.finditer(body):
@@ -771,26 +810,25 @@ def _gather_candidates(response: str, tool_defs) -> List[str]:
             if inferred_name:
                 add_candidate(json.dumps({"tool": inferred_name, "parameters": params}))
 
-    # 1b. Free-text hybrid repair over the whole response.
     repaired_all = repair_hybrid_tool_call(response)
     if repaired_all:
         add_candidate(repaired_all)
 
-    # 2. Fenced JSON blocks.
     for m in re.finditer(
             r"```(?:json|tool)?\s*({.*?\})\s*```",
             response,
             re.DOTALL | re.IGNORECASE,
     ):
         for obj in extract_json_objects(m.group(1)):
-            add_candidate(obj)
+            parsed = _maybe_parse_jsonish(obj)
+            if isinstance(parsed, dict) and _is_explicit_tool_dict(parsed):
+                add_candidate(obj)
 
-    # 3. Any JSON-looking object in free text that mentions tool/name/type.
     for obj in extract_json_objects(response):
-        if '"tool"' in obj or '"name"' in obj or '"type"' in obj:
+        parsed = _maybe_parse_jsonish(obj)
+        if isinstance(parsed, dict) and _is_explicit_tool_dict(parsed):
             add_candidate(obj)
 
-    # 4. Python-style calls.
     if tool_defs:
         known = {
             name
@@ -801,9 +839,12 @@ def _gather_candidates(response: str, tool_defs) -> List[str]:
 
         for m in re.finditer(r"\b([a-zA-Z_][a-zA-Z0-9_]*)\s*\(([^)]*)\)", response):
             func_name = m.group(1)
-            if func_name in known:
-                pargs = parse_python_call_args(func_name, m.group(2), tool_defs)
-                add_candidate(json.dumps({"tool": func_name, "parameters": pargs}))
+            if func_name not in known:
+                continue
+            if not _is_standalone_python_call_context(response, m.start(), m.end()):
+                continue
+            pargs = parse_python_call_args(func_name, m.group(2), tool_defs)
+            add_candidate(json.dumps({"tool": func_name, "parameters": pargs}))
 
     return candidates
 
