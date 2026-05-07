@@ -5795,7 +5795,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
       constraints: const BoxConstraints(maxHeight: 180),
       padding: const EdgeInsets.all(10),
       decoration: BoxDecoration(
-        color: Colors.black,
+        color: AppTheme.bgCodeMessageBubble,
         borderRadius: BorderRadius.circular(6),
       ),
       child: SingleChildScrollView(
@@ -6793,7 +6793,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
           Container(
             height: 280,
             decoration: BoxDecoration(
-              color: AppTheme.bgSecondary,
+              color: AppTheme.bgCodeMessageBubble,
               border: Border.all(color: AppTheme.border),
               borderRadius: BorderRadius.circular(8),
             ),

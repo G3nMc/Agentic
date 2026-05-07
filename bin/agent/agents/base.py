@@ -14,6 +14,19 @@ from ..core.state import WorkflowState
 # all. Override with HF_CHAT_AGENT_LOG_CHARS=N to widen.
 _AGENT_LOG_CHARS = int(os.environ.get("HF_CHAT_AGENT_LOG_CHARS", "800"))
 
+# Appended to every agent's system prompt. Some downstream backends (notably
+# Ollama via its Python client) crash on lone UTF-16 surrogates produced by
+# emoji round-tripping ("'utf-8' codec can't encode character '\udc8f'"), so
+# we instruct every role to stay within plain ASCII / standard punctuation.
+_NO_EMOJI_RULE = (
+    "\n\nOUTPUT CHARACTER RULE: You MUST NEVER include emojis, pictographs, "
+    "decorative symbols, or non-standard Unicode glyphs in your output "
+    "(e.g. no rocket, wrench, gear, sparkles, check-mark icons, arrows, "
+    "box-drawing, etc.). Use plain ASCII letters, digits, and standard "
+    "punctuation only. This rule is mandatory and overrides any stylistic "
+    "preference."
+)
+
 
 def _truncate(text: str) -> str:
     """Single-line, length-capped preview suitable for stderr logging."""
@@ -38,7 +51,7 @@ class Agent(ABC):
     def __init__(self, backend: ModelBackend, system_prompt: str,
                  *, temperature: float = 0.2, max_tokens: int = 1024):
         self.backend = backend
-        self.system_prompt = system_prompt
+        self.system_prompt = (system_prompt or "") + _NO_EMOJI_RULE
         self.temperature = temperature
         self.max_tokens = max_tokens
         # Surfaces as `(name=…, model=…)` in trace entries. Both backends carry

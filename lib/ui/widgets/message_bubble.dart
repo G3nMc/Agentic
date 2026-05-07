@@ -31,6 +31,7 @@ class MessageBubble extends StatefulWidget {
   final bool isUser;
   final VoidCallback? onResend;
   final VoidCallback? onDelete;
+  final VoidCallback? onEdit;
 
   const MessageBubble({
     super.key,
@@ -39,6 +40,7 @@ class MessageBubble extends StatefulWidget {
     this.isUser = false,
     this.onResend,
     this.onDelete,
+    this.onEdit,
   });
 
   @override
@@ -128,7 +130,7 @@ class _MessageBubbleState extends State<MessageBubble> {
                       height: 1.5,
                     ),
                     code: const TextStyle(
-                      backgroundColor: AppTheme.bgCode,
+                      backgroundColor: AppTheme.bgCodeMessageBubble,
                       fontFamily: "monospace",
                       color: AppTheme.textPrimary,
                       fontSize: 13.5,
@@ -172,6 +174,17 @@ class _MessageBubbleState extends State<MessageBubble> {
                         onTap: widget.onResend,
                         child: const Icon(
                           Icons.refresh,
+                          size: 14,
+                          color: AppTheme.accentMarrone,
+                        ),
+                      ),
+                    ],
+                    if (widget.onEdit != null) ...[
+                      const SizedBox(width: 6),
+                      GestureDetector(
+                        onTap: widget.onEdit,
+                        child: const Icon(
+                          Icons.edit_outlined,
                           size: 14,
                           color: AppTheme.accentMarrone,
                         ),

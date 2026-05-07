@@ -85,6 +85,10 @@ class _ChatViewState extends StateManager<ChatView> with WidgetsBindingObserver 
 
   final ScrollController _scrollController = ScrollController();
 
+  /// Controller for the chat input. Owned here so we can push text into it
+  /// when the user taps the edit icon on a message bubble.
+  final TextEditingController _inputController = TextEditingController();
+
   @override
   void initState() {
     super.initState();
@@ -614,6 +618,42 @@ class _ChatViewState extends StateManager<ChatView> with WidgetsBindingObserver 
     await _sendMessage(originalContent);
   }
 
+  /// Handles the "Edit" action on a user message bubble.
+  ///
+  /// Loads the message content into the chat input for editing, then truncates
+  /// the conversation by removing the selected message and every entry that
+  /// follows it (both in-memory and in the database). When the user later
+  /// presses send, [_sendMessage] re-inserts the edited message as the new
+  /// tail of the history.
+  Future<void> _handleEdit(String messageId) async {
+    if (_sending) return;
+
+    final idx = _messages.indexWhere((m) => m.id == messageId);
+    if (idx == -1) return;
+
+    final conv = _conversation;
+    if (conv == null) return;
+
+    final originalContent = _messages[idx].content;
+
+    final idsToRemove = _messages.sublist(idx).map((m) => m.id).toList();
+
+    setState(() {
+      _messages.removeRange(idx, _messages.length);
+      _sendError = null;
+      _inputController.text = originalContent;
+      _inputController.selection = TextSelection.collapsed(
+        offset: _inputController.text.length,
+      );
+    });
+
+    for (final id in idsToRemove) {
+      await MessageRepository.instance.deleteById(id);
+    }
+
+    await ConversationRepository.instance.touch(conv.id);
+  }
+
   /// Handles the "Delete" action on a message bubble.
   ///
   /// Removes the selected message from the conversation history.
@@ -752,6 +792,7 @@ class _ChatViewState extends StateManager<ChatView> with WidgetsBindingObserver 
           onDownload: _downloadChatAsJson,
           onCopyToClipboard: _copyChatToClipboard,
           onNewChatFromJson: _newChatFromJson,
+          controller: _inputController,
         ),
         if (showServerPanel)
           QuickServerPanel(
@@ -1542,6 +1583,7 @@ class _ChatViewState extends StateManager<ChatView> with WidgetsBindingObserver 
           isUser: m.role == MessageRole.user,
           // Show resend only on user bubbles and only when not already sending.
           onResend: (m.role == MessageRole.user && !_sending) ? () => _handleResend(m.id) : null,
+          onEdit: (m.role == MessageRole.user && !_sending) ? () => _handleEdit(m.id) : null,
           onDelete: () => _handleDeleteMessage(m.id),
         );
       },
@@ -1669,6 +1711,7 @@ class _ChatViewState extends StateManager<ChatView> with WidgetsBindingObserver 
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     _scrollController.dispose();
+    _inputController.dispose();
     super.dispose();
   }
 }

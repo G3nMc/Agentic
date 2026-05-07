@@ -43,6 +43,11 @@ class ChatInput extends StatefulWidget {
   /// Callback to create a new chat from JSON context (excluding conversation node).
   final VoidCallback? onNewChatFromJson;
 
+  /// Optional externally-owned controller. When provided, the parent can drive
+  /// the input text (e.g. to load a message body for editing). When null, the
+  /// widget creates and owns its own controller.
+  final TextEditingController? controller;
+
   const ChatInput({
     super.key,
     required this.enabled,
@@ -56,6 +61,7 @@ class ChatInput extends StatefulWidget {
     this.onDownload,
     this.onCopyToClipboard,
     this.onNewChatFromJson,
+    this.controller,
   });
 
   @override
@@ -63,7 +69,8 @@ class ChatInput extends StatefulWidget {
 }
 
 class _ChatInputState extends State<ChatInput> {
-  final _controller = TextEditingController();
+  late final TextEditingController _controller =
+      widget.controller ?? TextEditingController();
   final _focusNode = FocusNode();
   final _projectService = ProjectService();
   String _currentProjectFolder = 'Select folder...';
@@ -279,7 +286,10 @@ class _ChatInputState extends State<ChatInput> {
 
   @override
   void dispose() {
-    _controller.dispose();
+    // Only dispose the controller if we own it.
+    if (widget.controller == null) {
+      _controller.dispose();
+    }
     _focusNode.dispose();
     super.dispose();
   }
@@ -594,7 +604,7 @@ class _ChatInputState extends State<ChatInput> {
   @override
   Widget build(BuildContext context) {
     return Container(
-      padding: const EdgeInsets.fromLTRB(10, 10, 10, 10),
+      padding: const EdgeInsets.fromLTRB(10, 5, 10, 5),
       color: AppTheme.bgPrimary,
       child: Center(
         child: SizedBox(

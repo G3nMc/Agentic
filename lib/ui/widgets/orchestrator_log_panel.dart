@@ -76,9 +76,9 @@ class _OrchestratorLogPanelState extends State<OrchestratorLogPanel> {
     return Container(
       margin: const EdgeInsets.fromLTRB(10, 0, 10, 10),
       decoration: BoxDecoration(
-        color: AppTheme.aiBubble,
+        color: AppTheme.bgCodeOrchOutput,
         borderRadius: BorderRadius.circular(8),
-        border: Border.all(color: AppTheme.userBubble),
+        border: Border.all(color: AppTheme.border),
       ),
       child: Column(
         mainAxisSize: MainAxisSize.min,
@@ -171,7 +171,7 @@ class _OrchestratorLogPanelState extends State<OrchestratorLogPanel> {
                       'Waiting for orchestrator output…',
                       style: TextStyle(
                         fontSize: 11,
-                        color: Color(0xFF6C7086),
+                        color: Color(0xFF6E6E7D),
                         fontStyle: FontStyle.italic,
                       ),
                     ),
@@ -179,7 +179,7 @@ class _OrchestratorLogPanelState extends State<OrchestratorLogPanel> {
                 : SelectionArea(
                     child: ListView.builder(
                       controller: _scroll,
-                      padding: const EdgeInsets.fromLTRB(10, 0, 10, 6),
+                      padding: const EdgeInsets.fromLTRB(10, 10, 10, 6),
                       itemCount: _lines.length,
                       itemBuilder: (_, i) {
                         final line = _lines[i];
