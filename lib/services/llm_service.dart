@@ -76,6 +76,16 @@ class LlmService {
 
   static final LlmService instance = LlmService._();
 
+  String _extractOllamaKeyError(String stderr) {
+    for (final raw in stderr.split('\n')) {
+      final line = raw.trim();
+      if (line.toLowerCase().startsWith('invalid ollama api key')) {
+        return line;
+      }
+    }
+    return '';
+  }
+
   /// Unified interface to send chat using either remote or local backend
   Future<String> sendChat({
     required LlmBackend backend,
@@ -220,6 +230,8 @@ class LlmService {
         // If the orchestrator is already running on the HF backend from a
         // previous session, stop it before restarting on Ollama — the
         // Python subprocess only supports one backend per lifetime.
+        final settings = BackendSettingsRepository.instance;
+        final ollamaApiKey = await settings.getOllamaApiKey() ?? '';
         if (OrchestratorManager.instance.isRunning) {
           final currentBackend = OrchestratorManager.instance.currentBackend;
           if (currentBackend != OrchestratorBackend.ollama) {
@@ -231,13 +243,19 @@ class LlmService {
             modelId: resolvedOllamaModel,
             backend: OrchestratorBackend.ollama,
             ollamaBaseUrl: ollamaBaseUrl,
+            ollamaApiKey: ollamaApiKey,
           );
           if (!started) {
+            final stderr = OrchestratorManager.instance.stderrLog;
+            final keyError = _extractOllamaKeyError(stderr);
+            if (keyError.isNotEmpty) {
+              throw Exception(keyError);
+            }
             throw Exception(
               "Failed to start Ollama-backed orchestrator. Check that "
               "Python is installed and the Ollama daemon is running "
               "(Settings → 🦙 Ollama → Start Ollama server). "
-              "stderr: ${OrchestratorManager.instance.stderrLog}",
+              "stderr: $stderr",
             );
           }
         }

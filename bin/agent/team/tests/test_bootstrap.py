@@ -74,7 +74,7 @@ class AuthFlagForwardingTests(unittest.TestCase):
 
     def test_ollama_url_and_num_ctx_forwarded(self):
         argv = self._build(ollama_base_url="https://api.ollama.ai",
-                           ollama_num_ctx=8192)
+                           ollama_num_ctx=32768)
         self.assertIn("--ollama-base-url", argv)
         self.assertIn("https://api.ollama.ai", argv)
         self.assertIn("--ollama-num-ctx", argv)

@@ -16,7 +16,7 @@ from typing import Any, Dict, List, Optional, Tuple
 # ---------------------------------------------------------------------------
 
 JUNK_TAG_PATTERN = re.compile(
-    r"</?(?:plaintext|pre|code|html|body|p|span|div|tool|tool_call|function_call|function|parameter|parameters)\b[^>]*>",
+    r"</?(?:plaintext|pre|code|html|body|p|span|div|tool|tool_call|function_call|function|parameter|parameters|arg_key|arg_value|arg_name)\b[^>]*>",
     re.IGNORECASE,
 )
 
@@ -129,15 +129,17 @@ def _looks_like_tool_attempt(text: str) -> bool:
     if not text:
         return False
 
+    # Check for explicit tool tags or JSON structures
     if re.search(r"<\s*(?:tool|tool_call|function_call|function)(?=[\s>/=:]|$)", text, re.IGNORECASE):
         return True
     if re.search(r"</\s*(?:tool|tool_call|function_call|function)\s*>", text, re.IGNORECASE):
         return True
 
-    if re.search(r'["\'](?:tool|function_call|function|parameters|arguments|args|input)["\']\s*:', text):
+    # Require a more specific pattern for JSON-like structures
+    if re.search(r'["\']tool["\']\s*:\s*["\']\w+["\']', text):
         return True
 
-    if re.search(r"\b(?:tool_call|function_call)\s*[:=]", text, re.IGNORECASE):
+    if re.search(r"\b(?:tool_call|function_call)\s*[:=]\s*['\"]\w+['\"]", text, re.IGNORECASE):
         return True
 
     if re.search(r"```(?:json|tool)\b", text, re.IGNORECASE):
@@ -317,8 +319,19 @@ _HYBRID_RE = re.compile(
 _WRAPPER_LEAK_KEYS = ("parameters", "arguments", "args", "tool", "name", "function")
 
 
+_TOOL_FAMILY_CLOSE_RE = re.compile(
+    r"</\s*(?:tool|tool_call|function_call|function)\s*>",
+    re.IGNORECASE,
+)
+
+
 def _iter_xmlish_blocks(text: str):
-    """Yield (tag_name, opener_name, body) for every XML-ish tool block."""
+    """Yield (tag_name, opener_name, body) for every XML-ish tool block.
+
+    Accepts mismatched closers within the tool family (e.g. ``<tool>...
+    </tool_call>``) — small open-source models (glm, some qwen builds)
+    routinely mix the two grammars in a single reply.
+    """
     if not text:
         return
 
@@ -333,8 +346,7 @@ def _iter_xmlish_blocks(text: str):
         tag = m.group("tag").lower()
         opener_name = m.group("name")
 
-        close_re = re.compile(rf"</\s*{re.escape(tag)}\s*>", re.IGNORECASE)
-        close_m = close_re.search(text, m.end())
+        close_m = _TOOL_FAMILY_CLOSE_RE.search(text, m.end())
         if not close_m:
             pos = m.end()
             continue
@@ -342,6 +354,125 @@ def _iter_xmlish_blocks(text: str):
         body = text[m.end():close_m.start()]
         yield tag, opener_name, body
         pos = close_m.end()
+
+
+_ARG_KV_RE = re.compile(
+    r"<arg_key>\s*(?P<k>[^<]*?)\s*</arg_key>\s*<arg_value>\s*(?P<v>.*?)\s*</arg_value>",
+    re.DOTALL | re.IGNORECASE,
+)
+_ARG_KV_UNCLOSED_RE = re.compile(
+    # <arg_key>K</arg_key><arg_value>V"   — value uses a bare `"` as terminator.
+    r'<arg_key>\s*(?P<k>[^<]*?)\s*</arg_key>\s*<arg_value>(?P<v>[^<"]*?)"',
+    re.DOTALL | re.IGNORECASE,
+)
+_ARG_VALUE_AFTER_COLON_RE = re.compile(
+    r":\s*<arg_value>\s*(?P<v>.*?)\s*</arg_value>",
+    re.DOTALL | re.IGNORECASE,
+)
+_ARG_VALUE_AFTER_COLON_UNCLOSED_RE = re.compile(
+    # :<arg_value>VAL"   — model used `"` instead of `</arg_value>` as terminator.
+    r':\s*<arg_value>(?P<v>[^<"]*?)"',
+    re.DOTALL | re.IGNORECASE,
+)
+_QUOTED_VALUE_CLOSED_BY_TAG_RE = re.compile(
+    # :"VAL</arg_value>   — model opened with `"` (valid JSON) but closed with </arg_value>.
+    r':\s*"(?P<v>[^"]*?)</arg_value>',
+    re.DOTALL | re.IGNORECASE,
+)
+_STRAY_ARG_TAG_RE = re.compile(
+    r"</?arg_(?:key|value|name)\b[^>]*>",
+    re.IGNORECASE,
+)
+
+
+def _normalize_glm_arg_tags(text: str) -> str:
+    """Convert glm-style ``<arg_key>K</arg_key><arg_value>V</arg_value>`` pairs
+    into JSON ``"K":"V"`` so the standard JSON parser can succeed.
+
+    Handles every malformed variant observed in the wild:
+
+      1. ``"key": <arg_value>VAL</arg_value>``         →  ``"key": "VAL"``
+      2. ``<arg_key>K</arg_key><arg_value>V</arg_value>``  →  ``, "K": "V"``
+      3. ``"key": <arg_value>VAL"``                    →  ``"key": "VAL"``  (unclosed)
+      4. ``<arg_key>K</arg_key><arg_value>V"``         →  ``, "K": "V"``   (unclosed)
+      5. ``"key": "VAL</arg_value>``                   →  ``"key": "VAL"`` (open `"`,
+                                                          model substituted close-tag
+                                                          for the closing `"`)
+
+    Stray ``<arg_*>`` tags and tool-family close tags are stripped after
+    repair; missing trailing braces are restored by ``_autoclose_braces``.
+    """
+    if not text:
+        return text
+    low = text.lower()
+    if "<arg_value>" not in low and "<arg_key>" not in low and "</arg_value>" not in low:
+        return text
+
+    def _esc(s: str) -> str:
+        # Just enough escaping to land valid JSON.
+        return s.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n")
+
+    out = _ARG_KV_RE.sub(
+        lambda m: ', "' + _esc(m.group("k")) + '": "' + _esc(m.group("v")) + '"',
+        text,
+    )
+    out = _ARG_KV_UNCLOSED_RE.sub(
+        lambda m: ', "' + _esc(m.group("k")) + '": "' + _esc(m.group("v")) + '"',
+        out,
+    )
+    out = _ARG_VALUE_AFTER_COLON_RE.sub(
+        lambda m: ': "' + _esc(m.group("v")) + '"',
+        out,
+    )
+    out = _ARG_VALUE_AFTER_COLON_UNCLOSED_RE.sub(
+        lambda m: ': "' + _esc(m.group("v")) + '"',
+        out,
+    )
+    out = _QUOTED_VALUE_CLOSED_BY_TAG_RE.sub(
+        lambda m: ': "' + _esc(m.group("v")) + '"',
+        out,
+    )
+
+    # Strip stragglers: leftover <arg_*> tags and tool-family close tags.
+    # Leaving them inline would put non-JSON garbage inside the parameters
+    # object — extract_json_objects then yields a candidate that fails to
+    # parse.
+    out = _STRAY_ARG_TAG_RE.sub("", out)
+    out = _TOOL_FAMILY_CLOSE_RE.sub("", out)
+
+    # glm hybrids frequently drop the trailing braces (the close-tag stood
+    # in for them in the model's mental model). If the normalized string
+    # has more `{` than `}` outside string literals, append closers so
+    # extract_json_objects can balance the candidate.
+    return _autoclose_braces(out)
+
+
+def _autoclose_braces(text: str) -> str:
+    """Append ``}`` characters to balance unclosed objects, ignoring braces
+    inside JSON string literals.
+    """
+    depth = 0
+    in_str = False
+    esc = False
+    for ch in text:
+        if in_str:
+            if esc:
+                esc = False
+            elif ch == "\\":
+                esc = True
+            elif ch == '"':
+                in_str = False
+            continue
+        if ch == '"':
+            in_str = True
+        elif ch == "{":
+            depth += 1
+        elif ch == "}":
+            if depth > 0:
+                depth -= 1
+    if depth <= 0:
+        return text
+    return text + ("}" * depth)
 
 
 def _tool_defs_iter(tool_defs):
@@ -786,6 +917,13 @@ def _gather_candidates(response: str, tool_defs) -> List[str]:
             seen_fragments.add(fragment)
             candidates.append(fragment)
 
+    # glm/qwen builds occasionally splice <arg_key>/<arg_value> tags into the
+    # parameters JSON. Normalize once up front and run the full extraction
+    # over the repaired text in addition to the original — keeping the
+    # original means we never make things worse for well-formed replies.
+    normalized = _normalize_glm_arg_tags(response)
+    extra_responses = [normalized] if normalized != response else []
+
     for tag, opener_name, body in _iter_xmlish_blocks(response):
         repaired = repair_hybrid_tool_call(
             f"<{tag}{'=' + opener_name if opener_name else ''}>{body}</{tag}>"
@@ -845,6 +983,15 @@ def _gather_candidates(response: str, tool_defs) -> List[str]:
                 continue
             pargs = parse_python_call_args(func_name, m.group(2), tool_defs)
             add_candidate(json.dumps({"tool": func_name, "parameters": pargs}))
+
+    # Re-run JSON-object extraction over the glm-normalized text; if the
+    # repair turned a malformed reply into something parseable, surface the
+    # extra candidates here without disturbing the order of the originals.
+    for repaired_text in extra_responses:
+        for obj in extract_json_objects(repaired_text):
+            parsed = _maybe_parse_jsonish(obj)
+            if isinstance(parsed, dict) and _is_explicit_tool_dict(parsed):
+                add_candidate(obj)
 
     return candidates
 

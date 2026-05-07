@@ -201,8 +201,10 @@ class _ChatViewState extends StateManager<ChatView> with WidgetsBindingObserver 
 
   void _scrollToBottom() {
     if (!_scrollController.hasClients) return;
+    final position = _scrollController.position;
+    if (!position.hasContentDimensions) return;
     _scrollController.animateTo(
-      _scrollController.position.maxScrollExtent,
+      position.maxScrollExtent,
       duration: const Duration(milliseconds: 180),
       curve: Curves.easeOut,
     );
@@ -1170,6 +1172,7 @@ class _ChatViewState extends StateManager<ChatView> with WidgetsBindingObserver 
       String? token;
       String? modelId;
       String? ollamaBaseUrl;
+      String? ollamaApiKey;
       String? groqApiKey;
       String? geminiApiKey;
       String? openRouterApiKey;
@@ -1182,6 +1185,7 @@ class _ChatViewState extends StateManager<ChatView> with WidgetsBindingObserver 
       switch (desiredBackend) {
         case OrchestratorBackend.ollama:
           ollamaBaseUrl = await settings.getOllamaBaseUrl();
+          ollamaApiKey = await settings.getOllamaApiKey();
           final savedOllamaModel = await settings.getOllamaModel();
           modelId = convModelId.isNotEmpty ? convModelId : savedOllamaModel;
           if ((modelId ?? '').isEmpty) {
@@ -1295,6 +1299,7 @@ class _ChatViewState extends StateManager<ChatView> with WidgetsBindingObserver 
         modelId: modelId,
         backend: desiredBackend,
         ollamaBaseUrl: ollamaBaseUrl,
+        ollamaApiKey: ollamaApiKey,
         groqApiKey: groqApiKey,
         geminiApiKey: geminiApiKey,
         openRouterApiKey: openRouterApiKey,
@@ -1586,8 +1591,12 @@ class _ChatViewState extends StateManager<ChatView> with WidgetsBindingObserver 
     if (!_scrollController.hasClients) {
       return const SizedBox.shrink();
     }
+    final position = _scrollController.position;
+    if (!position.hasContentDimensions) {
+      return const SizedBox.shrink();
+    }
 
-    final maxScroll = _scrollController.position.maxScrollExtent;
+    final maxScroll = position.maxScrollExtent;
     final showButton = maxScroll > 0 && _currentScroll < maxScroll - 100;
 
     if (!showButton) {

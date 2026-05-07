@@ -3,8 +3,9 @@ from __future__ import annotations
 
 # import json
 import os
-# import sys
+import sys
 from typing import Any, Dict, List
+from urllib.parse import urlparse
 
 from .backend_base import ModelBackend
 from ..utils.text import sanitize_for_agent
@@ -18,20 +19,62 @@ class OllamaBackend(ModelBackend):
 
     Local daemon:  OllamaBackend(model_id="phi3:mini")
     Cloud (ollama.com): OllamaBackend(model_id="gpt-oss:120b-cloud",
-                            base_url="https://ollama.com",
                             api_key="<your key>")
+        — base_url auto-promotes to https://ollama.com when the model tag
+        ends with '-cloud' and the URL is left at the local default.
     """
 
     # Context window cap. Small models (phi3:mini, llama3.2) ship Modelfiles
-    # with num_ctx=128K which blows KV-cache RAM to tens of GiB. 4096 is a
-    # safe default that fits the system prompt + a couple of read_file
-    # results. Bump via --ollama-num-ctx when running a 7B+ model on >=16 GB.
-    DEFAULT_NUM_CTX = 4096
+    # with num_ctx=128K which blows KV-cache RAM to tens of GiB. 8192 is a
+    # safe default that fits the system prompt + several read_file results
+    # and gives repo-analysis conversations enough headroom to avoid the
+    # malformed-tool-call spiral that 4096 triggered on small models. Drop
+    # to 4096 via --ollama-num-ctx if running a phi3:mini-class model on a
+    # tight RAM budget; raise to 16384/32768 for 7B+ on >=16 GB or for
+    # cloud-hosted backends where local KV cost is irrelevant.
+    DEFAULT_NUM_CTX = 32768
+    DEFAULT_LOCAL_URL = "http://localhost:11434"
+    CLOUD_URL = "https://ollama.com"
+
+    @staticmethod
+    def _is_cloud_model_id(model_id: str) -> bool:
+        model = (model_id or "").strip().lower()
+        if not model:
+            return False
+
+        # Cloud tags can be either `<model>:cloud` or `<model>:<size>-cloud`.
+        if ":" in model:
+            tag = model.rsplit(":", 1)[1]
+            if tag == "cloud" or tag.endswith("-cloud"):
+                return True
+
+        # Backward compatibility for model IDs ending in `-cloud` without
+        # a conventional `:tag` suffix.
+        return model.endswith("-cloud")
+
+    @staticmethod
+    def _hostname_for(url: str) -> str:
+        if not url:
+            return ""
+        try:
+            parsed = urlparse(url if "://" in url else f"http://{url}")
+            return (parsed.hostname or "").lower()
+        except Exception:
+            return ""
+
+    @classmethod
+    def _is_local_host(cls, url: str) -> bool:
+        return cls._hostname_for(url) in {"localhost", "127.0.0.1", "::1"}
+
+    @classmethod
+    def _is_cloud_host(cls, url: str) -> bool:
+        host = cls._hostname_for(url)
+        return host == "ollama.com" or host.endswith(".ollama.com")
 
     def __init__(
             self,
             model_id: str,
-            base_url: str = "http://localhost:11434",
+            base_url: str = DEFAULT_LOCAL_URL,
             num_ctx: int = DEFAULT_NUM_CTX,
             api_key: str = "",
     ):
@@ -41,9 +84,36 @@ class OllamaBackend(ModelBackend):
             )
         from ollama import Client  # noqa: PLC0415
         self.model_id = model_id
-        self.base_url = base_url.rstrip("/")
+        base_url = base_url.rstrip("/")
+
+        # Auto-route ':cloud' / '-cloud' tagged models to ollama.com when the
+        # caller didn't override the URL. Saves users from having to pass
+        # --ollama-base-url separately just because the model name says cloud.
+        is_cloud_model = self._is_cloud_model_id(model_id)
+        if is_cloud_model and base_url == self.DEFAULT_LOCAL_URL:
+            base_url = self.CLOUD_URL
+            print(
+                f"[orch] '{model_id}' is a cloud-tagged model; "
+                f"routing to {base_url}.",
+                file=sys.stderr,
+                flush=True,
+            )
+
+        self.base_url = base_url
         self.num_ctx = num_ctx
         self.api_key = api_key.strip() or os.environ.get("OLLAMA_API_KEY", "").strip()
+
+        if self._is_cloud_host(self.base_url) and not self.api_key:
+            raise RuntimeError(
+                "Ollama cloud endpoint requires an API key. Pass "
+                "--ollama-api-key or set OLLAMA_API_KEY in the environment."
+            )
+        if self._is_cloud_host(self.base_url) and self.api_key.lower().startswith("ssh-"):
+            raise RuntimeError(
+                "The configured Ollama API key looks like an SSH public key "
+                "(starts with 'ssh-'). Use an API key from "
+                "https://ollama.com/settings/keys for direct ollama.com access."
+            )
 
         # Build a single Client instance reused for every request.
         # For cloud endpoints the README says to pass headers with Bearer token.
@@ -85,7 +155,7 @@ class OllamaBackend(ModelBackend):
         # For cloud endpoints list() may return cloud-hosted models that
         # haven't been "pulled" locally — skip the model-presence check when
         # we're clearly not talking to localhost.
-        is_cloud = "localhost" not in self.base_url and "127.0.0.1" not in self.base_url
+        is_cloud = not self._is_local_host(self.base_url)
         if is_cloud:
             return
 
@@ -123,6 +193,14 @@ class OllamaBackend(ModelBackend):
                 "(e.g. phi3:mini, llama3.2:3b, qwen2.5:1.5b), lower "
                 "--ollama-num-ctx, or close other apps."
             )
+        if "unauthorized" in low or "401" in low:
+            return (
+                "\n-> Direct ollama.com API access requires a valid API key "
+                "from https://ollama.com/settings/keys "
+                "(not an SSH public key). "
+                "Alternative: use http://localhost:11434 and authenticate via "
+                "`ollama signin`."
+            )
         if "context" in low and ("too large" in low or "exceed" in low):
             return (
                 "\n-> Prompt exceeded the model's context window. "
@@ -131,7 +209,7 @@ class OllamaBackend(ModelBackend):
         if "internal server error" in low:
             return (
                 "\n-> Ollama returned a generic 500. For cloud-tagged models "
-                "(':<size>-cloud') make sure you're signed in via "
+                "(':cloud' or ':<size>-cloud') make sure you're signed in via "
                 "`ollama signin`, and that the model supports the features "
                 "being requested (some cloud models don't accept tools or "
                 "custom num_ctx)."
@@ -161,7 +239,10 @@ class OllamaBackend(ModelBackend):
 
             effective_tools = None if self._tools_unsupported else tools
 
-            is_cloud_model = self.model_id.endswith("-cloud") or "-cloud:" in self.model_id
+            is_cloud_model = (
+                self._is_cloud_model_id(self.model_id)
+                or self._is_cloud_host(self.base_url)
+            )
 
             if is_cloud_model:
                 chat_options: Dict[str, Any] = {"temperature": temperature}
@@ -257,7 +338,10 @@ class OllamaBackend(ModelBackend):
             status = getattr(e, "status_code", 0)
             low = err_str.lower()
 
-            is_cloud_model = self.model_id.endswith("-cloud") or "-cloud:" in self.model_id
+            is_cloud_model = (
+                self._is_cloud_model_id(self.model_id)
+                or self._is_cloud_host(self.base_url)
+            )
 
             # 400: server explicitly says tools aren't supported.
             # 500 + cloud + tools attached: the cloud endpoint silently

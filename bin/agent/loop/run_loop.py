@@ -9,6 +9,7 @@ from typing import Any, Dict, List, Optional
 
 from . import history as _history
 from . import tool_dispatch as _td
+from .tool_detector import ToolIntentDetector
 from ..backends.backend_base import ModelBackend
 from ..policy import SecurityConfig
 from ..tools.registry import ToolRegistry
@@ -111,46 +112,15 @@ class Orchestrator:
     )
 
     # Patterns that indicate file/code intent — trigger tool-enabled mode.
-    _CODE_INTENT_MARKERS = (
-        # file references
-        "file", "folder", "director", "path", ".dart", ".py", ".js", ".ts",
-        ".json", ".yaml", ".yml", ".md", "lib/", "src/", "bin/", "test/",
-        # code objects
-        "function", "method", "class", "widget", "screen", "model", "service",
-        "import", "package", "dependency", "pubspec",
-        # actions
-        "fix", "edit", "modify", "change", "update", "refactor", "rename",
-        "create", "delete", "remove", "add", "implement", "write",
-        "run", "build", "compile", "test", "install", "deploy", "execute",
-        "read", "open", "show", "list", "find", "search", "look",
-        # git
-        "git", "commit", "branch", "merge", "push", "pull", "diff", "status",
-        # vague but file-related
-        "project", "codebase", "repo", "error", "bug", "crash", "exception",
-    )
 
-    # Deterministic "must-use-tools" patterns. These are evaluated before
-    # the general marker list so obvious tool tasks don't slip into chat mode.
-    _TOOL_INTENT_PATTERNS = (
-        r"\bflutter\s+analy[sz]e\b",
-        r"\bflutter\s+test\b",
-        r"\b(run|execute)\s+(a\s+)?command\b",
-        r"\b(get-content|select-string|findstr|dir|ls)\b",
-        r"\b(export|download|save)\b.*\b(chat|conversation|history)\b.*\bjson\b",
-        r"\b(read|open|search|find|list)\b.*\b(file|folder|directory|repo|project)\b",
-    )
+    import re
+    from typing import Tuple, List, Pattern
 
-    @classmethod
-    def _needs_tools(cls, text: str) -> bool:
-        """Return True when the message likely requires file/code access."""
-        t = (text or "").lower()
-        if any(re.search(pattern, t) for pattern in cls._TOOL_INTENT_PATTERNS):
-            return True
-        return any(m in t for m in cls._CODE_INTENT_MARKERS)
+
 
     def _should_escalate_chat_to_tools(self, user_input: str, model_reply: str) -> bool:
         """True when a chat-mode response should be retried in tool mode."""
-        if self._needs_tools(user_input):
+        if ToolIntentDetector.needs_tools(user_input):
             return True
         if _td.parse_all_tag_tool_calls(model_reply, self.tool_registry.definitions):
             return True
@@ -168,7 +138,7 @@ class Orchestrator:
         self._ensure_system_prompt()
         self._trim_history()
 
-        use_tools = (not self.disable_tools) and self._needs_tools(user_input)
+        use_tools = (not self.disable_tools) and ToolIntentDetector.needs_tools(user_input)
 
         if use_tools:
             decorated = self._TOOL_REMINDER + user_input
@@ -221,6 +191,24 @@ class Orchestrator:
         empty_retries = 0
         truncation_retries = 0
         malformed_tool_retries = 0
+        # Cumulative count of consecutive malformed iterations with no
+        # successful tool call between them. A model that keeps emitting
+        # broken syntax even after corrective feedback is unlikely to
+        # recover — bail with the canned message before burning the full
+        # iteration budget.
+        consecutive_malformed = 0
+        _MAX_CONSECUTIVE_MALFORMED = 2
+
+        # Sliding window of canonical "(name, sorted-params)" keys for
+        # tool calls already executed this turn. Used to detect the model
+        # looping on the same call (a common failure mode for smaller
+        # models — they fixate on one file and re-read it). When the same
+        # key appears twice we warn the model; a second warning bails
+        # with a synthesized recap of the tool results so far.
+        recent_calls: List[str] = []
+        repeat_warnings = 0
+        _MAX_REPEAT_WARNINGS = 2
+        _RECENT_WINDOW = 8
 
         # Rough character budget for the entire conversation history sent to
         # the model on each call.  When exceeded we force a trim so the next
@@ -231,7 +219,7 @@ class Orchestrator:
         _HISTORY_CHAR_BUDGET = 200_000
 
         for iteration in range(self.max_iterations):
-            print(f"[orch] Progress detected | iter={iteration}")
+            print(f"Iteration: {iteration}", file=sys.stderr)
             # === DYNAMIC ITERATION LIMIT ===
             # Extend budget proactively when progress is detected, not just at the end.
             # Check every 5 iterations and when approaching the limit.
@@ -247,8 +235,15 @@ class Orchestrator:
                 success_count = recent_history.count('"status": "success"')
                 error_count = recent_history.count('"status": "error"')
 
+                # Distinct calls in the recent window — extending the
+                # budget when the model is just repeating itself only
+                # delays the inevitable bail.
+                distinct_recent = len(set(recent_calls)) if recent_calls else 0
+
                 # Calculate extension multiplier based on progress rate
-                if success_count > 0 and success_count > error_count:
+                if (success_count > 0
+                        and success_count > error_count
+                        and distinct_recent >= 3):
                     # Good progress: extend by 5-15 based on success rate
                     extension = min(
                         5 + (success_count * 2),  # More successes = larger extension
@@ -318,7 +313,67 @@ class Orchestrator:
                 text_clean, self.tool_registry.definitions
             )
             if tag_calls:
+                # Reset the consecutive-malformed guard: a parseable call
+                # means the model has recovered.
+                consecutive_malformed = 0
+
+                # --- Repeat-call detection -----------------------------
+                # Same (tool, params) called more than once in the recent
+                # window means the model is looping. Warn once; if it
+                # happens again, bail with a recap rather than burn
+                # iterations on the identical call.
+                repeat_keys: List[tuple] = []
                 for name, params in tag_calls:
+                    key = (
+                        f"{name}::"
+                        f"{json.dumps(params, sort_keys=True, ensure_ascii=False)}"
+                    )
+                    if key in recent_calls:
+                        repeat_keys.append((name, params, key))
+
+                if repeat_keys:
+                    repeat_warnings += 1
+                    print(
+                        f"[orch] Repeat tool call detected "
+                        f"(warning {repeat_warnings}/{_MAX_REPEAT_WARNINGS}): "
+                        f"{[(n, p) for n, p, _ in repeat_keys]}",
+                        file=sys.stderr,
+                    )
+                    if repeat_warnings >= _MAX_REPEAT_WARNINGS:
+                        print(
+                            "[orch] Repeat-call cap reached; bailing with recap.",
+                            file=sys.stderr,
+                        )
+                        return self._build_recap_answer()
+
+                    summary = ", ".join(
+                        f"{n}({json.dumps(p, ensure_ascii=False)[:120]})"
+                        for n, p, _ in repeat_keys
+                    )
+                    self.conversation_history.append({
+                        "role": "user",
+                        "content": (
+                            f"You already called: {summary} earlier this turn. "
+                            "Calling the same tool with the same arguments will "
+                            "return the same result. Either:\n"
+                            "  1. Call a DIFFERENT tool, or\n"
+                            "  2. Call the same tool with DIFFERENT arguments, or\n"
+                            "  3. Give your final plain-text answer to the user "
+                            "now (no more tool calls).\n"
+                            "Pick one."
+                        ),
+                    })
+                    continue
+
+                for name, params in tag_calls:
+                    key = (
+                        f"{name}::"
+                        f"{json.dumps(params, sort_keys=True, ensure_ascii=False)}"
+                    )
+                    recent_calls.append(key)
+                    if len(recent_calls) > _RECENT_WINDOW:
+                        recent_calls = recent_calls[-_RECENT_WINDOW:]
+
                     print(f"[orch] -> tool {name}({params})", file=sys.stderr)
                     result = self.tool_registry.execute(name, params)
 
@@ -365,6 +420,20 @@ class Orchestrator:
                 continue
 
             is_malformed, malformed_error = _td.looks_like_malformed_tool_call(text_clean)
+            if is_malformed:
+                consecutive_malformed += 1
+                # Hard cap: even within the per-call retry budget, if the
+                # model keeps producing malformed calls back-to-back, bail
+                # before consuming dozens of iterations.
+                if consecutive_malformed >= _MAX_CONSECUTIVE_MALFORMED:
+                    print(
+                        f"[orch] Consecutive malformed cap reached "
+                        f"({consecutive_malformed}); bailing.",
+                        file=sys.stderr,
+                    )
+                    return self._build_recap_answer(
+                        reason="model emitted malformed tool calls repeatedly"
+                    )
             if is_malformed and malformed_tool_retries < 2:
                 malformed_tool_retries += 1
                 print(
@@ -475,7 +544,73 @@ class Orchestrator:
         except Exception as e:
             print(f"[orch] Failed to save session: {e}", file=sys.stderr)
 
-        return "Max iterations reached without a final answer. Session saved to session_dump.json."
+        return self._build_recap_answer(
+            reason=f"max iterations ({self.max_iterations}) reached without "
+                   f"a synthesized answer"
+        )
+
+    # ------------------------------------------------------------------
+    # Recap synthesis (used when the loop has to bail)
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _strip_internal_marker(body: str) -> str:
+        """Drop the trailing `[INTERNAL: ...]` directive we appended to
+        the tool-result follow-up message; the user shouldn't see it."""
+        idx = body.find("[INTERNAL:")
+        if idx == -1:
+            return body
+        return body[:idx].rstrip()
+
+    def _build_recap_answer(self, reason: str = "") -> str:
+        """Synthesize a final answer from the tool results gathered this turn.
+
+        Used when the loop has to abandon — the model is looping, emitting
+        malformed JSON, or has burned the iteration budget. Returning a
+        recap of what was actually learned is more useful than the canned
+        "model failed" string.
+        """
+        results: List[str] = []
+        for msg in self.conversation_history:
+            if msg.get("role") != "user":
+                continue
+            content = msg.get("content", "")
+            if not content.startswith("Tool `"):
+                continue
+
+            split = content.split("\n", 1)
+            header = split[0].rstrip(":")
+            body = split[1] if len(split) > 1 else ""
+            body = self._strip_internal_marker(body).strip()
+
+            # Bound each result so the recap doesn't itself blow context.
+            if len(body) > 600:
+                body = body[:600] + "\n... (truncated)"
+
+            results.append(f"{header}:\n{body}")
+
+        prefix = (
+            "I couldn't compose a single synthesized answer"
+            + (f" ({reason})" if reason else "")
+            + ". "
+        )
+
+        if not results:
+            return (
+                prefix
+                + "No tool results were collected before bailing — the request "
+                "may be too ambiguous, or the model may not support tool use. "
+                "Try rephrasing or use a different model."
+            )
+
+        # Most recent results are usually the most relevant; cap at 6.
+        if len(results) > 6:
+            results = results[-6:]
+
+        return (
+            prefix
+            + "Here's a recap of what I found while investigating:\n\n"
+            + "\n\n".join(results)
+        )
 
     # ------------------------------------------------------------------
     # Backend call w/ retry + circuit breaker

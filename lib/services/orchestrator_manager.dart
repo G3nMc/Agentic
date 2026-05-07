@@ -86,17 +86,25 @@ class OrchestratorManager {
   static const int _kMaxLogLines = 200;
   final List<String> _logLines = [];
   List<String> get logLines => List.unmodifiable(_logLines);
+  String? _lastNonEmptyLogLine;
 
   void _appendLog(String line) {
-    _stderrBuffer.writeln(line);
+    final trimmed = line.trim();
     // Empty lines are pure heartbeat signals from the Python streaming loop.
     // They still bump the inactivity watchdog (the listener calls
     // _bumpInactivityTimer unconditionally) but we don't show them in the
     // visible log so they don't scroll meaningful output off screen.
-    if (line.trim().isEmpty) return;
-    _logLines.add(line);
+    if (trimmed.isEmpty) return;
+
+    // Avoid repeated noise when the same startup/preflight error is emitted
+    // multiple times in quick succession.
+    if (_lastNonEmptyLogLine == trimmed) return;
+    _lastNonEmptyLogLine = trimmed;
+
+    _stderrBuffer.writeln(trimmed);
+    _logLines.add(trimmed);
     if (_logLines.length > _kMaxLogLines) _logLines.removeAt(0);
-    if (!_logController.isClosed) _logController.add(line);
+    if (!_logController.isClosed) _logController.add(trimmed);
   }
 
   // Completes when the orchestrator prints `__READY__` on stdout.
@@ -326,6 +334,18 @@ class OrchestratorManager {
     // it, without each caller having to thread the flag through.
     final effectiveMultiAgent =
         multiAgent ?? await AgentRoleSettingsRepository.instance.isEnabled();
+    final backendSettings = BackendSettingsRepository.instance;
+
+    // Ollama cloud requires a Bearer key when talking directly to ollama.com.
+    // Fill from persisted settings if the caller didn't pass explicit values.
+    if (backend == OrchestratorBackend.ollama) {
+      if (ollamaBaseUrl == null || ollamaBaseUrl.isEmpty) {
+        ollamaBaseUrl = await backendSettings.getOllamaBaseUrl();
+      }
+      if (ollamaApiKey == null || ollamaApiKey.isEmpty) {
+        ollamaApiKey = await backendSettings.getOllamaApiKey();
+      }
+    }
 
     // In multi-agent mode the agent config can reference any backend
     // regardless of the primary `backend` parameter. Auto-fill any missing
@@ -333,7 +353,6 @@ class OrchestratorManager {
     // crash with `<X> backend requires --<x>-api-key` when a role uses a
     // different provider than the primary one.
     if (effectiveMultiAgent) {
-      final backendSettings = BackendSettingsRepository.instance;
       if (hfToken == null || hfToken.isEmpty) {
         hfToken = await SettingsRepository.instance.getHfToken();
       }
@@ -394,10 +413,29 @@ class OrchestratorManager {
       );
       return false;
     }
+    final normalizedOllamaBase = (ollamaBaseUrl ?? '').trim().toLowerCase();
+    final isDirectOllamaCloud = normalizedOllamaBase == 'https://ollama.com' ||
+        normalizedOllamaBase == 'http://ollama.com' ||
+        normalizedOllamaBase.startsWith('https://ollama.com/') ||
+        normalizedOllamaBase.startsWith('http://ollama.com/');
+    final looksLikeSshKey = (ollamaApiKey ?? '').trim().toLowerCase().startsWith('ssh-');
+    if (backend == OrchestratorBackend.ollama &&
+        isDirectOllamaCloud &&
+        looksLikeSshKey) {
+      _appendLog(
+        'Invalid Ollama API key: it looks like an SSH public key '
+        '(starts with "ssh-"). For direct https://ollama.com access, use an '
+        'API key from https://ollama.com/settings/keys. '
+        'Alternatively switch base URL to http://localhost:11434 and use '
+        '`ollama signin` local auth.',
+      );
+      return false;
+    }
 
     try {
       _stderrBuffer.clear();
       _logLines.clear();
+      _lastNonEmptyLogLine = null;
       _readyCompleter = Completer<void>();
 
       final resolvedBasePath = workingDirectory ?? baseDirectory.path;
@@ -706,20 +744,25 @@ class OrchestratorManager {
 
   /// Pull a clean user-facing reply out of `_activeLines`. Handles the normal
   /// case (`{"response": "...", "trace": [...]}`) and tolerates stray lines
-  /// like a leftover `__READY__` from a respawn. Also publishes the trace
-  /// when present.
+  /// like a leftover `__READY__` from a respawn or stray Python prints that
+  /// landed on stdout instead of stderr. Also publishes the trace when
+  /// present.
+  ///
+  /// Strategy: scan from the end for the last line that parses as a JSON
+  /// object containing a `"response"` key. That envelope is authoritative —
+  /// anything before it is treated as noise and discarded. Falls back to the
+  /// joined text only if no such envelope exists.
   String _extractResponseFromBuffer() {
     final cleaned = _activeLines
         .where((l) => l.trim() != '__READY__')
         .toList();
-    final joined = cleaned.join('\n').trim();
-    if (!joined.startsWith('{')) {
-      _lastTrace = const [];
-      return joined;
-    }
-    try {
-      final obj = jsonDecode(joined);
-      if (obj is Map) {
+
+    for (var i = cleaned.length - 1; i >= 0; i--) {
+      final line = cleaned[i].trim();
+      if (!line.startsWith('{') || !line.endsWith('}')) continue;
+      try {
+        final obj = jsonDecode(line);
+        if (obj is! Map || obj['response'] is! String) continue;
         final rawTrace = obj['trace'];
         if (rawTrace is List) {
           final entries = <Map<String, Object?>>[];
@@ -733,14 +776,14 @@ class OrchestratorManager {
         } else {
           _lastTrace = const [];
         }
-        if (obj['response'] is String) {
-          return obj['response'] as String;
-        }
+        return obj['response'] as String;
+      } catch (_) {
+        // Not parseable — keep scanning earlier lines.
       }
-    } catch (_) {
-      // Not JSON — fall through.
     }
-    return joined;
+
+    _lastTrace = const [];
+    return cleaned.join('\n').trim();
   }
 
   void _onStreamError(Object error) {

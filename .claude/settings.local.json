@@ -104,7 +104,14 @@
       "Bash(cat C:\\\\\\\\Users\\\\\\\\Gentian\\\\\\\\AppData\\\\\\\\Local\\\\\\\\Temp/agentic_filters.json)",
       "Bash(git commit -m 'filter: tolerate comma-glued globs and missing-dot typos in include/exclude lists *)",
       "Bash(python -m py_compile bin/agent/core/workflow.py bin/agent/core/compactor.py bin/agent/core/context_limits.py bin/agent/core/agent_config.py bin/agent/agents/summarizer.py bin/agent/agents/__init__.py bin/agent/backends/backend_base.py bin/agent/backends/ollama.py)",
-      "Bash(python -m py_compile bin/agent/core/workflow.py)"
+      "Bash(python -m py_compile bin/agent/core/workflow.py)",
+      "Bash(python -c \"from bin.agent.loop import tool_dispatch as td; print\\('import ok'\\); print\\(td.parse_all_tag_tool_calls\\('<tool>{\\\\\"tool\\\\\":\\\\\"x\\\\\",\\\\\"parameters\\\\\":{\\\\\"a\\\\\":1}}</tool_call>'\\)\\)\")",
+      "Bash(python -m pytest bin/agent/team/tests -x -q)",
+      "Bash(python -m unittest discover -s bin/agent/team/tests -v)",
+      "Bash(python -m unittest discover -s agent/team/tests -v)",
+      "Bash(python -m unittest discover -s agent/team/tests)",
+      "Bash(python -c \"import ast; ast.parse\\(open\\(r'C:\\\\Users\\\\Gentian\\\\AsPro\\\\AI\\\\Agentic\\\\bin\\\\agent\\\\backends\\\\ollama.py', encoding='utf-8'\\).read\\(\\)\\); print\\('ollama.py OK'\\)\")",
+      "Bash(python -c \"import ast; ast.parse\\(open\\(r'C:\\\\Users\\\\Gentian\\\\AsPro\\\\AI\\\\Agentic\\\\bin\\\\orchestrator.py', encoding='utf-8'\\).read\\(\\)\\); print\\('orchestrator.py OK'\\)\")"
     ]
   }
 }

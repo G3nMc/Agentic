@@ -97,10 +97,9 @@ class _MessageBubbleState extends State<MessageBubble> {
                       letterSpacing: 0.5,
                     ),
                   ),
-                  Container(
-                      height: 1,
-                      width: double.infinity,
-                      color: AppTheme.accentDarkMarrone),
+                  const Expanded(
+                    child: SizedBox(height: 6),
+                  ),
                   if (widget.onDelete != null)
                     GestureDetector(
                       onTap: widget.onDelete,
@@ -112,31 +111,37 @@ class _MessageBubbleState extends State<MessageBubble> {
                     ),
                 ],
               ),
-              const SizedBox(height: 6),
+              const SizedBox(height: 10),
+              Container(
+                height: 1,
+                color: AppTheme.accentDarkMarrone,
+              ),
+              const SizedBox(height: 10),
               // ── Message body (markdown) ────────────────────────────
-              MarkdownBody(
-                data: widget.message,
-                selectable: true,
-                styleSheet: MarkdownStyleSheet(
-                  p: const TextStyle(
-                    color: AppTheme.textPrimary,
-                    fontSize: 14,
-                    height: 1.5,
+              SelectionArea(
+                child: MarkdownBody(
+                  data: widget.message,
+                  styleSheet: MarkdownStyleSheet(
+                    p: const TextStyle(
+                      color: AppTheme.textPrimary,
+                      fontSize: 14,
+                      height: 1.5,
+                    ),
+                    code: const TextStyle(
+                      backgroundColor: AppTheme.bgCode,
+                      fontFamily: "monospace",
+                      color: AppTheme.textPrimary,
+                      fontSize: 13.5,
+                    ),
+                    codeblockDecoration: BoxDecoration(
+                      color: AppTheme.codeBg,
+                      borderRadius: BorderRadius.circular(8),
+                    ),
                   ),
-                  code: const TextStyle(
-                    backgroundColor: AppTheme.bgCode,
-                    fontFamily: "monospace",
-                    color: AppTheme.textPrimary,
-                    fontSize: 13.5,
-                  ),
-                  codeblockDecoration: BoxDecoration(
-                    color: AppTheme.codeBg,
-                    borderRadius: BorderRadius.circular(8),
-                  ),
+                  builders: {
+                    "code": CodeBlockBuilder(),
+                  },
                 ),
-                builders: {
-                  "code": CodeBlockBuilder(),
-                },
               ),
               const SizedBox(height: 6),
               // ── Bottom actions (time, copy, resend) ────────────────

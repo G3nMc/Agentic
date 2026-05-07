@@ -83,7 +83,7 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--model", default="")
     p.add_argument("--ollama-base-url", default="http://localhost:11434")
     p.add_argument("--ollama-api-key", default="")
-    p.add_argument("--ollama-num-ctx", type=int, default=4096)
+    p.add_argument("--ollama-num-ctx", type=int, default=8192)
     p.add_argument("--temperature", type=float, default=0.2)
     p.add_argument("--max-tokens", type=int, default=8192)
     p.add_argument("--tpm-limit", type=int, default=0)

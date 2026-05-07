@@ -108,8 +108,10 @@ def main():
         "--ollama-base-url",
         default="http://localhost:11434",
         help="Ollama daemon or cloud endpoint URL. Local default is "
-             "http://localhost:11434; for Ollama Cloud use "
-             "https://api.ollama.ai (or the URL shown in your account).",
+             "http://localhost:11434. Models tagged ':<size>-cloud' are "
+             "auto-routed to https://ollama.com when this flag is left at "
+             "the default — pass it explicitly only to override (e.g. a "
+             "self-hosted proxy).",
     )
     parser.add_argument(
         "--ollama-api-key",
@@ -121,9 +123,11 @@ def main():
         "--ollama-num-ctx",
         type=int,
         default=OllamaBackend.DEFAULT_NUM_CTX,
-        help="Context window for Ollama. Defaults to 4096. Do NOT raise "
+        help="Context window for Ollama. Defaults to 8192. Do NOT raise "
              "this to match the model's Modelfile default (often 128K) — "
-             "it explodes KV-cache RAM use.",
+             "it explodes KV-cache RAM use. Drop to 4096 for very small "
+             "local models on tight RAM; raise to 16384/32768 for 7B+ "
+             "models on >=16 GB or for cloud-hosted backends.",
     )
     parser.add_argument(
         "--temperature",
@@ -542,7 +546,7 @@ def _build_backend_for_args(args):
         print(f"[orch] Ollama not ready: {e}", file=sys.stderr)
         sys.exit(3)
     print(
-        f"[orch] Using Ollama backend at {args.ollama_base_url} "
+        f"[orch] Using Ollama backend at {backend.base_url} "
         f"(num_ctx={args.ollama_num_ctx})",
         file=sys.stderr,
     )

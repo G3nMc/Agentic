@@ -50,7 +50,7 @@ class ApiConstants {
   static const String ollamaPythonBridgeUrl = "http://127.0.0.1:11501";
 
   /// Ollama Cloud (hosted) endpoint — requires Bearer token.
-  static const String ollamaCloudBaseUrl = "https://api.ollama.ai";
+  static const String ollamaCloudBaseUrl = "https://ollama.com";
 
   /// Public Ollama download page.
   static const String ollamaDownloadUrl = "https://ollama.com/download";
