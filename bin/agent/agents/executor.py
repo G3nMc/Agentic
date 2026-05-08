@@ -98,7 +98,7 @@ class ExecutorAgent(Agent):
         return state
 
     # ------------------------------------------------------------------
-    # Trivial direct-answer path
+    # Trivial direct-answer path (parallelized)
     # ------------------------------------------------------------------
     def run_no_tools(self, state: WorkflowState) -> WorkflowState:
         try:

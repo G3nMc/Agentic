@@ -1,7 +1,7 @@
 import 'dart:async';
 
-import 'package:flutter/material.dart';
 import 'package:agentic/statemanagement/method_listener.dart';
+import 'package:flutter/material.dart';
 
 import '../../core/theme/app_theme.dart';
 import '../../services/orchestrator_manager.dart';
@@ -42,8 +42,7 @@ class _HomeScreenState extends StateManager<HomeScreen> {
     switch (methodData.methodName) {
       case "openConversation":
         final id = methodData.methodParams?["conversationId"] as String?;
-        if (id != _activeConversationId &&
-            OrchestratorManager.instance.isRunning) {
+        if (id != _activeConversationId && OrchestratorManager.instance.isRunning) {
           unawaited(OrchestratorManager.instance.stop());
         }
         _activeConversationId = id;
@@ -97,7 +96,7 @@ class _HomeScreenState extends StateManager<HomeScreen> {
               width: _sidebarWidth,
               child: Container(
                 decoration: const BoxDecoration(
-                  color: AppTheme.bgSidebar,
+                  color: AppTheme.bgPrimary,
                   border: Border(
                     right: BorderSide(color: AppTheme.border),
                   ),

@@ -45,9 +45,10 @@ Decision rule (per kind: dir vs file)
 
 Baseline
     The filter always also enforces a small hardcoded baseline of
-    "noise" directory names (``.git``, ``__pycache__``, ``.dart_tool``,
-    ``build``, ``node_modules``, ``.gradle``). The user can override any
-    of them by adding the same name to ``include_dirs``.
+    "noise" directory names (``.git``, ``.idea``, ``.claude``,
+    ``.agent``, ``__pycache__``, ``.dart_tool``, ``build``,
+    ``node_modules``, ``.gradle``). The user can override any of them
+    by adding the same name to ``include_dirs``.
 """
 from __future__ import annotations
 
@@ -65,7 +66,8 @@ from typing import Iterable, List, Optional, Sequence, Tuple
 # bigger SKIP_EXT/SKIP_DIRS sets that used to live in fs_read.py are now
 # the user's responsibility to add (we no longer assume what they want).
 _BASELINE_EXCLUDE_DIRS: Tuple[str, ...] = (
-    ".git", ".idea", "__pycache__" ".dart_tool", "build", "node_modules", ".gradle",
+    ".git", ".idea", ".claude", ".agent",
+    "__pycache__", ".dart_tool", "build", "node_modules", ".gradle",
 )
 
 

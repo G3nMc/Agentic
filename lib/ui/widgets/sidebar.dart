@@ -650,7 +650,7 @@ class _SidebarConversationTileState extends State<_SidebarConversationTile> {
         onTap: widget.onTap,
         child: Container(
           decoration: BoxDecoration(
-            color: widget.isActive ? AppTheme.bgSecondary : (_hover ? AppTheme.bgSecondary : Colors.transparent),
+            // color: widget.isActive ? AppTheme.bgSecondary : (_hover ? AppTheme.bgSecondary : Colors.transparent),
             borderRadius: BorderRadius.circular(8),
           ),
           child: Padding(
@@ -662,7 +662,7 @@ class _SidebarConversationTileState extends State<_SidebarConversationTile> {
                     margin: EdgeInsets.only(right: showActions ? 6 : 0),
                     alignment: AlignmentGeometry.centerLeft,
                     height: 40,
-                    decoration: BoxDecoration(color: widget.isActive ? AppTheme.bgSecondary : Colors.transparent),
+                    // decoration: BoxDecoration(color: widget.isActive ? AppTheme.bgSecondary : Colors.transparent),
                     child: Text(
                       widget.conversation.title,
                       maxLines: 1,
@@ -670,7 +670,7 @@ class _SidebarConversationTileState extends State<_SidebarConversationTile> {
                       style: TextStyle(
                         // fontSize: 14,
                         fontWeight: widget.isActive ? FontWeight.bold : FontWeight.normal,
-                        color: AppTheme.textPrimary,
+                        color: widget.isActive ? AppTheme.accentMarrone : AppTheme.textPrimary,
                       ),
                     ),
                   ),

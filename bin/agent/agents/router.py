@@ -119,6 +119,7 @@ class RouterAgent(Agent):
     def run(self, state: WorkflowState) -> WorkflowState:
         text = state.user_input or ""
         # Tier 1: free rules.
+        # Enhanced trivial pattern matching for direct routing
         if any(p.search(text) for p in _TRIVIAL_PATTERNS):
             state.route = ROUTE_TRIVIAL
             state.add_trace(self.name, output=ROUTE_TRIVIAL,

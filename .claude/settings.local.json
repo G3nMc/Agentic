@@ -111,7 +111,13 @@
       "Bash(python -m unittest discover -s agent/team/tests -v)",
       "Bash(python -m unittest discover -s agent/team/tests)",
       "Bash(python -c \"import ast; ast.parse\\(open\\(r'C:\\\\Users\\\\Gentian\\\\AsPro\\\\AI\\\\Agentic\\\\bin\\\\agent\\\\backends\\\\ollama.py', encoding='utf-8'\\).read\\(\\)\\); print\\('ollama.py OK'\\)\")",
-      "Bash(python -c \"import ast; ast.parse\\(open\\(r'C:\\\\Users\\\\Gentian\\\\AsPro\\\\AI\\\\Agentic\\\\bin\\\\orchestrator.py', encoding='utf-8'\\).read\\(\\)\\); print\\('orchestrator.py OK'\\)\")"
+      "Bash(python -c \"import ast; ast.parse\\(open\\(r'C:\\\\Users\\\\Gentian\\\\AsPro\\\\AI\\\\Agentic\\\\bin\\\\orchestrator.py', encoding='utf-8'\\).read\\(\\)\\); print\\('orchestrator.py OK'\\)\")",
+      "Bash(python -c \"import ast; ast.parse\\(open\\(r'C:\\\\Users\\\\Gentian\\\\AsPro\\\\AI\\\\Agentic\\\\bin\\\\agent\\\\loop\\\\run_loop.py', encoding='utf-8'\\).read\\(\\)\\); print\\('OK'\\)\")",
+      "Bash(python -c \"import ast; [ast.parse\\(open\\(f, encoding='utf-8'\\).read\\(\\), filename=f\\) for f in ['bin/agent/tools/fs_read.py','bin/agent/loop/tool_dispatch.py','bin/agent/loop/run_loop.py']]; print\\('OK'\\)\")",
+      "Bash(git check-ignore *)",
+      "Bash(python -c \"import sys; sys.path.insert\\(0, 'bin'\\); from agent.path_filter import _BASELINE_EXCLUDE_DIRS; print\\(_BASELINE_EXCLUDE_DIRS\\)\")",
+      "Bash(python -m unittest bin.agent.team.tests.test_path_filter_normalisation -v)",
+      "Bash(python -m unittest agent.team.tests.test_path_filter_normalisation -v)"
     ]
   }
 }

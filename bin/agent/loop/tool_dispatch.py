@@ -648,8 +648,32 @@ def _sanitize_params(
             )
         except Exception:
             pass
+        # Record the drop so the orchestrator can feed a corrective
+        # message back to the model. Without this signal the model
+        # silently re-emits the same call → repeat-detector → recap
+        # bailout. See drain_recent_drops().
+        try:
+            _RECENT_DROPS.append((tool_name, list(dropped), list(cleaned.keys())))
+            # Bound the buffer in case nobody drains it.
+            if len(_RECENT_DROPS) > 32:
+                del _RECENT_DROPS[:-32]
+        except Exception:
+            pass
 
     return cleaned
+
+
+# (tool_name, dropped_keys, kept_keys) — appended by _sanitize_params,
+# drained by the orchestrator each iteration so the model gets told
+# exactly which keys it emitted that aren't part of the schema.
+_RECENT_DROPS: List[Tuple[str, List[str], List[str]]] = []
+
+
+def drain_recent_drops() -> List[Tuple[str, List[str], List[str]]]:
+    """Pop and return all sanitization drops since the last drain."""
+    drops = list(_RECENT_DROPS)
+    _RECENT_DROPS.clear()
+    return drops
 
 
 def _normalize_alternative_tool_keys(data: Dict[str, Any]) -> Dict[str, Any]:

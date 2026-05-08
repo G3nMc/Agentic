@@ -198,7 +198,7 @@ class Workflow:
             max_history_turns: int = 8,
             max_identical_failures: int = 10,
             iteration_timeout: float = 60.0,
-            turn_timeout: float = 180.0,
+            turn_timeout: float = 300.0,  # Increased from 180.0 to 300.0 seconds (5 minutes)
     ):
         self.agents = agents
         self.tool_registry = tool_registry
@@ -325,7 +325,7 @@ class Workflow:
         needs_reshape = (
             not self._shaped_this_session
             or _is_short_followup(user_input)
-        )
+        ) and state.route != ROUTE_TRIVIAL
 
         # Determine if we can parallelize
         can_parallel = (
@@ -359,26 +359,48 @@ class Workflow:
                     self.logger.exception("Shaper failed: %s", e)
                     return {"shaped": False, "error": e}
 
-            with concurrent.futures.ThreadPoolExecutor(max_workers=2) as ex:
+            # Optimized parallel processing with timeout and better resource management
+            with concurrent.futures.ThreadPoolExecutor(max_workers=2, thread_name_prefix="AgentWorkflow") as ex:
                 router_future = ex.submit(run_router)
                 shaper_future = ex.submit(run_shaper)
 
-                router_result = router_future.result()
-                shaper_result = shaper_future.result()
+                try:
+                    # Wait for router result with timeout
+                    router_result = router_future.result(timeout=30.0)
+                except concurrent.futures.TimeoutError:
+                    self.logger.error("Router operation timed out")
+                    router_result = {"route": ROUTE_REASONING, "error": "Router timeout"}
+                
+                # Only wait for shaper result if we actually need it
+                if needs_reshape and state.route != ROUTE_TRIVIAL:
+                    try:
+                        shaper_result = shaper_future.result(timeout=30.0)
+                    except concurrent.futures.TimeoutError:
+                        self.logger.error("Shaper operation timed out")
+                        shaper_result = {"shaped": False, "error": "Shaper timeout"}
+                else:
+                    shaper_result = {"shaped": False, "error": None}
 
             # Apply router result
             if router_result.get("error"):
                 state.route = ROUTE_REASONING
             self.logger.info("Router decided route=%s", state.route)
 
-            # Handle trivial route after parallel execution
+            # Handle trivial route after parallel execution with parallelization
             if state.route == ROUTE_TRIVIAL:
                 self.logger.info("Taking trivial path")
                 executor = self.agents.get("executor") or self.agents["reasoner"]
                 try:
                     if hasattr(executor, "run_no_tools"):
                         self.logger.debug("Calling executor.run_no_tools()")
-                        executor.run_no_tools(state)
+                        # Parallelize trivial path execution for better performance
+                        with concurrent.futures.ThreadPoolExecutor(max_workers=1, thread_name_prefix="TrivialPath") as ex:
+                            future = ex.submit(executor.run_no_tools, state)
+                            try:
+                                future.result(timeout=10.0)  # Reduced timeout for trivial requests
+                            except concurrent.futures.TimeoutError:
+                                self.logger.error("Trivial path execution timed out")
+                                state.final_answer = "ERROR: Trivial path timeout"
                     else:
                         self.logger.debug("Executor has no run_no_tools(); calling run()")
                         executor.run(state)
@@ -490,7 +512,8 @@ class Workflow:
                     return self.finalize(state, user_input)
 
             # 3. Shape (sequential)
-            if shaper is not None and needs_reshape:
+            # Skip Shaper for trivial requests as they don't need shaping
+            if state.route != ROUTE_TRIVIAL and shaper is not None and needs_reshape:
                 try:
                     self.logger.info(
                         "Running shaper | first_turn=%s short_followup=%s",

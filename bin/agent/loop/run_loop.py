@@ -23,6 +23,52 @@ from ..utils.circuit_breaker import CircuitBreaker
 # total history well within typical context limits even after many turns.
 _MAX_TOOL_RESULT_CHARS = 12_000
 
+# Bare confirmations / continuations that mean "execute the prior plan", not
+# "open-ended exploration". Mirrors workflow.py's _FOLLOWUP_RE so the
+# single-agent path gets the same intent-recovery the multi-agent Shaper
+# provides.
+_FOLLOWUP_RE = re.compile(
+    r"^\s*(?:"
+    r"ok(?:ay)?(?:\s+(?:proceed|go|do\s+it|continue|good))?"
+    r"|yes(?:\s+(?:proceed|go|do\s+it|continue|please))?"
+    r"|sure(?:\s+(?:do\s+it|go|proceed))?"
+    r"|proceed|continue|go\s+ahead|do\s+it|fix\s+it|please\s+continue"
+    r")[\s!.?]*$",
+    re.IGNORECASE,
+)
+
+# Action-intent verbs. When the user's request contains one of these, the
+# loop expects at least one write_file/patch_file/append_file before a final
+# answer. Used to gate dynamic-iteration extension and progressive pressure.
+_ACTION_VERB_RE = re.compile(
+    r"\b(implement|fix|write|create|edit|update|modify|refactor|add|delete|"
+    r"remove|rename|build|generate|patch|change|apply|install|setup|"
+    r"configure|migrate|port|replace)\b",
+    re.IGNORECASE,
+)
+
+
+def _is_short_followup(text: str) -> bool:
+    if not text:
+        return False
+    if _FOLLOWUP_RE.match(text):
+        return True
+    stripped = text.strip()
+    return len(stripped) <= 25 and not any(
+        m in stripped.lower() for m in (".dart", ".py", "lib/", "bin/", "git ")
+    )
+
+
+_FOLLOWUP_DIRECTIVE = (
+    "[CONTEXT: This is a confirmation reply. The user is confirming the plan "
+    "from your IMMEDIATELY PRECEDING assistant turn. Execute the FIRST "
+    "concrete action from that plan now. Do NOT re-explain the plan. Do NOT "
+    "re-research the codebase if you already have enough context. If the "
+    "plan involves editing files, START EDITING with write_file/patch_file. "
+    "If you genuinely need to read one more file first, read EXACTLY ONE, "
+    "then act.]\n\n"
+)
+
 
 class Orchestrator:
     def __init__(
@@ -138,12 +184,41 @@ class Orchestrator:
         self._ensure_system_prompt()
         self._trim_history()
 
+        # Detect a bare confirmation ("Yes", "Proceed", "Do it"). When found
+        # AND there's a prior assistant turn to inherit context from, treat
+        # the request as the action-intent of that prior plan — otherwise
+        # the model interprets "Yes" as open-ended exploration and burns
+        # the whole iteration budget reading files.
+        has_prior_assistant = any(
+            m.get("role") == "assistant" for m in self.conversation_history
+        )
+        is_followup = _is_short_followup(user_input) and has_prior_assistant
+
+        # Treat as action-task when the user used an action verb OR is
+        # confirming a prior plan. Used downstream to gate dynamic-iteration
+        # extension and progressive pressure on read-only loops.
+        self._action_intent = bool(
+            is_followup or _ACTION_VERB_RE.search(user_input or "")
+        )
+        # Reset per-turn write tracking — `_files_modified` is cumulative
+        # across the session for telemetry, but pressure decisions need a
+        # turn-local view.
+        self._writes_this_turn = 0
+        self._action_pressure_nudges = 0
+
         use_tools = (not self.disable_tools) and ToolIntentDetector.needs_tools(user_input)
+        # Force tool mode for bare confirmations — the prior plan almost
+        # always required tools, and chat-mode would lose that intent.
+        if is_followup and not self.disable_tools:
+            use_tools = True
 
         if use_tools:
             decorated = self._TOOL_REMINDER + user_input
         else:
             decorated = user_input
+
+        if is_followup and use_tools:
+            decorated = self._TOOL_REMINDER + _FOLLOWUP_DIRECTIVE + user_input
 
         self.conversation_history.append({"role": "user", "content": decorated})
 
@@ -190,6 +265,7 @@ class Orchestrator:
         refusal_retries = 0
         empty_retries = 0
         truncation_retries = 0
+        cliffhanger_retries = 0
         malformed_tool_retries = 0
         # Cumulative count of consecutive malformed iterations with no
         # successful tool call between them. A model that keeps emitting
@@ -220,6 +296,64 @@ class Orchestrator:
 
         for iteration in range(self.max_iterations):
             print(f"Iteration: {iteration}", file=sys.stderr)
+
+            # === PROGRESSIVE PRESSURE FOR READ-ONLY LOOPS ===
+            # When the user asked for an action ("implement", "fix", or
+            # "yes, proceed"), we expect at least one write before a final
+            # answer. If the model is burning iterations on reads/searches
+            # without ever editing, escalate pressure rather than waiting
+            # for max-iterations to expire.
+            in_read_only_loop = (
+                getattr(self, "_action_intent", False)
+                and self._writes_this_turn == 0
+                and self._successful_tool_count >= 4
+            )
+            if in_read_only_loop:
+                if iteration >= 28:
+                    print(
+                        f"[orch] Action-task with no writes after "
+                        f"{iteration} iterations; bailing to recap.",
+                        file=sys.stderr,
+                    )
+                    return self._build_recap_answer(
+                        reason=f"action-task stalled at iter {iteration} "
+                               f"with zero writes despite "
+                               f"{self._successful_tool_count} successful reads"
+                    )
+                if iteration >= 20 and self._action_pressure_nudges < 2:
+                    self._action_pressure_nudges = 2
+                    self.conversation_history.append({
+                        "role": "user",
+                        "content": (
+                            "[FINAL WARNING] You have used 20+ iterations "
+                            "reading files but have written nothing. The "
+                            "request asked for an action.\n"
+                            "Your IMMEDIATE next message MUST be either:\n"
+                            "  1) A single write_file / patch_file / "
+                            "append_file tool call, OR\n"
+                            "  2) Your final plain-text answer (no more "
+                            "tool calls).\n"
+                            "Stop researching. Act or answer."
+                        ),
+                    })
+                elif iteration >= 10 and self._action_pressure_nudges < 1:
+                    self._action_pressure_nudges = 1
+                    self.conversation_history.append({
+                        "role": "user",
+                        "content": (
+                            "[NUDGE] You have read several files but "
+                            "have not modified anything. The original "
+                            "request asked for an action (implementing "
+                            "a change). Either:\n"
+                            "  1) Make a write_file / patch_file / "
+                            "append_file call NOW, or\n"
+                            "  2) Give your final plain-text answer if "
+                            "the task is already complete.\n"
+                            "Avoid more read_file/search_in_files calls "
+                            "unless strictly necessary."
+                        ),
+                    })
+
             # === DYNAMIC ITERATION LIMIT ===
             # Extend budget proactively when progress is detected, not just at the end.
             # Check every 5 iterations and when approaching the limit.
@@ -240,8 +374,27 @@ class Orchestrator:
                 # delays the inevitable bail.
                 distinct_recent = len(set(recent_calls)) if recent_calls else 0
 
+                # Read-only loop guard: if the user asked for an action
+                # (implement / fix / "yes, proceed") and we've burned a
+                # bunch of successful reads without writing anything, do
+                # NOT extend — that just rewards the model for refusing
+                # to act. Pressure (below) will steer it instead.
+                read_only_loop = (
+                    getattr(self, "_action_intent", False)
+                    and self._writes_this_turn == 0
+                    and self._successful_tool_count >= 6
+                )
+                if read_only_loop:
+                    print(
+                        f"[orch] Read-only loop on action-task | "
+                        f"iter={iteration} successes={self._successful_tool_count} "
+                        f"writes=0 — extension suppressed",
+                        file=sys.stderr,
+                    )
+                    # Skip both extension branches; fall through to the
+                    # rest of the iteration so pressure-injection runs.
                 # Calculate extension multiplier based on progress rate
-                if (success_count > 0
+                elif (success_count > 0
                         and success_count > error_count
                         and distinct_recent >= 3):
                     # Good progress: extend by 5-15 based on success rate
@@ -259,9 +412,13 @@ class Orchestrator:
                     )
                     continue
 
-                # Detect complex multi-file operations: extend more aggressively
+                # Detect complex multi-file operations: extend more aggressively.
+                # Also suppressed by the read-only-loop guard: "files touched"
+                # for an action-task with zero writes is just files re-read.
                 files_touched = len(set(re.findall(r'\b[a-zA-Z_][\w/.-]*\.(?:dart|py|yaml|json|md)\b', recent_history)))
-                if files_touched >= 3 and self._successful_tool_count >= 5:
+                if (not read_only_loop
+                        and files_touched >= 3
+                        and self._successful_tool_count >= 5):
                     extension = min(20, self._max_iteration_cap - self.max_iterations)
                     old_limit = self.max_iterations
                     self.max_iterations += extension
@@ -312,6 +469,39 @@ class Orchestrator:
             tag_calls = _td.parse_all_tag_tool_calls(
                 text_clean, self.tool_registry.definitions
             )
+
+            # Drain any keys the sanitizer dropped while parsing this
+            # batch of calls. If we don't surface this to the model, it
+            # will silently re-emit the same call (now identical to a
+            # previous one because the unknown keys vanished) and the
+            # repeat-call detector will kill the turn. See fs_read.py
+            # for the read_file start_line/end_line case that motivated
+            # this fix.
+            sanitization_drops = _td.drain_recent_drops()
+            sanitized_tools = {name for name, _, _ in sanitization_drops}
+            if sanitization_drops:
+                drop_lines = []
+                for tname, dropped, kept in sanitization_drops:
+                    drop_lines.append(
+                        f"  - {tname}: rejected keys {dropped}; "
+                        f"the only accepted keys are {kept or '[none — see schema]'}"
+                    )
+                self.conversation_history.append({
+                    "role": "user",
+                    "content": (
+                        "[SCHEMA FEEDBACK] Your last tool call(s) included "
+                        "parameters that aren't part of the tool's schema. "
+                        "Those keys were stripped before execution:\n"
+                        + "\n".join(drop_lines)
+                        + "\n\nDo NOT re-emit the same call — it would be "
+                        "identical to one you already ran. Either call the "
+                        "tool again with ONLY the accepted keys (changing "
+                        "the values that were in the rejected keys to "
+                        "supported alternatives), pick a different tool, "
+                        "or give your final answer."
+                    ),
+                })
+
             if tag_calls:
                 # Reset the consecutive-malformed guard: a parseable call
                 # means the model has recovered.
@@ -322,8 +512,17 @@ class Orchestrator:
                 # window means the model is looping. Warn once; if it
                 # happens again, bail with a recap rather than burn
                 # iterations on the identical call.
+                #
+                # EXCEPTION: if this iteration also had keys sanitized
+                # away from the SAME tool, the duplicate is an artifact
+                # of stripping — the model emitted something different,
+                # we just erased the difference. Don't count it as a
+                # repeat; the schema-feedback message above will steer
+                # the next attempt.
                 repeat_keys: List[tuple] = []
                 for name, params in tag_calls:
+                    if name in sanitized_tools:
+                        continue
                     key = (
                         f"{name}::"
                         f"{json.dumps(params, sort_keys=True, ensure_ascii=False)}"
@@ -344,7 +543,10 @@ class Orchestrator:
                             "[orch] Repeat-call cap reached; bailing with recap.",
                             file=sys.stderr,
                         )
-                        return self._build_recap_answer()
+                        return self._build_recap_answer(
+                            reason=f"repeat-call cap after {repeat_warnings} "
+                                   f"warnings on {[n for n, _, _ in repeat_keys]}"
+                        )
 
                     summary = ", ".join(
                         f"{n}({json.dumps(p, ensure_ascii=False)[:120]})"
@@ -385,6 +587,7 @@ class Orchestrator:
                             file_path = params.get("path", "")
                             if file_path:
                                 self._files_modified.add(file_path)
+                            self._writes_this_turn += 1
 
                     # Truncate oversized tool results before they bloat the
                     # conversation history and blow the model's context window.
@@ -532,6 +735,46 @@ class Orchestrator:
                 })
                 continue
 
+            # Cliffhanger detection: replies like "Now I'll examine X" or
+            # "Would you like me to proceed with the next step?" hand the
+            # work back to the user mid-task. The system prompt forbids
+            # them, but instruct-tuned models (qwen-coder especially)
+            # emit them anyway. Catch the obvious shapes here and feed
+            # the model a hard nudge instead of returning the stub to
+            # the user. Two retries, then give up — we don't want to
+            # loop forever if the model genuinely has nothing more to
+            # do but phrases its conclusion awkwardly.
+            if (
+                cliffhanger_retries < 2
+                and self._looks_like_cliffhanger(text_clean)
+            ):
+                cliffhanger_retries += 1
+                print(
+                    f"[orch] Cliffhanger reply detected "
+                    f"(retry {cliffhanger_retries}); nudging model to "
+                    f"continue autonomously.",
+                    file=sys.stderr,
+                )
+                self.conversation_history.append({
+                    "role": "user",
+                    "content": (
+                        "[AUTONOMY] Your previous reply ended with a "
+                        "cliffhanger or a request for confirmation. The "
+                        "user already approved the work — do NOT ask "
+                        "again. Your IMMEDIATE next message must be "
+                        "either:\n"
+                        "  1. A tool call performing the next concrete "
+                        "step (a <tool>...</tool> tag), OR\n"
+                        "  2. A real final answer that summarizes what "
+                        "you completed (no \"would you like me to...\", "
+                        "no \"shall I...\", no \"let me continue...\").\n"
+                        "Do not announce intent without acting. Do not "
+                        "split the remaining work across more user "
+                        "turns."
+                    ),
+                })
+                continue
+
             # Otherwise treat as final answer.
             return _td.clean_final_answer(text or "")
 
@@ -561,14 +804,168 @@ class Orchestrator:
             return body
         return body[:idx].rstrip()
 
-    def _build_recap_answer(self, reason: str = "") -> str:
-        """Synthesize a final answer from the tool results gathered this turn.
+    # Directive injected as a final user turn before the synthesis call.
+    # Tells the model to stop tool-using and write the answer (or ask one
+    # clarifying question) using only what's already in history.
+    _SYNTHESIS_DIRECTIVE = (
+        "[FINAL SYNTHESIS] Stop. The tool loop is over — no more tool "
+        "calls will be executed, and any you emit will be ignored.\n"
+        "Using ONLY what is already in this conversation, produce the "
+        "user's final answer. If you have enough information to answer, "
+        "answer directly. If you do not, ask EXACTLY ONE specific "
+        "clarifying question.\n"
+        "Rules:\n"
+        "  - No <tool> tags. No JSON tool calls. Plain text only.\n"
+        "  - Do not say 'I will' or 'let me' — give the answer or the "
+        "question now.\n"
+        "  - Do not echo this directive."
+    )
 
-        Used when the loop has to abandon — the model is looping, emitting
-        malformed JSON, or has burned the iteration budget. Returning a
-        recap of what was actually learned is more useful than the canned
-        "model failed" string.
+    def _attempt_synthesis(self) -> Optional[str]:
+        """Make one last non-tool model call asking for a final answer.
+
+        Returns the cleaned text on success, or None when the call fails
+        / returns something that still looks like a tool attempt. The
+        caller falls back to the raw-result recap when this returns None.
         """
+        # Defensive copy so we don't pollute the live history with the
+        # synthesis directive (the next turn shouldn't see it).
+        synth_history = list(self.conversation_history)
+        synth_history.append({
+            "role": "user",
+            "content": self._SYNTHESIS_DIRECTIVE,
+        })
+
+        try:
+            text, _ = self.backend.chat(
+                messages=synth_history,
+                max_tokens=self.max_tokens,
+                temperature=self.temperature,
+                tools=None,
+            )
+        except Exception as e:  # noqa: BLE001
+            print(f"[orch] Synthesis call failed: {e}", file=sys.stderr)
+            return None
+
+        raw_len = len(text or "")
+        cleaned = _td.clean_final_answer(text or "").strip()
+        if not cleaned:
+            print(
+                f"[orch] Synthesis returned empty text "
+                f"(raw_len={raw_len}); falling back to raw recap.",
+                file=sys.stderr,
+            )
+            return None
+
+        # Reject replies that are still trying to call tools — we asked
+        # for plain text, anything else is the same failure mode under
+        # a different costume.
+        if _td.parse_all_tag_tool_calls(
+                cleaned, self.tool_registry.definitions
+        ):
+            print(
+                f"[orch] Synthesis reply still contained tool calls "
+                f"(len={len(cleaned)}); falling back to raw recap.",
+                file=sys.stderr,
+            )
+            return None
+
+        is_malformed, _ = _td.looks_like_malformed_tool_call(cleaned)
+        if is_malformed:
+            print(
+                f"[orch] Synthesis reply looks like a malformed tool "
+                f"call (len={len(cleaned)}); falling back to raw recap.",
+                file=sys.stderr,
+            )
+            return None
+
+        print(
+            f"[orch] Synthesis succeeded (raw_len={raw_len}, "
+            f"clean_len={len(cleaned)}).",
+            file=sys.stderr,
+        )
+        return cleaned
+
+    # Cliffhanger phrases the model uses to hand work back to the user
+    # mid-task. Match generously — the model paraphrases. We accept some
+    # false positives because the cost is just one extra iteration; the
+    # cost of returning a stub to the UI is the user typing "continue"
+    # again like they're herding a 9-year-old.
+    _CLIFFHANGER_RE = re.compile(
+        r"\b(?:"
+        # explicit confirmation requests
+        r"would\s+you\s+like\s+me\s+to\s+(?:proceed|continue|move|go|start|next)"
+        r"|shall\s+i\s+(?:proceed|continue|move|go|start)"
+        r"|should\s+i\s+(?:now|next|proceed|continue)"
+        r"|(?:are\s+you\s+)?ready\s+to\s+proceed"
+        r"|let\s+me\s+know\s+if\s+(?:you|i|we)"
+        r"|want\s+me\s+to\s+(?:keep|continue|proceed)"
+        r"|do\s+you\s+want\s+me\s+to\s+(?:proceed|continue|move|go)"
+        r"|(?:i'?ll|i\s+will|i\s+can)\s+wait\s+for\s+your\s+(?:input|confirmation|approval|go)"
+        r"|please\s+confirm\s+(?:if|whether|to)"
+        # announce-without-doing stubs ("now I'll examine X" / "let me check Y")
+        # only flag when the message is short — long messages with these
+        # phrases usually do also include real content / a tool call.
+        r")\b",
+        re.IGNORECASE,
+    )
+
+    _ANNOUNCE_STUB_RE = re.compile(
+        r"^(?:\s*)(?:"
+        r"now\s+i'?ll|"
+        r"let\s+me\s+(?:examine|read|check|look\s+at|continue|proceed|see|verify|inspect|review)|"
+        r"i'?ll\s+(?:examine|read|check|look\s+at|continue|proceed|see|verify|inspect|review|now)|"
+        r"next,?\s+i'?ll|"
+        r"next,?\s+let\s+me"
+        r")\b",
+        re.IGNORECASE,
+    )
+
+    def _looks_like_cliffhanger(self, text: str) -> bool:
+        """True when a plain-text reply hands work back to the user
+        instead of either calling another tool or finishing the task.
+
+        Two shapes:
+          * explicit confirmation request ("Would you like me to proceed
+            with step 2?") — always cliffhanger.
+          * announce-stub ("Now I'll examine the executor.") with no
+            tool call and very little body — model promised work but
+            stopped. Long messages that contain these phrases AND real
+            content are not flagged.
+        """
+        if not text:
+            return False
+        stripped = text.strip()
+        if not stripped:
+            return False
+
+        if self._CLIFFHANGER_RE.search(stripped):
+            return True
+
+        # Short announce-stubs only. A long final answer that happens
+        # to start with "Let me explain..." is fine.
+        if len(stripped) <= 400 and self._ANNOUNCE_STUB_RE.search(stripped):
+            return True
+
+        return False
+
+    def _build_recap_answer(self, reason: str = "") -> str:
+        """Produce a final answer when the loop has to abandon.
+
+        Tries hardest to give the user something useful, in this order:
+          1. Ask the model for a final synthesis using everything already
+             in history (one non-tool call).
+          2. If that fails, stitch the last ~6 tool results together so
+             the user at least sees what was learned.
+          3. If no tool results exist either, return a short error.
+        """
+        # 1. Synthesis attempt.
+        synthesized = self._attempt_synthesis()
+        if synthesized:
+            return synthesized
+
+        # 2. Raw recap fallback. Format as readable markdown so the
+        # user sees a coherent summary instead of a JSON dump.
         results: List[str] = []
         for msg in self.conversation_history:
             if msg.get("role") != "user":
@@ -582,35 +979,78 @@ class Orchestrator:
             body = split[1] if len(split) > 1 else ""
             body = self._strip_internal_marker(body).strip()
 
-            # Bound each result so the recap doesn't itself blow context.
-            if len(body) > 600:
-                body = body[:600] + "\n... (truncated)"
+            # Try to pull the human-meaningful field out of the JSON
+            # tool envelope so the recap shows the actual content
+            # instead of `{"status": "success", "content": "..."}`.
+            pretty_body = self._extract_tool_payload(body)
 
-            results.append(f"{header}:\n{body}")
+            # Bound each result so the recap doesn't itself blow
+            # context. 1500 chars (~3x the old 600) is enough for a
+            # useful snippet of a file/search result without dumping
+            # the whole 100 KB.
+            if len(pretty_body) > 1500:
+                pretty_body = pretty_body[:1500].rstrip() + "\n… (truncated)"
 
-        prefix = (
-            "I couldn't compose a single synthesized answer"
+            results.append(f"### {header}\n\n```\n{pretty_body}\n```")
+
+        prefix_lines = [
+            "**I couldn't compose a single synthesized answer"
             + (f" ({reason})" if reason else "")
-            + ". "
-        )
+            + ".**",
+            "",
+        ]
 
         if not results:
-            return (
-                prefix
-                + "No tool results were collected before bailing — the request "
+            return "\n".join(prefix_lines) + (
+                "No tool results were collected before bailing — the request "
                 "may be too ambiguous, or the model may not support tool use. "
                 "Try rephrasing or use a different model."
             )
 
         # Most recent results are usually the most relevant; cap at 6.
-        if len(results) > 6:
-            results = results[-6:]
+        # Dedupe consecutive identical results — six empty searches in a
+        # row add no information and bury anything useful that came
+        # before.
+        deduped: List[str] = []
+        for r in results:
+            if not deduped or deduped[-1] != r:
+                deduped.append(r)
+        if len(deduped) > 6:
+            deduped = deduped[-6:]
 
         return (
-            prefix
+            "\n".join(prefix_lines)
             + "Here's a recap of what I found while investigating:\n\n"
-            + "\n\n".join(results)
+            + "\n\n".join(deduped)
         )
+
+    @staticmethod
+    def _extract_tool_payload(body: str) -> str:
+        """Pull the human-readable field out of a JSON tool envelope.
+
+        Tool results land in history as ``{"status": "...", "content":
+        "...", ...}``. Dumping that JSON verbatim into the recap is
+        what made past bailouts unreadable. Try to surface ``content``
+        / ``matches`` / ``message`` / ``tree`` directly.
+        """
+        try:
+            payload = json.loads(body)
+        except (ValueError, TypeError):
+            return body
+        if not isinstance(payload, dict):
+            return body
+
+        for key in ("content", "message", "stdout", "result"):
+            value = payload.get(key)
+            if isinstance(value, str) and value.strip():
+                return value
+
+        for key in ("matches", "tree", "files", "lines"):
+            value = payload.get(key)
+            if isinstance(value, list) and value:
+                return "\n".join(str(v) for v in value[:50])
+
+        return body
 
     # ------------------------------------------------------------------
     # Backend call w/ retry + circuit breaker

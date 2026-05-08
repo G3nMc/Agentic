@@ -115,7 +115,7 @@ class _MessageBubbleState extends State<MessageBubble> {
               ),
               const SizedBox(height: 10),
               Container(
-                height: 1,
+                height: 0.5,
                 color: AppTheme.accentDarkMarrone,
               ),
               const SizedBox(height: 10),
@@ -160,6 +160,17 @@ class _MessageBubbleState extends State<MessageBubble> {
                       ),
                     ),
                     const SizedBox(width: 8),
+                    if (widget.onEdit != null) ...[
+                      GestureDetector(
+                        onTap: widget.onEdit,
+                        child: const Icon(
+                          Icons.edit_outlined,
+                          size: 14,
+                          color: AppTheme.accentMarrone,
+                        ),
+                      ),
+                      const SizedBox(width: 6),
+                    ],
                     GestureDetector(
                       onTap: _copied ? null : _copyToClipboard,
                       child: Icon(
@@ -174,17 +185,6 @@ class _MessageBubbleState extends State<MessageBubble> {
                         onTap: widget.onResend,
                         child: const Icon(
                           Icons.refresh,
-                          size: 14,
-                          color: AppTheme.accentMarrone,
-                        ),
-                      ),
-                    ],
-                    if (widget.onEdit != null) ...[
-                      const SizedBox(width: 6),
-                      GestureDetector(
-                        onTap: widget.onEdit,
-                        child: const Icon(
-                          Icons.edit_outlined,
                           size: 14,
                           color: AppTheme.accentMarrone,
                         ),

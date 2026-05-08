@@ -89,6 +89,12 @@ class _ChatViewState extends StateManager<ChatView> with WidgetsBindingObserver 
   /// when the user taps the edit icon on a message bubble.
   final TextEditingController _inputController = TextEditingController();
 
+  /// ID of the message currently staged for edit. Set when the user taps the
+  /// edit icon; cleared after the next send (or if it disappears from the
+  /// list). When non-null, [_sendMessage] truncates the conversation at this
+  /// message before appending the new one.
+  String? _editingMessageId;
+
   @override
   void initState() {
     super.initState();
@@ -314,6 +320,14 @@ class _ChatViewState extends StateManager<ChatView> with WidgetsBindingObserver 
       LlmBackend.geminiOrchestrator => (conv.modelId != null && conv.modelId!.startsWith('gemini')) ? conv.modelId! : (geminiModel ?? BackendSettingsRepository.defaultGeminiModel),
       _ => conv.modelId ?? '',
     };
+
+    // If the user staged an edit, drop the original message and every turn
+    // that came after it before recording the new (edited) user message.
+    final pendingEditId = _editingMessageId;
+    if (pendingEditId != null) {
+      _editingMessageId = null;
+      await _truncateForEdit(pendingEditId);
+    }
 
     final now = DateTime.now().millisecondsSinceEpoch;
 
@@ -620,38 +634,44 @@ class _ChatViewState extends StateManager<ChatView> with WidgetsBindingObserver 
 
   /// Handles the "Edit" action on a user message bubble.
   ///
-  /// Loads the message content into the chat input for editing, then truncates
-  /// the conversation by removing the selected message and every entry that
-  /// follows it (both in-memory and in the database). When the user later
-  /// presses send, [_sendMessage] re-inserts the edited message as the new
-  /// tail of the history.
-  Future<void> _handleEdit(String messageId) async {
+  /// Loads the message content into the chat input and remembers which
+  /// message was selected. The chat history stays intact — truncation is
+  /// applied later in [_sendMessage], so the user can dismiss the edit
+  /// (clear the input, navigate away) without losing previous turns.
+  void _handleEdit(String messageId) {
     if (_sending) return;
 
     final idx = _messages.indexWhere((m) => m.id == messageId);
     if (idx == -1) return;
 
-    final conv = _conversation;
-    if (conv == null) return;
-
     final originalContent = _messages[idx].content;
 
-    final idsToRemove = _messages.sublist(idx).map((m) => m.id).toList();
-
     setState(() {
-      _messages.removeRange(idx, _messages.length);
+      _editingMessageId = messageId;
       _sendError = null;
       _inputController.text = originalContent;
       _inputController.selection = TextSelection.collapsed(
         offset: _inputController.text.length,
       );
     });
+  }
+
+  /// Drops the staged edit target and everything after it from both the
+  /// in-memory list and the database. Called from [_sendMessage] right
+  /// before the new (edited) user turn is appended.
+  Future<void> _truncateForEdit(String messageId) async {
+    final idx = _messages.indexWhere((m) => m.id == messageId);
+    if (idx == -1) return;
+
+    final idsToRemove = _messages.sublist(idx).map((m) => m.id).toList();
+
+    setState(() {
+      _messages.removeRange(idx, _messages.length);
+    });
 
     for (final id in idsToRemove) {
       await MessageRepository.instance.deleteById(id);
     }
-
-    await ConversationRepository.instance.touch(conv.id);
   }
 
   /// Handles the "Delete" action on a message bubble.
@@ -667,6 +687,8 @@ class _ChatViewState extends StateManager<ChatView> with WidgetsBindingObserver 
     // Remove the message from the list
     setState(() {
       _messages.removeAt(idx);
+      // If we were staging an edit on this message, drop the edit target.
+      if (_editingMessageId == messageId) _editingMessageId = null;
     });
 
     // Remove the message from the database

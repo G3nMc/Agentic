@@ -38,12 +38,22 @@ def register(registry) -> None:
         except Exception as e:
             return json.dumps({"status": "error", "message": str(e)})
 
-    def read_file(path: str) -> str:
+    def read_file(
+        path: str,
+        start_line: int | None = None,
+        end_line: int | None = None,
+        offset: int | None = None,
+        limit: int | None = None,
+    ) -> str:
         # Hard cap on returned content. Large files dumped into history
         # bloat every subsequent model call by their full size, slowing
         # the loop and burning tokens. 100 KB is plenty for typical
-        # source files; bigger reads get a truncation marker so the
-        # model knows to ask for a specific range or use search_in_files.
+        # source files; bigger reads get a truncation marker.
+        # start_line/end_line (1-indexed, inclusive) and offset/limit
+        # (0-indexed offset, line count) let the model re-read a specific
+        # window of a previously-read file instead of pulling the whole
+        # thing again — this is what every other agent CLI's read_file
+        # supports, and not supporting it caused the repeat-call cascade.
         MAX_BYTES = 100 * 1024
         try:
             fp = registry.resolve_path(path)
@@ -51,17 +61,78 @@ def register(registry) -> None:
                 return json.dumps({"status": "error", "message": f"File not found: {path}"})
             raw = fp.read_bytes()
             total = len(raw)
+            full_text = raw.decode("utf-8", errors="replace")
+
+            wants_range = any(
+                v is not None for v in (start_line, end_line, offset, limit)
+            )
+
+            if wants_range:
+                lines = full_text.splitlines()
+                line_count = len(lines)
+
+                # Normalize aliases: offset/limit -> start_line/end_line.
+                if start_line is None and offset is not None:
+                    try:
+                        start_line = max(int(offset), 0) + 1
+                    except (TypeError, ValueError):
+                        start_line = 1
+                if end_line is None and limit is not None:
+                    try:
+                        if start_line is None:
+                            start_line = 1
+                        end_line = start_line + max(int(limit), 0) - 1
+                    except (TypeError, ValueError):
+                        end_line = None
+
+                try:
+                    s = max(int(start_line), 1) if start_line is not None else 1
+                except (TypeError, ValueError):
+                    s = 1
+                try:
+                    e = (
+                        min(int(end_line), line_count)
+                        if end_line is not None
+                        else line_count
+                    )
+                except (TypeError, ValueError):
+                    e = line_count
+
+                if e < s:
+                    e = s
+                window = lines[s - 1:e]
+                # Prefix each line with its 1-indexed number so the model
+                # has unambiguous offsets when it asks for a follow-up
+                # range or composes a patch.
+                pad = len(str(e))
+                numbered = "\n".join(
+                    f"{str(s + i).rjust(pad)}\t{ln}" for i, ln in enumerate(window)
+                )
+                return json.dumps({
+                    "status": "success",
+                    "path": path,
+                    "content": numbered,
+                    "size": total,
+                    "line_count": line_count,
+                    "start_line": s,
+                    "end_line": e,
+                    "truncated": False,
+                })
+
             truncated = total > MAX_BYTES
             if truncated:
-                content = raw[:MAX_BYTES].decode("utf-8", errors="replace")
+                content = full_text.encode("utf-8", errors="replace")[:MAX_BYTES].decode(
+                    "utf-8", errors="replace"
+                )
                 content += (
                     f"\n\n... [file truncated at {MAX_BYTES} bytes; "
-                    f"full size {total} bytes — use search_in_files for "
-                    f"a targeted lookup, or ask the user to copy the "
-                    f"specific section you need]"
+                    f"full size {total} bytes — re-call read_file with "
+                    f"start_line/end_line (or offset/limit) to read a "
+                    f"specific window, or use search_in_files for a "
+                    f"targeted lookup]"
                 )
             else:
-                content = raw.decode("utf-8", errors="replace")
+                content = full_text
             return json.dumps({
                 "status": "success",
                 "path": path,
@@ -217,10 +288,16 @@ def register(registry) -> None:
             "type": "function",
             "function": {
                 "name": "read_file",
-                "description": "Read the contents of a local file. Reads larger than 100 KB are truncated with a marker; use search_in_files instead for targeted lookups inside large files.",
+                "description": "Read a local file. Pass only `path` to read the whole file (capped at 100 KB). For large files, pass start_line+end_line (1-indexed, inclusive) or offset+limit to read a specific window — the response includes the line-numbered slice plus the file's total line_count so you can ask for the next window.",
                 "parameters": {
                     "type": "object",
-                    "properties": {"path": {"type": "string", "description": "File path"}},
+                    "properties": {
+                        "path": {"type": "string", "description": "File path"},
+                        "start_line": {"type": "integer", "description": "1-indexed first line to return (inclusive). Optional."},
+                        "end_line": {"type": "integer", "description": "1-indexed last line to return (inclusive). Optional."},
+                        "offset": {"type": "integer", "description": "Alias: 0-indexed first line. Converted to start_line internally."},
+                        "limit": {"type": "integer", "description": "Alias: number of lines to return from start_line/offset."},
+                    },
                     "required": ["path"],
                 },
             },
