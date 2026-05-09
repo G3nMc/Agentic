@@ -37,6 +37,35 @@ _FOLLOWUP_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Pure affirmations that should trigger immediate final response without
+# further processing. These are distinct from mixed messages that combine
+# praise with additional instructions.
+_AFFIRMATION_RE = re.compile(
+    r"^\s*(?:"
+    r"great\s+work"
+    r"|well\s+done"
+    r"|perfect"
+    r"|excellent"
+    r"|awesome"
+    r"|fantastic"
+    r"|amazing"
+    r"|outstanding"
+    r"|brilliant"
+    r"|superb"
+    r"|incredible"
+    r"|wonderful"
+    r"|terrific"
+    r"|fabulous"
+    r"|marvelous"
+    r"|impressive"
+    r"|remarkable"
+    r"|extraordinary"
+    r"|phenomenal"
+    r"|exceptional"
+    r")[\s!.?]*$",
+    re.IGNORECASE,
+)
+
 # Action-intent verbs. When the user's request contains one of these, the
 # loop expects at least one write_file/patch_file/append_file before a final
 # answer. Used to gate dynamic-iteration extension and progressive pressure.
@@ -51,6 +80,14 @@ _ACTION_VERB_RE = re.compile(
 def _is_short_followup(text: str) -> bool:
     if not text:
         return False
+    # Check for pure affirmations first - these should always trigger final response
+    # Pure affirmations are those that don't contain action words
+    if _AFFIRMATION_RE.match(text):
+        # Make sure it's not a mixed message with action words
+        lower_text = text.lower()
+        action_words = ("proceed", "continue", "go", "do it", "next", "step", "follow", "execute", "run", "implement")
+        if not any(word in lower_text for word in action_words):
+            return True
     if _FOLLOWUP_RE.match(text):
         return True
     stripped = text.strip()
