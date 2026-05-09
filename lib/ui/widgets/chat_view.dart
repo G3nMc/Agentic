@@ -1235,6 +1235,7 @@ class _ChatViewState extends StateManager<ChatView> with WidgetsBindingObserver 
       String? token;
       String? modelId;
       String? ollamaBaseUrl;
+      int? ollamaNumCtx;
       String? ollamaApiKey;
       String? groqApiKey;
       String? geminiApiKey;
@@ -1248,6 +1249,7 @@ class _ChatViewState extends StateManager<ChatView> with WidgetsBindingObserver 
       switch (desiredBackend) {
         case OrchestratorBackend.ollama:
           ollamaBaseUrl = await settings.getOllamaBaseUrl();
+          ollamaNumCtx = await settings.getOllamaNumCtx();
           ollamaApiKey = await settings.getOllamaApiKey();
           final savedOllamaModel = await settings.getOllamaModel();
           modelId = convModelId.isNotEmpty ? convModelId : savedOllamaModel;
@@ -1362,6 +1364,7 @@ class _ChatViewState extends StateManager<ChatView> with WidgetsBindingObserver 
         modelId: modelId,
         backend: desiredBackend,
         ollamaBaseUrl: ollamaBaseUrl,
+        ollamaNumCtx: ollamaNumCtx,
         ollamaApiKey: ollamaApiKey,
         groqApiKey: groqApiKey,
         geminiApiKey: geminiApiKey,

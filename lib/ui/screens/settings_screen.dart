@@ -31,6 +31,7 @@ import '../../services/openrouter_service.dart';
 import '../../services/orchestrator_manager.dart';
 import '../widgets/agent_workflow_settings.dart';
 import '../widgets/local_server_config_widget.dart';
+import '../widgets/token_count_picker.dart';
 
 class SettingsScreen extends StatefulWidget {
   const SettingsScreen({super.key});
@@ -688,16 +689,14 @@ class _SettingsScreenState extends State<SettingsScreen> {
           const SizedBox(height: 16),
 
           // Max completion tokens
-          TextField(
+          TokenCountPicker(
             controller: _groqMaxTokensController,
-            keyboardType: TextInputType.number,
-            decoration: const InputDecoration(
-              labelText: 'Max completion tokens',
-              hintText: '4096',
-              helperText: 'Maximum tokens in the response. Groq models support up to '
-                  '8192–32768 depending on the model.',
-              suffixText: 'tokens',
-            ),
+            presets: TokenCountPicker.maxTokensPresets,
+            labelText: 'Max completion tokens',
+            hintText: '4096',
+            helperText:
+                'Reply-length cap only. Groq bills per emitted output token, so raising this just allows longer '
+                'answers — it does not pre-charge you. Groq models support 8K–32K output depending on the model.',
             onChanged: _scheduleGroqMaxTokensSave,
           ),
           const SizedBox(height: 12),
@@ -1129,15 +1128,14 @@ class _SettingsScreenState extends State<SettingsScreen> {
             ],
           ),
           const SizedBox(height: 16),
-          TextField(
+          TokenCountPicker(
             controller: _openRouterMaxTokensController,
-            keyboardType: TextInputType.number,
-            decoration: const InputDecoration(
-              labelText: 'Max completion tokens',
-              hintText: '4096',
-              helperText: 'OpenRouter uses `max_tokens` for the completion budget.',
-              suffixText: 'tokens',
-            ),
+            presets: TokenCountPicker.maxTokensPresets,
+            labelText: 'Max completion tokens',
+            hintText: '4096',
+            helperText:
+                'Reply-length cap only — OpenRouter uses `max_tokens`. The provider manages the full context '
+                'window itself; you are billed per emitted output token, so larger values do not pre-charge.',
             onChanged: _scheduleOpenRouterMaxTokensSave,
           ),
           const SizedBox(height: 16),
@@ -1724,16 +1722,14 @@ class _SettingsScreenState extends State<SettingsScreen> {
             ],
           ),
           const SizedBox(height: 16),
-          TextField(
+          TokenCountPicker(
             controller: _githubMaxTokensController,
-            keyboardType: TextInputType.number,
-            decoration: const InputDecoration(
-              labelText: 'Max completion tokens',
-              hintText: '4096',
-              helperText:
-                  'GitHub Models uses `max_tokens` for the completion budget.',
-              suffixText: 'tokens',
-            ),
+            presets: TokenCountPicker.maxTokensPresets,
+            labelText: 'Max completion tokens',
+            hintText: '4096',
+            helperText:
+                'Reply-length cap only — GitHub Models uses `max_tokens`. The full context window is managed by '
+                'the provider. Bigger values just allow longer answers; you are metered per emitted output token.',
             onChanged: _scheduleGithubMaxTokensSave,
           ),
           const SizedBox(height: 16),
@@ -2260,15 +2256,15 @@ class _SettingsScreenState extends State<SettingsScreen> {
             style: TextStyle(fontSize: 11, color: Colors.grey[600]),
           ),
           const SizedBox(height: 16),
-          TextField(
+          TokenCountPicker(
             controller: _geminiMaxTokensController,
-            keyboardType: TextInputType.number,
-            decoration: const InputDecoration(
-              labelText: 'Max output tokens',
-              hintText: '2048',
-              helperText: 'Maximum tokens the model can emit in one call.',
-              suffixText: 'tokens',
-            ),
+            presets: TokenCountPicker.maxTokensPresets,
+            labelText: 'Max output tokens',
+            hintText: '2048',
+            helperText:
+                'Reply-length cap only. Gemini handles its own context window (1M on 2.5 Pro, 2M on 1.5 Pro). '
+                'You are billed per emitted output token, so raising this does not pre-charge — Gemini 2.5 Pro '
+                'can emit up to 64K in one call.',
             onChanged: _scheduleGeminiMaxTokensSave,
           ),
           const SizedBox(height: 16),
@@ -2405,14 +2401,14 @@ class _SettingsScreenState extends State<SettingsScreen> {
           const SizedBox(height: 12),
 
           // num_predict
-          TextField(
+          TokenCountPicker(
             controller: _generateNumPredictController,
-            keyboardType: TextInputType.number,
-            decoration: const InputDecoration(
-              labelText: 'Max tokens (num_predict)',
-              hintText: '2048',
-              suffixText: 'tokens',
-            ),
+            presets: TokenCountPicker.maxTokensPresets,
+            labelText: 'Max tokens (num_predict)',
+            hintText: '2048',
+            helperText:
+                'Cap on the reply only. Must fit inside (num_ctx − prompt − history); '
+                'on cloud endpoints you only pay for tokens actually emitted.',
             onChanged: (v) async {
               final n = int.tryParse(v.trim());
               if (n != null && n > 0) {
@@ -2423,16 +2419,14 @@ class _SettingsScreenState extends State<SettingsScreen> {
           const SizedBox(height: 12),
 
           // num_ctx
-          TextField(
+          TokenCountPicker(
             controller: _generateNumCtxController,
-            keyboardType: TextInputType.number,
-            decoration: const InputDecoration(
-              labelText: 'Context window (num_ctx)',
-              hintText: '4096',
-              helperText: 'Tokens the model can "see". Higher = more memory. '
-                  '4096 is safe for most hardware.',
-              suffixText: 'tokens',
-            ),
+            presets: TokenCountPicker.numCtxPresets,
+            labelText: 'Context window (num_ctx)',
+            hintText: '4096',
+            helperText:
+                'Total budget for the call (prompt + history + reply). Must comfortably exceed Max tokens — '
+                'rule of thumb: keep num_ctx ≥ 4× Max tokens. Default 4096; cloud Ollama models often support 32K+.',
             onChanged: (v) async {
               final n = int.tryParse(v.trim());
               if (n != null && n > 0) {
@@ -3619,27 +3613,25 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
           // ---- num_predict + num_ctx --------------------------------------
           Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Expanded(
-                child: TextField(
+                child: TokenCountPicker(
                   controller: _ollamaNumPredictController,
-                  keyboardType: TextInputType.number,
-                  decoration: const InputDecoration(
-                    labelText: 'Max output tokens (num_predict)',
-                    helperText: 'e.g. 2048',
-                  ),
+                  presets: TokenCountPicker.maxTokensPresets,
+                  labelText: 'Max output tokens (num_predict)',
+                  helperText: 'Reply cap — must fit inside num_ctx.',
                   onChanged: _scheduleNumPredictSave,
                 ),
               ),
               const SizedBox(width: 12),
               Expanded(
-                child: TextField(
+                child: TokenCountPicker(
                   controller: _ollamaNumCtxController,
-                  keyboardType: TextInputType.number,
-                  decoration: const InputDecoration(
-                    labelText: 'Context window (num_ctx)',
-                    helperText: 'e.g. 4096',
-                  ),
+                  presets: TokenCountPicker.numCtxPresets,
+                  labelText: 'Context window (num_ctx)',
+                  hintText: 'e.g. 4096',
+                  helperText: 'Total budget — keep ≥ 4× Max tokens.',
                   onChanged: _scheduleNumCtxSave,
                 ),
               ),
@@ -3647,42 +3639,54 @@ class _SettingsScreenState extends State<SettingsScreen> {
           ),
           const SizedBox(height: 6),
           _helperBlock(
-            what: 'num_predict caps how many tokens the model can generate in '
-                'ONE reply. It stops the model mid-sentence if it tries to '
-                'go longer — useful to prevent runaway generations that take '
-                'minutes on small models.',
+            what: 'num_predict caps the REPLY length only — the model is forced '
+                'to stop after this many tokens. On cloud Ollama (ollama.com '
+                'cloud) and other cloud providers you are billed per token '
+                'actually emitted, so raising this does NOT pre-charge you; '
+                'it just allows longer answers. On local models it gates how '
+                'long a runaway generation can keep your CPU/GPU busy.',
             normalRange: '256 – 8192 (default 2048). ~1 token ≈ 0.75 English '
-                'words or ~3 characters of code.',
+                'words or ~3 characters of code. Frontier cloud models (Claude, '
+                'Gemini) can emit up to 64K in one call.',
             bestFor: [
               '256–512 — short replies, tool calls, quick classification.',
               '1024–2048 — typical coding answers, a single file edit, '
                   'explanations (the app default).',
-              '4096–8192 — long essays, whole-file rewrites. On a 3B model '
-                  'this can take several minutes — consider raising '
-                  'cautiously.',
+              '4096–8192 — long essays, whole-file rewrites. On a small local '
+                  'model this can take several minutes; on a cloud model it '
+                  'just costs proportionally more output tokens.',
+              '16384+ — only useful with frontier cloud models (Claude, '
+                  'Gemini). Most local 3B–7B models will never emit this much '
+                  'cleanly.',
             ],
-            example: 'At 4 tok/s on phi3:mini, num_predict=8192 could burn '
-                'over 30 min if the model decides to actually use it all.',
+            example: 'Must fit inside num_ctx − (system prompt + history + '
+                'tool defs). If num_predict ≥ num_ctx the model has no room '
+                'to read your prompt and will fail or truncate.',
           ),
           const SizedBox(height: 10),
           _helperBlock(
-            what: 'num_ctx is the context window — how many tokens (prompt + '
-                'past messages + reply) the model can "see" at once. Bigger '
-                'window = more history, but KV-cache RAM grows roughly '
-                'linearly with it.',
-            normalRange: '2048 – 32768 (default 4096). Ollama may ship Modelfiles '
-                'defaulting to 128K — that can cost 30–50 GiB of RAM on '
-                'a tiny model, so this app caps at 4096 by default.',
+            what: 'num_ctx is the TOTAL budget for one call — system prompt + '
+                'tool defs + chat history + your message + the reply, all '
+                'combined. Cloud providers (Groq, OpenRouter, Gemini, GitHub '
+                'Models) manage this internally and ignore the field; it only '
+                'takes effect on Ollama backends. On local Ollama, KV-cache '
+                'RAM grows roughly linearly with it; on cloud Ollama, larger '
+                'windows just slow the prompt-eval step.',
+            normalRange: '2048 – 32768 for local (default 4096). Cloud-hosted '
+                'Ollama models often advertise 128K+. Frontier non-Ollama '
+                'cloud models (Claude 200K, Gemini 1M) handle this themselves.',
             bestFor: [
               '2048 — chit-chat, single-file reads. Lowest RAM.',
               '4096 — app default, fits a few read_file results + history.',
               '8192–16384 — multi-file edits, reading large config/log '
-                  'files. Needs a 7B+ model and >= 16 GB RAM to be comfy.',
-              '32768+ — rarely worth it; prompt-eval time grows with context '
-                  'and small models ignore most of it anyway.',
+                  'files. Needs a 7B+ model and ≥ 16 GB RAM locally.',
+              '32768+ — long-document tasks. Cheap on cloud Ollama, expensive '
+                  'in RAM and prompt-eval time locally.',
             ],
-            example: 'Raising this from 4096 → 32768 on phi3:mini can push RAM use '
-                'from ~2 GB to >10 GB for the same conversation.',
+            example: 'Rule of thumb: keep num_ctx ≥ 4× num_predict so the '
+                'model has room for the prompt + history. A 4096 window with '
+                'num_predict=2048 leaves only ~2K for everything before the '
+                'reply, which is tight.',
           ),
           const SizedBox(height: 12),
           Align(

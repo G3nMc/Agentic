@@ -68,13 +68,54 @@ class ExecutorAgent(Agent):
             tool = call.get("tool", "")
             params = call.get("parameters") or {}
             try:
-                raw = self.tool_registry.execute(tool, params)
+                # Get tool-specific timeout if configured, otherwise use default
+                tool_timeout = getattr(self.tool_registry, 'tool_timeouts', {}).get(tool, 30.0)
+                # Execute tool with timeout
+                future = concurrent.futures.ThreadPoolExecutor().submit(
+                    self.tool_registry.execute, tool, params
+                )
+                raw = future.result(timeout=tool_timeout)
+            except concurrent.futures.TimeoutError:
+                raw = json.dumps({
+                    "status": "error", 
+                    "message": f"Tool '{tool}' exceeded timeout of {tool_timeout} seconds"
+                })
             except Exception as e:  # noqa: BLE001
                 raw = json.dumps({"status": "error", "message": str(e)})
             return {"tool": tool, "parameters": params, "result": raw}
 
-        with concurrent.futures.ThreadPoolExecutor() as pool:
-            results = list(pool.map(_exec, state.tool_calls))
+        # Use ThreadPoolExecutor with timeout handling
+        with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
+            # Submit all tool calls
+            futures = [
+                pool.submit(_exec, call) for call in state.tool_calls
+            ]
+            
+            # Collect results with timeout
+            results = []
+            try:
+                for future in concurrent.futures.as_completed(futures, timeout=self.iteration_timeout):
+                    try:
+                        results.append(future.result())
+                    except concurrent.futures.TimeoutError:
+                        results.append({
+                            "tool": "unknown", 
+                            "parameters": {}, 
+                            "result": json.dumps({
+                                "status": "error", 
+                                "message": f"Tool execution exceeded iteration timeout of {self.iteration_timeout} seconds"
+                            })
+                        })
+            except concurrent.futures.TimeoutError:
+                # Handle case where overall collection times out
+                results.append({
+                    "tool": "executor", 
+                    "parameters": {}, 
+                    "result": json.dumps({
+                        "status": "error", 
+                        "message": f"Overall tool execution exceeded iteration timeout of {self.iteration_timeout} seconds"
+                    })
+                })
 
         for r in results:
             previews.append(self._preview(r['tool'], r['result']))

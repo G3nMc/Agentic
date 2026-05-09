@@ -34,6 +34,41 @@ class ToolRegistry:
         self._tool_circuit_breakers: Dict[str, CircuitBreaker] = {}
         self.tools: Dict[str, Callable] = {}
         self.definitions: List[Dict[str, Any]] = []
+        # Tool timeout configuration (in seconds)
+        self.tool_timeouts: Dict[str, float] = {
+            # File operations - typically fast
+            "read_file": 10.0,
+            "write_file": 10.0,
+            "append_file": 10.0,
+            "delete_file": 5.0,
+            "patch_file": 15.0,
+            "move_file": 10.0,
+            "create_directory": 5.0,
+            
+            # Search operations - can be slower for large projects
+            "list_files": 10.0,
+            "list_files_recursive": 15.0,
+            "search_in_files": 30.0,
+            "find_files": 15.0,
+            
+            # Git operations - vary by repo size
+            "git_status": 10.0,
+            "git_branches": 5.0,
+            "git_log": 10.0,
+            "git_diff": 15.0,
+            "git_checkout": 10.0,
+            "git_commit": 15.0,
+            
+            # Language-specific tools - can be slow
+            "flutter_analyze": 45.0,
+            "python_check": 30.0,
+            "python_lint": 30.0,
+            "python_format": 30.0,
+            "python_test": 60.0,
+            
+            # Shell commands - unpredictable duration
+            "run_command": 30.0,
+        }
         # Late import to avoid circular dependency
         from . import collect_all_tools
         collect_all_tools(self)

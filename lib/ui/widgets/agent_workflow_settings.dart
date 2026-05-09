@@ -12,6 +12,7 @@ import '../../services/groq_service.dart';
 import '../../services/ollama_service.dart';
 import '../../services/openrouter_service.dart';
 import 'team_board_viewer.dart';
+import 'token_count_picker.dart';
 
 /// Settings panel for the multi-agent workflow.
 ///
@@ -472,7 +473,7 @@ class _AgentWorkflowSettingsState extends State<AgentWorkflowSettings> {
               Icon(Icons.info_outline, size: 16, color: AppTheme.accent),
               SizedBox(width: 6),
               Text(
-                'Max Tokens vs Context Window (Ollama)',
+                'Max Tokens vs Context Window',
                 style: TextStyle(
                   fontSize: 13,
                   fontWeight: FontWeight.w600,
@@ -483,9 +484,22 @@ class _AgentWorkflowSettingsState extends State<AgentWorkflowSettings> {
           ),
           SizedBox(height: 6),
           Text(
-            '• Max tokens: output length limit (how much the model can generate).\n'
-            '• Context window (num_ctx): total tokens for input + output. '
-            'Must be ≥ max_tokens. For Ollama backends, set this to 32768+ for long files.',
+            '• Max tokens — hard cap on the reply length only. Applies to every '
+            'backend (Groq, OpenRouter, Gemini, GitHub Models, Ollama). On '
+            'cloud APIs you are billed per token actually emitted, so raising '
+            'this does not pre-charge you — it just lets longer answers '
+            'through.\n'
+            '• Context window (num_ctx) — total budget for the WHOLE call: '
+            'system prompt + tool defs + chat history + your message + the '
+            'reply, combined. Cloud providers manage this internally (Claude '
+            '200K, Gemini 1M, etc.) and ignore the field — it only takes '
+            'effect on Ollama backends, where the local Modelfile may default '
+            'as low as 4K.\n'
+            '• Relation — Max tokens must fit inside what is left of num_ctx '
+            'after the prompt, history and tool defs. If Max tokens is set '
+            'close to num_ctx the model has no room to read your prompt and '
+            'will fail or truncate. Rule of thumb: keep num_ctx ≥ 4× Max '
+            'tokens for long-context work.',
             style: TextStyle(fontSize: 11.5, color: AppTheme.textMuted),
           ),
         ],
@@ -910,17 +924,15 @@ class _AgentWorkflowSettingsState extends State<AgentWorkflowSettings> {
       onFocusChange: (has) {
         if (!has) _persistImmediately(role);
       },
-      child: TextField(
-        controller: _ollamaCtxCtrls[role],
-        keyboardType: TextInputType.number,
-        decoration: const InputDecoration(
-          labelText: 'Context window (num_ctx)',
-          hintText: 'e.g. 32768',
-          border: OutlineInputBorder(),
-          isDense: true,
-          helperText:
-              'Total context (input + output). Default: 4096. Set to 32768+ for long documents.',
-        ),
+      child: TokenCountPicker(
+        controller: _ollamaCtxCtrls[role]!,
+        presets: TokenCountPicker.numCtxPresets,
+        outlined: true,
+        isDense: true,
+        labelText: 'Context window (num_ctx)',
+        hintText: 'e.g. 32768',
+        helperText:
+            'Total budget — prompt + history + reply. Must comfortably exceed Max tokens. Default 4096; raise for long documents.',
         onChanged: (v) {
           final parsed = int.tryParse(v.trim());
           final cfg = _agents.get(role);
@@ -959,14 +971,14 @@ class _AgentWorkflowSettingsState extends State<AgentWorkflowSettings> {
       onFocusChange: (has) {
         if (!has) _persistImmediately(role);
       },
-      child: TextField(
-        controller: _maxTokensCtrls[role],
-        keyboardType: TextInputType.number,
-        decoration: const InputDecoration(
-          labelText: 'Max tokens',
-          border: OutlineInputBorder(),
-          isDense: true,
-        ),
+      child: TokenCountPicker(
+        controller: _maxTokensCtrls[role]!,
+        presets: TokenCountPicker.maxTokensPresets,
+        outlined: true,
+        isDense: true,
+        labelText: 'Max tokens (reply cap)',
+        helperText:
+            'Caps the reply only. Cloud APIs bill per emitted token, so raising this just allows longer answers.',
         onChanged: (v) {
           final parsed = int.tryParse(v.trim());
           if (parsed == null) return;
