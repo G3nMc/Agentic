@@ -12,7 +12,7 @@ class AppDatabase {
   static final AppDatabase instance = AppDatabase._();
 
   static const String _dbName = "hf_chat.db";
-  static const int _dbVersion = 8;
+  static const int _dbVersion = 9;
 
   Database? _db;
   Completer<Database>? _opening;
@@ -167,6 +167,19 @@ class AppDatabase {
       );
     ''');
 
+    // Context summaries for conversations
+    batch.execute('''
+      CREATE TABLE context_summaries (
+        conversation_id TEXT PRIMARY KEY,
+        summary_text TEXT NOT NULL,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        FOREIGN KEY (conversation_id)
+          REFERENCES conversations(id)
+          ON DELETE CASCADE
+      );
+    ''');
+
     await batch.commit(noResult: true);
   }
 
@@ -261,6 +274,20 @@ class AppDatabase {
         await db.execute(
             'ALTER TABLE messages ADD COLUMN response_time_ms INTEGER');
       }
+    }
+    if (oldVersion < 9) {
+      // Migrate to v9: add context summaries table
+      await db.execute('''
+        CREATE TABLE IF NOT EXISTS context_summaries (
+          conversation_id TEXT PRIMARY KEY,
+          summary_text TEXT NOT NULL,
+          created_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL,
+          FOREIGN KEY (conversation_id)
+            REFERENCES conversations(id)
+            ON DELETE CASCADE
+        )
+      ''');
     }
   }
 

@@ -18,6 +18,7 @@ import '../../data/repositories/conversation_repository.dart';
 import '../../data/repositories/local_server_config_repository.dart';
 import '../../data/repositories/message_repository.dart';
 import '../../data/repositories/settings_repository.dart';
+import '../../services/chat_processing_service.dart';
 import '../../services/huggingface_service.dart';
 import '../../services/llm_service.dart';
 import '../../services/local_server_manager.dart';
@@ -377,16 +378,36 @@ class _ChatViewState extends StateManager<ChatView> with WidgetsBindingObserver 
     }
 
     try {
+      // Build the request via ChatProcessingService so the rolling
+      // summary (if any) is injected as a system message and the history
+      // is packed newest-first by char-budget rather than sent in full.
+      // This is what keeps Q/A/Q context alive across turns without
+      // exceeding the model's window.
+      final prepared = await ChatProcessingService.instance.prepareRequest(
+        conversationId: conv.id,
+        userMessage: safeText,
+        backend: backend,
+        modelId: modelId,
+        token: token,
+        localServerUrl: serverUrl,
+        ollamaBaseUrl: ollamaBaseUrl,
+        ollamaModelId: modelId,
+        ollamaPythonBridgeUrl: ollamaPythonBridgeUrl,
+      );
+
       final reply = await LlmService.instance.sendChat(
         backend: backend,
         token: token ?? "",
         modelId: modelId,
-        history: history,
+        history: prepared.historyToSend.isNotEmpty
+            ? prepared.historyToSend
+            : history,
         conversationId: conv.id,
         localServerUrl: serverUrl,
         ollamaBaseUrl: ollamaBaseUrl,
         ollamaModelId: modelId,
         ollamaPythonBridgeUrl: ollamaPythonBridgeUrl,
+        contextSummary: prepared.contextSummary,
       );
 
       if (cancelToken.isCancelled) return;

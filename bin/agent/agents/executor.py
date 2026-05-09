@@ -34,7 +34,8 @@ class ExecutorAgent(Agent):
     def __init__(self, backend, *,
                  system_prompt: Optional[str] = None,
                  temperature: float = 0.4,
-                 max_tokens: int = 512):
+                 max_tokens: int = 512,
+                 iteration_timeout: float = 30.0):
         super().__init__(backend,
                          system_prompt or _EXECUTOR_SYSTEM_PROMPT,
                          temperature=temperature,
@@ -43,6 +44,7 @@ class ExecutorAgent(Agent):
         # attribute (not a constructor arg) so the agents-only build step
         # can run before the ToolRegistry exists.
         self.tool_registry = None
+        self.iteration_timeout = iteration_timeout
 
     # ------------------------------------------------------------------
     # Tool-execution path

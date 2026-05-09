@@ -249,7 +249,7 @@ class Workflow:
             tool_registry: ToolRegistry,
             *,
             max_iterations: int = 25,
-            max_history_turns: int = 8,
+            max_history_turns: Optional[int] = None,
             max_identical_failures: int = 10,
             iteration_timeout: float = 90.0,  # Increased from 60.0 to 90.0 seconds
             turn_timeout: float = 300.0,  # Increased from 180.0 to 300.0 seconds (5 minutes)
@@ -258,6 +258,20 @@ class Workflow:
         self.tool_registry = tool_registry
         self.max_iterations = max_iterations
         self._initial_max_iterations = max_iterations
+        # Derive max_history_turns from the reasoner's context window when the
+        # caller hasn't pinned it explicitly. A constant 8 throttled 128K cloud
+        # models down to ~50K of usable history; scaling makes the cap track
+        # whatever model is actually configured. ~2_000 tokens per turn is
+        # the typical cost AFTER tool round-trips collapse — at 128K that's
+        # 64 turns kept verbatim before trimming kicks in.
+        if max_history_turns is None:
+            reasoner = agents.get("reasoner")
+            ctx_tokens = int(getattr(getattr(reasoner, "backend", None),
+                                     "context_limit", 0) or 0)
+            if ctx_tokens > 0:
+                max_history_turns = max(30, ctx_tokens // 2_000)
+            else:
+                max_history_turns = 8
         self.max_history_turns = max_history_turns
         self.max_identical_failures = max_identical_failures
         self.iteration_timeout = iteration_timeout
@@ -1246,6 +1260,141 @@ class Workflow:
             "identical calls]\n" + "\n".join(lines)
         )
 
+    # Tools whose result BODY is worth carrying across turns. read_file is
+    # keyed by path; search_in_files by pattern; the rest by tool name (one
+    # latest body each). Everything else (list_files_recursive, etc.) only
+    # gets the one-line recap from _summarize_tool_calls.
+    _BODY_PRESERVE_TOOLS_PATH = frozenset({"read_file"})
+    _BODY_PRESERVE_TOOLS_PATTERN = frozenset({"search_in_files"})
+    _BODY_PRESERVE_TOOLS_LATEST = frozenset({
+        "flutter_analyze", "python_check", "python_lint", "python_test",
+        "run_command", "git_status", "git_diff", "git_log",
+    })
+
+    @staticmethod
+    def _payload_text(raw: Any) -> Optional[str]:
+        """Pull the human-readable payload out of a tool-result envelope.
+
+        Returns None when the result is an error or has no useful body.
+        Mirrors run_loop._extract_tool_payload's logic but rejects errors.
+        """
+        if isinstance(raw, dict):
+            obj = raw
+        elif isinstance(raw, str):
+            try:
+                obj = json.loads(raw)
+            except (ValueError, TypeError):
+                return raw if raw.strip() else None
+        else:
+            return None
+        if not isinstance(obj, dict):
+            return str(obj) if obj else None
+        if str(obj.get("status", "")).lower() == "error":
+            return None
+        for key in ("content", "stdout", "result", "tree"):
+            value = obj.get(key)
+            if isinstance(value, str) and value.strip():
+                return value
+        for key in ("matches", "files", "lines"):
+            value = obj.get(key)
+            if isinstance(value, list) and value:
+                return "\n".join(str(v) for v in value[:200])
+        return None
+
+    def _preserve_tool_bodies(
+        self,
+        results: List[Dict[str, Any]],
+        *,
+        max_total_chars: int,
+        max_per_body_chars: int = 8_000,
+    ) -> Optional[str]:
+        """Return a system message preserving the most informative tool-result
+        bodies from this turn, so the next turn doesn't re-issue the same
+        read_file / search call.
+
+        Strategy (newest-wins):
+          - read_file: keep the latest body per path
+          - search_in_files: keep the latest body per pattern
+          - flutter_analyze/python_*/run_command/git_*: keep the latest body
+            for that tool name
+          - everything else: not preserved (list_files etc. is too verbose
+            for the small benefit)
+
+        Caps each body at ``max_per_body_chars`` and the whole bundle at
+        ``max_total_chars`` (head+tail truncation per body).
+        """
+        if not results or max_total_chars <= 0:
+            return None
+
+        latest_by_path: Dict[str, Dict[str, Any]] = {}
+        latest_by_pattern: Dict[str, Dict[str, Any]] = {}
+        latest_by_tool: Dict[str, Dict[str, Any]] = {}
+
+        for r in results:
+            tool = str(r.get("tool", ""))
+            params = r.get("parameters") or {}
+            payload = self._payload_text(r.get("result", ""))
+            if payload is None:
+                continue
+            entry = {"tool": tool, "params": params, "payload": payload}
+            if tool in self._BODY_PRESERVE_TOOLS_PATH:
+                path = str(params.get("path") or "").strip()
+                if path:
+                    latest_by_path[path] = entry
+            elif tool in self._BODY_PRESERVE_TOOLS_PATTERN:
+                pattern = str(params.get("pattern") or "").strip()
+                if pattern:
+                    latest_by_pattern[pattern] = entry
+            elif tool in self._BODY_PRESERVE_TOOLS_LATEST:
+                latest_by_tool[tool] = entry
+
+        bundles: List[Dict[str, Any]] = (
+            list(latest_by_path.values())
+            + list(latest_by_pattern.values())
+            + list(latest_by_tool.values())
+        )
+        if not bundles:
+            return None
+
+        sections: List[str] = []
+        budget = max_total_chars
+        for entry in bundles:
+            body = entry["payload"]
+            if len(body) > max_per_body_chars:
+                half = max_per_body_chars // 2
+                trunc = len(body) - max_per_body_chars
+                body = (body[:half]
+                        + f"\n[... {trunc} chars truncated from middle ...]\n"
+                        + body[-half:])
+            try:
+                params_str = json.dumps(entry["params"], ensure_ascii=False)
+            except Exception:
+                params_str = str(entry["params"])
+            if len(params_str) > 200:
+                params_str = params_str[:200] + "…"
+            header = f"### {entry['tool']}({params_str})"
+            section = header + "\n" + body
+            if len(section) > budget:
+                # Last entry doesn't fit; truncate to remaining budget.
+                if budget < 200:
+                    break
+                section = section[:budget - 50] + "\n[... truncated to fit bundle budget ...]"
+                sections.append(section)
+                break
+            sections.append(section)
+            budget -= len(section)
+
+        if not sections:
+            return None
+
+        return (
+            "[Tool result bodies preserved from this turn for next-turn "
+            "context — these are the latest read_file/search/build results "
+            "the assistant has already gathered. Do NOT re-issue identical "
+            "calls; refer to these bodies instead.]\n\n"
+            + "\n\n".join(sections)
+        )
+
     @staticmethod
     def calls_signature(calls: List[Dict[str, Any]]) -> str:
         """Stable string representing a list of tool calls for loop-detection."""
@@ -1342,14 +1491,40 @@ class Workflow:
                 }
             )
 
-        tool_summary = self._summarize_tool_calls(
-            getattr(state, "tool_results", None) or []
-        )
+        tool_results = getattr(state, "tool_results", None) or []
+
+        tool_summary = self._summarize_tool_calls(tool_results)
         if tool_summary:
             self.conversation_history.append(
                 {
                     "role": "system",
                     "content": tool_summary,
+                }
+            )
+
+        # Preserve the actual bodies of read_file / search_in_files / build
+        # commands so the NEXT turn doesn't re-read the same files. Budget
+        # scales with the reasoner's context window — at 128K we can afford
+        # ~75K chars of preserved bodies (room for several full source
+        # files); at 8K Ollama only ~3K.
+        reasoner = self.agents.get("reasoner")
+        ctx_tokens = int(getattr(getattr(reasoner, "backend", None),
+                                 "context_limit", 0) or 0)
+        if ctx_tokens > 0:
+            # ~15% of the window. Each preserved body still capped per-entry
+            # by max_per_body_chars (default 20K) inside _preserve_tool_bodies.
+            bundle_budget = max(8_000, (ctx_tokens * 4) // 7)
+        else:
+            bundle_budget = 8_000
+        bodies = self._preserve_tool_bodies(
+            tool_results, max_total_chars=bundle_budget,
+            max_per_body_chars=max(8_000, (ctx_tokens * 4) // 25 if ctx_tokens else 8_000),
+        )
+        if bodies:
+            self.conversation_history.append(
+                {
+                    "role": "system",
+                    "content": bodies,
                 }
             )
 

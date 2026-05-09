@@ -15,13 +15,11 @@ from ..policy import SecurityConfig
 from ..tools.registry import ToolRegistry
 from ..utils.circuit_breaker import CircuitBreaker
 
-# Maximum characters of a tool result to keep in conversation history.
-# Tool results (read_file, list_files_recursive, etc.) can be tens of KB;
-# embedding them verbatim blows the model's context window after a few
-# iterations.  12 000 chars ≈ 3 000 tokens — enough context for the model
-# to understand the result and decide the next step, while keeping the
-# total history well within typical context limits even after many turns.
-_MAX_TOOL_RESULT_CHARS = 12_000
+# Default cap on tool-result chars. Used as a floor when the backend
+# doesn't expose a context_limit; the Orchestrator scales this up at
+# runtime via ``self._max_tool_result_chars`` so a 128K cloud model
+# isn't throttled by the 12K value sized for 8K Ollama.
+_MAX_TOOL_RESULT_CHARS_FALLBACK = 12_000
 
 # Bare confirmations / continuations that mean "execute the prior plan", not
 # "open-ended exploration". Mirrors workflow.py's _FOLLOWUP_RE so the
@@ -148,11 +146,33 @@ class Orchestrator:
         self._max_iteration_cap = 150  # Absolute ceiling to prevent runaway costs
         self._successful_tool_count = 0  # Track progress for dynamic extension
         self._files_modified = set()  # Track unique files touched
-        # Sliding-window history cap. Each "turn" = 1 user msg + 1 assistant msg.
-        # 6 turns = 12 messages. Keeps total history well under 8 k-token cloud
-        # limits (system prompt ~700 tok + 12 msgs * ~300 tok avg + max_tokens
-        # 2048 ≈ 6300).
-        self.max_history_turns = 6
+
+        # Derive history/result caps from the backend's actual context window
+        # so a 128K cloud model isn't throttled to ~50K by constants sized
+        # for 8K Ollama. Tuned for "use as much context as the model offers"
+        # — coding sessions specifically benefit from preserving full file
+        # bodies across many turns. Falls back to the original tight
+        # defaults when the backend doesn't report context_limit.
+        ctx_tokens = int(getattr(backend, "context_limit", 0) or 0)
+        ctx_chars = ctx_tokens * 4  # chars/4 ≈ tokens (matches rate_limit estimator)
+        if ctx_tokens > 0:
+            # 1 turn = 1 user + 1 assistant msg. ~2_000 tokens per pair
+            # (the average after the assistant's tool round-trips collapse
+            # to the final answer between turns) means at 128K we keep
+            # ~64 turns = 128 messages — effectively a full session.
+            self.max_history_turns = max(30, ctx_tokens // 2_000)
+            # Single tool result allowed to occupy up to ~20% of the window.
+            # That fits a typical large source file (e.g. 1700-line Dart
+            # widget ≈ 100K chars) without head+tail truncation.
+            self._max_tool_result_chars = max(40_000, ctx_chars // 5)
+            # Total prompt char budget — 85% of the window. Leaves enough
+            # room for system prompt (~5%) + reply budget (~3%) + safety
+            # margin. The compactor still catches anything past 75%.
+            self._history_char_budget = int(ctx_chars * 0.85)
+        else:
+            self.max_history_turns = 6
+            self._max_tool_result_chars = _MAX_TOOL_RESULT_CHARS_FALLBACK
+            self._history_char_budget = 200_000
 
     # ------------------------------------------------------------------
     # Session management
@@ -171,8 +191,18 @@ class Orchestrator:
         )
 
     def _trim_history(self) -> None:
+        # Per-message char cap derived from context_limit. Keeps individual
+        # messages ≤ 20% of the window — generous enough for a full source
+        # file while still preventing one runaway message from dominating
+        # the whole budget. Total-budget enforcement (_history_char_budget)
+        # is what catches the aggregate.
+        ctx_chars = (int(getattr(self.backend, "context_limit", 0) or 0) * 4)
+        per_msg_cap = (ctx_chars // 5) if ctx_chars > 0 else _history.MAX_MSG_CHARS
+        per_msg_cap = max(_history.MAX_MSG_CHARS, per_msg_cap)
         self.conversation_history = _history.trim_history(
-            self.conversation_history, self.max_history_turns
+            self.conversation_history,
+            self.max_history_turns,
+            max_msg_chars=per_msg_cap,
         )
 
     # ------------------------------------------------------------------
@@ -323,13 +353,10 @@ class Orchestrator:
         _MAX_REPEAT_WARNINGS = 2
         _RECENT_WINDOW = 8
 
-        # Rough character budget for the entire conversation history sent to
-        # the model on each call.  When exceeded we force a trim so the next
-        # _call_model() stays within the backend's context limit.  200K chars
-        # ≈ 50K tokens — generous for 8K–32K context models, and still safe
-        # for 1M-token models because tool results are already capped at
-        # _MAX_TOOL_RESULT_CHARS per message.
-        _HISTORY_CHAR_BUDGET = 200_000
+        # Total-history char budget. Derived from backend.context_limit at
+        # __init__ (see self._history_char_budget); a local alias keeps the
+        # in-loop logic readable.
+        _HISTORY_CHAR_BUDGET = self._history_char_budget
 
         for iteration in range(self.max_iterations):
             print(f"Iteration: {iteration}", file=sys.stderr)
@@ -631,10 +658,11 @@ class Orchestrator:
                     # Head+tail strategy: keep the first and last halves so the
                     # model sees both file headers/imports AND the implementation
                     # at the bottom — the middle is usually less critical.
+                    max_tool_result_chars = self._max_tool_result_chars
                     display_result = result
-                    if len(display_result) > _MAX_TOOL_RESULT_CHARS:
-                        half = _MAX_TOOL_RESULT_CHARS // 2
-                        trunc_len = len(display_result) - _MAX_TOOL_RESULT_CHARS
+                    if len(display_result) > max_tool_result_chars:
+                        half = max_tool_result_chars // 2
+                        trunc_len = len(display_result) - max_tool_result_chars
                         display_result = (
                                 display_result[:half]
                                 + f"\n[... {trunc_len} chars truncated from middle ...]\n"

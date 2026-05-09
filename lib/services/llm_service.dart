@@ -97,6 +97,7 @@ class LlmService {
     String? ollamaBaseUrl, // e.g., "http://localhost:11434"
     String? ollamaModelId, // e.g., "llama3:latest"
     String? ollamaPythonBridgeUrl, // e.g., "http://127.0.0.1:11501"
+    String? contextSummary, // Additional context summary to include
   }) async {
     switch (backend) {
       case LlmBackend.huggingFace:
@@ -207,7 +208,7 @@ class LlmService {
         return OrchestratorManager.instance.sendPrompt(
           lastUser,
           sessionKey: conversationId,
-          seedHistory: _seedHistoryForOrchestrator(history),
+          seedHistory: _seedHistoryForOrchestrator(history, contextSummary: contextSummary),
         );
 
       case LlmBackend.ollamaOrchestrator:
@@ -267,7 +268,7 @@ class LlmService {
         return OrchestratorManager.instance.sendPrompt(
           lastUser,
           sessionKey: conversationId,
-          seedHistory: _seedHistoryForOrchestrator(history),
+          seedHistory: _seedHistoryForOrchestrator(history, contextSummary: contextSummary),
         );
 
       case LlmBackend.groq:
@@ -359,7 +360,7 @@ class LlmService {
         return OrchestratorManager.instance.sendPrompt(
           lastUser,
           sessionKey: conversationId,
-          seedHistory: _seedHistoryForOrchestrator(history),
+          seedHistory: _seedHistoryForOrchestrator(history, contextSummary: contextSummary),
         );
 
       case LlmBackend.geminiOrchestrator:
@@ -422,7 +423,7 @@ class LlmService {
         return OrchestratorManager.instance.sendPrompt(
           lastUser,
           sessionKey: conversationId,
-          seedHistory: _seedHistoryForOrchestrator(history),
+          seedHistory: _seedHistoryForOrchestrator(history, contextSummary: contextSummary),
         );
 
       case LlmBackend.openRouter:
@@ -501,7 +502,7 @@ class LlmService {
         return OrchestratorManager.instance.sendPrompt(
           lastUser,
           sessionKey: conversationId,
-          seedHistory: _seedHistoryForOrchestrator(history),
+          seedHistory: _seedHistoryForOrchestrator(history, contextSummary: contextSummary),
         );
 
       case LlmBackend.githubOrchestrator:
@@ -612,11 +613,22 @@ class LlmService {
   }
 
   List<Map<String, String>> _seedHistoryForOrchestrator(
-    List<ChatMessage> history,
-  ) {
-    if (history.isEmpty) return const [];
+    List<ChatMessage> history, {
+    String? contextSummary,
+  }) {
+    final List<Map<String, String>> result = [];
+    
+    // Add context summary as a system message if provided
+    if (contextSummary != null && contextSummary.isNotEmpty) {
+      result.add({
+        'role': 'system',
+        'content': 'Context Summary: $contextSummary',
+      });
+    }
+    
+    if (history.isEmpty) return result;
     final seed = history.sublist(0, history.length - 1);
-    return seed
+    result.addAll(seed
         .map((m) => {
               'role': switch (m.role) {
                 MessageRole.user => 'user',
@@ -625,7 +637,8 @@ class LlmService {
               },
               'content': m.content,
             })
-        .toList(growable: false);
+        .toList(growable: false));
+    return result;
   }
 
   /// Check backend availability

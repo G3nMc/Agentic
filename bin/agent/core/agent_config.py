@@ -231,6 +231,7 @@ def build_agents(config_path: str | Path,
         agents["executor"] = ExecutorAgent(
             build_backend_for_role(c, secrets, cache),
             temperature=c.temperature, max_tokens=c.max_tokens,
+            iteration_timeout=getattr(c, 'iteration_timeout', 30.0),
         )
     if "summarizer" in cfgs:
         c = cfgs["summarizer"]
