@@ -39,6 +39,7 @@ from .state import ROUTE_REASONING, ROUTE_TRIVIAL, WorkflowState
 from ..loop import tool_dispatch as _td
 from ..policy import SecurityConfig
 from ..tools.registry import ToolRegistry
+from ..utils.token_estimator import chars_for_tokens
 
 
 _WRITE_TOOLS = frozenset({"write_file", "append_file", "patch_file"})
@@ -347,6 +348,32 @@ class Workflow:
         )
 
     def _trim_history(self) -> None:
+        # Token-aware trimming: derive budget from the reasoner's context window.
+        # Using tokens instead of raw turn counts avoids underestimating
+        # code-heavy prompts (code tokenizes at ~3.0 chars/tok vs prose at ~4.0).
+        reasoner = self.agents.get("reasoner")
+        ctx_tokens = int(getattr(getattr(reasoner, "backend", None),
+                                 "context_limit", 0) or 0)
+        if ctx_tokens > 0:
+            from ..loop import history as _history
+            token_budget = int(ctx_tokens * 0.85)
+            per_msg_tokens = max(2_500, ctx_tokens // 5)
+            before = len(self.conversation_history)
+            self.conversation_history = _history.trim_history_by_tokens(
+                self.conversation_history,
+                token_budget=token_budget,
+                content_type="code",
+                max_msg_tokens=per_msg_tokens,
+            )
+            after = len(self.conversation_history)
+            if after < before:
+                self.logger.info(
+                    "History trimmed by tokens | before=%s after=%s budget=%s",
+                    before, after, token_budget,
+                )
+            return
+
+        # Fallback for backends without context_limit: use turn-count cap.
         keep = self.max_history_turns * 2
 
         non_system_indexes = [
@@ -1683,12 +1710,15 @@ class Workflow:
         if ctx_tokens > 0:
             # ~15% of the window. Each preserved body still capped per-entry
             # by max_per_body_chars (default 20K) inside _preserve_tool_bodies.
-            bundle_budget = max(8_000, (ctx_tokens * 4) // 7)
+            ctx_chars = chars_for_tokens(ctx_tokens, "code")
+            bundle_budget = max(8_000, ctx_chars // 7)
+            per_body_chars = max(8_000, ctx_chars // 25)
         else:
             bundle_budget = 8_000
+            per_body_chars = 8_000
         bodies = self._preserve_tool_bodies(
             tool_results, max_total_chars=bundle_budget,
-            max_per_body_chars=max(8_000, (ctx_tokens * 4) // 25 if ctx_tokens else 8_000),
+            max_per_body_chars=per_body_chars,
         )
         if bodies:
             self.conversation_history.append(

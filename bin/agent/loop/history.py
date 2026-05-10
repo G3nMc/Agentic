@@ -13,8 +13,15 @@ from ..utils.token_estimator import estimate_tokens, chars_for_tokens
 # Default hard cap on individual message length. Used as a fallback when
 # the caller doesn't pass ``max_msg_chars`` — the Orchestrator now derives
 # it from ``backend.context_limit`` so a 128K cloud model isn't truncated
-# at a constant sized for 8K Ollama. ~10K chars ≈ 2.5K tokens.
+# at a constant sized for 8K Ollama.
+# At 8K context: ~10K chars ≈ 2.5K tokens (code-aware).
+# At 128K context: scaled dynamically by the caller.
 MAX_MSG_CHARS = 10_000
+
+# Default token cap per message when the caller passes max_msg_tokens.
+# ~2_500 tokens is safe for 8K Ollama; callers with larger context windows
+# should pass a higher max_msg_tokens.
+MAX_MSG_TOKENS = 2_500
 
 
 def ensure_system_prompt(history: List[Dict[str, Any]], system_prompt: str) -> None:
@@ -25,7 +32,8 @@ def ensure_system_prompt(history: List[Dict[str, Any]], system_prompt: str) -> N
 
 def trim_history(history: List[Dict[str, Any]], max_turns: int,
                  *, max_msg_chars: int = MAX_MSG_CHARS,
-                 max_msg_tokens: Optional[int] = None) -> List[Dict[str, Any]]:
+                 max_msg_tokens: Optional[int] = None,
+                 content_type: str = "code") -> List[Dict[str, Any]]:
     """
     Enforce the sliding-window history cap. Always keeps the system message.
     Non-system messages are capped at ``max_turns * 2`` (user + assistant
@@ -51,9 +59,9 @@ def trim_history(history: List[Dict[str, Any]], max_turns: int,
     for msg in non_system:
         content = msg.get("content") or ""
         if max_msg_tokens is not None:
-            msg_tokens = estimate_tokens(content, content_type="code")
+            msg_tokens = estimate_tokens(content, content_type=content_type)
             if msg_tokens > max_msg_tokens:
-                target_chars = chars_for_tokens(max_msg_tokens, content_type="code")
+                target_chars = chars_for_tokens(max_msg_tokens, content_type=content_type)
                 overflow = len(content) - target_chars
                 content = (content[:target_chars]
                            + f"\n[... {overflow} chars truncated from history ...]")
@@ -66,6 +74,74 @@ def trim_history(history: List[Dict[str, Any]], max_turns: int,
         capped.append(msg)
 
     return system + capped
+
+
+def trim_history_by_tokens(
+    history: List[Dict[str, Any]],
+    token_budget: int,
+    *,
+    content_type: str = "code",
+    per_message_overhead: int = 10,
+    max_msg_tokens: Optional[int] = None,
+) -> List[Dict[str, Any]]:
+    """
+    Enforce a token budget by packing messages newest-first.
+
+    Always keeps the system message. Non-system messages are included
+    newest-first until the accumulated token estimate exceeds the budget.
+    Any surviving message that exceeds ``max_msg_tokens`` is truncated
+    in place.
+
+    Returns a new list — caller assigns it back.
+    """
+    system = [m for m in history if m.get("role") == "system"]
+    non_system = [m for m in history if m.get("role") != "system"]
+
+    if max_msg_tokens is None:
+        # Fair share: budget divided by a reasonable message count, with a floor.
+        max_msg_tokens = max(MAX_MSG_TOKENS, token_budget // max(10, len(non_system)))
+
+    # Truncate individual messages first.
+    capped = []
+    for msg in non_system:
+        content = msg.get("content") or ""
+        msg_tokens = estimate_tokens(content, content_type=content_type)
+        if msg_tokens > max_msg_tokens:
+            target_chars = chars_for_tokens(max_msg_tokens, content_type=content_type)
+            overflow = len(content) - target_chars
+            content = (content[:target_chars]
+                       + f"\n[... {overflow} chars truncated from history ...]")
+            msg = dict(msg, content=content)
+        capped.append(msg)
+
+    # Pack newest-first until budget. Always keep at least 1 turn (2 msgs).
+    kept: List[Dict[str, Any]] = []
+    current_tokens = sum(
+        estimate_tokens(m.get("content", ""), content_type=content_type)
+        + per_message_overhead
+        for m in system
+    )
+    min_keep = min(2, len(capped))
+
+    for msg in reversed(capped):
+        msg_tokens = (
+            estimate_tokens(msg.get("content", ""), content_type=content_type)
+            + per_message_overhead
+        )
+        if current_tokens + msg_tokens > token_budget and len(kept) >= min_keep:
+            break
+        kept.insert(0, msg)
+        current_tokens += msg_tokens
+
+    dropped = len(capped) - len(kept)
+    if dropped > 0:
+        print(
+            f"[orch] History trimmed by tokens: dropped {dropped} old messages "
+            f"(kept {len(kept)} non-system, ~{current_tokens} tokens).",
+            file=sys.stderr,
+        )
+
+    return system + kept
 
 
 def import_external_history(history: List[Dict[str, Any]],

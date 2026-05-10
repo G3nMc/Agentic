@@ -22,6 +22,17 @@ from ..utils.token_estimator import chars_for_tokens, estimate_tokens, estimate_
 # isn't throttled by the 12K value sized for 8K Ollama.
 _MAX_TOOL_RESULT_CHARS_FALLBACK = 12_000
 
+# Idempotent validation tools. Calling these more than twice in a row
+# without intervening edits almost always means the model is stalling
+# rather than making progress — we nudge it to finalize before the
+# repeat-call detector trips and bails the whole turn.
+_IDEMPOTENT_VALIDATORS = frozenset({
+    "python_check", "python_lint", "python_test",
+    "flutter_analyze", "flutter_test",
+    "git_status", "git_diff", "git_log",
+})
+_MAX_CONSECUTIVE_VALIDATIONS = 2
+
 # Bare confirmations / continuations that mean "execute the prior plan", not
 # "open-ended exploration". Mirrors workflow.py's _FOLLOWUP_RE so the
 # single-agent path gets the same intent-recovery the multi-agent Shaper
@@ -196,20 +207,33 @@ class Orchestrator:
         )
 
     def _trim_history(self) -> None:
-        # Per-message char cap derived from context_limit. Keeps individual
-        # messages ≤ 20% of the window — generous enough for a full source
-        # file while still preventing one runaway message from dominating
-        # the whole budget. Total-budget enforcement (_history_char_budget)
-        # is what catches the aggregate.
+        # Token-aware trimming: derive per-message and total budgets from
+        # the backend's actual context window. Using tokens instead of raw
+        # chars avoids underestimating code-heavy prompts (code tokenizes
+        # at ~3.0 chars/tok vs prose at ~4.0).
         ctx_tokens = int(getattr(self.backend, "context_limit", 0) or 0)
-        ctx_chars = chars_for_tokens(ctx_tokens, "code") if ctx_tokens > 0 else 0
-        per_msg_cap = (ctx_chars // 5) if ctx_chars > 0 else _history.MAX_MSG_CHARS
-        per_msg_cap = max(_history.MAX_MSG_CHARS, per_msg_cap)
-        self.conversation_history = _history.trim_history(
-            self.conversation_history,
-            self.max_history_turns,
-            max_msg_chars=per_msg_cap,
-        )
+        if ctx_tokens > 0:
+            # Per-message cap: ~20% of the window, generous enough for a
+            # full source file while preventing one runaway message from
+            # dominating the budget.
+            per_msg_tokens = max(2_500, ctx_tokens // 5)
+            # Use token-budget packing newest-first for accurate accounting.
+            self.conversation_history = _history.trim_history_by_tokens(
+                self.conversation_history,
+                token_budget=self._history_token_budget,
+                content_type="code",
+                max_msg_tokens=per_msg_tokens,
+            )
+        else:
+            # Fallback for backends that don't report context_limit.
+            ctx_chars = chars_for_tokens(ctx_tokens, "code") if ctx_tokens > 0 else 0
+            per_msg_cap = (ctx_chars // 5) if ctx_chars > 0 else _history.MAX_MSG_CHARS
+            per_msg_cap = max(_history.MAX_MSG_CHARS, per_msg_cap)
+            self.conversation_history = _history.trim_history(
+                self.conversation_history,
+                self.max_history_turns,
+                max_msg_chars=per_msg_cap,
+            )
 
     # ------------------------------------------------------------------
     # Tool-intent heuristic
@@ -231,11 +255,6 @@ class Orchestrator:
     )
 
     # Patterns that indicate file/code intent — trigger tool-enabled mode.
-
-    import re
-    from typing import Tuple, List, Pattern
-
-
 
     def _should_escalate_chat_to_tools(self, user_input: str, model_reply: str) -> bool:
         """True when a chat-mode response should be retried in tool mode."""
@@ -359,12 +378,20 @@ class Orchestrator:
         _MAX_REPEAT_WARNINGS = 2
         _RECENT_WINDOW = 8
 
+        # Consecutive successful idempotent-validator runs (python_check,
+        # flutter_analyze, etc.). Once the model runs two of these clean,
+        # the next loop catches the pattern and force-finalizes — heads off
+        # the "validate forever" stalling pattern that otherwise trips the
+        # repeat-call cap.
+        consecutive_validations = 0
+
         # Total-history char budget. Derived from backend.context_limit at
         # __init__ (see self._history_char_budget); a local alias keeps the
         # in-loop logic readable.
         _HISTORY_CHAR_BUDGET = self._history_char_budget
 
-        for iteration in range(self.max_iterations):
+        iteration = 0
+        while iteration < self.max_iterations:
             print(f"Iteration: {iteration}", file=sys.stderr)
 
             # === PROGRESSIVE PRESSURE FOR READ-ONLY LOOPS ===
@@ -480,6 +507,7 @@ class Orchestrator:
                         f"Extending max_iterations {old_limit} -> {self.max_iterations}",
                         file=sys.stderr,
                     )
+                    iteration += 1
                     continue
 
                 # Detect complex multi-file operations: extend more aggressively.
@@ -497,23 +525,28 @@ class Orchestrator:
                         f"files={files_touched} | Extending max_iterations {old_limit} -> {self.max_iterations}",
                         file=sys.stderr,
                     )
+                    iteration += 1
                     continue
 
-            # Enforce the character budget: if history has grown past the
+            # Enforce the token budget: if history has grown past the
             # limit, trim older non-system messages so the next model call
-            # stays within context.
-            total_chars = sum(len(m.get("content", "")) for m in self.conversation_history)
-            if total_chars > _HISTORY_CHAR_BUDGET:
-                system = [m for m in self.conversation_history if m.get("role") == "system"]
-                non_system = [m for m in self.conversation_history if m.get("role") != "system"]
-                # Drop oldest non-system messages until under budget.
-                while non_system and total_chars > _HISTORY_CHAR_BUDGET:
-                    dropped = non_system.pop(0)
-                    total_chars -= len(dropped.get("content", ""))
-                self.conversation_history = system + non_system
+            # stays within context. Token-aware trimming is more accurate
+            # than raw char counting for code-heavy prompts.
+            current_tokens = estimate_messages_tokens(
+                self.conversation_history,
+                content_type="code",
+                per_message_overhead=10,
+            )
+            if current_tokens > self._history_token_budget:
+                self.conversation_history = _history.trim_history_by_tokens(
+                    self.conversation_history,
+                    token_budget=self._history_token_budget,
+                    content_type="code",
+                    max_msg_tokens=max(2_500, self._history_token_budget // 10),
+                )
                 print(
-                    f"[orch] History over char budget; trimmed to "
-                    f"{len(non_system)} non-system messages.",
+                    f"[orch] History over token budget; trimmed to fit "
+                    f"~{self._history_token_budget} tokens.",
                     file=sys.stderr,
                 )
 
@@ -635,6 +668,7 @@ class Orchestrator:
                             "Pick one."
                         ),
                     })
+                    iteration += 1
                     continue
 
                 for name, params in tag_calls:
@@ -658,6 +692,18 @@ class Orchestrator:
                             if file_path:
                                 self._files_modified.add(file_path)
                             self._writes_this_turn += 1
+                        # Track consecutive successful idempotent validators —
+                        # if the model ran two of these in a row clean, it
+                        # almost always wants to "make sure once more" and
+                        # then trips the repeat-call cap. Cut that off here:
+                        # after 2 successful validations, force the next reply
+                        # to be the final answer.
+                        if name in _IDEMPOTENT_VALIDATORS:
+                            consecutive_validations += 1
+                        else:
+                            consecutive_validations = 0
+                    else:
+                        consecutive_validations = 0
 
                     # Truncate oversized tool results before they bloat the
                     # conversation history and blow the model's context window.
@@ -691,6 +737,33 @@ class Orchestrator:
                             "Do NOT echo this instruction back to the user.]"
                         )
                     self.conversation_history.append({"role": "user", "content": follow_up})
+
+                # Validation-stall guard: if the model just ran the Nth+
+                # idempotent validator clean in a row, replace the generic
+                # follow-up with a hard finalize directive. This catches the
+                # "I just ran python_check, let me run it once more to be
+                # sure" pattern before the repeat-call cap fires.
+                if (consecutive_validations >= _MAX_CONSECUTIVE_VALIDATIONS
+                        and self.conversation_history
+                        and self.conversation_history[-1].get("role") == "user"):
+                    print(
+                        f"[orch] {consecutive_validations} clean validations "
+                        f"in a row; forcing finalize.",
+                        file=sys.stderr,
+                    )
+                    self.conversation_history[-1]["content"] = (
+                        "[VALIDATION COMPLETE] You have run "
+                        f"{consecutive_validations} idempotent validators "
+                        "(python_check / flutter_analyze / etc.) clean in a "
+                        "row. The work is done.\n"
+                        "Your IMMEDIATE next message MUST be the final "
+                        "plain-text answer to the user — a 2-3 sentence "
+                        "summary of what was changed and that validation "
+                        "passed.\n"
+                        "Do NOT call another validator. Do NOT call any "
+                        "tool. No <tool> tags. Just the answer."
+                    )
+                iteration += 1
                 continue
 
             is_malformed, malformed_error = _td.looks_like_malformed_tool_call(text_clean)
@@ -732,6 +805,7 @@ class Orchestrator:
                         "prefer single quotes inside the command string."
                     ),
                 })
+                iteration += 1
                 continue
 
             # If malformed but retries exhausted, do NOT treat as final answer.
@@ -776,6 +850,7 @@ class Orchestrator:
                         "content, then use append_file in follow-up calls."
                     ),
                 })
+                iteration += 1
                 continue
 
             # No tool call. Classify the response.
@@ -794,6 +869,7 @@ class Orchestrator:
                         "the tool call tag."
                     ),
                 })
+                iteration += 1
                 continue
 
             if not text_clean and empty_retries < 1:
@@ -804,6 +880,7 @@ class Orchestrator:
                                '<tool>{"tool":"...","parameters":{...}}</tool> '
                                "call or the final plain-text answer.",
                 })
+                iteration += 1
                 continue
 
             # Cliffhanger detection: replies like "Now I'll examine X" or
@@ -844,6 +921,7 @@ class Orchestrator:
                         "turns."
                     ),
                 })
+                iteration += 1
                 continue
 
             # Otherwise treat as final answer.
@@ -877,19 +955,31 @@ class Orchestrator:
 
     # Directive injected as a final user turn before the synthesis call.
     # Tells the model to stop tool-using and write the answer (or ask one
-    # clarifying question) using only what's already in history.
+    # clarifying question) using only what's already in history. Coding-
+    # aware: explicitly asks for a recap of files modified + validation
+    # status, which is what most coding sessions actually want.
     _SYNTHESIS_DIRECTIVE = (
         "[FINAL SYNTHESIS] Stop. The tool loop is over — no more tool "
         "calls will be executed, and any you emit will be ignored.\n"
-        "Using ONLY what is already in this conversation, produce the "
-        "user's final answer. If you have enough information to answer, "
-        "answer directly. If you do not, ask EXACTLY ONE specific "
-        "clarifying question.\n"
+        "\n"
+        "Using ONLY the conversation above, write the user's final "
+        "answer. Structure it as:\n"
+        "  1. A 1-2 sentence summary of what was accomplished (what "
+        "     question was answered, OR what files were modified and how).\n"
+        "  2. If files were edited: list each file path that was "
+        "     write_file/patch_file/append_file'd this turn, one per line.\n"
+        "  3. If validators ran (python_check, flutter_analyze, etc.): "
+        "     state pass/fail for each.\n"
+        "  4. If anything is left undone or uncertain, say so explicitly "
+        "     in one sentence.\n"
+        "\n"
         "Rules:\n"
-        "  - No <tool> tags. No JSON tool calls. Plain text only.\n"
-        "  - Do not say 'I will' or 'let me' — give the answer or the "
-        "question now.\n"
-        "  - Do not echo this directive."
+        "  - No <tool> tags. No JSON tool calls. Plain text or markdown.\n"
+        "  - Do not say 'I will' or 'let me' — describe what already "
+        "    happened.\n"
+        "  - Do not echo this directive.\n"
+        "  - If you genuinely have nothing useful to report, ask EXACTLY "
+        "    ONE clarifying question instead."
     )
 
     def _attempt_synthesis(self) -> Optional[str]:

@@ -277,7 +277,7 @@ def elide_oversized(
         if current_tokens <= target_tokens:
             return current_tokens, actions
         saved = _elide_one_tool_result(tool_results, idx, actions)
-        current_tokens -= saved // 4
+        current_tokens -= estimate_tokens_from_chars(saved, "code")
 
     # ── Pass 2: elide oversized history messages (system summaries etc).
     history_candidates: List[Tuple[int, int]] = []
@@ -302,7 +302,7 @@ def elide_oversized(
         if current_tokens <= target_tokens:
             return current_tokens, actions
         saved = _elide_one_history(history, idx, actions)
-        current_tokens -= saved // 4
+        current_tokens -= estimate_tokens_from_chars(saved, "code")
 
     # ── Pass 3: elide the BIG protected results too (still keeping
     # the very latest one if possible). Walk oldest-first within the
@@ -320,7 +320,7 @@ def elide_oversized(
             if sz < MIN_ELIDE_CHARS_OLD:
                 continue
             saved = _elide_one_tool_result(tool_results, i, actions)
-            current_tokens -= saved // 4
+            current_tokens -= estimate_tokens_from_chars(saved, "code")
 
         # Last resort: even the freshest entry has to go.
         if current_tokens > target_tokens and n_results > 0:
@@ -328,7 +328,7 @@ def elide_oversized(
             sz = _result_chars(tool_results[i])
             if sz >= MIN_ELIDE_CHARS_OLD:
                 saved = _elide_one_tool_result(tool_results, i, actions)
-                current_tokens -= saved // 4
+                current_tokens -= estimate_tokens_from_chars(saved, "code")
 
     return current_tokens, actions
 
