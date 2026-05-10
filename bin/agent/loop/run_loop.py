@@ -14,6 +14,7 @@ from ..backends.backend_base import ModelBackend
 from ..policy import SecurityConfig
 from ..tools.registry import ToolRegistry
 from ..utils.circuit_breaker import CircuitBreaker
+from ..utils.token_estimator import chars_for_tokens, estimate_tokens, estimate_messages_tokens
 
 # Default cap on tool-result chars. Used as a floor when the backend
 # doesn't expose a context_limit; the Orchestrator scales this up at
@@ -154,7 +155,7 @@ class Orchestrator:
         # bodies across many turns. Falls back to the original tight
         # defaults when the backend doesn't report context_limit.
         ctx_tokens = int(getattr(backend, "context_limit", 0) or 0)
-        ctx_chars = ctx_tokens * 4  # chars/4 ≈ tokens (matches rate_limit estimator)
+        ctx_chars = chars_for_tokens(ctx_tokens, "code")  # conservative code-aware budget
         if ctx_tokens > 0:
             # 1 turn = 1 user + 1 assistant msg. ~2_000 tokens per pair
             # (the average after the assistant's tool round-trips collapse
@@ -169,10 +170,14 @@ class Orchestrator:
             # room for system prompt (~5%) + reply budget (~3%) + safety
             # margin. The compactor still catches anything past 75%.
             self._history_char_budget = int(ctx_chars * 0.85)
+            # Token budget for the in-loop estimator. Using tokens instead
+            # of raw chars avoids underestimating code-heavy prompts.
+            self._history_token_budget = int(ctx_tokens * 0.85)
         else:
             self.max_history_turns = 6
             self._max_tool_result_chars = _MAX_TOOL_RESULT_CHARS_FALLBACK
             self._history_char_budget = 200_000
+            self._history_token_budget = 50_000
 
     # ------------------------------------------------------------------
     # Session management
@@ -196,7 +201,8 @@ class Orchestrator:
         # file while still preventing one runaway message from dominating
         # the whole budget. Total-budget enforcement (_history_char_budget)
         # is what catches the aggregate.
-        ctx_chars = (int(getattr(self.backend, "context_limit", 0) or 0) * 4)
+        ctx_tokens = int(getattr(self.backend, "context_limit", 0) or 0)
+        ctx_chars = chars_for_tokens(ctx_tokens, "code") if ctx_tokens > 0 else 0
         per_msg_cap = (ctx_chars // 5) if ctx_chars > 0 else _history.MAX_MSG_CHARS
         per_msg_cap = max(_history.MAX_MSG_CHARS, per_msg_cap)
         self.conversation_history = _history.trim_history(

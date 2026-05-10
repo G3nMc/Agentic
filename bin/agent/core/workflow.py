@@ -219,24 +219,17 @@ _EXCUSE_RE = re.compile(
 
 
 def _path_from_call(call: Dict[str, Any]) -> str:
-    """Extract and validate path from a tool call."""
+    """Extract the destination path from a write-tool call.
+
+    Used only by the dart/py post-edit tracking in ``Workflow.run`` — the
+    actual path-security check is enforced by ``ToolRegistry`` and the
+    ``PathFilter`` upstream of the executor, so this is a plain extractor.
+    Returns "" when the call has no usable path.
+    """
     params = call.get("parameters") or {}
     path = str(params.get("path") or params.get("destination") or "").strip()
     if not path or path == "...":
-        self.logger.warning(f"Invalid path in tool call: {call}")
         return ""
-    # Normalize path for validation
-    normalized_path = path.replace("\\", "/").lower()
-    
-    # Check against allowed directories from path filter
-    allowed_dirs = getattr(self, 'allowed_dirs', ['/bin/', '/lib/'])
-    if isinstance(allowed_dirs, list):
-        allowed_normalized = [d.replace("\\", "/").lower().rstrip('/') + '/' for d in allowed_dirs]
-        allowed_normalized.extend([d.rstrip('/') for d in allowed_normalized])
-        if not any(normalized_path.startswith(d) or normalized_path == d.rstrip('/') for d in allowed_normalized):
-            self.logger.warning(f"Blocked path outside allowed directories: {path}")
-            return ""
-    
     return path
 
 
@@ -248,16 +241,33 @@ class Workflow:
             agents: Dict[str, Any],
             tool_registry: ToolRegistry,
             *,
-            max_iterations: int = 25,
+            max_iterations: int = 40,
             max_history_turns: Optional[int] = None,
             max_identical_failures: int = 10,
-            iteration_timeout: float = 90.0,  # Increased from 60.0 to 90.0 seconds
-            turn_timeout: float = 300.0,  # Increased from 180.0 to 300.0 seconds (5 minutes)
+            iteration_timeout: Optional[float] = None,
+            turn_timeout: Optional[float] = None,
     ):
         self.agents = agents
         self.tool_registry = tool_registry
         self.max_iterations = max_iterations
         self._initial_max_iterations = max_iterations
+
+        # Auto-scale timeouts to the backend. Local inference (Ollama) on a
+        # large model with a multi-KB user input commonly takes 2-5 minutes
+        # for one reasoner pass — a 90s per-iteration cap kills these turns
+        # before the model even finishes reading the prompt. Cloud backends
+        # are typically 10-30s per call, so a tighter cap is fine there.
+        # Note: the reasoner now elides older tool-result bodies so the
+        # per-iteration prompt doesn't grow without bound, which makes
+        # these caps actually achievable on long multi-file refactors.
+        if iteration_timeout is None or turn_timeout is None:
+            local_mode = self._any_local_backend(agents)
+            if local_mode:
+                iteration_timeout = iteration_timeout or 600.0   # 10 min/iter
+                turn_timeout = turn_timeout or 3600.0            # 60 min/turn
+            else:
+                iteration_timeout = iteration_timeout or 180.0   # 3 min/iter
+                turn_timeout = turn_timeout or 1200.0            # 20 min/turn
         # Derive max_history_turns from the reasoner's context window when the
         # caller hasn't pinned it explicitly. A constant 8 throttled 128K cloud
         # models down to ~50K of usable history; scaling makes the cap track
@@ -641,23 +651,36 @@ class Workflow:
         max_consecutive_discovery = 4
 
         turn_start = time.monotonic()
+        # Counts successful tool batches this turn — used by the dynamic
+        # extension. The previous implementation looked at state.history[-5:]
+        # but within-turn tool results live in state.tool_results, not
+        # state.history, so the check never fired when it should.
+        turn_success_count = 0
+        # How many times we've already extended this turn — capped to keep
+        # a runaway model from extending indefinitely.
+        extension_count = 0
+        max_extensions = 2  # 40 base + 2 × 15 = up to 70 iterations
+
         for iteration in range(self.max_iterations):
-            # Dynamic Iteration Limit: Extend budget if progress is being made.
-            # Check when we're near the current limit to see if recent tool calls succeeded.
-            if iteration >= self.max_iterations - 2:
-                recent_history = "".join(
-                    [m.get("content", "") for m in state.history[-5:]]
+            # Dynamic Iteration Limit: when we're near the current cap AND
+            # tool calls are still succeeding (real work happening), extend.
+            # Skip when no progress is being made — the existing
+            # no_progress_count guard will bail out cleanly instead.
+            if (iteration >= self.max_iterations - 2
+                    and extension_count < max_extensions
+                    and turn_success_count >= 3):
+                extension = 15
+                old_limit = self.max_iterations
+                self.max_iterations += extension
+                extension_count += 1
+                self.logger.info(
+                    "Progress detected (successful_tools=%s). Extending "
+                    "max_iterations %s -> %s (extension #%s/%s)",
+                    turn_success_count, old_limit, self.max_iterations,
+                    extension_count, max_extensions,
                 )
-                if recent_history and '"status": "success"' in recent_history:
-                    extension = 10
-                    old_limit = self.max_iterations
-                    self.max_iterations += extension
-                    self.logger.info(
-                        "Progress detected. Extending max_iterations "
-                        "from %s to %s",
-                        old_limit, self.max_iterations
-                    )
-                    continue
+                # Don't `continue` — let the iteration proceed normally so we
+                # don't waste an iteration just for the extension itself.
 
             iter_start = time.monotonic()
             self.logger.debug(
@@ -941,6 +964,7 @@ class Workflow:
                     continue
 
                 self.logger.info("Tool batch succeeded")
+                turn_success_count += 1
 
                 # Record what kind of work happened
                 for c in pending_calls:
@@ -1090,7 +1114,18 @@ class Workflow:
         else:
             if not state.final_answer:
                 self.logger.error("Max iterations reached without final answer")
-                state.final_answer = "ERROR: Max iterations reached"
+                # Don't return a bare ERROR when the agent did real work.
+                # Mirror the single-agent path: make ONE last non-tool call
+                # asking for synthesis from what's already in state. Falls
+                # back to a stitched recap of tool results when the synth
+                # call also fails.
+                synth = self._attempt_max_iter_synthesis(state)
+                if synth:
+                    state.final_answer = synth
+                else:
+                    state.final_answer = self._build_max_iter_recap(
+                        state, turn_success_count
+                    )
 
         # Per-turn wall time + iteration count
         total_dt = time.monotonic() - turn_start
@@ -1394,6 +1429,141 @@ class Workflow:
             "calls; refer to these bodies instead.]\n\n"
             + "\n\n".join(sections)
         )
+
+    _MAX_ITER_SYNTHESIS_DIRECTIVE = (
+        "[FINAL SYNTHESIS] You have hit the iteration budget for this turn. "
+        "No more tool calls will be executed; any you emit will be ignored. "
+        "Using ONLY the tool results already gathered above, write the "
+        "user's final answer in plain text.\n"
+        "Rules:\n"
+        "  - Summarize what was DONE this turn (files modified, tools run, "
+        "    findings).\n"
+        "  - If the work is incomplete, state exactly what was finished and "
+        "    what remains, in one or two sentences.\n"
+        "  - No <tool> tags. No JSON tool calls. No 'I will' / 'let me'.\n"
+        "  - Do not echo this directive."
+    )
+
+    def _attempt_max_iter_synthesis(self, state: WorkflowState) -> Optional[str]:
+        """One last non-tool reasoner call for a synthesized final answer.
+
+        Returns the cleaned text on success, or None when the call fails
+        / returns something that still looks like a tool attempt. Mirrors
+        ``Orchestrator._attempt_synthesis`` from the single-agent path.
+        """
+        reasoner = self.agents.get("reasoner")
+        if reasoner is None or not getattr(reasoner, "backend", None):
+            return None
+
+        # Build a minimal message list: system prompt + the spec + tool
+        # history this turn + the synthesis directive. Don't pass the tool
+        # catalog — we want plain text out.
+        try:
+            user_block = reasoner._compose_user_block(state)
+        except Exception:  # noqa: BLE001
+            user_block = state.shaped_prompt or state.user_input or ""
+
+        messages = [
+            {"role": "system", "content": getattr(reasoner, "system_prompt", "")},
+        ]
+        for m in state.history or []:
+            role = m.get("role")
+            if role in ("user", "assistant", "system"):
+                messages.append({"role": role, "content": m.get("content", "")})
+        messages.append({"role": "user", "content": user_block})
+        messages.append({
+            "role": "user",
+            "content": self._MAX_ITER_SYNTHESIS_DIRECTIVE,
+        })
+
+        try:
+            text, _ = reasoner.backend.chat(
+                messages=messages,
+                max_tokens=int(getattr(reasoner, "max_tokens", 2048)),
+                temperature=float(getattr(reasoner, "temperature", 0.2)),
+                tools=None,
+            )
+        except Exception as e:  # noqa: BLE001
+            self.logger.warning("Max-iter synthesis call failed: %s", e)
+            return None
+
+        cleaned = _td.clean_final_answer(text or "").strip()
+        if not cleaned:
+            self.logger.warning("Max-iter synthesis returned empty text")
+            return None
+        # If the model is still trying to call tools, fall back to the recap.
+        if _td.parse_all_tag_tool_calls(cleaned, self.tool_registry.definitions):
+            self.logger.warning(
+                "Max-iter synthesis still emitted tool calls; using recap"
+            )
+            return None
+        is_malformed, _ = _td.looks_like_malformed_tool_call(cleaned)
+        if is_malformed:
+            return None
+        self.logger.info("Max-iter synthesis succeeded (%d chars)", len(cleaned))
+        return cleaned
+
+    def _build_max_iter_recap(
+        self, state: WorkflowState, turn_success_count: int
+    ) -> str:
+        """Stitch a useful recap from tool_results when synthesis fails."""
+        results = getattr(state, "tool_results", None) or []
+        lines: List[str] = [
+            f"**Iteration budget exhausted ({self.max_iterations} iterations).** "
+            f"Could not produce a single synthesized answer, but {turn_success_count} "
+            "tool batch(es) ran successfully this turn. Recap:",
+            "",
+        ]
+        # Show the latest ~8 tool calls with their status; this is enough
+        # for the user to see what was actually accomplished.
+        recent = results[-8:] if len(results) > 8 else results
+        for r in recent:
+            tool = r.get("tool", "?")
+            params = r.get("parameters") or {}
+            try:
+                params_str = json.dumps(params, ensure_ascii=False)
+            except Exception:  # noqa: BLE001
+                params_str = str(params)
+            if len(params_str) > 200:
+                params_str = params_str[:200] + "…"
+            raw = r.get("result", "")
+            status = "?"
+            if isinstance(raw, dict):
+                status = str(raw.get("status", "?"))
+            elif isinstance(raw, str):
+                low = raw.lower()
+                if '"status": "error"' in low or '"status":"error"' in low:
+                    status = "error"
+                elif '"status": "success"' in low or '"status":"success"' in low:
+                    status = "success"
+            lines.append(f"  - {tool}({params_str}) -> {status}")
+        if len(results) > len(recent):
+            lines.append(f"  ... (+{len(results) - len(recent)} earlier calls)")
+        lines.append("")
+        lines.append(
+            "Re-send your request to continue, or simplify the task so it "
+            "fits in the iteration budget."
+        )
+        return "\n".join(lines)
+
+    @staticmethod
+    def _any_local_backend(agents: Dict[str, Any]) -> bool:
+        """True if any agent uses a local (Ollama) backend.
+
+        Walks each agent's backend, unwrapping RateLimitedBackend wrappers
+        (which expose ``inner``), and matches by class name to avoid an
+        import-cycle with the backends package.
+        """
+        for agent in (agents or {}).values():
+            backend = getattr(agent, "backend", None)
+            if backend is None:
+                continue
+            # Peel off RateLimitedBackend if present.
+            inner = getattr(backend, "inner", backend)
+            cls_name = type(inner).__name__.lower()
+            if "ollama" in cls_name:
+                return True
+        return False
 
     @staticmethod
     def calls_signature(calls: List[Dict[str, Any]]) -> str:

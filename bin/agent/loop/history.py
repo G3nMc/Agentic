@@ -6,7 +6,9 @@ focused on iteration logic.
 from __future__ import annotations
 
 import sys
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
+
+from ..utils.token_estimator import estimate_tokens, chars_for_tokens
 
 # Default hard cap on individual message length. Used as a fallback when
 # the caller doesn't pass ``max_msg_chars`` — the Orchestrator now derives
@@ -22,13 +24,15 @@ def ensure_system_prompt(history: List[Dict[str, Any]], system_prompt: str) -> N
 
 
 def trim_history(history: List[Dict[str, Any]], max_turns: int,
-                 *, max_msg_chars: int = MAX_MSG_CHARS) -> List[Dict[str, Any]]:
+                 *, max_msg_chars: int = MAX_MSG_CHARS,
+                 max_msg_tokens: Optional[int] = None) -> List[Dict[str, Any]]:
     """
     Enforce the sliding-window history cap. Always keeps the system message.
     Non-system messages are capped at ``max_turns * 2`` (user + assistant
     per turn). Older messages are dropped first; then any surviving message
-    whose content exceeds ``max_msg_chars`` is truncated in place so a
-    single large tool result cannot blow the request budget on its own.
+    whose content exceeds ``max_msg_chars`` (or ``max_msg_tokens`` if
+    provided) is truncated in place so a single large tool result cannot
+    blow the request budget on its own.
 
     Returns a new list — caller assigns it back.
     """
@@ -46,7 +50,15 @@ def trim_history(history: List[Dict[str, Any]], max_turns: int,
     capped = []
     for msg in non_system:
         content = msg.get("content") or ""
-        if len(content) > max_msg_chars:
+        if max_msg_tokens is not None:
+            msg_tokens = estimate_tokens(content, content_type="code")
+            if msg_tokens > max_msg_tokens:
+                target_chars = chars_for_tokens(max_msg_tokens, content_type="code")
+                overflow = len(content) - target_chars
+                content = (content[:target_chars]
+                           + f"\n[... {overflow} chars truncated from history ...]")
+                msg = dict(msg, content=content)
+        elif len(content) > max_msg_chars:
             overflow = len(content) - max_msg_chars
             content = (content[:max_msg_chars]
                        + f"\n[... {overflow} chars truncated from history ...]")

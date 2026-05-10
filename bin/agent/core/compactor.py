@@ -35,6 +35,12 @@ import sys
 from collections import Counter
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
+from ..utils.token_estimator import (
+    estimate_messages_tokens,
+    estimate_tokens,
+    estimate_tokens_from_chars,
+)
+
 
 # Same factor the rate-limiter uses: leave headroom for output tokens
 # and provider-side overhead the chars/4 estimator can't see.
@@ -86,22 +92,21 @@ logger = logging.getLogger(__name__)
 # Token estimation
 # ---------------------------------------------------------------------------
 def _estimate_text_tokens(text: str) -> int:
-    """chars/4 heuristic; matches utils.rate_limit.estimate_tokens."""
-    return (len(text or "")) // 4
+    """Content-aware token estimate for code-heavy tool output."""
+    return estimate_tokens(text or "", content_type="code")
 
 
 def _estimate_message_tokens(msg: Dict[str, Any]) -> int:
     content = msg.get("content")
     if isinstance(content, str):
-        text_len = len(content)
+        return estimate_tokens(content, content_type="code") + 10
     elif isinstance(content, list):
-        text_len = sum(
-            len(str(p.get("text", ""))) for p in content if isinstance(p, dict)
-        )
-    else:
-        text_len = 0
-    # +10 per message overhead for role/separator tokens.
-    return (text_len // 4) + 10
+        total = 0
+        for part in content:
+            if isinstance(part, dict):
+                total += estimate_tokens(str(part.get("text", "")), content_type="code")
+        return total + 10
+    return 10
 
 
 def _estimate_tool_results_tokens(tool_results: List[Dict[str, Any]]) -> int:
@@ -112,13 +117,12 @@ def _estimate_tool_results_tokens(tool_results: List[Dict[str, Any]]) -> int:
     for r in tool_results:
         result = r.get("result", "")
         if isinstance(result, str):
-            total += len(result)
+            total += estimate_tokens(result, content_type="code")
         elif isinstance(result, dict):
-            # JSON-ish; cheap upper bound
-            total += len(str(result))
+            total += estimate_tokens(str(result), content_type="code")
         # tool name + params + index prefix overhead
-        total += 80
-    return total // 4
+        total += 20
+    return total
 
 
 def estimate_total_tokens(
@@ -140,7 +144,7 @@ def estimate_total_tokens(
         total += _estimate_message_tokens(m)
     total += _estimate_tool_results_tokens(tool_results or [])
     total += _estimate_text_tokens(shaped_prompt or user_input or "")
-    total += system_prompt_chars // 4
+    total += estimate_tokens_from_chars(system_prompt_chars, content_type="code")
     total += int(max_tokens or 0)
     return total
 

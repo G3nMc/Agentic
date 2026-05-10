@@ -13,21 +13,17 @@ from typing import Tuple
 
 
 def estimate_tokens(messages, max_tokens: int) -> int:
-    """Cheap prompt-size estimate: chars/4 is within ~15% of the real
-    tokenizer for English/code and avoids a tiktoken dependency. Adds the
-    reply budget so we reserve for the response, not just the prompt."""
-    total_chars = 0
-    for m in messages or []:
-        c = m.get("content")
-        if isinstance(c, str):
-            total_chars += len(c)
-        elif isinstance(c, list):
-            for part in c:
-                if isinstance(part, dict):
-                    total_chars += len(str(part.get("text", "")))
-    # +10 per message as overhead for role tokens and separators.
-    overhead = 10 * len(messages or [])
-    return (total_chars // 4) + overhead + max_tokens
+    """Content-aware prompt-size estimate using token_estimator.
+
+    Coding workflows are code-heavy, so we use the code multiplier (3.0
+    chars/token) with a 10% safety margin for conservative budgeting.
+    """
+    from .token_estimator import estimate_messages_tokens
+
+    total = estimate_messages_tokens(
+        messages, content_type="code", per_message_overhead=10
+    )
+    return total + max_tokens
 
 
 class TokenBucket:

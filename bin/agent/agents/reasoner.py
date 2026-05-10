@@ -130,28 +130,81 @@ class ReasonerAgent(Agent):
         return state
 
     # ------------------------------------------------------------------
+    # Number of MOST RECENT tool results to include with full bodies.
+    # Older results become one-liners (tool(params) -> status) — keeps
+    # the model aware they happened without re-sending the bodies on
+    # every iteration. Without this, a long tool loop linearly grows the
+    # prompt every iteration and a local model's wall-clock per-iteration
+    # cost balloons (~410s by iter 23 in observed runs).
+    _KEEP_FULL_RESULTS = 5
+    # Hard char cap on the full-bodied section. Even if _KEEP_FULL_RESULTS
+    # are the last 5, if their combined body exceeds this we still drop
+    # the older ones to one-liners. ~80K chars ≈ 26K tokens at the code
+    # multiplier — comfortable headroom inside any 128K window.
+    _MAX_FULL_RESULTS_CHARS = 80_000
+
     def _compose_user_block(self, state: WorkflowState) -> str:
-        """Build the user-side message: shaped prompt + any tool results so far."""
+        """Build the user-side message: shaped prompt + any tool results so far.
+
+        Tool results are truncated newest-first: only the last
+        ``_KEEP_FULL_RESULTS`` (and at most ``_MAX_FULL_RESULTS_CHARS``)
+        are inlined with full bodies. Older results are folded to a
+        single ``tool(params) -> status`` line so the per-iteration
+        prompt size doesn't grow without bound.
+        """
         parts: List[str] = []
         if state.shaped_prompt:
             parts.append(f"[Spec]\n{state.shaped_prompt}")
         else:
             parts.append(state.user_input)
 
-        if state.tool_results:
+        results = list(state.tool_results or [])
+        if results:
+            n = len(results)
+            # Decide which indices get full bodies (newest-first within
+            # the recent window AND a char budget). Older ones get a
+            # one-liner.
+            keep_full_indices: set[int] = set()
+            budget = self._MAX_FULL_RESULTS_CHARS
+            for i in range(n - 1, max(-1, n - 1 - self._KEEP_FULL_RESULTS), -1):
+                body_len = len(str(results[i].get("result", "")))
+                if budget - body_len < 0 and keep_full_indices:
+                    break
+                keep_full_indices.add(i)
+                budget -= body_len
+
             parts.append("\n[Tool calls + results so far this turn]")
-            for i, r in enumerate(state.tool_results, 1):
+            for i, r in enumerate(results):
                 tool = r.get("tool", "?")
-                # Surface the parameters the model used — without them, the
-                # Reasoner can't tell why a call failed and tends to re-issue
-                # the exact same broken request.
                 params = r.get("parameters") or {}
                 try:
                     params_str = json.dumps(params, ensure_ascii=False)
                 except Exception:  # noqa: BLE001
                     params_str = str(params)
-                result = r.get("result", "")
-                parts.append(f"{i}. {tool}({params_str}) -> {result}")
+                if i in keep_full_indices:
+                    result = r.get("result", "")
+                    parts.append(f"{i + 1}. {tool}({params_str}) -> {result}")
+                else:
+                    # Older — extract status only. The full body was
+                    # available to the reasoner on the iteration it
+                    # arrived; if it needed to be remembered it should
+                    # have been used by now.
+                    raw = r.get("result", "")
+                    status = "?"
+                    if isinstance(raw, dict):
+                        status = str(raw.get("status", "?"))
+                    elif isinstance(raw, str):
+                        low = raw.lower()
+                        if '"status": "error"' in low or '"status":"error"' in low:
+                            status = "error"
+                        elif '"status": "success"' in low or '"status":"success"' in low:
+                            status = "success"
+                    parts.append(
+                        f"{i + 1}. {tool}({params_str}) -> {status} "
+                        f"[body elided — older than the last "
+                        f"{self._KEEP_FULL_RESULTS} calls]"
+                    )
+
             parts.append(
                 "[End of tool history]\n"
                 "If a previous call failed, READ THE ERROR and either fix the "
