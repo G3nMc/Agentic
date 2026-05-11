@@ -10,20 +10,6 @@ import re
 # Reasoning-model thinking blocks. Used by Groq, DeepSeek-R1, QwQ etc.
 _THINK_RE = re.compile(r"", re.DOTALL | re.IGNORECASE)
 
-# Patterns that indicate tool execution content (results, outputs, file paths, etc.)
-# When detected, we preserve raw text to avoid corrupting tool outputs.
-_TOOL_RESULT_PATTERNS = [
-    r"\b[A-Za-z]:\\[\w\\.\-]+",  # Windows paths: C:\path\to\file
-    r"\b/[\w\./\-]+\b",  # Unix paths: /path/to/file, lib/ui/widgets.dart
-    r"\[tool result elided:",  # Compactor stub marker
-    r"\b(?:read_file|write_file|list_files|search_in_files|run_command)\b",  # Tool names
-    r'\{\"tool\":\s*\"[^\"]+\"',  # Tool call JSON: {"tool": "name"
-    r'\b(?:status\"?:\s*\"?(?:success|error)\"?,|status\":\s*\"(?:success|error)\")',  # Tool result status
-    r"\b(?:stdout|stderr|exit_code|output)\"?:",  # Command execution keys
-    r"^\s*(?:SUCCESS|ERROR|Traceback|File \"|[A-Z]:\\|/usr/|/bin/|/opt/)",  # Common output prefixes
-]
-_TOOL_RESULT_RE = re.compile("|".join(_TOOL_RESULT_PATTERNS), re.IGNORECASE)
-
 
 def strip_think(text: str) -> str:
     """Remove  reasoning blocks from a string."""
@@ -32,45 +18,30 @@ def strip_think(text: str) -> str:
     return _THINK_RE.sub("", text).strip()
 
 
-def _looks_like_tool_result(obj) -> bool:
-    """Check if content appears to be tool execution output.
-    
-    Tool results (file contents, command outputs, etc.) should be preserved
-    raw to avoid corrupting legitimate characters in user code/data.
-    """
-    if isinstance(obj, str):
-        return bool(_TOOL_RESULT_RE.search(obj))
-    if isinstance(obj, dict):
-        # Check for tool result structure
-        if "tool" in obj or "result" in obj or "status" in obj:
-            return True
-        if "parameters" in obj and "tool" in obj:
-            return True
-        # Recursively check values
-        return any(_looks_like_tool_result(v) for v in obj.values())
-    if isinstance(obj, list):
-        return any(_looks_like_tool_result(item) for item in obj)
-    return False
-
-
 def sanitize(obj, *, for_agent: bool = True):
-    """Sanitize content by removing problematic characters.
+    """Sanitize content by removing characters that break downstream encoders.
 
     Args:
         obj: The object to sanitize (str, list, dict, or other).
-        for_agent: If True (default), remove emoji/icon chars that cause
-            agent errors. If False, only remove null bytes to preserve
-            markdown formatting for UI display.
+        for_agent: Reserved for future use. Currently has no effect —
+            null-byte and lone-surrogate stripping are always applied
+            because both are invalid in UTF-8 and crash any encoder
+            regardless of whether the consumer is an agent or the UI.
     """
     import re
 
     if isinstance(obj, str):
-        # Always remove null bytes - they break JSON encoding
+        # Always remove null bytes — they break JSON encoding.
         obj = obj.replace("\x00", "")
-        # Only remove Unicode surrogate pairs (emoji/icon chars) when
-        # sending to agents. Preserve them for UI display.
-        if for_agent:
-            obj = re.sub(r"[\ud800-\udfff]", "", obj)
+        # Always strip lone UTF-16 surrogate code points (U+D800–U+DFFF).
+        # These are an encoding-error artifact (typically from
+        # surrogateescape decoding that wasn't cleaned up), never
+        # legitimate Unicode, and crash any UTF-8 encoder downstream
+        # (Ollama's Python client, json.dumps without ensure_ascii,
+        # file writes). Safe in both agent and display contexts:
+        # real emoji live in the supplementary planes (U+1F300+) and
+        # are not affected.
+        obj = re.sub(r"[\ud800-\udfff]", "", obj)
         return obj
 
     if isinstance(obj, list):
@@ -83,18 +54,24 @@ def sanitize(obj, *, for_agent: bool = True):
 
 
 def sanitize_for_agent(obj):
-    """Sanitize content before sending to an agent (removes emoji/icon chars).
-    
-    Tool execution results (file contents, command outputs, etc.) are
-    detected and returned raw to preserve legitimate characters in user
-    code and data.
+    """Sanitize content before sending to an agent.
+
+    Strips null bytes and lone UTF-16 surrogate code points — both are
+    invalid in UTF-8 and crash downstream encoders (notably Ollama's
+    Python client). Applied uniformly to every message, including tool
+    results: lone surrogates are never legitimate content, so there's
+    no reason to preserve them.
     """
-    if _looks_like_tool_result(obj):
-        # Tool result content - preserve raw, only strip null bytes
-        return sanitize(obj, for_agent=False)
     return sanitize(obj, for_agent=True)
 
 
 def sanitize_for_display(obj):
-    """Sanitize content for UI display (preserves emoji/icon chars, removes only null bytes)."""
+    """Sanitize content for UI display.
+
+    Same behaviour as :func:`sanitize_for_agent` today — both strip
+    null bytes and lone surrogates. Kept as a separate entry point so
+    callers self-document intent and the two paths can diverge later
+    if display-specific handling (e.g. preserving real emoji that an
+    agent system has trouble with) becomes necessary.
+    """
     return sanitize(obj, for_agent=False)

@@ -41,7 +41,7 @@ class ChatInput extends StatefulWidget {
   final VoidCallback? onCopyToClipboard;
 
   /// Callback to create a new chat from JSON context (excluding conversation node).
-  final VoidCallback? onNewChatFromJson;
+  final Future<void> Function(String jsonContent)? onNewChatFromJson;
 
   /// Optional externally-owned controller. When provided, the parent can drive
   /// the input text (e.g. to load a message body for editing). When null, the
@@ -281,6 +281,26 @@ class _ChatInputState extends State<ChatInput> {
 
       // Reload branches for the new project folder
       await _loadGitBranches();
+    }
+  }
+
+  Future<void> _handleNewChatFromJsonFile() async {
+    if (!widget.enabled || widget.sending) return;
+    try {
+      final result = await FilePicker.pickFiles(
+        type: FileType.custom,
+        allowedExtensions: ['json'],
+      );
+      if (result == null || result.files.isEmpty) return;
+      final file = result.files.first;
+      if (file.path == null) return;
+      final jsonContent = await File(file.path!).readAsString();
+      await widget.onNewChatFromJson!(jsonContent);
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Failed to load JSON file: $e')),
+      );
     }
   }
 
@@ -675,7 +695,7 @@ class _ChatInputState extends State<ChatInput> {
                     children: [
                       _NewChatFromJsonButton(
                         enabled: widget.enabled && !widget.sending,
-                        onTap: widget.onNewChatFromJson,
+                        onTap: _handleNewChatFromJsonFile,
                       ),
                       const SizedBox(width: 10),
                       _DownloadButton(

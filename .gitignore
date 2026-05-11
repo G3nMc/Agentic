@@ -47,3 +47,4 @@ app.*.map.json
 installer/Output/AgenticSetup.exe
 *.exe
 installer/Output/AgenticSetup.exe
+*.exe

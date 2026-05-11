@@ -1159,34 +1159,19 @@ class _ChatViewState extends StateManager<ChatView> with WidgetsBindingObserver 
     }
   }
 
-  Future<void> _newChatFromJson() async {
-    final conv = _conversation;
-    if (conv == null) return;
+  Future<void> _newChatFromJson(String jsonContent) async {
+    final jsonData = jsonDecode(jsonContent) as Map<String, dynamic>;
+    final messages = jsonData['messages'] as List<dynamic>;
 
-    final messages = await MessageRepository.instance.listByConversation(conv.id);
-
-    // Build JSON like the download button, but we'll extract just messages
-    final jsonData = {
-      "messages": messages.map((msg) {
-        final entry = <String, dynamic>{
-          "role": msg.role.apiValue,
-          "content": msg.content,
-        };
-        if (msg.agent != null) entry["agent"] = msg.agent;
-        return entry;
-      }).toList(),
-    };
-
-    // Create a new conversation with the same metadata (excluding "conversation" node)
-    // Preserve groupId so the new chat appears in the same sidebar filter.
+    // Create a new conversation
     final newConv = Conversation(
       id: const Uuid().v4(),
       title: 'New chat from JSON',
-      modelId: conv.modelId,
-      backend: conv.backend,
+      modelId: _conversation?.modelId,
+      backend: _conversation?.backend,
       createdAt: DateTime.now().millisecondsSinceEpoch,
       updatedAt: DateTime.now().millisecondsSinceEpoch,
-      groupId: conv.groupId,
+      groupId: _conversation?.groupId,
     );
     await ConversationRepository.instance.insert(newConv);
 
