@@ -40,6 +40,12 @@ class ChatInput extends StatefulWidget {
   /// Callback to copy the current chat as JSON to clipboard.
   final VoidCallback? onCopyToClipboard;
 
+  /// Callback to trigger download of the current chat as Markdown.
+  final VoidCallback? onDownloadAsMarkdown;
+
+  /// Callback to copy the current chat as Markdown to clipboard.
+  final VoidCallback? onCopyToClipboardAsMarkdown;
+
   /// Callback to create a new chat from JSON context (excluding conversation node).
   final Future<void> Function(String jsonContent)? onNewChatFromJson;
 
@@ -60,6 +66,8 @@ class ChatInput extends StatefulWidget {
     this.onProjectFolderChanged,
     this.onDownload,
     this.onCopyToClipboard,
+    this.onDownloadAsMarkdown,
+    this.onCopyToClipboardAsMarkdown,
     this.onNewChatFromJson,
     this.controller,
   });
@@ -702,6 +710,8 @@ class _ChatInputState extends State<ChatInput> {
                         enabled: widget.enabled && !widget.sending,
                         onDownload: widget.onDownload,
                         onCopyToClipboard: widget.onCopyToClipboard,
+                        onDownloadAsMarkdown: widget.onDownloadAsMarkdown,
+                        onCopyToClipboardAsMarkdown: widget.onCopyToClipboardAsMarkdown,
                       ),
                       const SizedBox(width: 10),
                       _AttachButton(
@@ -1058,11 +1068,15 @@ class _DownloadButton extends StatefulWidget {
   final bool enabled;
   final VoidCallback? onDownload;
   final VoidCallback? onCopyToClipboard;
+  final VoidCallback? onDownloadAsMarkdown;
+  final VoidCallback? onCopyToClipboardAsMarkdown;
 
   const _DownloadButton({
     required this.enabled,
     this.onDownload,
     this.onCopyToClipboard,
+    this.onDownloadAsMarkdown,
+    this.onCopyToClipboardAsMarkdown,
   });
 
   @override
@@ -1104,6 +1118,28 @@ class _DownloadButtonState extends State<_DownloadButton> {
               Icon(Icons.content_copy_outlined, size: 18),
               SizedBox(width: 12),
               Text('Copy to Clipboard as JSON'),
+            ],
+          ),
+        ),
+        PopupMenuItem(
+          enabled: widget.enabled,
+          onTap: widget.onDownloadAsMarkdown,
+          child: const Row(
+            children: [
+              Icon(Icons.download_outlined, size: 18),
+              SizedBox(width: 12),
+              Text('Download as Markdown'),
+            ],
+          ),
+        ),
+        PopupMenuItem(
+          enabled: widget.enabled,
+          onTap: widget.onCopyToClipboardAsMarkdown,
+          child: const Row(
+            children: [
+              Icon(Icons.content_copy_outlined, size: 18),
+              SizedBox(width: 12),
+              Text('Copy to Clipboard as Markdown'),
             ],
           ),
         ),

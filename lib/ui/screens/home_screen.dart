@@ -42,21 +42,31 @@ class _HomeScreenState extends StateManager<HomeScreen> {
     switch (methodData.methodName) {
       case "openConversation":
         final id = methodData.methodParams?["conversationId"] as String?;
-        if (id != _activeConversationId && OrchestratorManager.instance.isRunning) {
-          unawaited(OrchestratorManager.instance.stop());
-        }
+        final needsStop = id != _activeConversationId && OrchestratorManager.instance.isRunning;
         _activeConversationId = id;
-        // Always refresh the sidebar when a conversation is opened so that
-        // newly created conversations (e.g. "New chat from JSON") appear in
-        // the list even when the open request originates outside the Sidebar.
-        _refreshSidebar();
+        if (needsStop) {
+          // Stop must complete before refreshing: if we fire _refreshSidebar()
+          // while isRunning=true, ChatView._startOrchestratorForActiveBackend
+          // sees "already running on same backend" and skips the start, then
+          // stop() finishes killing the old process — leaving no orchestrator.
+          OrchestratorManager.instance.stop().then((_) {
+            if (mounted) _refreshSidebar();
+          });
+        } else {
+          // Always refresh so newly created conversations appear in the list
+          // even when the open request originates outside the Sidebar.
+          _refreshSidebar();
+        }
         break;
       case "closeActiveConversation":
-        if (OrchestratorManager.instance.isRunning) {
-          unawaited(OrchestratorManager.instance.stop());
-        }
         _activeConversationId = null;
-        _refreshSidebar();
+        if (OrchestratorManager.instance.isRunning) {
+          OrchestratorManager.instance.stop().then((_) {
+            if (mounted) _refreshSidebar();
+          });
+        } else {
+          _refreshSidebar();
+        }
         break;
     }
   }

@@ -1,7 +1,7 @@
 """Local / cloud Ollama backend via the official `ollama` Python library."""
 from __future__ import annotations
 
-# import json
+import json
 import os
 import sys
 from typing import Any, Dict, List
@@ -9,6 +9,10 @@ from urllib.parse import urlparse
 
 from .backend_base import ModelBackend
 from ..utils.text import sanitize_for_agent
+
+
+def _log(msg: str) -> None:
+    print(msg, file=sys.stderr, flush=True)
 
 
 class OllamaBackend(ModelBackend):
@@ -41,15 +45,10 @@ class OllamaBackend(ModelBackend):
         model = (model_id or "").strip().lower()
         if not model:
             return False
-
-        # Cloud tags can be either `<model>:cloud` or `<model>:<size>-cloud`.
         if ":" in model:
             tag = model.rsplit(":", 1)[1]
             if tag == "cloud" or tag.endswith("-cloud"):
                 return True
-
-        # Backward compatibility for model IDs ending in `-cloud` without
-        # a conventional `:tag` suffix.
         return model.endswith("-cloud")
 
     @staticmethod
@@ -86,17 +85,12 @@ class OllamaBackend(ModelBackend):
         self.model_id = model_id
         base_url = base_url.rstrip("/")
 
-        # Auto-route ':cloud' / '-cloud' tagged models to ollama.com when the
-        # caller didn't override the URL. Saves users from having to pass
-        # --ollama-base-url separately just because the model name says cloud.
         is_cloud_model = self._is_cloud_model_id(model_id)
         if is_cloud_model and base_url == self.DEFAULT_LOCAL_URL:
             base_url = self.CLOUD_URL
-            print(
-                f"[orch] '{model_id}' is a cloud-tagged model; "
-                f"routing to {base_url}.",
-                file=sys.stderr,
-                flush=True,
+            _log(
+                f"[Ollama:init] '{model_id}' is a cloud-tagged model; "
+                f"routing to {base_url}."
             )
 
         self.base_url = base_url
@@ -115,48 +109,47 @@ class OllamaBackend(ModelBackend):
                 "https://ollama.com/settings/keys for direct ollama.com access."
             )
 
-        # Build a single Client instance reused for every request.
-        # For cloud endpoints the README says to pass headers with Bearer token.
         client_kwargs: Dict[str, Any] = {"host": self.base_url}
         if self.api_key:
             client_kwargs["headers"] = {"Authorization": f"Bearer {self.api_key}"}
         self._client: Any = Client(**client_kwargs)
 
-        # Set to True after the first 400 "does not support tools" error so
-        # all subsequent calls skip the tools= parameter automatically.
-        # Same pattern as GroqBackend._tools_unsupported.
         self._tools_unsupported: bool = False
+
+        _log(
+            f"[Ollama:init] model={model_id} base_url={self.base_url} "
+            f"num_ctx={num_ctx} cloud_model={is_cloud_model} "
+            f"has_api_key={bool(self.api_key)}"
+        )
 
     @property
     def context_limit(self) -> int:
-        # Ollama runs the model with whatever num_ctx we passed in — that
-        # IS the effective limit, regardless of what the model could handle
-        # at a different num_ctx setting.
         return int(self.num_ctx)
 
     def health_check(self) -> None:
         """Raise RuntimeError with a clear message if the endpoint or model
         is unreachable. Called once at startup for fast-fail feedback."""
         from ollama import ResponseError  # noqa: PLC0415
+        _log(f"[Ollama:health_check] checking {self.base_url} for model={self.model_id}")
         try:
             result = self._client.list()
         except ResponseError as e:
+            _log(f"[Ollama:health_check_error] ResponseError status={e.status_code} error={e.error}")
             raise RuntimeError(
                 f"Ollama returned error {e.status_code} for {self.base_url}: "
                 f"{e.error}. Check your API key or server address."
             ) from e
         except Exception as e:
+            _log(f"[Ollama:health_check_error] {type(e).__name__}: {e}")
             raise RuntimeError(
                 f"Cannot reach Ollama at {self.base_url}: {e}. "
                 f"Start the daemon from Settings -> Ollama, or run "
                 f"`ollama serve` in a terminal."
             ) from e
 
-        # For cloud endpoints list() may return cloud-hosted models that
-        # haven't been "pulled" locally — skip the model-presence check when
-        # we're clearly not talking to localhost.
         is_cloud = not self._is_local_host(self.base_url)
         if is_cloud:
+            _log(f"[Ollama:health_check_ok] cloud endpoint — skipping model presence check")
             return
 
         models = getattr(result, "models", []) or []
@@ -166,17 +159,22 @@ class OllamaBackend(ModelBackend):
             if name:
                 names.add(name)
 
-        # Match exact tag or base name (phi3 matches phi3:latest).
         bare = self.model_id.split(":", 1)[0]
         if self.model_id not in names and not any(
                 (n or "").split(":", 1)[0] == bare for n in names
         ):
             installed = ", ".join(sorted(n for n in names if n)) or "(none)"
+            _log(
+                f"[Ollama:health_check_missing] model={self.model_id!r} "
+                f"not in installed={installed}"
+            )
             raise RuntimeError(
                 f"Ollama does not have model '{self.model_id}' installed. "
                 f"Installed: {installed}. Pull it with "
                 f"`ollama pull {self.model_id}` or pick an installed tag."
             )
+
+        _log(f"[Ollama:health_check_ok] model={self.model_id!r} found locally")
 
     @staticmethod
     def _build_hint_for(err_msg: str) -> str:
@@ -217,15 +215,46 @@ class OllamaBackend(ModelBackend):
         return ""
 
     def chat(self, messages, max_tokens, temperature, tools=None):
-        return self._chat_with_heartbeats_impl(messages, max_tokens, temperature, tools)
+        return self._chat_impl(messages, max_tokens, temperature, tools)
 
-
-
-    def _chat_with_heartbeats_impl(self, messages, max_tokens, temperature, tools=None):
+    def _chat_impl(self, messages, max_tokens, temperature, tools=None):
         from ollama import ResponseError  # noqa: PLC0415
-        import sys
-        import json
-        effective_tools = None
+
+        messages = sanitize_for_agent(messages)
+        tools = sanitize_for_agent(tools)
+
+        effective_tools = None if self._tools_unsupported else tools
+        n_tools = len(effective_tools) if effective_tools else 0
+
+        is_cloud_model = (
+            self._is_cloud_model_id(self.model_id)
+            or self._is_cloud_host(self.base_url)
+        )
+
+        _log(
+            f"[Ollama:chat] model={self.model_id} msgs={len(messages)} "
+            f"tools={n_tools} max_tokens={max_tokens} temperature={temperature} "
+            f"cloud={is_cloud_model} tools_unsupported={self._tools_unsupported}"
+            + (" [sending without tools]" if self._tools_unsupported and tools else "")
+        )
+
+        if is_cloud_model:
+            chat_options: Dict[str, Any] = {"temperature": temperature}
+        else:
+            chat_options = {
+                "temperature": temperature,
+                "num_predict": max_tokens,
+                "num_ctx": self.num_ctx,
+            }
+
+        chat_kwargs: Dict[str, Any] = dict(
+            model=self.model_id,
+            messages=messages,
+            stream=True,
+            options=chat_options,
+        )
+        if effective_tools:
+            chat_kwargs["tools"] = effective_tools
 
         try:
             parts: List[str] = []
@@ -233,44 +262,10 @@ class OllamaBackend(ModelBackend):
             chunk_count = 0
             native_calls: List[Any] = []
 
-
-            messages = sanitize_for_agent(messages)
-            tools = sanitize_for_agent(tools)
-
-            effective_tools = None if self._tools_unsupported else tools
-
-            is_cloud_model = (
-                self._is_cloud_model_id(self.model_id)
-                or self._is_cloud_host(self.base_url)
-            )
-
-            if is_cloud_model:
-                chat_options: Dict[str, Any] = {"temperature": temperature}
-            else:
-                chat_options = {
-                    "temperature": temperature,
-                    "num_predict": max_tokens,
-                    "num_ctx": self.num_ctx,
-                }
-
-            chat_kwargs: Dict[str, Any] = dict(
-                model=self.model_id,
-                messages=messages,
-                stream=True,
-                options=chat_options,
-            )
-
-            if effective_tools:
-                chat_kwargs["tools"] = effective_tools
-
             stream = self._client.chat(**chat_kwargs)
 
             for chunk in stream:
                 content = chunk.message.content or ""
-
-                # Note: Output content is NOT sanitized here to preserve markdown
-                # formatting (emojis, icons, etc.) for the UI.
-
                 if content:
                     parts.append(content)
 
@@ -278,17 +273,12 @@ class OllamaBackend(ModelBackend):
                 native_calls.extend(sanitize_for_agent(tcs))
 
                 chunk_count += 1
-
                 if chunk_count % 20 == 1:
                     so_far = len("".join(parts))
-                    current_output = "".join(parts)
-                    display_output = current_output[-100:] if len(current_output) > 100 else current_output
-
-                    print(
-                        f"[orch] Streaming '{self.model_id}' "
-                        f"({so_far} chars so far)... Last output: {display_output!r}",
-                        file=sys.stderr,
-                        flush=True,
+                    tail = "".join(parts)[-80:]
+                    _log(
+                        f"[Ollama:streaming] model={self.model_id} "
+                        f"chunks={chunk_count} chars={so_far} tail={tail!r}"
                     )
                 else:
                     sys.stderr.write("\n")
@@ -297,222 +287,79 @@ class OllamaBackend(ModelBackend):
                 if getattr(chunk, "done", False):
                     finish_reason = getattr(chunk, "done_reason", "") or ""
 
-            # Native tool calls → safe <tool> format
-            if native_calls:
-                tag_lines: List[str] = []
+            _log(
+                f"[Ollama:stream_done] model={self.model_id} "
+                f"total_chunks={chunk_count} content_len={len(''.join(parts))} "
+                f"tool_calls={len(native_calls)} finish_reason={finish_reason!r}"
+            )
 
+            if native_calls:
+                _log(f"[Ollama:tool_calls] converting {len(native_calls)} native call(s) to <tool> tags")
+                tag_lines: List[str] = []
                 for tc in native_calls:
                     fn = getattr(tc, "function", tc)
                     name = getattr(fn, "name", None)
                     args = getattr(fn, "arguments", {}) or {}
-
-
                     args = sanitize_for_agent(args)
-
                     if isinstance(args, str):
                         try:
                             args = json.loads(args)
-                        except json.JSONDecodeError:
+                        except json.JSONDecodeError as exc:
+                            _log(f"[Ollama:tool_call_parse_error] args JSON decode failed: {exc} raw={args!r:.80}")
                             args = {}
-
                     if not name:
+                        _log(f"[Ollama:tool_call_skip] tool call has no name — skipping")
                         continue
-
                     tag_lines.append(
                         f'<tool>{json.dumps({"tool": name, "parameters": args}, ensure_ascii=False)}</tool>'
                     )
-
-                    print(
-                        f"[orch] Native tool_call -> {name}({args})",
-                        file=sys.stderr,
-                        flush=True,
-                    )
+                    _log(f"[Ollama:tool_call] {name}({json.dumps(args, ensure_ascii=False)[:200]})")
 
                 if tag_lines:
                     return "\n".join(tag_lines), finish_reason
 
-            return "".join(parts).strip(), finish_reason
+            result = "".join(parts).strip()
+            _log(f"[Ollama:done] returning content ({len(result)} chars) finish_reason={finish_reason!r}")
+            return result, finish_reason
 
         except ResponseError as e:
             err_str = str(getattr(e, "error", e))
             status = getattr(e, "status_code", 0)
             low = err_str.lower()
 
-            is_cloud_model = (
+            _log(
+                f"[Ollama:response_error] model={self.model_id} status={status} "
+                f"error={err_str!r} tools_attached={bool(effective_tools)}"
+            )
+
+            is_cloud = (
                 self._is_cloud_model_id(self.model_id)
                 or self._is_cloud_host(self.base_url)
             )
-
-            # 400: server explicitly says tools aren't supported.
-            # 500 + cloud + tools attached: the cloud endpoint silently
-            # rejects the tools= payload with a generic Internal Server
-            # Error instead of a helpful 400. We can't distinguish this
-            # from a real 500 server failure, but retrying once without
-            # tools is cheap — if the retry also fails we surface the
-            # real error to the user.
             tools_likely_unsupported = (
                 effective_tools
                 and (
                     (status == 400 and "does not support tools" in low)
-                    or (is_cloud_model
-                        and "internal server error" in low)
+                    or (is_cloud and "internal server error" in low)
                 )
             )
 
             if tools_likely_unsupported:
                 reason = (
-                    "explicitly unsupported"
+                    "explicitly unsupported (400)"
                     if status == 400
                     else "500 from cloud endpoint — likely tools-incompatible"
                 )
-                print(
-                    f"[orch] '{self.model_id}' tools rejected ({reason}); "
-                    "retrying without tools, falling back to text-based "
-                    "<tool> protocol.",
-                    file=sys.stderr,
-                    flush=True,
+                _log(
+                    f"[Ollama:tools_unsupported] model={self.model_id} reason={reason} "
+                    f"— disabling native tools, retrying with text protocol"
                 )
                 self._tools_unsupported = True
-
-                return self._chat_with_heartbeats_impl(
-                    messages, max_tokens, temperature, tools=tools
-                )
+                return self._chat_impl(messages, max_tokens, temperature, tools=tools)
 
             hint = self._build_hint_for(err_str)
             raise RuntimeError(f"Ollama error {status}: {err_str}{hint}") from e
 
         except Exception as e:
+            _log(f"[Ollama:error] model={self.model_id} {type(e).__name__}: {e}")
             raise RuntimeError(f"Ollama error: {e}") from e
-
-    # def _chat_with_heartbeats_impl(self, messages, max_tokens, temperature, tools=None):
-    #     """Stream the response token-by-token. Each chunk resets the Dart-side
-    #     inactivity watchdog via the stderr line it emits.
-    #
-    #     Passes `tools` to the API so models with native tool-calling (GLM,
-    #     Qwen, Llama 3.x, etc.) can respond with structured `tool_calls`
-    #     instead of — or in addition to — text. When native tool_calls are
-    #     present we serialise them as `<tool>…</tool>` text so the
-    #     orchestrator's existing text-based parser handles them uniformly.
-    #
-    #     If the model returns a 400 "does not support tools" error (e.g.
-    #     phi3:mini), `_tools_unsupported` is set to True and the call is
-    #     retried without the tools= parameter — identical to GroqBackend.
-    #     """
-    #     from ollama import ResponseError  # noqa: PLC0415
-    #     try:
-    #         parts: List[str] = []
-    #         finish_reason = ""
-    #         chunk_count = 0
-    #         # Accumulated native tool calls (list of ollama ToolCall objects).
-    #         native_calls: List[Any] = []
-    #
-    #         # Skip tools= for models that are known not to support it.
-    #         effective_tools = None if self._tools_unsupported else tools
-    #
-    #         # Ollama Cloud models (tagged ':<size>-cloud', e.g.
-    #         # 'mistral-large-3:675b-cloud') are served by Ollama's hosted
-    #         # inference and reject the local-only `options` payload with
-    #         # a bare HTTP 500. For those, only pass `temperature` and skip
-    #         # num_ctx/num_predict entirely.
-    #         is_cloud_model = self.model_id.endswith("-cloud") or "-cloud:" in self.model_id
-    #         if is_cloud_model:
-    #             chat_options: Dict[str, Any] = {"temperature": temperature}
-    #         else:
-    #             chat_options = {
-    #                 "temperature": temperature,
-    #                 "num_predict": max_tokens,
-    #                 "num_ctx": self.num_ctx,
-    #             }
-    #
-    #         chat_kwargs: Dict[str, Any] = dict(
-    #             model=self.model_id,
-    #             messages=messages,
-    #             stream=True,
-    #             options=chat_options,
-    #         )
-    #         if effective_tools:
-    #             chat_kwargs["tools"] = effective_tools
-    #
-    #         stream = self._client.chat(**chat_kwargs)
-    #         for chunk in stream:
-    #             content = chunk.message.content or ""
-    #             if content:
-    #                 parts.append(content)
-    #
-    #             # Native tool calls: accumulate across chunks.
-    #             tcs = getattr(chunk.message, "tool_calls", None) or []
-    #             native_calls.extend(tcs)
-    #
-    #             chunk_count += 1
-    #             if chunk_count % 20 == 1:
-    #                 so_far = len("".join(parts))
-    #                 current_output = "".join(parts)
-    #                 # Show last 100 chars of agent output for brevity
-    #                 display_output = current_output[-100:] if len(current_output) > 100 else current_output
-    #                 print(
-    #                     f"[orch] Streaming '{self.model_id}' "
-    #                     f"({so_far} chars so far)... Last output: {display_output!r}",
-    #                     file=sys.stderr,
-    #                     flush=True,
-    #                 )
-    #             else:
-    #                 # Bare newline = silent heartbeat: resets the Dart-side
-    #                 # inactivity watchdog without cluttering the log panel.
-    #                 # Critical for slow local models where 20 chunks can take
-    #                 # several minutes to arrive.
-    #                 sys.stderr.write("\n")
-    #                 sys.stderr.flush()
-    #             if getattr(chunk, "done", False):
-    #                 finish_reason = getattr(chunk, "done_reason", "") or ""
-    #
-    #         # If the model used its native tool-calling API, convert each call
-    #         # to the <tool> tag format the orchestrator already understands.
-    #         # This lets GLM-4, Qwen, Llama 3.x, etc. work without any changes
-    #         # to the orchestrator loop.
-    #         if native_calls:
-    #             tag_lines: List[str] = []
-    #             for tc in native_calls:
-    #                 fn = getattr(tc, "function", tc)
-    #                 name = getattr(fn, "name", None)
-    #                 args = getattr(fn, "arguments", {}) or {}
-    #                 if not name:
-    #                     continue
-    #                 tag_lines.append(
-    #                     f'<tool>{json.dumps({"tool": name, "parameters": args})}</tool>'
-    #                 )
-    #                 print(
-    #                     f"[orch] Native tool_call -> {name}({args})",
-    #                     file=sys.stderr,
-    #                     flush=True,
-    #                 )
-    #             if tag_lines:
-    #                 return "\n".join(tag_lines), finish_reason
-    #
-    #         return "".join(parts), finish_reason
-    #
-    #     except ResponseError as e:
-    #         err_str = str(getattr(e, "error", e))
-    #         status = getattr(e, "status_code", 0)
-    #         # 400 "does not support tools" — disable tool-calling for this
-    #         # model and retry once without the tools= parameter.
-    #         if (
-    #                 status == 400
-    #                 and effective_tools
-    #                 and "does not support tools" in err_str.lower()
-    #         ):
-    #             print(
-    #                 f"[orch] '{self.model_id}' does not support native "
-    #                 "tool-calling; switching to text-based tool parsing.",
-    #                 file=sys.stderr,
-    #                 flush=True,
-    #             )
-    #             self._tools_unsupported = True
-    #             return self._chat_with_heartbeats_impl(
-    #                 messages, max_tokens, temperature, tools=tools
-    #             )
-    #         hint = self._build_hint_for(err_str)
-    #         raise RuntimeError(
-    #             f"Ollama error {status}: {err_str}{hint}"
-    #         ) from e
-    #     except Exception as e:
-    #         raise RuntimeError(f"Ollama error: {e}") from e

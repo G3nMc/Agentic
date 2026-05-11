@@ -834,6 +834,8 @@ class _ChatViewState extends StateManager<ChatView> with WidgetsBindingObserver 
           onProjectFolderChanged: _startOrchestrator,
           onDownload: _downloadChatAsJson,
           onCopyToClipboard: _copyChatToClipboard,
+          onDownloadAsMarkdown: _downloadChatAsMarkdown,
+          onCopyToClipboardAsMarkdown: _copyChatToClipboardAsMarkdown,
           onNewChatFromJson: _newChatFromJson,
           controller: _inputController,
         ),
@@ -1159,9 +1161,121 @@ class _ChatViewState extends StateManager<ChatView> with WidgetsBindingObserver 
     }
   }
 
+  Future<void> _downloadChatAsMarkdown() async {
+    final conv = _conversation;
+    if (conv == null) return;
+
+    final messages = await MessageRepository.instance.listByConversation(conv.id);
+    final workflowTitle = await _resolveWorkflowTitle(conv);
+
+    // Build Markdown content
+    final markdownContent = StringBuffer();
+    markdownContent.writeln("# ${conv.title}");
+    markdownContent.writeln();
+    if (workflowTitle != null) {
+      markdownContent.writeln("_Workflow: $workflowTitle");
+      markdownContent.writeln();
+    }
+    markdownContent.writeln("_Model: ${conv.modelId ?? 'unknown'} | Backend: ${conv.backend}_");
+    markdownContent.writeln();
+    markdownContent.writeln("---");
+    markdownContent.writeln();
+
+    for (final msg in messages) {
+      final rolePrefix = msg.role == MessageRole.user ? "**User**" : "**Assistant**";
+      if (msg.agent != null) {
+        markdownContent.writeln("$rolePrefix (${msg.agent})");
+      } else {
+        markdownContent.writeln(rolePrefix);
+      }
+      markdownContent.writeln();
+      markdownContent.writeln(msg.content);
+      markdownContent.writeln();
+      markdownContent.writeln("---");
+      markdownContent.writeln();
+    }
+
+    final safeName = conv.title.replaceAll(RegExp(r'[\/:*?"<>|]'), '_');
+
+    try {
+      // Prefer a save dialog on platforms that support it (desktop).
+      String? savePath = await FilePicker.saveFile(
+        dialogTitle: 'Save chat as Markdown',
+        fileName: '$safeName.md',
+        type: FileType.custom,
+        allowedExtensions: ['md'],
+      );
+
+      if (savePath == null && mounted) {
+        // User cancelled the save dialog.
+        return;
+      }
+
+      // If saveFile returned null (mobile / web fallback), write to a
+      // well-known directory so the user can retrieve it.
+      if (savePath == null) {
+        final dir = await getApplicationDocumentsDirectory();
+        savePath = '${dir.path}${Platform.pathSeparator}$safeName.md';
+      }
+
+      final file = File(savePath);
+      await file.writeAsString(markdownContent.toString(), flush: true);
+
+      if (!mounted) return;
+
+      NotificationHelper.showSuccess(context, 'Saved to $savePath');
+    } catch (e) {
+      if (!mounted) return;
+      NotificationHelper.showError(context, 'Failed to save Markdown: $e');
+    }
+  }
+
+  Future<void> _copyChatToClipboardAsMarkdown() async {
+    final conv = _conversation;
+    if (conv == null) return;
+
+    final messages = await MessageRepository.instance.listByConversation(conv.id);
+    final workflowTitle = await _resolveWorkflowTitle(conv);
+
+    // Build Markdown content
+    final markdownContent = StringBuffer();
+    markdownContent.writeln("# ${conv.title}");
+    markdownContent.writeln();
+    if (workflowTitle != null) {
+      markdownContent.writeln("_Workflow: $workflowTitle");
+      markdownContent.writeln();
+    }
+    markdownContent.writeln("_Model: ${conv.modelId ?? 'unknown'} | Backend: ${conv.backend}_");
+    markdownContent.writeln();
+    markdownContent.writeln("---");
+    markdownContent.writeln();
+
+    for (final msg in messages) {
+      final rolePrefix = msg.role == MessageRole.user ? "**User**" : "**Assistant**";
+      if (msg.agent != null) {
+        markdownContent.writeln("$rolePrefix (${msg.agent})");
+      } else {
+        markdownContent.writeln(rolePrefix);
+      }
+      markdownContent.writeln();
+      markdownContent.writeln(msg.content);
+      markdownContent.writeln();
+      markdownContent.writeln("---");
+      markdownContent.writeln();
+    }
+
+    try {
+      await Clipboard.setData(ClipboardData(text: markdownContent.toString()));
+      if (!mounted) return;
+      NotificationHelper.showSuccess(context, 'Chat Markdown copied to clipboard');
+    } catch (e) {
+      if (!mounted) return;
+      NotificationHelper.showError(context, 'Failed to copy to clipboard: $e');
+    }
+  }
+
   Future<void> _newChatFromJson(String jsonContent) async {
     final jsonData = jsonDecode(jsonContent) as Map<String, dynamic>;
-    final messages = jsonData['messages'] as List<dynamic>;
 
     // Create a new conversation
     final newConv = Conversation(
