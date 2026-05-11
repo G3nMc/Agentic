@@ -121,18 +121,20 @@ def register(registry) -> None:
 
             truncated = total > MAX_BYTES
             if truncated:
+                line_count = full_text.count("\n") + 1
                 content = full_text.encode("utf-8", errors="replace")[:MAX_BYTES].decode(
                     "utf-8", errors="replace"
                 )
-                content += (
-                    f"\n\n... [file truncated at {MAX_BYTES} bytes; "
-                    f"full size {total} bytes — re-call read_file with "
-                    f"start_line/end_line (or offset/limit) to read a "
-                    f"specific window, or use search_in_files for a "
-                    f"targeted lookup]"
-                )
+                content = (
+                    f"[TRUNCATED: returned first {MAX_BYTES} bytes of {total} "
+                    f"(~{line_count} lines total). "
+                    f"Use read_file(\"{path}\", start_line=N, end_line=M) "
+                    f"to read a specific section, or search_in_files to locate "
+                    f"content without fetching the whole file.]\n\n"
+                ) + content
             else:
                 content = full_text
+
             return json.dumps({
                 "status": "success",
                 "path": path,

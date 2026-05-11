@@ -15,9 +15,12 @@ import '../../data/models/agent_credentials.dart';
 import '../../data/models/hf_model.dart';
 import '../../data/repositories/agent_credentials_repository.dart';
 import '../../data/repositories/backend_settings_repository.dart';
+import '../../data/repositories/database_connections_repository.dart';
 import '../../data/repositories/dev_filters_repository.dart';
 import '../../data/repositories/model_repository.dart';
 import '../../data/repositories/settings_repository.dart';
+
+export '../../data/repositories/database_connections_repository.dart' show DatabaseConnection;
 import '../../services/project_service.dart';
 import '../../services/groq_service.dart';
 import '../../services/llm_service.dart';
@@ -82,6 +85,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
   List<String> _includeFiles = [];
   bool _filtersLoaded = false;
   String? _filtersWorkingDir;
+
+  // Database connections (Developer panel).
+  List<DatabaseConnection> _dbConnections = [];
+  bool _dbConnectionsLoaded = false;
 
   // Orchestrator log persistence
   List<String> _persistedLog = [];
@@ -6064,6 +6071,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
       _filtersLoaded = true;
       _loadFilters();
     }
+    // Lazy-load database connections the first time the panel opens.
+    if (!_dbConnectionsLoaded) {
+      _dbConnectionsLoaded = true;
+      _loadDatabaseConnections();
+    }
     return SingleChildScrollView(
       padding: const EdgeInsets.all(24),
       child: Center(
@@ -6073,6 +6085,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
               _buildExternalToolsSection(),
+              const SizedBox(height: 24),
+              _buildDatabaseConnectionsSection(),
               const SizedBox(height: 24),
               _buildFilesystemFiltersSection(),
               const SizedBox(height: 24),
@@ -6261,6 +6275,198 @@ class _SettingsScreenState extends State<SettingsScreen> {
     await SettingsRepository.instance.clearPythonPath();
     if (!mounted) return;
     setState(() => _pythonPathController.text = '');
+  }
+
+  // ---- Database connections (Developer panel) --------------------------------
+
+  Future<void> _loadDatabaseConnections() async {
+    final connections = await DatabaseConnectionsRepository.instance.getAll();
+    if (!mounted) return;
+    setState(() {
+      _dbConnections = List<DatabaseConnection>.from(connections);
+    });
+  }
+
+  Future<void> _saveDatabaseConnections() async {
+    await DatabaseConnectionsRepository.instance.setAll(_dbConnections);
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text('Database connections saved'),
+        duration: Duration(seconds: 2),
+      ),
+    );
+  }
+
+  Future<void> _addDatabaseConnection() async {
+    final result = await showDialog<Map<String, String>>(
+      context: context,
+      builder: (ctx) => _DatabaseConnectionDialog(
+        connection: null,
+        existingKeys: _dbConnections.map((c) => c.key).toSet(),
+      ),
+    );
+    if (result == null || !mounted) return;
+    final newConnection = DatabaseConnection(
+      key: result['key']!,
+      value: result['value']!,
+      type: result['type']!,
+    );
+    setState(() {
+      _dbConnections.add(newConnection);
+    });
+    await _saveDatabaseConnections();
+  }
+
+  Future<void> _editDatabaseConnection(
+      DatabaseConnection connection,
+      int index) async {
+    final otherKeys = <String>{};
+    for (int i = 0; i < _dbConnections.length; i++) {
+      if (i != index) otherKeys.add(_dbConnections[i].key);
+    }
+    final result = await showDialog<Map<String, String>>(
+      context: context,
+      builder: (ctx) => _DatabaseConnectionDialog(
+        connection: connection,
+        existingKeys: otherKeys,
+      ),
+    );
+    if (result == null || !mounted) return;
+    setState(() {
+      _dbConnections[index] = DatabaseConnection(
+        key: result['key']!,
+        value: result['value']!,
+        type: result['type']!,
+      );
+    });
+    await _saveDatabaseConnections();
+  }
+
+  Future<void> _deleteDatabaseConnection(int index) async {
+    setState(() {
+      _dbConnections.removeAt(index);
+    });
+    await _saveDatabaseConnections();
+  }
+
+  Widget _buildDatabaseConnectionsSection() {
+    return _section(
+      title: "Database Connections",
+      subtitle:
+          "Configure database connections for the db_query tool. "
+          "Use MariaDB connection strings (mysql+pymysql://user:pass@host:port/db) "
+          "or SQLite file paths.",
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Row(
+            children: [
+              const Text(
+                "Connections",
+                style: TextStyle(
+                  fontSize: 13,
+                  fontWeight: FontWeight.w600,
+                  color: AppTheme.textPrimary,
+                ),
+              ),
+              const Spacer(),
+              IconButton(
+                tooltip: 'Add connection',
+                icon: const Icon(Icons.add_circle_outline, size: 20),
+                onPressed: _addDatabaseConnection,
+              ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          if (_dbConnections.isEmpty)
+            const Text(
+              "No database connections configured. Click + to add one.",
+              style: TextStyle(fontSize: 12, color: AppTheme.textMuted),
+            )
+          else
+            ..._dbConnections.asMap().entries.map((entry) {
+              final index = entry.key;
+              final conn = entry.value;
+              return _databaseConnectionRow(conn, index);
+            }),
+        ],
+      ),
+    );
+  }
+
+  Widget _databaseConnectionRow(
+      DatabaseConnection conn, int index) {
+    return Card(
+      margin: const EdgeInsets.only(bottom: 8),
+      child: Padding(
+        padding: const EdgeInsets.all(12),
+        child: Row(
+          children: [
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      Text(
+                        conn.key,
+                        style: const TextStyle(
+                          fontSize: 13,
+                          fontWeight: FontWeight.w600,
+                          color: AppTheme.textPrimary,
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                        decoration: BoxDecoration(
+                          color: conn.type == 'mariadb'
+                              ? AppTheme.accentMarrone.withValues(alpha: 51)
+                              : AppTheme.success.withValues(alpha: 51),
+                          borderRadius: BorderRadius.circular(4),
+                        ),
+                        child: Text(
+                          conn.type.toUpperCase(),
+                          style: TextStyle(
+                            fontSize: 10,
+                            fontWeight: FontWeight.bold,
+                            color: conn.type == 'mariadb'
+                                ? AppTheme.accentMarrone
+                                : AppTheme.success,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 4),
+                  Text(
+                    conn.value,
+                    style: const TextStyle(
+                      fontSize: 11,
+                      color: AppTheme.textMuted,
+                      fontFamily: 'monospace',
+                    ),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ],
+              ),
+            ),
+            IconButton(
+              tooltip: 'Edit',
+              icon: const Icon(Icons.edit_outlined, size: 18),
+              onPressed: () => _editDatabaseConnection(conn, index),
+            ),
+            IconButton(
+              tooltip: 'Delete',
+              icon: const Icon(Icons.delete_outline, size: 18),
+              onPressed: () => _deleteDatabaseConnection(index),
+            ),
+          ],
+        ),
+      ),
+    );
   }
 
   // ---- Filesystem filters (Developer panel) --------------------------------
@@ -7059,5 +7265,175 @@ class _SettingsScreenState extends State<SettingsScreen> {
     } finally {
       if (mounted) setState(() => _installerBusy = false);
     }
+  }
+}
+
+// ---- Database Connection Dialog Widget --------------------------------------
+
+class _DatabaseConnectionDialog extends StatefulWidget {
+  final DatabaseConnection? connection;
+  final Set<String> existingKeys;
+
+  const _DatabaseConnectionDialog({
+    this.connection,
+    required this.existingKeys,
+  });
+
+  @override
+  State<_DatabaseConnectionDialog> createState() =>
+      _DatabaseConnectionDialogState();
+}
+
+class _DatabaseConnectionDialogState
+    extends State<_DatabaseConnectionDialog> {
+  late TextEditingController _keyController;
+  late TextEditingController _valueController;
+  late String _selectedType;
+  String? _error;
+
+  @override
+  void initState() {
+    super.initState();
+    _keyController = TextEditingController(
+      text: widget.connection?.key ?? '',
+    );
+    _valueController = TextEditingController(
+      text: widget.connection?.value ?? '',
+    );
+    _selectedType = widget.connection?.type ?? 'sqlite';
+  }
+
+  @override
+  void dispose() {
+    _keyController.dispose();
+    _valueController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _browseForDatabaseFile() async {
+    final result = await FilePicker.pickFiles(
+      dialogTitle: 'Select SQLite Database File',
+      type: FileType.custom,
+      allowedExtensions: ['sqlite', 'sqlite3', 'db', ''],
+    );
+    final picked = result?.files.single.path;
+    if (picked != null && picked.isNotEmpty) {
+      _valueController.text = picked;
+    }
+  }
+
+  void _validateAndSubmit() {
+    final key = _keyController.text.trim();
+    final value = _valueController.text.trim();
+
+    if (key.isEmpty) {
+      setState(() => _error = 'Connection name is required');
+      return;
+    }
+    if (value.isEmpty) {
+      setState(() => _error = 'Connection string/path is required');
+      return;
+    }
+    if (widget.existingKeys.contains(key) &&
+        widget.connection?.key != key) {
+      setState(() => _error = 'A connection with this name already exists');
+      return;
+    }
+
+    Navigator.of(context).pop<Map<String, String>>({
+      'key': key,
+      'value': value,
+      'type': _selectedType,
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: Text(
+        widget.connection == null ? 'Add Database Connection' : 'Edit Database Connection',
+      ),
+      content: SizedBox(
+        width: 500,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            TextField(
+              controller: _keyController,
+              autofocus: true,
+              decoration: const InputDecoration(
+                labelText: 'Connection Name',
+                hintText: 'e.g., mydb, local_sqlite',
+                helperText: 'A unique identifier for this connection',
+              ),
+              onChanged: (_) => setState(() => _error = null),
+            ),
+            const SizedBox(height: 16),
+            DropdownButtonFormField<String>(
+              initialValue: _selectedType,
+              decoration: const InputDecoration(
+                labelText: 'Connection Type',
+              ),
+              items: const [
+                DropdownMenuItem(value: 'sqlite', child: Text('SQLite (file path)')),
+                DropdownMenuItem(value: 'mariadb', child: Text('MariaDB (connection string)')),
+              ],
+              onChanged: (v) {
+                if (v != null) setState(() => _selectedType = v);
+              },
+            ),
+            const SizedBox(height: 16),
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Expanded(
+                  child: TextField(
+                    controller: _valueController,
+                    decoration: InputDecoration(
+                      labelText: _selectedType == 'sqlite'
+                          ? 'SQLite Database Path'
+                          : 'MariaDB Connection String',
+                      hintText: _selectedType == 'sqlite'
+                          ? 'e.g., data/mydb.sqlite or /home/user/data.db'
+                          : 'mysql+pymysql://user:pass@localhost:3306/mydb',
+                      helperText: _selectedType == 'sqlite'
+                          ? 'Absolute or relative path to the .sqlite file'
+                          : 'Format: mysql+pymysql://user:password@host:port/database',
+                    ),
+                    maxLines: 2,
+                    onChanged: (_) => setState(() => _error = null),
+                  ),
+                ),
+                if (_selectedType == 'sqlite') ...[
+                  const SizedBox(width: 8),
+                  IconButton(
+                    tooltip: 'Browse for SQLite database file',
+                    icon: const Icon(Icons.folder_open_outlined, size: 24),
+                    onPressed: _browseForDatabaseFile,
+                  ),
+                ],
+              ],
+            ),
+            const SizedBox(height: 8),
+            if (_error != null)
+              Text(
+                _error!,
+                style: const TextStyle(color: AppTheme.danger, fontSize: 12),
+              ),
+          ],
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('Cancel'),
+        ),
+        FilledButton(
+          onPressed: _validateAndSubmit,
+          child: const Text('Save'),
+        ),
+      ],
+    );
   }
 }

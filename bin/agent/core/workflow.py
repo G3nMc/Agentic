@@ -39,7 +39,7 @@ from .state import ROUTE_REASONING, ROUTE_TRIVIAL, WorkflowState
 from ..loop import tool_dispatch as _td
 from ..policy import SecurityConfig
 from ..tools.registry import ToolRegistry
-from ..utils.token_estimator import chars_for_tokens
+from ..utils.token_estimator import chars_for_tokens, estimate_messages_tokens
 
 
 _WRITE_TOOLS = frozenset({"write_file", "append_file", "patch_file"})
@@ -677,6 +677,14 @@ class Workflow:
         consecutive_discovery_count = 0
         max_consecutive_discovery = 4
 
+        # Per-path read-count tracker: if the model reads the same file
+        # N times we inject a warning before the next reasoner call.
+        # This catches the "large file gets elided → re-read → elided"
+        # death spiral before the global circuit breaker fires.
+        path_read_counts: Dict[str, int] = {}
+        PATH_REREAD_WARN = 2   # inject warning after this many reads
+        PATH_REREAD_LIMIT = 4  # hard-stop after this many reads
+
         turn_start = time.monotonic()
         # Counts successful tool batches this turn — used by the dynamic
         # extension. The previous implementation looked at state.history[-5:]
@@ -1024,6 +1032,51 @@ class Workflow:
                 last_failed_sig = None
                 consecutive_failures = 0
                 last_success_sig = pending_sig
+
+                # Per-path reread guard: count how many times each file has
+                # been read this turn. If a path crosses PATH_REREAD_WARN,
+                # inject a targeted message so the model knows it should use
+                # start_line/end_line instead of re-reading the whole file.
+                # At PATH_REREAD_LIMIT we treat it the same as a non-progress
+                # iteration to break the spiral before the global circuit
+                # breaker fires.
+                for c in pending_calls:
+                    if c.get("tool") != "read_file":
+                        continue
+                    fpath = str((c.get("parameters") or {}).get("path") or "")
+                    if not fpath:
+                        continue
+                    # Only count whole-file reads (no start_line/offset).
+                    params = c.get("parameters") or {}
+                    is_ranged = any(
+                        params.get(k) is not None
+                        for k in ("start_line", "end_line", "offset", "limit")
+                    )
+                    if is_ranged:
+                        continue
+                    path_read_counts[fpath] = path_read_counts.get(fpath, 0) + 1
+                    count = path_read_counts[fpath]
+                    if count == PATH_REREAD_WARN:
+                        self.logger.warning(
+                            "Path reread warning | path=%s reads=%s", fpath, count
+                        )
+                        state.history.append({
+                            "role": "user",
+                            "content": (
+                                f"WARNING: You have now read \"{fpath}\" {count} times "
+                                f"in full. This file is likely large enough to be elided "
+                                f"from context on the next compaction pass.\n\n"
+                                f"DO NOT read it again in full. Instead:\n"
+                                f"  1) Use read_file(\"{fpath}\", start_line=N, end_line=M) "
+                                f"to fetch only the specific lines you need, OR\n"
+                                f"  2) Use search_in_files to locate the exact section first."
+                            ),
+                        })
+                    elif count >= PATH_REREAD_LIMIT:
+                        self.logger.error(
+                            "Path reread limit hit | path=%s reads=%s", fpath, count
+                        )
+                        no_progress_count += 1
 
                 # If stuck in discovery mode, nudge toward action
                 if consecutive_discovery_count >= max_consecutive_discovery:
@@ -1701,18 +1754,26 @@ class Workflow:
 
         # Preserve the actual bodies of read_file / search_in_files / build
         # commands so the NEXT turn doesn't re-read the same files. Budget
-        # scales with the reasoner's context window — at 128K we can afford
-        # ~75K chars of preserved bodies (room for several full source
-        # files); at 8K Ollama only ~3K.
+        # scales dynamically with free space: we measure how much of the
+        # token budget is already consumed by history, then allocate up to
+        # 60% of the remaining room for preserved bodies.
         reasoner = self.agents.get("reasoner")
         ctx_tokens = int(getattr(getattr(reasoner, "backend", None),
                                  "context_limit", 0) or 0)
         if ctx_tokens > 0:
-            # ~15% of the window. Each preserved body still capped per-entry
-            # by max_per_body_chars (default 20K) inside _preserve_tool_bodies.
+            token_budget = int(ctx_tokens * 0.85)
+            used_tokens = estimate_messages_tokens(
+                self.conversation_history,
+                content_type="code",
+                per_message_overhead=10,
+            )
+            free_tokens = max(0, token_budget - used_tokens)
+            # Allocate 60% of free space for preserved bodies, but cap
+            # per-body so one huge file doesn't monopolize the budget.
+            alloc_tokens = int(free_tokens * 0.60)
             ctx_chars = chars_for_tokens(ctx_tokens, "code")
-            bundle_budget = max(8_000, ctx_chars // 7)
-            per_body_chars = max(8_000, ctx_chars // 25)
+            bundle_budget = max(4_000, chars_for_tokens(alloc_tokens, "code"))
+            per_body_chars = max(4_000, ctx_chars // 25)
         else:
             bundle_budget = 8_000
             per_body_chars = 8_000

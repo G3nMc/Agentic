@@ -119,7 +119,9 @@
       "Bash(python -m unittest bin.agent.team.tests.test_path_filter_normalisation -v)",
       "Bash(python -m unittest agent.team.tests.test_path_filter_normalisation -v)",
       "Bash(python -c \"import ast; ast.parse\\(open\\('bin/agent/loop/run_loop.py', encoding='utf-8'\\).read\\(\\)\\); ast.parse\\(open\\('bin/agent/loop/history.py', encoding='utf-8'\\).read\\(\\)\\); ast.parse\\(open\\('bin/agent/core/workflow.py', encoding='utf-8'\\).read\\(\\)\\); print\\('All three files parse OK'\\)\")",
-      "Bash(python -m pytest bin/agent/team/tests/ -q)"
+      "Bash(python -m pytest bin/agent/team/tests/ -q)",
+      "Bash(python -c \"from bin.agent.core.compactor import elide_oversized; print\\('compactor ok'\\)\")",
+      "Bash(python -c \"from bin.agent.core.workflow import Workflow; print\\('workflow ok'\\)\")"
     ]
   }
 }

@@ -79,6 +79,15 @@ _ELIDED_STUB = (
     "[tool result elided: {tool}({params}) returned {orig_chars} chars; "
     "exceeded model context window. Call a narrower tool or paginate.]"
 )
+# Richer stub for read_file: names the exact parameter syntax so the
+# model knows how to paginate instead of re-reading the whole file.
+_ELIDED_READ_FILE_STUB = (
+    "[read_file result elided: \"{path}\" returned {orig_chars} chars "
+    "(~{orig_tokens} tokens) — too large to hold in context alongside "
+    "current history. DO NOT re-read the full file. Instead use "
+    "read_file(\"{path}\", start_line=N, end_line=M) to fetch only the "
+    "lines you need, or search_in_files to locate the relevant section first.]"
+)
 _ELIDED_HISTORY_STUB = (
     "[message elided: {orig_chars} chars; exceeded model context window]"
 )
@@ -189,9 +198,17 @@ def _elide_one_tool_result(
             params_str = params_str[:120] + "..."
     except Exception:
         params_str = str(params)[:120]
-    stub = _ELIDED_STUB.format(
-        tool=tool, params=params_str, orig_chars=orig_chars,
-    )
+
+    if tool == "read_file":
+        path = str(params.get("path") or "?")
+        orig_tokens = estimate_tokens_from_chars(orig_chars, "code")
+        stub = _ELIDED_READ_FILE_STUB.format(
+            path=path, orig_chars=orig_chars, orig_tokens=orig_tokens,
+        )
+    else:
+        stub = _ELIDED_STUB.format(
+            tool=tool, params=params_str, orig_chars=orig_chars,
+        )
     r["result"] = stub
     actions.append(
         f"elided tool_result[{idx}] {tool} ({orig_chars} chars -> "
@@ -430,7 +447,7 @@ def fold_old_stubs(
     if actions is not None:
         actions.append(
             f"folded {len(prefix)} old stubs into 1 summary entry "
-            f"(saved ~{chars_saved // 4} tokens; kept latest "
+            f"(saved ~{estimate_tokens_from_chars(chars_saved, 'code')} tokens; kept latest "
             f"{len(suffix)} intact)"
         )
 

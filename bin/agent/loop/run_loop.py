@@ -189,6 +189,9 @@ class Orchestrator:
             self._max_tool_result_chars = _MAX_TOOL_RESULT_CHARS_FALLBACK
             self._history_char_budget = 200_000
             self._history_token_budget = 50_000
+        # Preserve the init-time ceiling so dynamic recomputation never
+        # grows past it (it only shrinks when free space is tight).
+        self._init_max_tool_result_chars = self._max_tool_result_chars
 
     # ------------------------------------------------------------------
     # Session management
@@ -204,6 +207,33 @@ class Orchestrator:
         _history.ensure_system_prompt(
             self.conversation_history,
             self.tool_registry.get_system_prompt(),
+        )
+
+    def _recompute_tool_budget(self) -> None:
+        """Dynamically scale the tool-result char cap based on free space.
+
+        Called once per iteration before the model call. If history is
+        small we let tool results grow up to the init-time ceiling; if
+        history is large we shrink proportionally so the prompt never
+        exceeds the token budget.
+        """
+        ctx_tokens = int(getattr(self.backend, "context_limit", 0) or 0)
+        if ctx_tokens <= 0:
+            return
+        used = estimate_messages_tokens(
+            self.conversation_history,
+            content_type="code",
+            per_message_overhead=10,
+        )
+        free_tokens = max(0, self._history_token_budget - used)
+        # Reserve 15% of free space for the model's reply + safety margin.
+        alloc_tokens = int(free_tokens * 0.85)
+        # Convert token allocation to chars using the code-aware multiplier.
+        alloc_chars = chars_for_tokens(alloc_tokens, "code")
+        # Never grow past the init-time ceiling, never drop below 12K.
+        self._max_tool_result_chars = max(
+            12_000,
+            min(self._init_max_tool_result_chars, alloc_chars),
         )
 
     def _trim_history(self) -> None:
@@ -549,6 +579,12 @@ class Orchestrator:
                     f"~{self._history_token_budget} tokens.",
                     file=sys.stderr,
                 )
+
+            # Recompute the per-tool-result char cap based on how much
+            # budget is still free after trimming. This lets large file
+            # bodies pass through untouched when history is small, and
+            # shrinks gracefully as the session grows.
+            self._recompute_tool_budget()
 
             try:
                 text, finish_reason = self._call_model()
