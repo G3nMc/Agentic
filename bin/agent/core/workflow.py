@@ -520,7 +520,8 @@ class Workflow:
                     cleaned,
                     self.tool_registry.definitions,
                 )
-                tool_like = parsed_calls or _td.looks_like_malformed_tool_call(cleaned)
+                is_malformed, _malformed_err = _td.looks_like_malformed_tool_call(cleaned)
+                tool_like = parsed_calls or is_malformed
                 plan_like = _looks_like_plan(cleaned)
                 if tool_like or plan_like:
                     reason = "tool-like" if tool_like else "plan-like"
@@ -596,7 +597,8 @@ class Workflow:
                     cleaned,
                     self.tool_registry.definitions,
                 )
-                tool_like = parsed_calls or _td.looks_like_malformed_tool_call(cleaned)
+                is_malformed2, _malformed_err2 = _td.looks_like_malformed_tool_call(cleaned)
+                tool_like = parsed_calls or is_malformed2
                 plan_like = _looks_like_plan(cleaned)
                 if tool_like or plan_like:
                     reason = "tool-like" if tool_like else "plan-like"
