@@ -1844,12 +1844,14 @@ def build_workflow_from_args(
         security_config: SecurityConfig,
         base_path: str = ".",
         path_filter: Optional[Any] = None,
+        db_connections: Optional[Dict[str, Dict[str, str]]] = None,
 ) -> Workflow:
     """One-call helper: parse the agent config, build everything, return a Workflow."""
     tool_registry = ToolRegistry(
         base_path=base_path,
         security_config=security_config,
         path_filter=path_filter,
+        db_connections=db_connections,
     )
     secrets = SecretsResolver(args)
     agents = build_agents(

@@ -265,10 +265,167 @@ def register(registry) -> None:
         except Exception as e:
             return json.dumps({"status": "error", "message": str(e)})
 
+    def read_files(
+        paths: list,
+        max_lines_per_file: int | None = 200,
+    ) -> str:
+        """Read multiple files in one call. Returns concatenated contents with
+        file headers, ideal for loading several related files at once instead
+        of making separate read_file calls for each one.
+
+        Each file's content is prefixed with a ``=== path ===`` separator so
+        the model can distinguish where one file ends and another begins.
+        Output is capped at ``MAX_TOTAL_BYTES`` (200 KB) to avoid flooding
+        the context window; files beyond the cap are listed by name only.
+
+        ``max_lines_per_file`` (default 200) limits how many lines are
+        returned per file.  Set to ``null`` / omit to get the full file
+        (still subject to the per-file 100 KB cap used by read_file).
+        """
+        MAX_TOTAL_BYTES = 200 * 1024
+        PER_FILE_BYTE_CAP = 100 * 1024
+
+        if not isinstance(paths, list) or len(paths) == 0:
+            return json.dumps({
+                "status": "error",
+                "message": "paths must be a non-empty list of file paths",
+            })
+
+        # Cap the number of files to prevent abuse / context explosion.
+        if len(paths) > 50:
+            return json.dumps({
+                "status": "error",
+                "message": (
+                    f"Too many paths ({len(paths)}); maximum is 50. "
+                    "Reduce the list or use search_in_files to narrow down."
+                ),
+            })
+
+        results: list[dict] = []
+        total_bytes = 0
+        truncated_files: list[str] = []
+
+        for file_path in paths:
+            try:
+                fp = registry.resolve_path(file_path)
+            except ValueError as exc:
+                results.append({
+                    "path": file_path,
+                    "status": "error",
+                    "message": str(exc),
+                })
+                continue
+
+            if not fp.exists():
+                results.append({
+                    "path": file_path,
+                    "status": "error",
+                    "message": f"File not found: {file_path}",
+                })
+                continue
+
+            try:
+                raw = fp.read_bytes()
+                total_size = len(raw)
+                full_text = raw.decode("utf-8", errors="replace")
+            except Exception as exc:
+                results.append({
+                    "path": file_path,
+                    "status": "error",
+                    "message": str(exc),
+                })
+                continue
+
+            # Apply line limit if requested.
+            if max_lines_per_file is not None:
+                lines = full_text.splitlines()
+                line_count = len(lines)
+                if line_count > max_lines_per_file:
+                    window = lines[:max_lines_per_file]
+                    pad = len(str(max_lines_per_file))
+                    content = "\n".join(
+                        f"{str(i + 1).rjust(pad)}\t{ln}"
+                        for i, ln in enumerate(window)
+                    )
+                    content += (
+                        f"\n\n[... {line_count - max_lines_per_file} more lines "
+                        f"(total {line_count} lines). "
+                        f"Use read_file(\"{file_path}\", start_line={max_lines_per_file + 1}) "
+                        f"to continue reading.]"
+                    )
+                    was_truncated = True
+                else:
+                    content = full_text
+                    was_truncated = False
+            else:
+                # No line limit — apply byte cap like read_file does.
+                if total_size > PER_FILE_BYTE_CAP:
+                    line_count = full_text.count("\n") + 1
+                    content = full_text.encode("utf-8", errors="replace")[
+                        :PER_FILE_BYTE_CAP
+                    ].decode("utf-8", errors="replace")
+                    content = (
+                        f"[TRUNCATED: returned first {PER_FILE_BYTE_CAP} bytes "
+                        f"of {total_size} (~{line_count} lines total). "
+                        f"Use read_file(\"{file_path}\", start_line=N, end_line=M) "
+                        f"to read a specific section.]\\n\\n"
+                    ) + content
+                    was_truncated = True
+                else:
+                    content = full_text
+                    was_truncated = False
+
+            entry_bytes = len(content.encode("utf-8", errors="replace"))
+
+            # If adding this file would exceed the total budget, list it by
+            # name only instead of including its full content.
+            if total_bytes + entry_bytes > MAX_TOTAL_BYTES:
+                truncated_files.append(file_path)
+                continue
+
+            total_bytes += entry_bytes
+            results.append({
+                "path": file_path,
+                "status": "success",
+                "content": content,
+                "size": total_size,
+                "truncated": was_truncated,
+            })
+
+        # Build the concatenated output with clear file separators.
+        parts: list[str] = []
+        for r in results:
+            if r["status"] == "error":
+                parts.append(f"=== {r['path']} ===\nERROR: {r['message']}")
+            else:
+                header = f"=== {r['path']} ==="
+                if r.get("truncated"):
+                    header += "  (truncated)"
+                parts.append(f"{header}\n{r['content']}")
+
+        if truncated_files:
+            parts.append(
+                "[OUTPUT TRUNCATED: the following files were omitted because "
+                "the total output exceeded the size cap. "
+                "Use read_file to read them individually: "
+                + ", ".join(truncated_files)
+                + "]"
+            )
+
+        return json.dumps({
+            "status": "success",
+            "files_read": len([r for r in results if r["status"] == "success"]),
+            "files_error": len([r for r in results if r["status"] == "error"]),
+            "files_omitted": len(truncated_files),
+            "total_bytes": total_bytes,
+            "content": "\n\n".join(parts),
+        })
+
     registry.tools.update({
         "list_files": list_files,
         "list_files_recursive": list_files_recursive,
         "read_file": read_file,
+        "read_files": read_files,
         "search_in_files": search_in_files,
         "find_files": find_files,
     })
@@ -301,6 +458,28 @@ def register(registry) -> None:
                         "limit": {"type": "integer", "description": "Alias: number of lines to return from start_line/offset."},
                     },
                     "required": ["path"],
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "read_files",
+                "description": "Read multiple files in one call. Returns concatenated contents with file headers, ideal for loading several related files at once instead of making separate read_file calls for each one. Each file is prefixed with a === path === separator. Output is capped at 200 KB total; files beyond the cap are listed by name only. Use max_lines_per_file to limit lines per file (default 200).",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "paths": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "List of file paths (relative to project root) to read. Maximum 50 files.",
+                        },
+                        "max_lines_per_file": {
+                            "type": "integer",
+                            "description": "Maximum lines to return per file (default 200). Set to null for full content (subject to 100 KB per-file cap).",
+                        },
+                    },
+                    "required": ["paths"],
                 },
             },
         },

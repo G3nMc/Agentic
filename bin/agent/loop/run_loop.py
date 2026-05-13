@@ -31,7 +31,7 @@ _IDEMPOTENT_VALIDATORS = frozenset({
     "flutter_analyze", "flutter_test",
     "git_status", "git_diff", "git_log",
 })
-_MAX_CONSECUTIVE_VALIDATIONS = 2
+_MAX_CONSECUTIVE_VALIDATIONS = 3
 
 # Bare confirmations / continuations that mean "execute the prior plan", not
 # "open-ended exploration". Mirrors workflow.py's _FOLLOWUP_RE so the
@@ -127,6 +127,7 @@ class Orchestrator:
             security_config: Optional[SecurityConfig] = None,
             disable_tools: bool = False,
             path_filter: Optional[Any] = None,
+            db_connections: Optional[Dict[str, Dict[str, str]]] = None,
     ):
         self.backend = backend
         # When True, every request is routed as a plain chat call — the
@@ -138,7 +139,8 @@ class Orchestrator:
         self.model_id = getattr(backend, "model_id", "(unknown)")
         self.tool_registry = ToolRegistry(base_path=base_path,
                                           security_config=security_config,
-                                          path_filter=path_filter)
+                                          path_filter=path_filter,
+                                          db_connections=db_connections)
         # Model-level circuit breaker: open after 5 consecutive API failures,
         # probe again after 60 s so a temporary outage doesn't loop forever.
         self._model_circuit_breaker = CircuitBreaker(
@@ -860,32 +862,72 @@ class Orchestrator:
                 )
 
             # --- Truncation detection ---
-            # The reply claims to start a tool call (`<tool>` or fenced JSON)
-            # but was cut off by max_tokens before the matching `</tool>` /
-            # closing brace arrived. Without this branch we'd dump the raw
-            # half-written JSON back to the UI.
+            # The reply was cut off by max_tokens. Two shapes:
+            #   1. A tool call was truncated (<tool> or JSON opened but not
+            #      closed) — retry with a tool-call-specific nudge.
+            #   2. A final answer was truncated (plain text, no tool syntax)
+            #      — retry asking the model to continue from where it left
+            #      off. This is the fix for "parts that are cutted" in long
+            #      explanations: the old code always assumed a tool call,
+            #      wasting retries on a continuation prompt that made no sense.
             looks_truncated = (
                     finish_reason == "length"
                     or _td.looks_like_unclosed_tool(text_clean)
             )
             if looks_truncated and truncation_retries < 2:
                 truncation_retries += 1
-                print(f"[orch] Truncation detected (retry {truncation_retries}).",
-                      file=sys.stderr)
-                self.conversation_history.append({
-                    "role": "user",
-                    "content": (
-                        "Your previous reply was CUT OFF before the closing "
-                        "</tool> tag. Do NOT include any plan, preamble, or "
-                        "explanation. Emit ONLY the tool call on a single "
-                        "line, e.g.:\n"
-                        '<tool>{"tool":"write_file","parameters":'
-                        '{"path":"...","content":"..."}}</tool>\n'
-                        "If the content is very large, break the work into "
-                        "smaller steps: first create the file with a short "
-                        "content, then use append_file in follow-up calls."
-                    ),
-                })
+                # Determine whether this is a truncated tool call or a
+                # truncated final answer. A tool call has <tool> tags or
+                # JSON tool syntax; a final answer is plain text.
+                is_tool_truncation = _td.looks_like_unclosed_tool(text_clean) or (
+                    _td.parse_all_tag_tool_calls(
+                        text_clean, self.tool_registry.definitions
+                    )
+                )
+                if is_tool_truncation:
+                    print(
+                        f"[orch] Truncated tool call detected "
+                        f"(retry {truncation_retries}).",
+                        file=sys.stderr,
+                    )
+                    self.conversation_history.append({
+                        "role": "user",
+                        "content": (
+                            "Your previous reply was CUT OFF before the closing "
+                            "</tool> tag. Do NOT include any plan, preamble, or "
+                            "explanation. Emit ONLY the tool call on a single "
+                            "line, e.g.:\n"
+                            '<tool>{"tool":"write_file","parameters":'
+                            '{"path":"...","content":"..."}}</tool>\n'
+                            "If the content is very large, break the work into "
+                            "smaller steps: first create the file with a short "
+                            "content, then use append_file in follow-up calls."
+                        ),
+                    })
+                else:
+                    print(
+                        f"[orch] Truncated final answer detected "
+                        f"(retry {truncation_retries}).",
+                        file=sys.stderr,
+                    )
+                    # For a truncated final answer, give the model the last
+                    # ~800 chars of its own output so it can continue
+                    # seamlessly instead of starting over.
+                    tail = text_clean[-800:] if len(text_clean) > 800 else text_clean
+                    self.conversation_history.append({
+                        "role": "user",
+                        "content": (
+                            "Your previous reply was CUT OFF by the token "
+                            "limit. Continue EXACTLY from where you left off. "
+                            "Do NOT repeat what you already wrote. Do NOT "
+                            "start over. Just continue the text.\n\n"
+                            "--- LAST 800 CHARS OF YOUR PREVIOUS REPLY ---\n"
+                            f"{tail}\n"
+                            "--- END OF PREVIOUS REPLY ---\n\n"
+                            "Continue from here. Pick up mid-sentence if "
+                            "necessary. Do NOT add any preamble."
+                        ),
+                    })
                 iteration += 1
                 continue
 

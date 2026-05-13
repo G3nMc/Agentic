@@ -1,0 +1,23 @@
+PRAGMA foreign_keys = OFF;
+
+DELETE FROM "Entities";
+DELETE FROM "EntityProperties";
+DELETE FROM "UiGroups";
+DELETE FROM "UiTabs";
+DELETE FROM "UiTabPages";
+DELETE FROM "UiWidgets";
+DELETE FROM "UiToolbarButtons";
+DELETE FROM "UiToolbars";
+DELETE FROM "EntityRelationships";
+DELETE FROM "Methods" WHERE IsCustom = 0;
+DELETE FROM "MethodParameters" WHERE IsCustom = 0;
+DELETE FROM "ValidationRules";
+DELETE FROM "BusinessLogicSteps";
+DELETE FROM "ErrorDefinitions";
+DELETE FROM "FieldPatterns";
+DELETE FROM "ServiceDependencies";
+
+-- Reset AUTOINCREMENT counters
+DELETE FROM sqlite_sequence;
+
+PRAGMA foreign_keys = ON;

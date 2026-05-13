@@ -123,7 +123,16 @@
       "Bash(python -c \"from bin.agent.core.compactor import elide_oversized; print\\('compactor ok'\\)\")",
       "Bash(python -c \"from bin.agent.core.workflow import Workflow; print\\('workflow ok'\\)\")",
       "Bash(Get-ChildItem -Path \"C:\\\\Users\\\\Gentian\\\\AsPro\\\\AI\\\\Agentic\" -Directory)",
-      "Bash(Select-Object -First 20)"
+      "Bash(Select-Object -First 20)",
+      "Bash(python -c \"import ast; ast.parse\\(open\\('C:/Users/Gentian/AsPro/AI/Agentic/bin/agent/tools/registry.py'\\).read\\(\\)\\)\")",
+      "Bash(python -)",
+      "Bash(python -c \"import ast; ast.parse\\(open\\('bin/agent/tools/registry.py'\\).read\\(\\)\\); print\\('syntax OK'\\)\")",
+      "Bash(python -c \"from agent.tools.registry import ToolRegistry; print\\('ToolRegistry import OK'\\)\")",
+      "Bash(python -c \"from agent.core.workflow import build_workflow_from_args; print\\('workflow import OK'\\)\")",
+      "Bash(python -m pytest bin/agent/team/tests/ -x -q)",
+      "Bash(git stash *)",
+      "Bash(python -m pytest bin/agent/team/tests/test_bootstrap.py::AuthFlagForwardingTests::test_ollama_url_and_num_ctx_forwarded -x -q)",
+      "Bash(python -m pytest bin/agent/team/tests/ -q --deselect bin/agent/team/tests/test_bootstrap.py::AuthFlagForwardingTests::test_ollama_url_and_num_ctx_forwarded)"
     ]
   }
 }

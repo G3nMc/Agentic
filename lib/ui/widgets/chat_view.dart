@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
@@ -1870,6 +1871,8 @@ class _TypingIndicator extends StatefulWidget {
 
 class _TypingIndicatorState extends State<_TypingIndicator> with SingleTickerProviderStateMixin {
   late final AnimationController _c;
+  StreamSubscription<String>? _statusSub;
+  String _label = 'Working...';
 
   @override
   void initState() {
@@ -1878,10 +1881,21 @@ class _TypingIndicatorState extends State<_TypingIndicator> with SingleTickerPro
       vsync: this,
       duration: const Duration(milliseconds: 1000),
     )..repeat();
+
+    // Seed from the last known status so late-mounted indicators show the
+    // current activity instead of the generic fallback.
+    final last = OrchestratorManager.instance.lastStatus;
+    if (last != null && last.isNotEmpty) _label = last;
+
+    _statusSub = OrchestratorManager.instance.statusStream.listen((status) {
+      if (!mounted) return;
+      setState(() => _label = status);
+    });
   }
 
   @override
   void dispose() {
+    _statusSub?.cancel();
     _c.dispose();
     super.dispose();
   }
@@ -1919,9 +1933,9 @@ class _TypingIndicatorState extends State<_TypingIndicator> with SingleTickerPro
             },
           ),
           const SizedBox(width: 10),
-          const Text(
-            "Working...",
-            style: TextStyle(color: AppTheme.accentMarrone, fontSize: 13),
+          Text(
+            _label,
+            style: const TextStyle(color: AppTheme.accentMarrone, fontSize: 13),
           ),
         ],
       ),

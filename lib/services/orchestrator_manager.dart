@@ -7,6 +7,7 @@ import 'package:path_provider/path_provider.dart';
 
 import '../data/repositories/agent_role_settings_repository.dart';
 import '../data/repositories/backend_settings_repository.dart';
+import '../data/repositories/database_connections_repository.dart';
 import '../data/repositories/dev_filters_repository.dart';
 import '../data/repositories/settings_repository.dart';
 
@@ -75,6 +76,15 @@ class OrchestratorManager {
   List<Map<String, Object?>> _lastTrace = const [];
   List<Map<String, Object?>> get lastTrace => List.unmodifiable(_lastTrace);
 
+  // ── Human-friendly status stream ───────────────────────────────────────
+  // Each event is a short label like "Reading file..." or "Analyzing Dart
+  // code..." that the typing indicator displays instead of "Working...".
+  final StreamController<String> _statusController = StreamController<String>.broadcast();
+
+  /// Live stream of human-friendly status labels derived from orchestrator
+  /// log lines. Use this to show what the model is doing right now.
+  Stream<String> get statusStream => _statusController.stream;
+
   /// Live stream of orchestrator log lines (stderr of the subprocess).
   /// Each event is a single trimmed line such as
   ///   "[orch] Groq streaming 'llama-3.3-70b-versatile' (42 chars)..."
@@ -105,6 +115,158 @@ class OrchestratorManager {
     _logLines.add(trimmed);
     if (_logLines.length > _kMaxLogLines) _logLines.removeAt(0);
     if (!_logController.isClosed) _logController.add(trimmed);
+
+    // Derive a human-friendly status label from the raw log line and push
+    // it onto the status stream so the typing indicator can show what the
+    // model is doing right now instead of a generic "Working...".
+    final status = _deriveStatus(trimmed);
+    if (status != null) {
+      _lastStatus = status;
+      if (!_statusController.isClosed) _statusController.add(status);
+    }
+  }
+
+  /// Latest human-friendly status label, or null if nothing has been derived
+  /// yet. Widgets that mount late can read this to show the current activity.
+  String? _lastStatus;
+
+  /// Current human-friendly status label (may be null).
+  String? get lastStatus => _lastStatus;
+
+  /// Map a raw orchestrator log line to a short, user-facing label.
+  ///
+  /// Returns null when the line doesn't carry a meaningful activity signal
+  /// (e.g. pure heartbeat, token-budget trimming, circuit-breaker chatter).
+  /// The returned string should be short enough to fit next to the three
+  /// animated dots — aim for ≤ 40 characters.
+  static String? _deriveStatus(String line) {
+    final l = line.toLowerCase();
+
+    // ── Tool calls ────────────────────────────────────────────────────
+    if (l.contains('[orch] -> tool ')) {
+      final tool = _extractAfter(line, '[orch] -> tool ');
+      if (tool == null) return null;
+      return _labelForTool(tool);
+    }
+
+    // ── Model reply arrived ───────────────────────────────────────────
+    if (l.contains('[orch] model reply')) return 'Thinking...';
+
+    // ── Request dispatched ────────────────────────────────────────────
+    if (l.contains('[orch] request (tool-enabled)')) return 'Planning...';
+    if (l.contains('[orch] request (chat)')) return 'Reasoning...';
+
+    // ── Multi-agent role transitions ──────────────────────────────────
+    if (l.contains('[agent:router')) return 'Routing task...';
+    if (l.contains('[agent:shaper')) return 'Shaping plan...';
+    if (l.contains('[agent:reasoner')) return 'Reasoning...';
+    if (l.contains('[agent:executor')) return 'Executing tools...';
+
+    // ── Retry / recovery signals ──────────────────────────────────────
+    if (l.contains('retrying in tool mode')) return 'Switching to tools...';
+    if (l.contains('malformed tool call detected')) return 'Correcting format...';
+    if (l.contains('truncated tool call detected')) return 'Continuing tool call...';
+    if (l.contains('truncated final answer detected')) return 'Continuing answer...';
+    if (l.contains('refusal detected')) return 'Overcoming refusal...';
+    if (l.contains('cliffhanger reply detected')) return 'Pushing to act...';
+
+    // ── Validation runs ───────────────────────────────────────────────
+    if (l.contains('flutter_analyze')) return 'Analyzing Dart code...';
+    if (l.contains('python_check')) return 'Checking Python syntax...';
+    if (l.contains('python_lint')) return 'Linting Python...';
+    if (l.contains('python_test')) return 'Running tests...';
+
+    // ── Synthesis / recap ─────────────────────────────────────────────
+    if (l.contains('synthesis succeeded')) return 'Summarizing...';
+    if (l.contains('synthesis call failed')) return 'Summarizing...';
+    if (l.contains('max iterations reached')) return 'Wrapping up...';
+    if (l.contains('repeat-call cap reached')) return 'Wrapping up...';
+
+    // ── Progress / extension ──────────────────────────────────────────
+    if (l.contains('progress detected')) return 'Making progress...';
+    if (l.contains('complex multi-file')) return 'Working on multiple files...';
+
+    // ── Nudge / pressure ──────────────────────────────────────────────
+    if (l.contains('[nudge]')) return 'Nudging to act...';
+    if (l.contains('[final warning]')) return 'Final push to act...';
+
+    // ── History trimming (noise — don't show) ─────────────────────────
+    if (l.contains('history trimmed')) return null;
+    if (l.contains('history over token budget')) return null;
+
+    // ── Rate-limit / circuit-breaker (noise) ──────────────────────────
+    if (l.contains('tpm limit')) return null;
+    if (l.contains('transient error')) return null;
+    if (l.contains('circuit breaker')) return null;
+
+    return null;
+  }
+
+  static String? _extractAfter(String line, String prefix) {
+    final idx = line.indexOf(prefix);
+    if (idx == -1) return null;
+    final after = line.substring(idx + prefix.length);
+    // Tool calls look like: read_file(path='...', start_line=...)
+    final paren = after.indexOf('(');
+    if (paren == -1) return after.trim();
+    return after.substring(0, paren).trim();
+  }
+
+  static String _labelForTool(String toolName) {
+    switch (toolName) {
+      case 'read_file':
+        return 'Reading file...';
+      case 'read_files':
+        return 'Reading files...';
+      case 'write_file':
+        return 'Writing file...';
+      case 'append_file':
+        return 'Appending to file...';
+      case 'patch_file':
+        return 'Patching file...';
+      case 'delete_file':
+        return 'Deleting file...';
+      case 'move_file':
+        return 'Moving file...';
+      case 'create_directory':
+        return 'Creating directory...';
+      case 'list_files':
+        return 'Listing files...';
+      case 'list_files_recursive':
+        return 'Exploring project...';
+      case 'search_in_files':
+        return 'Searching code...';
+      case 'find_files':
+        return 'Finding files...';
+      case 'run_command':
+        return 'Running command...';
+      case 'git_status':
+        return 'Checking git status...';
+      case 'git_diff':
+        return 'Viewing git diff...';
+      case 'git_log':
+        return 'Reading git history...';
+      case 'git_commit':
+        return 'Committing changes...';
+      case 'git_checkout':
+        return 'Switching branch...';
+      case 'git_branches':
+        return 'Listing branches...';
+      case 'flutter_analyze':
+        return 'Analyzing Dart code...';
+      case 'python_check':
+        return 'Checking Python syntax...';
+      case 'python_lint':
+        return 'Linting Python...';
+      case 'python_format':
+        return 'Formatting Python...';
+      case 'python_test':
+        return 'Running tests...';
+      case 'db_query':
+        return 'Querying database...';
+      default:
+        return 'Working...';
+    }
   }
 
   // Completes when the orchestrator prints `__READY__` on stdout.
@@ -560,6 +722,21 @@ class OrchestratorManager {
         }
       } catch (e) {
         _appendLog('[manager] Failed to write filters config: $e (continuing without filters)');
+      }
+
+      // User-configured database connections (Settings → Developer →
+      // Database Connections). The Flutter UI persists these in the
+      // app's SQLite settings table; we serialise the current snapshot
+      // to a temp file and hand the path to Python so the db_query tool
+      // can resolve a connection key the model passes in.
+      try {
+        final tmp = await getTemporaryDirectory();
+        final dbConnPath = '${tmp.path}/agentic_db_connections.json';
+        await DatabaseConnectionsRepository.instance.writeConfigJson(dbConnPath);
+        args.addAll(['--db-connections-config', dbConnPath]);
+        _appendLog('[manager] DB connections written -> $dbConnPath');
+      } catch (e) {
+        _appendLog('[manager] Failed to write DB connections config: $e (continuing without DB tool)');
       }
 
       final python = await resolvePythonExecutable();

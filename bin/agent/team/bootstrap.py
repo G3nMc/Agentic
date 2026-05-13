@@ -91,6 +91,10 @@ def build_team_session_from_args(args, *,
         worker_extra_args += ["--backend", args.backend]
     if getattr(args, "filters_config", None):
         worker_extra_args += ["--filters-config", args.filters_config]
+    if getattr(args, "db_connections_config", None):
+        worker_extra_args += [
+            "--db-connections-config", args.db_connections_config,
+        ]
     if getattr(args, "sandbox", False):
         worker_extra_args += ["--sandbox"]
     if getattr(args, "audit_log", None):

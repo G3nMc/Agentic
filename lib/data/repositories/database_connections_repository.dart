@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:io';
 
 import 'settings_repository.dart';
 
@@ -119,5 +120,16 @@ class DatabaseConnectionsRepository {
     final all = await getAll();
     final filtered = all.where((c) => c.key != key).toList();
     await setAll(filtered);
+  }
+
+  /// Serialise the configured connections as a JSON array and write it to
+  /// [path], so the Python orchestrator can load them via
+  /// `--db-connections-config`. The file always exists after this call —
+  /// even with zero connections we write `[]` so the orchestrator's loader
+  /// has a definitive answer instead of falling back to "file not found".
+  Future<void> writeConfigJson(String path) async {
+    final all = await getAll();
+    final payload = jsonEncode([for (final c in all) c.toJson()]);
+    await File(path).writeAsString(payload, flush: true);
   }
 }

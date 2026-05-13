@@ -1,0 +1,34 @@
+Helio host:
+
+
+ftp:
+password master per MobaxTerm da sbloccare in caso lo richiede come master password : 11022011
+IP:  65.19.154.90 
+user: userdieci11_ftp
+pass: 24Heliohost_ftp
+
+https://tommy.heliohost.org/
+user: userdieci11
+pass: 24Heliohost
+
+
+dominio:  ims.helio.st
+
+
+user: mariadb
+IP: 65.19.154.90 oppure ims.helioho.st
+database name: userdieci11_ims
+userdieci11_maria11
+11skandal
+
+altro user: mariadb
+IP: 65.19.154.90 oppure ims.helioho.st
+database name: userdieci11_tools
+userdieci11_maria11_tools
+11skandal_tools
+
+
+
+Account email:
+info@ims.helioho.st
+25Heliomail+

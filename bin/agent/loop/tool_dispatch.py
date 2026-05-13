@@ -129,14 +129,19 @@ def _looks_like_tool_attempt(text: str) -> bool:
     if not text:
         return False
 
-    # Check for explicit tool tags or JSON structures
-    if re.search(r"<\s*(?:tool|tool_call|function_call|function)(?=[\s>/=:]|$)", text, re.IGNORECASE):
+    # Check for explicit tool tags or JSON structures.
+    # Require <tool> (not just any tool-family tag) — smaller models
+    # sometimes echo <tool_call> or <function_call> from other prompt
+    # styles without actually intending a tool invocation.
+    if re.search(r"<\s*tool\s*>", text, re.IGNORECASE):
         return True
-    if re.search(r"</\s*(?:tool|tool_call|function_call|function)\s*>", text, re.IGNORECASE):
+    if re.search(r"</\s*tool\s*>", text, re.IGNORECASE):
         return True
 
-    # Require a more specific pattern for JSON-like structures
-    if re.search(r'["\']tool["\']\s*:\s*["\']\w+["\']', text):
+    # Only match "tool": "name" when it looks like a JSON object start —
+    # a bare mention of '"tool": "read_file"' in a final-answer narrative
+    # should NOT trigger the malformed path.
+    if re.search(r'\{\s*["\']tool["\']\s*:\s*["\']\w+["\']', text):
         return True
 
     if re.search(r"\b(?:tool_call|function_call)\s*[:=]\s*['\"]\w+['\"]", text, re.IGNORECASE):
@@ -187,22 +192,25 @@ def looks_like_malformed_tool_call(text: str) -> Tuple[bool, str | None]:
             f"Malformed tool call: Missing colon after 'tool' key. {correct_format}"
         )
 
-    if re.search(r"<\s*(?:tool|tool_call|function_call|function)(?=[\s>/=:]|$)", text, re.IGNORECASE) and not re.search(
-            r"</\s*(?:tool|tool_call|function_call|function)\s*>", text, re.IGNORECASE
-    ):
-        return True, (
-            f"Malformed tool call: Unclosed tool tag. Either close it properly or use JSON format. {correct_format}"
-        )
+    # Unclosed tool tags are NOT flagged here — they are handled by the
+    # truncation-detection path (looks_like_unclosed_tool + finish_reason)
+    # which gives better corrective feedback ("Your reply was CUT OFF"
+    # vs "Malformed tool call"). A model that writes "<tool>" in a
+    # narrative final answer will pass through here and be treated as
+    # plain text, which is the right outcome.
 
     if re.search(r'["\']parameters["\']\s*>', text):
         return True, (
             f"Malformed tool call: Invalid syntax after 'parameters' key. Use ':' not '>'. {correct_format}"
         )
 
-    return True, (
-        f"Malformed tool call: The reply looks like a tool invocation but could not be parsed. "
-        f"{correct_format}"
-    )
+    # If none of the specific malformation patterns matched, the text is
+    # probably a final answer that happens to mention tool-like keywords
+    # (e.g. "tool_call" or "function_call" from another prompt style).
+    # Don't flag it as malformed — treating a valid final answer as a
+    # malformed tool call is far more disruptive than letting a genuinely
+    # malformed call slip through (it'll be caught on the next iteration).
+    return False, None
 
 
 # ---------------------------------------------------------------------------

@@ -139,6 +139,15 @@ class _MessageBubbleState extends State<MessageBubble> {
                       color: AppTheme.codeBg,
                       borderRadius: BorderRadius.circular(8),
                     ),
+                    blockquote: const TextStyle(
+                      color: AppTheme.textPrimary,
+                      fontSize: 14,
+                      height: 1.5,
+                    ),
+                    blockquoteDecoration: BoxDecoration(
+                      color: AppTheme.bgSecondary,
+                      borderRadius: BorderRadius.circular(4),
+                    ),
                   ),
                   builders: {
                     "code": CodeBlockBuilder(),

@@ -270,6 +270,20 @@ def main():
             "over exclusion. read_file / write_file are NOT filtered."
         ),
     )
+    parser.add_argument(
+        "--db-connections-config",
+        default="",
+        metavar="PATH",
+        help=(
+            "Optional path to a JSON file listing user-configured database "
+            "connections — written by the Flutter Settings UI (Developer → "
+            "Database Connections). Each entry is "
+            "{\"key\": ..., \"value\": ..., \"type\": \"sqlite\"|\"mariadb\"}. "
+            "Loaded once at startup and passed to the db_query tool so the "
+            "model can address connections by key without touching the "
+            "filesystem."
+        ),
+    )
 
     args = parser.parse_args()
 
@@ -299,6 +313,17 @@ def main():
         active = path_filter.summary_for_prompt(top=3) or "(none)"
         print(f"[orch] Filesystem filter active:\n{active}",
               file=sys.stderr)
+
+    # User-configured database connections written by the Flutter Settings UI.
+    # Same non-fatal policy as filters: a missing or malformed file just means
+    # the db_query tool reports "no connections available" until the user
+    # reconfigures, instead of preventing the orchestrator from starting.
+    db_connections = _load_db_connections(args.db_connections_config)
+    if db_connections:
+        print(
+            f"[orch] Database connections loaded: {sorted(db_connections.keys())}",
+            file=sys.stderr,
+        )
 
     # ------------------------------------------------------------------
     # Team Mode path: decompose heavy tasks into worker subprocesses.
@@ -341,6 +366,7 @@ def main():
                 security_config=security_config,
                 base_path=args.base_path,
                 path_filter=path_filter,
+                db_connections=db_connections,
             )
         except Exception as e:  # noqa: BLE001
             print(f"[orch] Failed to build multi-agent workflow: {e}",
@@ -390,6 +416,7 @@ def main():
         security_config=security_config,
         disable_tools=args.disable_tools,
         path_filter=path_filter,
+        db_connections=db_connections,
     )
     if args.disable_tools:
         print("[orch] Tools disabled — running in plain-chat mode.",
@@ -428,6 +455,50 @@ def _load_path_filter(filters_config_path: str, base_path: str):
               file=sys.stderr)
         return None
     return PathFilter.from_config(base_path, cfg)
+
+
+def _load_db_connections(config_path: str):
+    """Read the optional db-connections JSON file and return a dict.
+
+    The Flutter Settings UI writes a list of {"key", "value", "type"} entries;
+    we convert it into the dict shape the db_query tool expects (keyed by
+    connection name). Returns an empty dict for any failure so the
+    orchestrator still starts — db_query will just report "no connections
+    available" until the user fixes the file.
+    """
+    path = (config_path or "").strip()
+    if not path:
+        return {}
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            raw = json.load(f)
+    except FileNotFoundError:
+        print(f"[orch] --db-connections-config '{path}' not found; ignoring.",
+              file=sys.stderr)
+        return {}
+    except (json.JSONDecodeError, OSError) as e:
+        print(
+            f"[orch] --db-connections-config could not be read ({e}); ignoring.",
+            file=sys.stderr,
+        )
+        return {}
+    if not isinstance(raw, list):
+        print(
+            "[orch] --db-connections-config did not contain a list; ignoring.",
+            file=sys.stderr,
+        )
+        return {}
+    connections = {}
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        key = item.get("key")
+        value = item.get("value", "")
+        conn_type = item.get("type", "sqlite")
+        if not isinstance(key, str) or not key:
+            continue
+        connections[key] = {"value": value, "type": conn_type}
+    return connections
 
 
 def _build_backend_for_args(args):

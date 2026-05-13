@@ -61,31 +61,13 @@ def register(registry) -> None:
             return json.dumps({"status": "error", "message": str(e)})
 
     def _load_connections(registry) -> Dict[str, Dict[str, str]]:
-        """Load database connections from settings file."""
-        # Read from the orchestrator's settings JSON
-        settings_path = registry.base_path / ".agent" / "settings.json"
-        if not settings_path.exists():
-            return {}
+        """Return database connections previously loaded onto the registry.
 
-        try:
-            with open(settings_path, "r", encoding="utf-8") as f:
-                data = json.load(f)
-
-            connections_data = data.get("database_connections", [])
-            if not isinstance(connections_data, list):
-                return {}
-
-            # Convert list of {key, value, type} to dict keyed by name
-            connections = {}
-            for item in connections_data:
-                if isinstance(item, dict) and "key" in item and "value" in item:
-                    connections[item["key"]] = {
-                        "value": item.get("value", ""),
-                        "type": item.get("type", "sqlite"),
-                    }
-            return connections
-        except (json.JSONDecodeError, IOError):
-            return {}
+        Connections are populated at orchestrator startup from the JSON file
+        the Flutter UI writes via --db-connections-config. The registry
+        holds them as a dict keyed by connection name; we just hand it back.
+        """
+        return getattr(registry, "db_connections", None) or {}
 
     def _execute_mariadb(
         connection_string: str,
