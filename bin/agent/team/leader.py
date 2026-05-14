@@ -26,6 +26,7 @@ from __future__ import annotations
 import json
 import logging
 import sys
+import time
 from typing import Any, Dict, List, Optional, Tuple
 
 from ..agents.base import Agent
@@ -66,7 +67,7 @@ class LeaderAgent(Agent):
         backend: ModelBackend,
         *,
         paths: TeamPaths,
-        max_tokens: int = 1024,
+        max_tokens: int = 4096,
         temperature: float = 0.2,
     ):
         super().__init__(
@@ -108,7 +109,14 @@ class LeaderAgent(Agent):
         consecutive_failures = 0
         _MAX_IDENTICAL_FAILURES = 2
 
+        # Minimum inter-call delay for rate-limited backends (Gemini free
+        # tier = 5 RPM). The backend's own retry logic handles 429s, but
+        # a small pause between turns prevents hitting the limit at all.
+        _MIN_TURN_INTERVAL_S = 3.0
+
         for turn in range(_DECOMPOSE_MAX_TURNS):
+            if turn > 0:
+                time.sleep(_MIN_TURN_INTERVAL_S)
             text = self._chat_once(history, prompt if turn == 0 else "")
             calls = self._extract_calls(text)
             if not calls and self._looks_like_final(text):
@@ -360,7 +368,7 @@ class LeaderAgent(Agent):
             messages=messages,
             max_tokens=self.max_tokens,
             temperature=self.temperature,
-            tools=None,
+            tools=LEADER_TOOL_DEFINITIONS,
         )
         cleaned = _td.clean_history_text(text or "")
         print(f"[leader←{self.model_id}] {cleaned[:300]}",

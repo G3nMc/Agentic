@@ -3,7 +3,9 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
+import time
 from typing import Any, Dict, List, Optional, Tuple
 
 from .backend_base import ModelBackend
@@ -51,6 +53,34 @@ class GeminiBackend(ModelBackend):
         if "max_tokens" in low or "max token" in low:
             return "length"
         return low
+
+    @staticmethod
+    def _extract_retry_delay(exc: Exception) -> float:
+        """Extract retryDelay (seconds) from a Google API error response.
+
+        Parses the ``retryDelay`` field inside the ``RetryInfo`` detail,
+        e.g. ``"retryDelay": "7s"``. Falls back to exponential back-off
+        (2^attempt) when the field is missing or unparseable.
+        """
+        try:
+            body = getattr(exc, "response_json", None)
+            if body is None:
+                resp = getattr(exc, "response", None)
+                body = getattr(resp, "json", None)
+                if callable(body):
+                    body = body()
+            if isinstance(body, dict):
+                details = body.get("details") or body.get("error", {}).get("details") or []
+                for d in details:
+                    if isinstance(d, dict) and d.get("@type", "").endswith("RetryInfo"):
+                        raw = d.get("retryDelay", "")
+                        if isinstance(raw, str):
+                            m = re.match(r"(\d+(?:\.\d+)?)\s*s", raw.strip())
+                            if m:
+                                return float(m.group(1))
+        except Exception:
+            pass
+        return 2.0  # conservative default
 
     def _to_contents(self, messages: List[Dict[str, Any]]) -> Tuple[str, List[Any]]:
         system_parts: List[str] = []
@@ -122,15 +152,51 @@ class GeminiBackend(ModelBackend):
             )
 
         _log(f"[Gemini:request] sending generate_content to model={self.model_id}")
-        try:
-            response = self._client.models.generate_content(
-                model=self.model_id,
-                contents=contents if contents else "",
-                config=self._types.GenerateContentConfig(**config_kwargs),
-            )
-        except Exception as e:
-            _log(f"[Gemini:error] model={self.model_id} {type(e).__name__}: {e}")
-            raise RuntimeError(f"Gemini error: {e}") from e
+
+        # Retry loop for transient errors (429 rate-limit, 5xx server errors).
+        # Extracts retryDelay from Google's error response when available,
+        # otherwise falls back to exponential back-off.
+        _MAX_RETRIES = 3
+        last_exc: Optional[Exception] = None
+        for attempt in range(_MAX_RETRIES):
+            try:
+                response = self._client.models.generate_content(
+                    model=self.model_id,
+                    contents=contents if contents else "",
+                    config=self._types.GenerateContentConfig(**config_kwargs),
+                )
+                break  # success — exit retry loop
+            except Exception as e:
+                last_exc = e
+                status_code = getattr(e, "status_code", None) or getattr(
+                    getattr(e, "response", None), "status_code", None
+                )
+                # Only retry on transient errors (429, 5xx). Anything else
+                # (4xx auth errors, bad requests) fails immediately.
+                if status_code not in (429, 500, 502, 503, 504):
+                    _log(
+                        f"[Gemini:error] model={self.model_id} "
+                        f"{type(e).__name__}: {e}"
+                    )
+                    raise RuntimeError(f"Gemini error: {e}") from e
+                if attempt >= _MAX_RETRIES - 1:
+                    _log(
+                        f"[Gemini:error] model={self.model_id} "
+                        f"retries exhausted ({_MAX_RETRIES}) — "
+                        f"{type(e).__name__}: {e}"
+                    )
+                    raise RuntimeError(
+                        f"Gemini error after {_MAX_RETRIES} retries: {e}"
+                    ) from e
+                # Extract retryDelay from the error body (Google returns it
+                # in the RetryInfo detail). Fall back to exponential back-off.
+                delay = self._extract_retry_delay(e)
+                _log(
+                    f"[Gemini:retry] model={self.model_id} "
+                    f"attempt={attempt + 1}/{_MAX_RETRIES} "
+                    f"status={status_code} delay={delay:.1f}s"
+                )
+                time.sleep(delay)
 
         candidates = getattr(response, "candidates", []) or []
         finish_reason = ""

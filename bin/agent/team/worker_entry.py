@@ -99,6 +99,7 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--multi-agent", action="store_true", default=True)
     p.add_argument("--agent-config", default="")
     p.add_argument("--filters-config", default="")
+    p.add_argument("--db-connections-config", default="")
     return p
 
 
