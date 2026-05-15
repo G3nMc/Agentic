@@ -20,6 +20,7 @@ import '../../data/repositories/local_server_config_repository.dart';
 import '../../data/repositories/message_repository.dart';
 import '../../data/repositories/settings_repository.dart';
 import '../../services/chat_processing_service.dart';
+import '../../services/context_summary_service.dart';
 import '../../services/huggingface_service.dart';
 import '../../services/llm_service.dart';
 import '../../services/local_server_manager.dart';
@@ -187,6 +188,9 @@ class _ChatViewState extends StateManager<ChatView> with WidgetsBindingObserver 
     // Entering an existing chat should always ensure the orchestrator is up
     // for orchestrator-backed modes so the next action is instant.
     await _startOrchestratorForActiveBackend(silent: true);
+
+    // Hydrate the log panel with the previous session's output from disk.
+    OrchestratorManager.instance.loadLogFromDisk(id);
 
     WidgetsBinding.instance.addPostFrameCallback((_) => _scrollToBottom());
   }
@@ -396,13 +400,17 @@ class _ChatViewState extends StateManager<ChatView> with WidgetsBindingObserver 
         ollamaPythonBridgeUrl: ollamaPythonBridgeUrl,
       );
 
+      final historyForRequest = _isOrchestratorBackend(backend)
+          ? history
+          : (prepared.historyToSend.isNotEmpty
+              ? prepared.historyToSend
+              : history);
+
       final reply = await LlmService.instance.sendChat(
         backend: backend,
         token: token ?? "",
         modelId: modelId,
-        history: prepared.historyToSend.isNotEmpty
-            ? prepared.historyToSend
-            : history,
+        history: historyForRequest,
         conversationId: conv.id,
         localServerUrl: serverUrl,
         ollamaBaseUrl: ollamaBaseUrl,
@@ -650,6 +658,7 @@ class _ChatViewState extends StateManager<ChatView> with WidgetsBindingObserver 
     for (final id in idsToRemove) {
       await MessageRepository.instance.deleteById(id);
     }
+    await ContextSummaryService.instance.deleteContextSummary(conv.id);
 
     await _sendMessage(originalContent);
   }
@@ -694,6 +703,10 @@ class _ChatViewState extends StateManager<ChatView> with WidgetsBindingObserver 
     for (final id in idsToRemove) {
       await MessageRepository.instance.deleteById(id);
     }
+    final conv = _conversation;
+    if (conv != null) {
+      await ContextSummaryService.instance.deleteContextSummary(conv.id);
+    }
   }
 
   /// Handles the "Delete" action on a message bubble.
@@ -715,6 +728,7 @@ class _ChatViewState extends StateManager<ChatView> with WidgetsBindingObserver 
 
     // Remove the message from the database
     await MessageRepository.instance.deleteById(messageId);
+    await ContextSummaryService.instance.deleteContextSummary(conv.id);
 
     // Update the conversation's updated time
     await ConversationRepository.instance.touch(conv.id);
@@ -848,7 +862,8 @@ class _ChatViewState extends StateManager<ChatView> with WidgetsBindingObserver 
         if (showOrchestratorLog && _logVisible) ...[
           ResizeHandle(
             height: _logPanelHeight,
-            onHeightChanged: (newHeight) => setState(() => _logPanelHeight = newHeight),
+            onHeightChanged: (newHeight) =>
+                setState(() => _logPanelHeight = newHeight),
             minHeight: 40.0,
           ),
           OrchestratorLogPanel(height: _logPanelHeight),

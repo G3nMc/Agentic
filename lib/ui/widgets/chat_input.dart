@@ -11,6 +11,7 @@ import '../../core/theme/app_theme.dart';
 import '../../core/utils/notification_helper.dart';
 import '../../services/orchestrator_manager.dart';
 import '../../services/project_service.dart';
+import '../screens/settings_screen.dart';
 
 class ChatInput extends StatefulWidget {
   final bool enabled;
@@ -82,6 +83,7 @@ class _ChatInputState extends State<ChatInput> {
   final _focusNode = FocusNode();
   final _projectService = ProjectService();
   String _currentProjectFolder = 'Select folder...';
+  List<String> _projectFolders = const [];
   List<String> _branches = [];
   String _selectedBranch = '';
 
@@ -161,17 +163,21 @@ class _ChatInputState extends State<ChatInput> {
   }
 
   void _loadProjectInfo() {
+    final folders = _projectService.projectFolders;
     if (!_projectService.hasExplicitFolder) {
-      // No folder picked yet — make it obvious so the user picks one before
-      // sending requests, otherwise --base-path falls back to Directory.current
-      // (the app install dir on Windows installer builds).
-      setState(() => _currentProjectFolder = 'Select folder...');
+      setState(() {
+        _currentProjectFolder = 'Select folder...';
+        _projectFolders = folders;
+      });
       return;
     }
     final path = _projectService.currentPath;
     final folderName = path.split(Platform.pathSeparator).last;
     if (folderName.isNotEmpty) {
-      setState(() => _currentProjectFolder = folderName);
+      setState(() {
+        _currentProjectFolder = folderName;
+        _projectFolders = folders;
+      });
     }
   }
 
@@ -252,44 +258,29 @@ class _ChatInputState extends State<ChatInput> {
     setState(() => _selectedBranch = branch);
   }
 
-  Future<void> _pickProjectFolder() async {
-    final newPath = await _projectService.pickProjectFolder();
-    if (newPath == null || !mounted) return;
+  Future<void> _switchToProject(String path) async {
+    if (!mounted) return;
+    final switched = await _projectService.selectProjectFolder(path);
+    if (!switched || !mounted) return;
 
-    final confirmed = await showDialog<bool>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('Change Project Folder'),
-        content: Text(
-          'Changing the project folder will restart the orchestrator. Do you want to continue?\n\n'
-          'New folder: ${newPath.split(Platform.pathSeparator).last}',
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx, false),
-            child: const Text('Cancel'),
-          ),
-          TextButton(
-            onPressed: () => Navigator.pop(ctx, true),
-            child: const Text('Confirm'),
-          ),
-        ],
+    setState(() => _currentProjectFolder = path.split(Platform.pathSeparator).last);
+
+    // Stop orchestrator to ensure it restarts with the new base path
+    await OrchestratorManager.instance.stop();
+
+    // Notify parent to restart orchestrator if needed
+    widget.onProjectFolderChanged?.call();
+
+    // Reload branches for the new project folder
+    await _loadGitBranches();
+  }
+
+  void _openSettingsForProjects() {
+    Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => const SettingsScreen(initialSection: 0),
       ),
     );
-
-    if (confirmed == true && mounted) {
-      await _projectService.setProjectFolder(newPath);
-      setState(() => _currentProjectFolder = newPath.split(Platform.pathSeparator).last);
-
-      // Stop orchestrator to ensure it restarts with the new base path
-      await OrchestratorManager.instance.stop();
-
-      // Notify parent to restart orchestrator if needed
-      widget.onProjectFolderChanged?.call();
-
-      // Reload branches for the new project folder
-      await _loadGitBranches();
-    }
   }
 
   Future<void> _handleNewChatFromJsonFile() async {
@@ -770,7 +761,9 @@ class _ChatInputState extends State<ChatInput> {
                         children: [
                           _ProjectFolderButton(
                             folderName: _currentProjectFolder,
-                            onTap: _pickProjectFolder,
+                            projectFolders: _projectFolders,
+                            onSelectProject: _switchToProject,
+                            onOpenSettings: _openSettingsForProjects,
                           ),
                           const SizedBox(width: 8),
                           if (widget.showLogToggle) ...[
@@ -978,33 +971,78 @@ class _LogToggleButton extends StatelessWidget {
 
 class _ProjectFolderButton extends StatelessWidget {
   final String folderName;
-  final VoidCallback onTap;
+  final List<String> projectFolders;
+  final ValueChanged<String> onSelectProject;
+  final VoidCallback onOpenSettings;
 
-  const _ProjectFolderButton({required this.folderName, required this.onTap});
+  const _ProjectFolderButton({
+    required this.folderName,
+    required this.projectFolders,
+    required this.onSelectProject,
+    required this.onOpenSettings,
+  });
 
   @override
-  Widget build(BuildContext context) => Tooltip(
-        message: 'Click to select project folder',
-        child: InkWell(
-          onTap: onTap,
-          borderRadius: BorderRadius.circular(6),
-          child: Container(
-            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-            decoration: BoxDecoration(
-              color: AppTheme.bgSecondary,
-              borderRadius: BorderRadius.circular(6),
-              border: Border.all(color: AppTheme.accentMarrone),
-            ),
-            child: Row(mainAxisSize: MainAxisSize.min, children: [
-              const Icon(Icons.folder, size: 14, color: AppTheme.textSecondary),
-              const SizedBox(width: 4),
-              Text(folderName, style: const TextStyle(fontSize: 12, color: AppTheme.textPrimary)),
-              const SizedBox(width: 2),
-              const Icon(Icons.keyboard_arrow_down, size: 14, color: AppTheme.textSecondary),
-            ]),
+  Widget build(BuildContext context) {
+    final items = <PopupMenuEntry<String>>[
+      for (final p in projectFolders)
+        PopupMenuItem<String>(
+          value: p,
+          child: Row(
+            children: [
+              const Icon(Icons.folder, size: 16, color: AppTheme.textSecondary),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  p.split(Platform.pathSeparator).last,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(fontSize: 13),
+                ),
+              ),
+            ],
           ),
         ),
-      );
+      const PopupMenuDivider(),
+      PopupMenuItem<String>(
+        value: '__add__',
+        child: Row(
+          children: [
+            const Icon(Icons.add, size: 16, color: AppTheme.accent),
+            const SizedBox(width: 8),
+            const Text('Manage projects\u2026', style: TextStyle(fontSize: 13, color: AppTheme.accent)),
+          ],
+        ),
+      ),
+    ];
+
+    return PopupMenuButton<String>(
+      tooltip: 'Switch project folder',
+      offset: const Offset(0, 40),
+      onSelected: (value) {
+        if (value == '__add__') {
+          onOpenSettings();
+        } else {
+          onSelectProject(value);
+        }
+      },
+      itemBuilder: (_) => items,
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+        decoration: BoxDecoration(
+          color: AppTheme.bgSecondary,
+          borderRadius: BorderRadius.circular(6),
+          border: Border.all(color: AppTheme.accentMarrone),
+        ),
+        child: Row(mainAxisSize: MainAxisSize.min, children: [
+          const Icon(Icons.folder, size: 14, color: AppTheme.textSecondary),
+          const SizedBox(width: 4),
+          Text(folderName, style: const TextStyle(fontSize: 12, color: AppTheme.textPrimary)),
+          const SizedBox(width: 2),
+          const Icon(Icons.keyboard_arrow_down, size: 14, color: AppTheme.textSecondary),
+        ]),
+      ),
+    );
+  }
 }
 
 class _SendButton extends StatelessWidget {

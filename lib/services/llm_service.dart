@@ -209,6 +209,7 @@ class LlmService {
           lastUser,
           sessionKey: conversationId,
           seedHistory: _seedHistoryForOrchestrator(history, contextSummary: contextSummary),
+          forceHistorySync: true,
         );
 
       case LlmBackend.ollamaOrchestrator:
@@ -269,6 +270,7 @@ class LlmService {
           lastUser,
           sessionKey: conversationId,
           seedHistory: _seedHistoryForOrchestrator(history, contextSummary: contextSummary),
+          forceHistorySync: true,
         );
 
       case LlmBackend.groq:
@@ -361,6 +363,7 @@ class LlmService {
           lastUser,
           sessionKey: conversationId,
           seedHistory: _seedHistoryForOrchestrator(history, contextSummary: contextSummary),
+          forceHistorySync: true,
         );
 
       case LlmBackend.geminiOrchestrator:
@@ -424,6 +427,7 @@ class LlmService {
           lastUser,
           sessionKey: conversationId,
           seedHistory: _seedHistoryForOrchestrator(history, contextSummary: contextSummary),
+          forceHistorySync: true,
         );
 
       case LlmBackend.openRouter:
@@ -503,6 +507,7 @@ class LlmService {
           lastUser,
           sessionKey: conversationId,
           seedHistory: _seedHistoryForOrchestrator(history, contextSummary: contextSummary),
+          forceHistorySync: true,
         );
 
       case LlmBackend.githubOrchestrator:
@@ -569,7 +574,8 @@ class LlmService {
         return OrchestratorManager.instance.sendPrompt(
           lastUser,
           sessionKey: conversationId,
-          seedHistory: _seedHistoryForOrchestrator(history),
+          seedHistory: _seedHistoryForOrchestrator(history, contextSummary: contextSummary),
+          forceHistorySync: true,
         );
 
       case LlmBackend.ollamaGenerate:

@@ -50,6 +50,7 @@ if _THIS_DIR not in sys.path:
 
 import argparse
 import json
+from typing import Any, Dict, List
 
 from agent.backends import RateLimitedBackend, build_backend
 from agent.backends.gemini import GeminiBackend
@@ -71,6 +72,44 @@ from agent.utils.io_protocol import (
 )
 
 configure_stdio_utf8()
+
+
+def _normalise_external_history(raw: Any) -> List[Dict[str, str]]:
+    """Return caller-supplied visible chat turns in a safe role/content shape."""
+    if not isinstance(raw, list):
+        return []
+    history: List[Dict[str, str]] = []
+    for msg in raw:
+        if not isinstance(msg, dict):
+            continue
+        role = str(msg.get("role") or "").strip().lower()
+        content = str(msg.get("content") or "")
+        if role not in ("user", "assistant", "system") or not content.strip():
+            continue
+        history.append({"role": role, "content": content})
+    return history
+
+
+def _prompt_with_visible_history(prompt: str, history: List[Dict[str, str]]) -> str:
+    """Prefix stateless Team Mode prompts with the visible chat history."""
+    if not history:
+        return prompt
+    lines = [
+        "Use the following visible chat history as authoritative context for "
+        "the latest user request. It is ordered oldest to newest.",
+        "--- CHAT HISTORY ---",
+    ]
+    for msg in history:
+        role = msg["role"]
+        content = msg["content"]
+        lines.append(f"[{role}] {content}")
+    lines.extend([
+        "--- END CHAT HISTORY ---",
+        "",
+        "Latest user request:",
+        prompt,
+    ])
+    return "\n".join(lines)
 
 
 def main():
@@ -633,10 +672,10 @@ def _run_interactive_loop(orchestrator: Orchestrator) -> None:
             req = read_interactive_request(sys.stdin)
             if req is None:
                 break  # EOF
-            if req.get("new_session"):
+            history = _normalise_external_history(req.get("history"))
+            if req.get("new_session") or history:
                 orchestrator.reset()
-                history = req.get("history") or []
-                if isinstance(history, list):
+                if history:
                     orchestrator.import_history(history)
             prompt = (req.get("prompt") or "").strip()
             if not prompt:
@@ -676,10 +715,10 @@ def _run_interactive_workflow(workflow) -> None:
             req = read_interactive_request(sys.stdin)
             if req is None:
                 break
-            if req.get("new_session"):
+            history = _normalise_external_history(req.get("history"))
+            if req.get("new_session") or history:
                 workflow.reset()
-                history = req.get("history") or []
-                if isinstance(history, list):
+                if history:
                     workflow.import_history(history)
             prompt = (req.get("prompt") or "").strip()
             if not prompt:
@@ -720,6 +759,7 @@ def _run_interactive_team(session, args) -> None:
             req = read_interactive_request(sys.stdin)
             if req is None:
                 break
+            history = _normalise_external_history(req.get("history"))
             prompt = (req.get("prompt") or "").strip()
             # Per-conversation isolation: each chat has its own team
             # subfolder so switching chats doesn't clobber state. The
@@ -736,12 +776,16 @@ def _run_interactive_team(session, args) -> None:
                 sys.stdout.flush()
                 continue
             try:
+                prompt_with_context = _prompt_with_visible_history(
+                    prompt,
+                    history,
+                )
                 # Each prompt = one team session.
                 from agent.team.bootstrap import build_team_session_from_args
                 fresh_session = build_team_session_from_args(
                     args, session_id=conv_id,
                 )
-                result = fresh_session.run(prompt)
+                result = fresh_session.run(prompt_with_context)
                 payload = {
                     "response": result.get("summary", ""),
                     "trace": [],

@@ -2,6 +2,7 @@ import 'package:flutter/foundation.dart';
 import 'package:sqflite/sqflite.dart';
 
 import '../../services/llm_service.dart';
+import '../../services/project_service.dart';
 import '../database/app_database.dart';
 
 class BackendSettingsRepository {
@@ -82,15 +83,7 @@ class BackendSettingsRepository {
   static const int defaultOllamaNumCtx = 4096;
 
   Future<LlmBackend> getActiveBackend() async {
-    final db = await AppDatabase.instance.database;
-    final rows = await db.query(
-      "backend_settings",
-      where: "id = ?",
-      whereArgs: [_kActive],
-      limit: 1,
-    );
-    if (rows.isEmpty) return LlmBackend.orchestrator;
-    final stored = (rows.first["value"] as String?) ?? "";
+    final stored = await _readString(_kActive) ?? "";
     // Non-orchestrator backends are no longer exposed in the UI —
     // coerce them to their closest orchestrator equivalent so an
     // existing stored value doesn't break the dropdown.
@@ -162,84 +155,25 @@ class BackendSettingsRepository {
   }
 
   Future<void> setActiveBackend(LlmBackend backend) async {
-    final db = await AppDatabase.instance.database;
-    await db.insert(
-      "backend_settings",
-      {
-        "id": _kActive,
-        // Use the enum name directly so parsing is symmetric and robust.
-        "value": backend.name,
-      },
-      conflictAlgorithm: ConflictAlgorithm.replace,
-    );
+    // Use the enum name directly so parsing is symmetric and robust.
+    await _writeString(_kActive, backend.name);
   }
 
-  Future<String?> getLocalServerUrl() async {
-    final db = await AppDatabase.instance.database;
-    final rows = await db.query(
-      "backend_settings",
-      where: "id = ?",
-      whereArgs: [_kLocalUrl],
-      limit: 1,
-    );
-    return rows.isEmpty ? null : rows.first["value"] as String?;
-  }
+  Future<String?> getLocalServerUrl() => _readString(_kLocalUrl);
 
-  Future<void> setLocalServerUrl(String url) async {
-    final db = await AppDatabase.instance.database;
-    await db.insert(
-      "backend_settings",
-      {
-        "id": _kLocalUrl,
-        "value": url,
-      },
-      conflictAlgorithm: ConflictAlgorithm.replace,
-    );
-  }
+  Future<void> setLocalServerUrl(String url) => _writeString(_kLocalUrl, url);
 
   // ---------------------------------------------------------------------------
   // Ollama settings
   // ---------------------------------------------------------------------------
 
-  Future<String?> getOllamaBaseUrl() async {
-    final db = await AppDatabase.instance.database;
-    final rows = await db.query(
-      "backend_settings",
-      where: "id = ?",
-      whereArgs: [_kOllamaUrl],
-      limit: 1,
-    );
-    return rows.isEmpty ? null : rows.first["value"] as String?;
-  }
+  Future<String?> getOllamaBaseUrl() => _readString(_kOllamaUrl);
 
-  Future<void> setOllamaBaseUrl(String url) async {
-    final db = await AppDatabase.instance.database;
-    await db.insert(
-      "backend_settings",
-      {"id": _kOllamaUrl, "value": url},
-      conflictAlgorithm: ConflictAlgorithm.replace,
-    );
-  }
+  Future<void> setOllamaBaseUrl(String url) => _writeString(_kOllamaUrl, url);
 
-  Future<String?> getOllamaModel() async {
-    final db = await AppDatabase.instance.database;
-    final rows = await db.query(
-      "backend_settings",
-      where: "id = ?",
-      whereArgs: [_kOllamaModel],
-      limit: 1,
-    );
-    return rows.isEmpty ? null : rows.first["value"] as String?;
-  }
+  Future<String?> getOllamaModel() => _readString(_kOllamaModel);
 
-  Future<void> setOllamaModel(String name) async {
-    final db = await AppDatabase.instance.database;
-    await db.insert(
-      "backend_settings",
-      {"id": _kOllamaModel, "value": name},
-      conflictAlgorithm: ConflictAlgorithm.replace,
-    );
-  }
+  Future<void> setOllamaModel(String name) => _writeString(_kOllamaModel, name);
 
   Future<double> getOllamaTemperature() async {
     final v = await _readString(_kOllamaTemperature);
@@ -473,6 +407,15 @@ class BackendSettingsRepository {
       _writeString(_kGenerateThinking, enabled.toString());
 
   Future<String?> _readString(String key) async {
+    final scopedKey = _scopedKey(key);
+    if (scopedKey != key) {
+      final scoped = await _readRaw(scopedKey);
+      if (scoped != null) return scoped;
+    }
+    return _readRaw(key);
+  }
+
+  Future<String?> _readRaw(String key) async {
     final db = await AppDatabase.instance.database;
     final rows = await db.query(
       "backend_settings",
@@ -487,28 +430,20 @@ class BackendSettingsRepository {
     final db = await AppDatabase.instance.database;
     await db.insert(
       "backend_settings",
-      {"id": key, "value": value},
+      {"id": _scopedKey(key), "value": value},
       conflictAlgorithm: ConflictAlgorithm.replace,
     );
   }
 
-  Future<String?> getOllamaPythonBridgeUrl() async {
-    final db = await AppDatabase.instance.database;
-    final rows = await db.query(
-      "backend_settings",
-      where: "id = ?",
-      whereArgs: [_kOllamaPythonBridgeUrl],
-      limit: 1,
-    );
-    return rows.isEmpty ? null : rows.first["value"] as String?;
+  String _scopedKey(String key) {
+    final projectKey = ProjectService().activeProjectKey;
+    if (projectKey == null || projectKey.trim().isEmpty) return key;
+    return 'project.$projectKey::$key';
   }
 
-  Future<void> setOllamaPythonBridgeUrl(String url) async {
-    final db = await AppDatabase.instance.database;
-    await db.insert(
-      "backend_settings",
-      {"id": _kOllamaPythonBridgeUrl, "value": url},
-      conflictAlgorithm: ConflictAlgorithm.replace,
-    );
-  }
+  Future<String?> getOllamaPythonBridgeUrl() =>
+      _readString(_kOllamaPythonBridgeUrl);
+
+  Future<void> setOllamaPythonBridgeUrl(String url) =>
+      _writeString(_kOllamaPythonBridgeUrl, url);
 }

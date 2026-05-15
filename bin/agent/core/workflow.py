@@ -1043,9 +1043,14 @@ def build_workflow_from_args(args, *, security_config: SecurityConfig, base_path
     """Build Workflow from args."""
     tool_registry = ToolRegistry(base_path=base_path, security_config=security_config,
                                  path_filter=path_filter, db_connections=db_connections)
+
+    # Load per-project agent context (.agent.md / context.md) when present.
+    from .project_context import load_project_context
+    project_context = load_project_context(base_path)
+
     secrets = SecretsResolver(args)
     agents = build_agents(args.agent_config, secrets, tool_definitions=tool_registry.definitions,
-                          tools_catalog_text=tool_registry.get_system_prompt())
+                          tools_catalog_text=tool_registry.get_system_prompt(project_context=project_context))
     return Workflow(agents, tool_registry)
 
 # """Workflow dispatcher — replaces the single-agent run-loop in multi-agent mode.

@@ -116,6 +116,9 @@ class OrchestratorManager {
     if (_logLines.length > _kMaxLogLines) _logLines.removeAt(0);
     if (!_logController.isClosed) _logController.add(trimmed);
 
+    // Persist to the per-chat log file so logs survive process restarts.
+    _writeToLogFile(trimmed);
+
     // Derive a human-friendly status label from the raw log line and push
     // it onto the status stream so the typing indicator can show what the
     // model is doing right now instead of a generic "Working...".
@@ -123,6 +126,55 @@ class OrchestratorManager {
     if (status != null) {
       _lastStatus = status;
       if (!_statusController.isClosed) _statusController.add(status);
+    }
+  }
+
+  /// Append a single line to `<basePath>/logs/<sessionKey>.log`.
+  ///
+  /// Creates the `logs/` directory on first write. When a previous chat is
+  /// reloaded the file already exists, so new lines naturally append after
+  /// the previous session's output — no explicit prepend step needed.
+  void _writeToLogFile(String line) {
+    final base = _basePath;
+    final key = _sessionKey;
+    if (base == null || key == null || key.isEmpty) return;
+    try {
+      final dir = Directory('$base${Platform.pathSeparator}logs');
+      if (!dir.existsSync()) dir.createSync(recursive: true);
+      final file = File(
+        '${dir.path}${Platform.pathSeparator}$key.log',
+      );
+      file.writeAsStringSync('$line\n', mode: FileMode.append, flush: true);
+    } catch (_) {
+      // Best-effort: never let a disk write failure crash the orchestrator
+      // or leak into the visible log stream.
+    }
+  }
+
+  /// Read the on-disk log file for [sessionKey] and push every line into the
+  /// in-memory buffer and live stream so the log panel shows previous-session
+  /// output immediately when a chat is reloaded.
+  ///
+  /// Safe to call before the orchestrator subprocess is running — only needs
+  /// [_basePath] to be set (which happens during [start]).
+  void loadLogFromDisk(String sessionKey) {
+    final base = _basePath;
+    if (base == null || sessionKey.isEmpty) return;
+    try {
+      final file = File(
+        '$base${Platform.pathSeparator}logs${Platform.pathSeparator}$sessionKey.log',
+      );
+      if (!file.existsSync()) return;
+      final lines = file.readAsLinesSync();
+      for (final line in lines) {
+        final trimmed = line.trim();
+        if (trimmed.isEmpty) continue;
+        _logLines.add(trimmed);
+        if (_logLines.length > _kMaxLogLines) _logLines.removeAt(0);
+        if (!_logController.isClosed) _logController.add(trimmed);
+      }
+    } catch (_) {
+      // Best-effort: never let a disk read failure block the UI.
     }
   }
 
@@ -286,6 +338,7 @@ class OrchestratorManager {
   Timer? _inactivityTimer;
   DateTime? _requestStartedAt;
   String? _sessionKey;
+  String? _basePath;
 
   /// The conversation id of the most recent prompt routed through this
   /// orchestrator. Used by the Team Mode UI to point the board viewer
@@ -601,6 +654,7 @@ class OrchestratorManager {
       _readyCompleter = Completer<void>();
 
       final resolvedBasePath = workingDirectory ?? baseDirectory.path;
+      _basePath = resolvedBasePath;
       _appendLog('[manager] --base-path -> $resolvedBasePath');
       if (!ProjectService().hasExplicitFolder && workingDirectory == null) {
         _appendLog(
@@ -786,13 +840,15 @@ class OrchestratorManager {
   /// Send a prompt to the orchestrator and await the full response.
   ///
   /// [sessionKey] identifies the visible chat conversation. When it changes,
-  /// the Python side is reset and optionally re-seeded with [seedHistory] so
-  /// switching chats does not leak hidden state across conversations.
+  /// or when [forceHistorySync] is true, the Python side is reset and
+  /// re-seeded with [seedHistory] so hidden orchestrator memory cannot drift
+  /// away from the visible chat history.
   Future<String> sendPrompt(
     String prompt, {
     bool newSession = false,
     String? sessionKey,
     List<Map<String, String>> seedHistory = const [],
+    bool forceHistorySync = false,
   }) {
     // Serialize requests so multiple callers don't interleave on stdin.
     final next = _chain.then(
@@ -801,6 +857,7 @@ class OrchestratorManager {
         newSession,
         sessionKey: sessionKey,
         seedHistory: seedHistory,
+        forceHistorySync: forceHistorySync,
       ),
     );
     _chain = next.catchError((_) => '');
@@ -812,6 +869,7 @@ class OrchestratorManager {
     bool newSession, {
     String? sessionKey,
     List<Map<String, String>> seedHistory = const [],
+    bool forceHistorySync = false,
   }) async {
     if (!_isRunning || _process == null) {
       return 'Error: Orchestrator not running. Start it from Settings first.';
@@ -820,7 +878,9 @@ class OrchestratorManager {
       return 'Error: Orchestrator not ready yet.';
     }
 
-    final shouldResetSession = newSession || (sessionKey != null && sessionKey != _sessionKey);
+    final shouldResetSession = forceHistorySync ||
+        newSession ||
+        (sessionKey != null && sessionKey != _sessionKey);
     if (shouldResetSession) {
       _sessionKey = sessionKey;
     }

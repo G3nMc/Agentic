@@ -6,6 +6,7 @@ import '../core/task_queue.dart';
 import '../data/models/context_summary.dart';
 import '../data/models/message.dart';
 import '../data/repositories/context_summary_repository.dart';
+import '../data/repositories/message_repository.dart';
 import '../utils/circuit_breaker.dart';
 import '../utils/logger.dart';
 import '../utils/retry_handler.dart';
@@ -184,6 +185,15 @@ RULES:
           maxSummaryChars: maxSummaryChars,
           previousSummary: existing?.summaryText,
         );
+        final currentMessages =
+            await MessageRepository.instance.listByConversation(conversationId);
+        if (!_messageSnapshotStillPrefix(messages, currentMessages)) {
+          Logger.logContextSummary(
+            conversationId,
+            'discarded stale async summary; messages changed while summarizing',
+          );
+          return;
+        }
         if (result.summaryText.isNotEmpty) {
           await _persist(conversationId, result.summaryText);
         }
@@ -230,6 +240,22 @@ RULES:
       buffer.writeln('[$role] ${m.content}');
     }
     return buffer.toString();
+  }
+
+  bool _messageSnapshotStillPrefix(
+    List<ChatMessage> expected,
+    List<ChatMessage> actual,
+  ) {
+    if (actual.length < expected.length) return false;
+    for (var i = 0; i < expected.length; i++) {
+      if (expected[i].id != actual[i].id ||
+          expected[i].createdAt != actual[i].createdAt ||
+          expected[i].role != actual[i].role ||
+          expected[i].content != actual[i].content) {
+        return false;
+      }
+    }
+    return true;
   }
 
   String _buildIncrementalPrompt({

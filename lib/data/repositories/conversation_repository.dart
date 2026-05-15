@@ -121,6 +121,9 @@ class ConversationRepository {
     // Failure is non-fatal — the chat row is already gone and we don't
     // want a filesystem error to look like a delete failure to the UI.
     await _deleteTeamSessionFolder(id);
+
+    // Same for the orchestrator log file written by OrchestratorManager.
+    await _deleteOrchestratorLogFile(id);
   }
 
   /// Remove `<project>/.agent/team/<conversation_id>/` if it exists.
@@ -146,6 +149,29 @@ class ConversationRepository {
       }
     } catch (e) {
       print('[DEBUG] Team folder cleanup skipped for $conversationId: $e');
+    }
+  }
+
+  /// Remove `<project>/logs/<conversation_id>.log` if it exists.
+  /// Called from [delete] so chat deletion also cleans up the orchestrator log.
+  Future<void> _deleteOrchestratorLogFile(String conversationId) async {
+    if (conversationId.isEmpty) return;
+    final safeRe = RegExp(r'^[A-Za-z0-9._-]+$');
+    if (!safeRe.hasMatch(conversationId)) return;
+    if (conversationId == '_default') return;
+
+    try {
+      final basePath = ProjectService().currentPath;
+      final sep = Platform.pathSeparator;
+      final file = File(
+        '$basePath${sep}logs$sep$conversationId.log',
+      );
+      if (await file.exists()) {
+        await file.delete();
+        print('[DEBUG] Removed orchestrator log for conversation $conversationId');
+      }
+    } catch (e) {
+      print('[DEBUG] Orchestrator log cleanup skipped for $conversationId: $e');
     }
   }
 }

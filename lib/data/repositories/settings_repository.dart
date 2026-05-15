@@ -1,12 +1,17 @@
 import 'package:sqflite/sqflite.dart';
 
-import '../database/app_database.dart';
 import '../../services/secure_storage_service.dart';
+import '../database/app_database.dart';
 
 class SettingsRepository {
   SettingsRepository._();
 
   static final SettingsRepository instance = SettingsRepository._();
+
+  /// Provided by ProjectService after startup. Generic settings remain global;
+  /// callers that need per-project state use the explicit `*ForProject`
+  /// helpers below.
+  static String? Function()? projectKeyProvider;
 
   static const String keyHfToken = "hf_token";
   static const String keySelectedModelId = "selected_model_id";
@@ -59,11 +64,40 @@ class SettingsRepository {
     await db.delete("settings", where: "key = ?", whereArgs: [key]);
   }
 
+  Future<String?> getForProject(String key) async {
+    final scoped = _projectScopedKey(key);
+    if (scoped == key) return get(key);
+    final scopedValue = await get(scoped);
+    return (scopedValue ?? get(key)) as Future<String?>;
+  }
+
+  Future<void> setForProject(String key, String value) {
+    return set(_projectScopedKey(key), value);
+  }
+
+  Future<void> deleteForProject(String key) {
+    return delete(_projectScopedKey(key));
+  }
+
+  String _projectScopedKey(String key) {
+    final projectKey = projectKeyProvider?.call();
+    if (projectKey == null || projectKey.trim().isEmpty) return key;
+    return 'project.$projectKey::$key';
+  }
+
   // --- Secure Storage Delegations ---
 
   Future<String?> getHfToken() => SecureStorageService.instance.getToken();
   Future<void> setHfToken(String token) => SecureStorageService.instance.saveToken(token);
 
-  Future<String?> getSelectedModelId() => SecureStorageService.instance.getModelId();
-  Future<void> setSelectedModelId(String modelId) => SecureStorageService.instance.saveModelId(modelId);
+  Future<String?> getSelectedModelId() async {
+    final scoped = await getForProject(keySelectedModelId);
+    if (scoped != null) return scoped;
+    return SecureStorageService.instance.getModelId();
+  }
+
+  Future<void> setSelectedModelId(String modelId) async {
+    await setForProject(keySelectedModelId, modelId);
+    await SecureStorageService.instance.saveModelId(modelId);
+  }
 }

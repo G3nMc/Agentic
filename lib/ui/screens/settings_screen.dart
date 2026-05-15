@@ -37,7 +37,11 @@ import '../widgets/local_server_config_widget.dart';
 import '../widgets/token_count_picker.dart';
 
 class SettingsScreen extends StatefulWidget {
-  const SettingsScreen({super.key});
+  /// Optional initial section index. When non-null, the screen opens directly
+  /// to that section (0 = Project Folders, 1 = Model Settings, …).
+  final int? initialSection;
+
+  const SettingsScreen({super.key, this.initialSection});
 
   @override
   State<SettingsScreen> createState() => _SettingsScreenState();
@@ -57,9 +61,15 @@ class _SettingsScreenState extends State<SettingsScreen> {
   LlmBackend _activeBackend = LlmBackend.huggingFace;
   String? _localServerUrl;
 
-  // Settings side-nav: 0 = Model Settings, 1 = Orchestrator,
-  // 2 = Workflow Agents, 3 = Developer (debug-only).
+  // Settings side-nav: 0 = Project Folders, 1 = Model Settings,
+  // 2 = Orchestrator, 3 = Workflow Agents, 4 = Developer (debug-only),
+  // 5 = Agent Context.
   int _settingsSection = 0;
+
+  // Agent Context editor state
+  final TextEditingController _agentContextController = TextEditingController();
+  bool _agentContextLoaded = false;
+  bool _agentContextSaving = false;
 
   // Developer / installer panel state.
   bool _installerBusy = false;
@@ -257,6 +267,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
   @override
   void initState() {
     super.initState();
+    if (widget.initialSection != null) {
+      _settingsSection = widget.initialSection!;
+    }
     _load();
     _initLogFile();
   }
@@ -321,6 +334,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     _generateApiKeyController.dispose();
     _generateNumPredictController.dispose();
     _generateNumCtxController.dispose();
+    _agentContextController.dispose();
     super.dispose();
   }
 
@@ -3805,12 +3819,16 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 const VerticalDivider(width: 1, thickness: 1, color: AppTheme.border),
                 Expanded(
                   child: _settingsSection == 0
-                      ? _buildModelSettings()
+                      ? _buildProjectFoldersSection()
                       : _settingsSection == 1
-                          ? _buildOrchestratorPanel()
+                          ? _buildModelSettings()
                           : _settingsSection == 2
-                              ? _buildAgentWorkflowPanel()
-                              : _buildDeveloperPanel(),
+                              ? _buildOrchestratorPanel()
+                              : _settingsSection == 3
+                                  ? _buildAgentWorkflowPanel()
+                                  : _settingsSection == 4
+                                      ? _buildDeveloperPanel()
+                                      : _buildAgentContextPanel(),
                 ),
               ],
             ),
@@ -3826,13 +3844,17 @@ class _SettingsScreenState extends State<SettingsScreen> {
       child: ListView(
         padding: const EdgeInsets.symmetric(vertical: 16, horizontal: 8),
         children: [
-          _navItem("Model Settings", 0, Icons.tune_outlined),
+          _navItem("Project Folders", 0, Icons.folder_outlined),
           const SizedBox(height: 4),
-          _navItem("Orchestrator", 1, Icons.memory_outlined),
+          _navItem("Model Settings", 1, Icons.tune_outlined),
           const SizedBox(height: 4),
-          _navItem("Workflow Agents", 2, Icons.account_tree_outlined),
+          _navItem("Orchestrator", 2, Icons.memory_outlined),
           const SizedBox(height: 4),
-          _navItem("Developer", 3, Icons.developer_mode_outlined),
+          _navItem("Workflow Agents", 3, Icons.account_tree_outlined),
+          const SizedBox(height: 4),
+          _navItem("Developer", 4, Icons.developer_mode_outlined),
+          const SizedBox(height: 4),
+          _navItem("Agent Context", 5, Icons.psychology_outlined),
         ],
       ),
     );
@@ -3867,6 +3889,220 @@ class _SettingsScreenState extends State<SettingsScreen> {
             ],
           ),
         ),
+      ),
+    );
+  }
+
+  // ---- Project Folders panel -------------------------------------------------
+
+  Widget _buildProjectFoldersSection() {
+    return SingleChildScrollView(
+      padding: const EdgeInsets.all(24),
+      child: Center(
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 720),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              _section(
+                title: 'Project Folders',
+                subtitle: 'Manage the folders the agent can work in. '
+                    'Settings are scoped per project using the absolute path '
+                    'as a key. The last-used project is restored on launch.',
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    // + Add button
+                    Align(
+                      alignment: Alignment.centerRight,
+                      child: TextButton.icon(
+                        onPressed: _addProjectFolder,
+                        icon: const Icon(Icons.add, size: 18),
+                        label: const Text('Add project folder'),
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    // Project list
+                    ValueListenableBuilder<List<String>>(
+                      valueListenable: ProjectService().projectFoldersNotifier,
+                      builder: (ctx, folders, _) {
+                        if (folders.isEmpty) {
+                          return Container(
+                            padding: const EdgeInsets.symmetric(
+                                horizontal: 16, vertical: 24),
+                            decoration: BoxDecoration(
+                              border: Border.all(color: AppTheme.border),
+                              borderRadius: BorderRadius.circular(8),
+                            ),
+                            child: const Text(
+                              'No project folders added yet. '
+                              'Click "+ Add project folder" to get started.',
+                              style: TextStyle(
+                                fontSize: 13,
+                                color: AppTheme.textMuted,
+                              ),
+                              textAlign: TextAlign.center,
+                            ),
+                          );
+                        }
+                        return Column(
+                          children: [
+                            for (int i = 0; i < folders.length; i++)
+                              _projectFolderTile(folders[i]),
+                          ],
+                        );
+                      },
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _projectFolderTile(String path) {
+    final isActive = ProjectService().activeProjectKey == path;
+    final folderName = path.split(Platform.pathSeparator).last;
+
+    return Container(
+      margin: const EdgeInsets.only(bottom: 6),
+      decoration: BoxDecoration(
+        color: isActive ? AppTheme.accent.withAlpha(18) : AppTheme.bgSecondary,
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(
+          color: isActive ? AppTheme.accent : AppTheme.border,
+        ),
+      ),
+      child: ListTile(
+        dense: true,
+        contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 2),
+        leading: Icon(
+          isActive ? Icons.folder : Icons.folder_outlined,
+          size: 20,
+          color: isActive ? AppTheme.accent : AppTheme.textSecondary,
+        ),
+        title: Text(
+          folderName,
+          style: TextStyle(
+            fontSize: 13.5,
+            fontWeight: isActive ? FontWeight.w600 : FontWeight.normal,
+            color: isActive ? AppTheme.accent : AppTheme.textPrimary,
+          ),
+        ),
+        subtitle: Text(
+          path,
+          style: const TextStyle(
+            fontFamily: 'monospace',
+            fontSize: 11,
+            color: AppTheme.textMuted,
+          ),
+          overflow: TextOverflow.ellipsis,
+        ),
+        trailing: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            if (!isActive)
+              IconButton(
+                tooltip: 'Activate this project',
+                icon: const Icon(Icons.check_circle_outline, size: 18),
+                onPressed: () => _activateProjectFolder(path),
+                padding: EdgeInsets.zero,
+                constraints:
+                    const BoxConstraints(minWidth: 32, minHeight: 32),
+              ),
+            IconButton(
+              tooltip: 'Edit (change path)',
+              icon: const Icon(Icons.edit_outlined, size: 18),
+              onPressed: () => _editProjectFolder(path),
+              padding: EdgeInsets.zero,
+              constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
+            ),
+            IconButton(
+              tooltip: 'Remove',
+              icon: const Icon(Icons.delete_outline,
+                  size: 18, color: AppTheme.danger),
+              onPressed: () => _removeProjectFolder(path),
+              padding: EdgeInsets.zero,
+              constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Future<void> _addProjectFolder() async {
+    final picked = await ProjectService().pickProjectFolder();
+    if (picked == null || picked.isEmpty) return;
+    await ProjectService().addProjectFolder(picked, select: true);
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+            'Added and activated: ${picked.split(Platform.pathSeparator).last}'),
+        duration: const Duration(seconds: 2),
+      ),
+    );
+  }
+
+  Future<void> _activateProjectFolder(String path) async {
+    final switched = await ProjectService().selectProjectFolder(path);
+    if (!switched || !mounted) return;
+    // Restart orchestrator so it picks up the new --base-path
+    await OrchestratorManager.instance.stop();
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+            'Switched to: ${path.split(Platform.pathSeparator).last}'),
+        duration: const Duration(seconds: 2),
+      ),
+    );
+  }
+
+  Future<void> _editProjectFolder(String oldPath) async {
+    final picked = await ProjectService().pickProjectFolder();
+    if (picked == null || picked.isEmpty) return;
+    await ProjectService().updateProjectFolder(oldPath, picked);
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text('Project folder updated'),
+        duration: Duration(seconds: 2),
+      ),
+    );
+  }
+
+  Future<void> _removeProjectFolder(String path) async {
+    final confirm = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Remove project folder'),
+        content: Text(
+            'Remove "${path.split(Platform.pathSeparator).last}" from the list?\n'
+            'This does not delete any files on disk.'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Cancel'),
+          ),
+          TextButton(
+            style: TextButton.styleFrom(foregroundColor: AppTheme.danger),
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('Remove'),
+          ),
+        ],
+      ),
+    );
+    if (confirm != true) return;
+    await ProjectService().removeProjectFolder(path);
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text('Project folder removed'),
+        duration: Duration(seconds: 2),
       ),
     );
   }
@@ -5895,6 +6131,247 @@ class _SettingsScreenState extends State<SettingsScreen> {
             splashRadius: 16,
           ),
         ],
+      ),
+    );
+  }
+
+  // ---- Agent Context panel ---------------------------------------------------
+
+  String? get _agentContextFilePath {
+    final projectPath = ProjectService().activeProjectKey;
+    if (projectPath == null || projectPath.isEmpty) return null;
+    // Use .agent.md as the canonical name (matches Python backend's first candidate).
+    return '${projectPath}${Platform.pathSeparator}.agent.md';
+  }
+
+  Future<void> _loadAgentContext() async {
+    if (_agentContextLoaded) return;
+    _agentContextLoaded = true;
+    final filePath = _agentContextFilePath;
+    if (filePath == null) return;
+    final file = File(filePath);
+    if (await file.exists()) {
+      _agentContextController.text = await file.readAsString();
+    } else {
+      // Seed with a helpful template.
+      _agentContextController.text = '''# Project Context
+Brief overview of this project.
+
+## Agent Identity & Role
+- **Agent Name**: 
+- **Role / Persona**: 
+
+## Knowledge & Skills
+- **Core Competencies**: 
+- **Domain Knowledge**: 
+
+## Project Structure & Standards
+- **Project Structure**: 
+- **Coding Standards**: 
+- **Testing Requirements**: 
+
+## Current State & Working Context
+- **Codebase Overview**: 
+- **Recent Changes**: 
+- **Known Issues / Tech Debt**: 
+- **Immediate Focus**: 
+
+## Behavioral Rules
+- **Must Always**: 
+- **Must Never**: 
+
+## Communication Style
+- 
+
+## Tools & Workflow
+- **Available Tools**: 
+- **Workflow Notes**: 
+''';
+    }
+    if (!mounted) return;
+    setState(() {});
+  }
+
+  Future<void> _saveAgentContext() async {
+    final filePath = _agentContextFilePath;
+    if (filePath == null) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('No active project folder selected.')),
+      );
+      return;
+    }
+    setState(() => _agentContextSaving = true);
+    try {
+      final file = File(filePath);
+      await file.writeAsString(_agentContextController.text);
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Saved: ${filePath.split(Platform.pathSeparator).last}'),
+          duration: const Duration(seconds: 2),
+        ),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Failed to save: $e')),
+      );
+    } finally {
+      if (mounted) setState(() => _agentContextSaving = false);
+    }
+  }
+
+  Widget _buildAgentContextPanel() {
+    // Load on first render.
+    if (!_agentContextLoaded) {
+      _loadAgentContext();
+    }
+
+    final filePath = _agentContextFilePath;
+    final hasProject = filePath != null;
+
+    return SingleChildScrollView(
+      padding: const EdgeInsets.all(24),
+      child: Center(
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 720),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              _section(
+                title: 'Agent Context (.agent.md)',
+                subtitle: hasProject
+                    ? 'Edit the per-project agent configuration file. '
+                        'This Markdown file is merged into the system prompt '
+                        'before every agent run, allowing you to set coding '
+                        'standards, behavioral rules, and project-specific '
+                        'knowledge for the agent.\n\n'
+                        'File: $filePath'
+                    : 'Select a project folder first to edit its agent context.',
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    if (!hasProject)
+                      Container(
+                        padding: const EdgeInsets.all(16),
+                        decoration: BoxDecoration(
+                          border: Border.all(color: AppTheme.border),
+                          borderRadius: BorderRadius.circular(8),
+                        ),
+                        child: const Text(
+                          'No active project. Go to "Project Folders" and '
+                          'activate a project to edit its agent context.',
+                          style: TextStyle(
+                            fontSize: 13,
+                            color: AppTheme.textMuted,
+                          ),
+                          textAlign: TextAlign.center,
+                        ),
+                      )
+                    else ...[
+                      // Toolbar
+                      Row(
+                        children: [
+                          const Icon(Icons.info_outline, size: 16,
+                              color: AppTheme.textSecondary),
+                          const SizedBox(width: 6),
+                          const Expanded(
+                            child: Text(
+                              'Sections starting with "##" are parsed and '
+                              'merged into the system prompt.',
+                              style: TextStyle(
+                                fontSize: 11,
+                                color: AppTheme.textSecondary,
+                              ),
+                            ),
+                          ),
+                          const SizedBox(width: 8),
+                          TextButton.icon(
+                            onPressed: _agentContextSaving
+                                ? null
+                                : _saveAgentContext,
+                            icon: _agentContextSaving
+                                ? const SizedBox(
+                                    width: 14,
+                                    height: 14,
+                                    child: CircularProgressIndicator(
+                                        strokeWidth: 2),
+                                  )
+                                : const Icon(Icons.save_outlined, size: 18),
+                            label: const Text('Save'),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 8),
+                      // Editor
+                      Container(
+                        decoration: BoxDecoration(
+                          border: Border.all(color: AppTheme.border),
+                          borderRadius: BorderRadius.circular(8),
+                        ),
+                        child: TextField(
+                          controller: _agentContextController,
+                          maxLines: null,
+                          minLines: 20,
+                          style: const TextStyle(
+                            fontFamily: 'monospace',
+                            fontSize: 13,
+                            height: 1.5,
+                          ),
+                          decoration: const InputDecoration(
+                            border: InputBorder.none,
+                            contentPadding: EdgeInsets.all(16),
+                          ),
+                        ),
+                      ),
+                      const SizedBox(height: 12),
+                      // Quick-reference card
+                      Container(
+                        padding: const EdgeInsets.all(12),
+                        decoration: BoxDecoration(
+                          color: AppTheme.bgSecondary,
+                          borderRadius: BorderRadius.circular(8),
+                          border: Border.all(
+                            color: AppTheme.accentDarkMarrone.withAlpha(60),
+                          ),
+                        ),
+                        child: const Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              'Recognised sections',
+                              style: TextStyle(
+                                fontSize: 12,
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
+                            SizedBox(height: 6),
+                            Text(
+                              '## Agent Identity & Role\n'
+                              '## Knowledge & Skills\n'
+                              '## Project Structure & Standards\n'
+                              '## Current State & Working Context\n'
+                              '## Behavioral Rules\n'
+                              '## Communication Style\n'
+                              '## Tools & Workflow',
+                              style: TextStyle(
+                                fontFamily: 'monospace',
+                                fontSize: 11,
+                                color: AppTheme.textSecondary,
+                                height: 1.6,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
       ),
     );
   }

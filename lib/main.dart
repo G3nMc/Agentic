@@ -19,5 +19,5 @@ Future<void> main() async {
   // points at the user's project, not the app install dir.
   await ProjectService().init();
 
-  runApp(const HfChatApp());
+  runApp(const ChatApp());
 }

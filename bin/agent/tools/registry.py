@@ -248,13 +248,24 @@ class ToolRegistry:
             audit_log(self._audit_logger, tool_name, parameters or {}, err)
             return err
 
-    def get_system_prompt(self) -> str:
+    def get_system_prompt(self, project_context: Optional[str] = None) -> str:
         """
         Generate production system prompt with tool catalog.
 
         Includes strict formatting rules and auto-generated tool reference.
+        When *project_context* is provided it is merged into the prompt as a
+        ``[PROJECT CONTEXT]`` block between the base rules and the tool catalog.
         """
         lines = self._base_system_prompt()
+
+        # Merge project context (from .agent.md / context.md) when available.
+        if project_context and project_context.strip():
+            lines.append("")
+            lines.append("PROJECT CONTEXT (from .agent.md)")
+            lines.append("================================")
+            for cline in project_context.strip().splitlines():
+                lines.append(cline)
+            lines.append("")
 
         groups: Dict[str, List[str]] = {cat: [] for cat in self.TOOL_CATEGORIES}
         groups['Other'] = []
@@ -318,6 +329,7 @@ class ToolRegistry:
             "   - No internal planning narration unless explicitly asked.",
             "   - No permission-seeking for routine tool work.",
             "   - No empty responses.",
+            "   - If the final response is empty and no errors occurred, retry up to 3 times.",
             "",
             "2. EXECUTION AUTONOMY",
             "   - User says 'proceed/yes/go/do it/continue' → EXECUTE every step in THIS turn.",
@@ -342,8 +354,6 @@ class ToolRegistry:
             "====================",
             "",
             "WHEN TO USE TOOLS",
-            "- Read files before modifying",
-            "- Search only when necessary, never broad filesystem scans",
             "- Use read_files (batch) instead of read_file (single) when reading 2+ files",
             "- Use direct tools (read_file, search_in_files, list_files) instead of run_command",
             "",
@@ -353,7 +363,7 @@ class ToolRegistry:
             "MANDATORY VALIDATION (after write operations)",
             "- After writing/patching .dart files → flutter_analyze immediately (same turn)",
             "- After writing/patching .py files → python_check immediately (same turn)",
-            "- If validation fails, fix and re-run (repeat until clean or blocked twice)",
+            "- If validation fails, fix and re-run (repeat until clean or blocked)",
             "- FORBIDDEN: asking user to run validation, claiming tools unavailable",
             "- The agent runs validators, not the user. Period.",
             "",
@@ -368,6 +378,7 @@ class ToolRegistry:
             "=============",
             "- Always inspect file before changing",
             "- Prefer smallest safe edit solving the problem",
+            "- In large context which needs more than 2 steps of implemen",
             "- Never ask user to apply changes manually when tools exist",
             "- Use relative paths only",
             "- Do not repeat same failing action; adjust strategy",
@@ -423,6 +434,39 @@ class ToolRegistry:
             "",
             "AVAILABLE TOOLS",
             "===============",
+            "",
+            "LARGE CONTEXT HANDLING",
+            "======================",
+            "",
+            "ANALYSIS (read-heavy, no writes yet)",
+            "- If full understanding requires inspecting many files or concepts,",
+            "  split analysis into numbered parts (Part 1 of N, Part 2 of N, ...).",
+            "- Complete each part fully before moving to the next.",
+            "- Do NOT begin implementation until analysis is declared complete.",
+            "",
+            "IMPLEMENTATION (write-heavy, multi-step)",
+            "- If the task requires more than one implementation step,",
+            "  execute EXACTLY ONE step per turn, then stop.",
+            "- Do NOT chain multiple write steps in a single turn.",
+            "- Wait for user confirmation before proceeding to the next step.",
+            "",
+            "MANDATORY STEP REPORT (after every implementation step)",
+            "- Output a structured report in this exact format:",
+            "",
+            "  STEP REPORT",
+            "  -----------",
+            "  Done:",
+            "    - [task completed in this step]",
+            "    - ...",
+            "  Pending:",
+            "    - [next task]",
+            "    - ...",
+            "  Current state:",
+            "    [1-3 sentences describing what is working, what is wired, what is missing]",
+            "",
+            "- This report is MANDATORY. Skipping it is a protocol violation.",
+            "- The report must reflect actual tool results, not assumptions.",
+            "",
         ]
 
     @staticmethod

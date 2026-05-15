@@ -14,7 +14,7 @@ from ..backends.backend_base import ModelBackend
 from ..policy import SecurityConfig
 from ..tools.registry import ToolRegistry
 from ..utils.circuit_breaker import CircuitBreaker
-from ..utils.token_estimator import chars_for_tokens, estimate_tokens, estimate_messages_tokens
+from ..utils.token_estimator import chars_for_tokens, estimate_messages_tokens
 
 # Default cap on tool-result chars. Used as a floor when the backend
 # doesn't expose a context_limit; the Orchestrator scales this up at
@@ -206,9 +206,12 @@ class Orchestrator:
         _history.import_external_history(self.conversation_history, history)
 
     def _ensure_system_prompt(self) -> None:
+        # Load per-project agent context (.agent.md / context.md) when present.
+        from ..core.project_context import load_project_context
+        project_context = load_project_context(str(self.tool_registry.base_path))
         _history.ensure_system_prompt(
             self.conversation_history,
-            self.tool_registry.get_system_prompt(),
+            self.tool_registry.get_system_prompt(project_context=project_context),
         )
 
     def _recompute_tool_budget(self) -> None:
@@ -397,7 +400,7 @@ class Orchestrator:
         # recover — bail with the canned message before burning the full
         # iteration budget.
         consecutive_malformed = 0
-        _MAX_CONSECUTIVE_MALFORMED = 2
+        _MAX_CONSECUTIVE_MALFORMED = 5
 
         # Sliding window of canonical "(name, sorted-params)" keys for
         # tool calls already executed this turn. Used to detect the model
@@ -433,9 +436,9 @@ class Orchestrator:
             # without ever editing, escalate pressure rather than waiting
             # for max-iterations to expire.
             in_read_only_loop = (
-                getattr(self, "_action_intent", False)
-                and self._writes_this_turn == 0
-                and self._successful_tool_count >= 4
+                    getattr(self, "_action_intent", False)
+                    and self._writes_this_turn == 0
+                    and self._successful_tool_count >= 4
             )
             if in_read_only_loop:
                 if iteration >= 28:
@@ -509,9 +512,9 @@ class Orchestrator:
                 # NOT extend — that just rewards the model for refusing
                 # to act. Pressure (below) will steer it instead.
                 read_only_loop = (
-                    getattr(self, "_action_intent", False)
-                    and self._writes_this_turn == 0
-                    and self._successful_tool_count >= 6
+                        getattr(self, "_action_intent", False)
+                        and self._writes_this_turn == 0
+                        and self._successful_tool_count >= 6
                 )
                 if read_only_loop:
                     print(
@@ -524,8 +527,8 @@ class Orchestrator:
                     # rest of the iteration so pressure-injection runs.
                 # Calculate extension multiplier based on progress rate
                 elif (success_count > 0
-                        and success_count > error_count
-                        and distinct_recent >= 3):
+                      and success_count > error_count
+                      and distinct_recent >= 3):
                     # Good progress: extend by 5-15 based on success rate
                     extension = min(
                         5 + (success_count * 2),  # More successes = larger extension
@@ -630,16 +633,16 @@ class Orchestrator:
                 self.conversation_history.append({
                     "role": "user",
                     "content": (
-                        "[SCHEMA FEEDBACK] Your last tool call(s) included "
-                        "parameters that aren't part of the tool's schema. "
-                        "Those keys were stripped before execution:\n"
-                        + "\n".join(drop_lines)
-                        + "\n\nDo NOT re-emit the same call — it would be "
-                        "identical to one you already ran. Either call the "
-                        "tool again with ONLY the accepted keys (changing "
-                        "the values that were in the rejected keys to "
-                        "supported alternatives), pick a different tool, "
-                        "or give your final answer."
+                            "[SCHEMA FEEDBACK] Your last tool call(s) included "
+                            "parameters that aren't part of the tool's schema. "
+                            "Those keys were stripped before execution:\n"
+                            + "\n".join(drop_lines)
+                            + "\n\nDo NOT re-emit the same call — it would be "
+                              "identical to one you already ran. Either call the "
+                              "tool again with ONLY the accepted keys (changing "
+                              "the values that were in the rejected keys to "
+                              "supported alternatives), pick a different tool, "
+                              "or give your final answer."
                     ),
                 })
 
@@ -804,21 +807,86 @@ class Orchestrator:
                 iteration += 1
                 continue
 
+            # is_malformed, malformed_error = _td.looks_like_malformed_tool_call(text_clean)
+            # if is_malformed:
+            #     consecutive_malformed += 1
+            #     # Hard cap: even within the per-call retry budget, if the
+            #     # model keeps producing malformed calls back-to-back, bail
+            #     # before consuming dozens of iterations.
+            #     if consecutive_malformed >= _MAX_CONSECUTIVE_MALFORMED:
+            #         print(
+            #             f"[orch] Consecutive malformed cap reached "
+            #             f"({consecutive_malformed}); bailing.",
+            #             file=sys.stderr,
+            #         )
+            #         return self._build_recap_answer(
+            #             reason="model emitted malformed tool calls repeatedly"
+            #         )
+
             is_malformed, malformed_error = _td.looks_like_malformed_tool_call(text_clean)
             if is_malformed:
                 consecutive_malformed += 1
-                # Hard cap: even within the per-call retry budget, if the
-                # model keeps producing malformed calls back-to-back, bail
-                # before consuming dozens of iterations.
+
+                if malformed_tool_retries < 2:
+                    # Still have correction retries — send feedback regardless
+                    # of consecutive count. Only bail after retries are gone.
+                    malformed_tool_retries += 1
+                    print(
+                        f"[orch] Malformed tool call detected (retry {malformed_tool_retries}): {malformed_error}",
+                        file=sys.stderr,
+                    )
+                    print(
+                        f"[orch] Unparseable reply (first 500 chars): "
+                        f"{text_clean[:500]!r}",
+                        file=sys.stderr,
+                    )
+                    self.conversation_history.append({
+                        "role": "user",
+                        "content": (
+                            f"Your previous reply attempted a tool call but the "
+                            f"format was invalid. {malformed_error}\n"
+                            "Reply with EXACTLY ONE valid tool call on a single "
+                            "line in this format:\n"
+                            '<tool>{"tool":"NAME","parameters":{...}}</tool>\n'
+                            "No explanation, no markdown, no backticks. Keep the "
+                            "JSON valid. If a shell command contains quotes, "
+                            "prefer single quotes inside the command string."
+                        ),
+                    })
+                    iteration += 1
+                    continue
+
+                # Retries exhausted. Hard cap on consecutive malformed runs.
                 if consecutive_malformed >= _MAX_CONSECUTIVE_MALFORMED:
                     print(
                         f"[orch] Consecutive malformed cap reached "
                         f"({consecutive_malformed}); bailing.",
                         file=sys.stderr,
                     )
-                    return self._build_recap_answer(
-                        reason="model emitted malformed tool calls repeatedly"
+                    # Skip synthesis — history contains only broken calls,
+                    # not useful work; synthesis would likely fail too.
+                    return (
+                        "The model failed to emit a valid tool call after multiple "
+                        "attempts. The request may be too ambiguous or the model may "
+                        "not support tool-use. Try rephrasing your request or using "
+                        "a different model."
                     )
+
+                # Retries exhausted but consecutive cap not yet reached —
+                # return the direct error (same as original terminal branch).
+                print(
+                    f"[orch] Malformed tool call: retries exhausted. "
+                    f"Error: {malformed_error}",
+                    file=sys.stderr,
+                )
+
+                return (
+                    "The model failed to emit a valid tool call after multiple "
+                    "attempts. The request may be too ambiguous or the model may "
+                    "not support tool-use. Try rephrasing your request or using "
+                    "a different model."
+                )
+
             if is_malformed and malformed_tool_retries < 2:
                 malformed_tool_retries += 1
                 print(
@@ -971,8 +1039,8 @@ class Orchestrator:
             # loop forever if the model genuinely has nothing more to
             # do but phrases its conclusion awkwardly.
             if (
-                cliffhanger_retries < 2
-                and self._looks_like_cliffhanger(text_clean)
+                    cliffhanger_retries < 2
+                    and self._looks_like_cliffhanger(text_clean)
             ):
                 cliffhanger_retries += 1
                 print(
@@ -1258,9 +1326,9 @@ class Orchestrator:
             deduped = deduped[-6:]
 
         return (
-            "\n".join(prefix_lines)
-            + "Here's a recap of what I found while investigating:\n\n"
-            + "\n\n".join(deduped)
+                "\n".join(prefix_lines)
+                + "Here's a recap of what I found while investigating:\n\n"
+                + "\n\n".join(deduped)
         )
 
     @staticmethod
