@@ -482,46 +482,45 @@ class _SidebarState extends StateManager<Sidebar> {
         ),
         Padding(
           padding: const EdgeInsets.symmetric(horizontal: 8),
-          child: Container(
-            constraints: const BoxConstraints(minHeight: 38),
-            width: double.infinity,
-            child: OutlinedButton.icon(
-              onPressed: _newChat,
-              icon: const Icon(Icons.add, size: 16),
-              label: const Text("New chat"),
-              style: OutlinedButton.styleFrom(
-                alignment: Alignment.centerLeft,
-                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
-                side: const BorderSide(color: AppTheme.accentMarrone),
+          child: Row(
+            children: [
+              Expanded(
+                child: Container(
+                  constraints: const BoxConstraints(minHeight: 38),
+                  child: OutlinedButton.icon(
+                    onPressed: _newChat,
+                    icon: const Icon(Icons.add, size: 16),
+                    label: const Text("New chat"),
+                    style: OutlinedButton.styleFrom(
+                      alignment: Alignment.centerLeft,
+                      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+                      side: const BorderSide(color: AppTheme.accentMarrone),
+                    ),
+                  ),
+                ),
               ),
-            ),
+              const SizedBox(width: 5),
+              IconButton(
+                tooltip: "Select multiple",
+                icon: const Icon(Icons.checklist, size: 18),
+                onPressed: _openChatSelectionModal,
+                color: AppTheme.textSecondary,
+                splashRadius: 18,
+              ),
+            ],
           ),
         ),
         const SizedBox(height: 12),
-        Padding(
-          padding: const EdgeInsets.fromLTRB(18, 6, 12, 6),
-          child: Row(
-            children: [
-              const Text(
-                "Recent",
-                style: TextStyle(
-                  fontSize: 11,
-                  letterSpacing: 0.6,
-                  fontWeight: FontWeight.w600,
-                  color: AppTheme.textMuted,
-                ),
-              ),
-              const Spacer(),
-              IconButton(
-                tooltip: "Select multiple",
-                icon: const Icon(Icons.checklist, size: 16),
-                onPressed: _openChatSelectionModal,
-                color: AppTheme.textMuted,
-                splashRadius: 16,
-                padding: EdgeInsets.zero,
-                constraints: const BoxConstraints(),
-              ),
-            ],
+        const Padding(
+          padding: EdgeInsets.fromLTRB(18, 6, 12, 6),
+          child: Text(
+            "Recent",
+            style: TextStyle(
+              fontSize: 11,
+              letterSpacing: 0.6,
+              fontWeight: FontWeight.w600,
+              color: AppTheme.textMuted,
+            ),
           ),
         ),
         Expanded(

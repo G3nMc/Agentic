@@ -99,6 +99,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
   // Database connections (Developer panel).
   List<DatabaseConnection> _dbConnections = [];
   bool _dbConnectionsLoaded = false;
+  String? _dbConnectionsWorkingDir;
+
+  // Listener for active project changes to refresh project-scoped settings.
+  VoidCallback? _activeProjectListener;
 
   // Orchestrator log persistence
   List<String> _persistedLog = [];
@@ -3892,6 +3896,16 @@ class _SettingsScreenState extends State<SettingsScreen> {
   // ---- Projects panel (folders + agent context) -------------------------------
 
   Widget _buildProjectsSection() {
+    // Lazy-load project-scoped settings when the panel is shown or the
+    // active project changes.
+    if (!_dbConnectionsLoaded ||
+        _dbConnectionsWorkingDir != ProjectService().currentPath) {
+      _loadDatabaseConnections();
+    }
+    if (!_filtersLoaded ||
+        _filtersWorkingDir != ProjectService().currentPath) {
+      _loadFilters();
+    }
     return SingleChildScrollView(
       padding: const EdgeInsets.all(24),
       child: Center(
@@ -3954,6 +3968,16 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 ),
               ),
               const SizedBox(height: 32),
+              // -- Database Connections (project-scoped) --
+              if (ProjectService().activeProjectKey != null) ...[
+                _buildDatabaseConnectionsSection(),
+                const SizedBox(height: 32),
+              ],
+              // -- Filesystem Filters (project-scoped) --
+              if (ProjectService().activeProjectKey != null) ...[
+                _buildFilesystemFiltersSection(),
+                const SizedBox(height: 32),
+              ],
               // -- Agent Context (inline, per active project) --
               _buildAgentContextInline(),
             ],
@@ -6311,6 +6335,7 @@ Brief overview of this project.
             const SizedBox(height: 8),
             // Editor
             Container(
+              constraints: const BoxConstraints(maxHeight: 500),
               decoration: BoxDecoration(
                 border: Border.all(color: AppTheme.border),
                 borderRadius: BorderRadius.circular(8),
@@ -6543,16 +6568,6 @@ Brief overview of this project.
       _externalPathsLoaded = true;
       _loadExternalToolPaths();
     }
-    // Lazy-load filesystem filter lists the first time the panel opens.
-    if (!_filtersLoaded) {
-      _filtersLoaded = true;
-      _loadFilters();
-    }
-    // Lazy-load database connections the first time the panel opens.
-    if (!_dbConnectionsLoaded) {
-      _dbConnectionsLoaded = true;
-      _loadDatabaseConnections();
-    }
     return SingleChildScrollView(
       padding: const EdgeInsets.all(24),
       child: Center(
@@ -6562,10 +6577,6 @@ Brief overview of this project.
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
               _buildExternalToolsSection(),
-              const SizedBox(height: 24),
-              _buildDatabaseConnectionsSection(),
-              const SizedBox(height: 24),
-              _buildFilesystemFiltersSection(),
               const SizedBox(height: 24),
               if (kDebugMode) _buildInnoSetupSection(),
             ],
@@ -6757,15 +6768,18 @@ Brief overview of this project.
   // ---- Database connections (Developer panel) --------------------------------
 
   Future<void> _loadDatabaseConnections() async {
-    final connections = await DatabaseConnectionsRepository.instance.getAll();
+    final workingDir = ProjectService().currentPath;
+    final connections = await DatabaseConnectionsRepository.instance.getAll(workingDir);
     if (!mounted) return;
     setState(() {
+      _dbConnectionsWorkingDir = workingDir;
       _dbConnections = List<DatabaseConnection>.from(connections);
     });
   }
 
   Future<void> _saveDatabaseConnections() async {
-    await DatabaseConnectionsRepository.instance.setAll(_dbConnections);
+    final workingDir = _dbConnectionsWorkingDir ?? ProjectService().currentPath;
+    await DatabaseConnectionsRepository.instance.setAll(workingDir, _dbConnections);
     if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
       const SnackBar(

@@ -84,7 +84,7 @@ class OllamaGenerateService {
   ///
   /// [enableThinking] passes `"think": true` which makes supported reasoning
   /// models (e.g. deepseek-r1, qwq) return their chain-of-thought inside
-  /// `<think>…</think>` tags in the response text — the Flutter UI will render
+  /// `</think>` tags in the response text — the Flutter UI will render
   /// these as a collapsible "Reasoning" block automatically.
   Future<String> sendChat({
     required String modelId,
@@ -95,6 +95,19 @@ class OllamaGenerateService {
     int? numPredict,
     int numCtx = 4096,
     bool enableThinking = false,
+    // --- New parameters matching Ollama /api/generate spec ---
+    String? suffix,
+    List<String>? images,
+    Object? format,
+    bool raw = false,
+    String? keepAlive,
+    bool logprobs = false,
+    int? topLogprobs,
+    int? seed,
+    int? topK,
+    double? topP,
+    double? minP,
+    List<String>? stop,
   }) async {
     final url = _normalise(baseUrl ?? defaultBaseUrl);
 
@@ -110,18 +123,32 @@ class OllamaGenerateService {
     final systemText = systemParts.join('\n\n');
     final prompt = _buildPrompt(turns);
 
+    final options = <String, Object?>{
+      'temperature': temperature,
+      'num_ctx': numCtx,
+      if (numPredict != null) 'num_predict': numPredict,
+      if (seed != null) 'seed': seed,
+      if (topK != null) 'top_k': topK,
+      if (topP != null) 'top_p': topP,
+      if (minP != null) 'min_p': minP,
+      if (stop != null && stop.isNotEmpty) 'stop': stop,
+    };
+
     final body = <String, Object?>{
       'model': modelId,
       'prompt': prompt,
       'stream': true, // stream for live tokens & no timeout
-      'options': <String, Object?>{
-        'temperature': temperature,
-        'num_ctx': numCtx,
-        if (numPredict != null) 'num_predict': numPredict,
-      },
+      'options': options,
+      if (systemText.isNotEmpty) 'system': systemText,
+      if (enableThinking) 'think': true,
+      if (suffix != null && suffix.isNotEmpty) 'suffix': suffix,
+      if (images != null && images.isNotEmpty) 'images': images,
+      if (format != null) 'format': format,
+      if (raw) 'raw': true,
+      if (keepAlive != null && keepAlive.isNotEmpty) 'keep_alive': keepAlive,
+      if (logprobs) 'logprobs': true,
+      if (topLogprobs != null) 'top_logprobs': topLogprobs,
     };
-    if (systemText.isNotEmpty) body['system'] = systemText;
-    if (enableThinking) body['think'] = true;
 
     try {
       final resp = await _dio.post<ResponseBody>(
@@ -171,7 +198,7 @@ class OllamaGenerateService {
   ///
   /// Each line is a JSON object with at minimum `{"response":"…","done":false}`.
   /// When `done` is true the stream ends. The `thinking` field (if present)
-  /// carries chain-of-thought text that we wrap in `<think>…</think>` tags so
+  /// carries chain-of-thought text that we wrap in ` response` tags so
   /// the Flutter UI's `_ReasoningBlock` widget picks it up automatically.
   Future<String> _readStream(ResponseBody body) async {
     final buffer = StringBuffer(); // incomplete-line carry-over
@@ -228,7 +255,7 @@ class OllamaGenerateService {
     final thinkText = thinking.toString().trim();
     final responseText = response.toString().trim();
     if (thinkText.isNotEmpty) {
-      return '<think>$thinkText</think>\n\n$responseText';
+      return '$thinkText\n\n$responseText';
     }
     return responseText;
   }

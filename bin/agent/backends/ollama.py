@@ -1,11 +1,15 @@
-"""Local / cloud Ollama backend via the official `ollama` Python library."""
+"""Local / cloud Ollama backend via the official `ollama` Python library.
+
+Uses `/api/generate` (not `/api/chat`) so the same endpoint works for
+both raw-completion and chat-formatted requests.  The `messages` list is
+converted into a single `prompt` string + optional `system` field.
+"""
 from __future__ import annotations
 
 import json
 import os
 import sys
-from typing import Any, Dict, List
-from urllib.parse import urlparse
+from typing import Any, Dict, List, Optional
 
 from .backend_base import ModelBackend
 from ..utils.text import sanitize_for_agent
@@ -18,7 +22,7 @@ def _log(msg: str) -> None:
 class OllamaBackend(ModelBackend):
     """
     Talks to a local or cloud Ollama endpoint via the official `ollama`
-    Python library. Streaming is used so every incoming token chunk acts
+    Python library.  Streaming is used so every incoming token chunk acts
     as a natural heartbeat — no separate thread needed.
 
     Local daemon:  OllamaBackend(model_id="phi3:mini")
@@ -29,16 +33,16 @@ class OllamaBackend(ModelBackend):
     """
 
     # Context window cap. Small models (phi3:mini, llama3.2) ship Modelfiles
-    # with num_ctx=128K which blows KV-cache RAM to tens of GiB. 8192 is a
+    # with num_ctx=128K which blows KV-cache RAM to tens of GiB.  32768 is a
     # safe default that fits the system prompt + several read_file results
-    # and gives repo-analysis conversations enough headroom to avoid the
-    # malformed-tool-call spiral that 4096 triggered on small models. Drop
-    # to 4096 via --ollama-num-ctx if running a phi3:mini-class model on a
-    # tight RAM budget; raise to 16384/32768 for 7B+ on >=16 GB or for
-    # cloud-hosted backends where local KV cost is irrelevant.
+    # and gives repo-analysis conversations enough headroom.
     DEFAULT_NUM_CTX = 32768
     DEFAULT_LOCAL_URL = "http://localhost:11434"
     CLOUD_URL = "https://ollama.com"
+
+    # ------------------------------------------------------------------
+    # Helpers
+    # ------------------------------------------------------------------
 
     @staticmethod
     def _is_cloud_model_id(model_id: str) -> bool:
@@ -56,6 +60,7 @@ class OllamaBackend(ModelBackend):
         if not url:
             return ""
         try:
+            from urllib.parse import urlparse
             parsed = urlparse(url if "://" in url else f"http://{url}")
             return (parsed.hostname or "").lower()
         except Exception:
@@ -70,18 +75,23 @@ class OllamaBackend(ModelBackend):
         host = cls._hostname_for(url)
         return host == "ollama.com" or host.endswith(".ollama.com")
 
+    # ------------------------------------------------------------------
+    # Init
+    # ------------------------------------------------------------------
+
     def __init__(
-            self,
-            model_id: str,
-            base_url: str = DEFAULT_LOCAL_URL,
-            num_ctx: int = DEFAULT_NUM_CTX,
-            api_key: str = "",
+        self,
+        model_id: str,
+        base_url: str = DEFAULT_LOCAL_URL,
+        num_ctx: int = DEFAULT_NUM_CTX,
+        api_key: str = "",
     ):
         if not model_id:
             raise RuntimeError(
                 "Ollama backend requires --model (e.g. 'qwen2.5-coder:7b')."
             )
         from ollama import Client  # noqa: PLC0415
+
         self.model_id = model_id
         base_url = base_url.rstrip("/")
 
@@ -126,10 +136,15 @@ class OllamaBackend(ModelBackend):
     def context_limit(self) -> int:
         return int(self.num_ctx)
 
+    # ------------------------------------------------------------------
+    # Health check
+    # ------------------------------------------------------------------
+
     def health_check(self) -> None:
         """Raise RuntimeError with a clear message if the endpoint or model
         is unreachable. Called once at startup for fast-fail feedback."""
         from ollama import ResponseError  # noqa: PLC0415
+
         _log(f"[Ollama:health_check] checking {self.base_url} for model={self.model_id}")
         try:
             result = self._client.list()
@@ -161,7 +176,7 @@ class OllamaBackend(ModelBackend):
 
         bare = self.model_id.split(":", 1)[0]
         if self.model_id not in names and not any(
-                (n or "").split(":", 1)[0] == bare for n in names
+            (n or "").split(":", 1)[0] == bare for n in names
         ):
             installed = ", ".join(sorted(n for n in names if n)) or "(none)"
             _log(
@@ -175,6 +190,10 @@ class OllamaBackend(ModelBackend):
             )
 
         _log(f"[Ollama:health_check_ok] model={self.model_id!r} found locally")
+
+    # ------------------------------------------------------------------
+    # Hint builder
+    # ------------------------------------------------------------------
 
     @staticmethod
     def _build_hint_for(err_msg: str) -> str:
@@ -214,10 +233,58 @@ class OllamaBackend(ModelBackend):
             )
         return ""
 
-    def chat(self, messages, max_tokens, temperature, tools=None):
+    # ------------------------------------------------------------------
+    # Prompt builder  (messages → prompt + system)
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _build_prompt_and_system(
+        messages: List[Dict[str, Any]],
+    ) -> tuple[str, str]:
+        """Convert a chat `messages` list into a single `prompt` string
+        and an optional `system` string suitable for `/api/generate`."""
+        system_parts: List[str] = []
+        prompt_parts: List[str] = []
+
+        for m in messages:
+            role = (m.get("role") or "").strip().lower()
+            content = m.get("content", "") or ""
+            if role == "system":
+                system_parts.append(content)
+            elif role == "user":
+                prompt_parts.append(f"User: {content}")
+            elif role == "assistant":
+                prompt_parts.append(f"Assistant: {content}")
+            else:
+                # Unknown role — treat as user.
+                prompt_parts.append(f"User: {content}")
+
+        system = "\n\n".join(system_parts)
+        prompt = "\n".join(prompt_parts)
+        if prompt_parts:
+            prompt += "\nAssistant:"
+        return prompt, system
+
+    # ------------------------------------------------------------------
+    # Chat  (via /api/generate)
+    # ------------------------------------------------------------------
+
+    def chat(
+        self,
+        messages: List[Dict[str, Any]],
+        max_tokens: int,
+        temperature: float,
+        tools: Optional[List[Dict[str, Any]]] = None,
+    ) -> tuple[str, str]:
         return self._chat_impl(messages, max_tokens, temperature, tools)
 
-    def _chat_impl(self, messages, max_tokens, temperature, tools=None):
+    def _chat_impl(
+        self,
+        messages: List[Dict[str, Any]],
+        max_tokens: int,
+        temperature: float,
+        tools: Optional[List[Dict[str, Any]]] = None,
+    ) -> tuple[str, str]:
         from ollama import ResponseError  # noqa: PLC0415
 
         messages = sanitize_for_agent(messages)
@@ -231,6 +298,8 @@ class OllamaBackend(ModelBackend):
             or self._is_cloud_host(self.base_url)
         )
 
+        prompt, system = self._build_prompt_and_system(messages)
+
         _log(
             f"[Ollama:chat] model={self.model_id} msgs={len(messages)} "
             f"tools={n_tools} max_tokens={max_tokens} temperature={temperature} "
@@ -239,22 +308,33 @@ class OllamaBackend(ModelBackend):
         )
 
         if is_cloud_model:
-            chat_options: Dict[str, Any] = {"temperature": temperature}
+            generate_options: Dict[str, Any] = {"temperature": temperature}
         else:
-            chat_options = {
+            generate_options = {
                 "temperature": temperature,
                 "num_predict": max_tokens,
                 "num_ctx": self.num_ctx,
             }
 
-        chat_kwargs: Dict[str, Any] = dict(
+        generate_kwargs: Dict[str, Any] = dict(
             model=self.model_id,
-            messages=messages,
+            prompt=prompt,
             stream=True,
-            options=chat_options,
+            options=generate_options,
         )
+        if system:
+            generate_kwargs["system"] = system
+        # The ollama Python library's generate() does NOT accept a 'tools'
+        # kwarg (only chat() does).  When tools are requested we must use
+        # the text protocol — tool definitions are already in the system
+        # prompt, so the model can emit <tool>...</tool> tags directly.
         if effective_tools:
-            chat_kwargs["tools"] = effective_tools
+            _log(
+                "[Ollama:tools_via_text] generate() does not support native "
+                "tools; relying on text protocol (<tool> tags in prompt)"
+            )
+            self._tools_unsupported = True
+            effective_tools = None
 
         try:
             parts: List[str] = []
@@ -262,14 +342,14 @@ class OllamaBackend(ModelBackend):
             chunk_count = 0
             native_calls: List[Any] = []
 
-            stream = self._client.chat(**chat_kwargs)
+            stream = self._client.generate(**generate_kwargs)
 
             for chunk in stream:
-                content = chunk.message.content or ""
+                content = chunk.response or ""
                 if content:
                     parts.append(content)
 
-                tcs = getattr(chunk.message, "tool_calls", None) or []
+                tcs = getattr(chunk, "tool_calls", None) or []
                 native_calls.extend(sanitize_for_agent(tcs))
 
                 chunk_count += 1

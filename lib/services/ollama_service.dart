@@ -272,11 +272,11 @@ class OllamaService {
   }
 
   // ---------------------------------------------------------------------------
-  // Chat
+  // Chat via /api/generate (streaming)
   // ---------------------------------------------------------------------------
 
-  /// Send the [history] to Ollama and return the assistant's full reply.
-  /// Non-streaming for simplicity — the existing UI waits on a single string.
+  /// Send the [history] to Ollama via `/api/generate` and return the
+  /// assistant's full reply. Streaming is used so the UI stays responsive.
   Future<String> sendChat({
     required String modelId,
     required List<ChatMessage> history,
@@ -284,66 +284,101 @@ class OllamaService {
     String? apiKey,
     double temperature = 0.7,
     int? numPredict,
-    // Default 4096. Several models (phi3:mini, llama3.2) ship a Modelfile
-    // with num_ctx=128K; honouring that blows up KV-cache allocation to
-    // tens of GiB and triggers "model requires 50 GiB" errors even on
-    // 2-3 GB models. 4096 is ample for chat and keeps the cache <1 GiB.
     int numCtx = 4096,
+    // --- New parameters matching Ollama /api/generate spec ---
+    String? suffix,
+    List<String>? images,
+    Object? format,
+    bool raw = false,
+    String? keepAlive,
+    bool logprobs = false,
+    int? topLogprobs,
+    int? seed,
+    int? topK,
+    double? topP,
+    double? minP,
+    List<String>? stop,
   }) async {
     final url = _normalise(baseUrl ?? defaultBaseUrl);
-    final messages = history
-        .map((m) => {
-              'role': _roleToApi(m.role),
-              'content': m.content,
-            })
+
+    // Split system messages from conversational turns.
+    final systemParts = history
+        .where((m) => m.role == MessageRole.system)
+        .map((m) => m.content)
         .toList();
+    final turns = history
+        .where((m) => m.role != MessageRole.system)
+        .toList();
+
+    final systemText = systemParts.join('\n\n');
+    final prompt = _buildPrompt(turns);
 
     final options = <String, Object?>{
       'temperature': temperature,
       'num_ctx': numCtx,
+      if (numPredict != null) 'num_predict': numPredict,
+      if (seed != null) 'seed': seed,
+      if (topK != null) 'top_k': topK,
+      if (topP != null) 'top_p': topP,
+      if (minP != null) 'min_p': minP,
+      if (stop != null && stop.isNotEmpty) 'stop': stop,
     };
-    if (numPredict != null) options['num_predict'] = numPredict;
+
+    final body = <String, Object?>{
+      'model': modelId,
+      'prompt': prompt,
+      'stream': true,
+      'options': options,
+      if (systemText.isNotEmpty) 'system': systemText,
+      if (suffix != null && suffix.isNotEmpty) 'suffix': suffix,
+      if (images != null && images.isNotEmpty) 'images': images,
+      if (format != null) 'format': format,
+      if (raw) 'raw': true,
+      if (keepAlive != null && keepAlive.isNotEmpty) 'keep_alive': keepAlive,
+      if (logprobs) 'logprobs': true,
+      if (topLogprobs != null) 'top_logprobs': topLogprobs,
+    };
 
     try {
-      final resp = await _dio.post(
-        '$url/api/chat',
-        data: {
-          'model': modelId,
-          'messages': messages,
-          'stream': false,
-          'options': options,
-        },
+      final resp = await _dio.post<ResponseBody>(
+        '$url/api/generate',
+        data: jsonEncode(body),
         options: Options(
+          responseType: ResponseType.stream,
           headers: _headers(apiKey: apiKey),
-          receiveTimeout: const Duration(minutes: 10),
+          receiveTimeout: Duration.zero,
           sendTimeout: const Duration(minutes: 1),
-          // Don't let Dio throw on 4xx/5xx — we want to extract Ollama's
-          // own `{"error":"model 'foo' not found, try pulling it first"}`
-          // body so the exception we raise is actually useful.
           validateStatus: (_) => true,
         ),
       );
+
       if (resp.statusCode != 200) {
-        final data = resp.data;
-        String errMsg;
-        if (data is Map && data['error'] is String) {
-          errMsg = data['error'] as String;
-        } else {
-          errMsg = '$data';
-        }
+        String errBody = '';
+        try {
+          final chunks = <int>[];
+          await resp.data!.stream.listen((c) => chunks.addAll(c)).asFuture();
+          errBody = utf8.decode(chunks, allowMalformed: true);
+        } catch (_) {}
+
+        // Try to extract Ollama's own error field.
+        String errMsg = errBody;
+        try {
+          final obj = jsonDecode(errBody);
+          if (obj is Map && obj['error'] is String) {
+            errMsg = obj['error'] as String;
+          }
+        } catch (_) {}
+
         final lower = errMsg.toLowerCase();
         String hint = '';
         if (lower.contains('requires more system memory') ||
             lower.contains('not enough memory') ||
             lower.contains('out of memory') ||
             (lower.contains('memory') && lower.contains('gib'))) {
-          // User picked a model too big for their RAM — give tiered advice
-          // based on how much RAM Ollama reported as available.
           hint = _lowMemoryHint(errMsg);
         } else if (lower.contains('not found') ||
             lower.contains('no such model') ||
             lower.contains('try pulling')) {
-          // Fetch the installed list so the user knows what tags are valid.
           try {
             final installed = await listInstalledModels(baseUrl: baseUrl);
             hint = installed.isEmpty
@@ -358,16 +393,12 @@ class OllamaService {
           }
         }
         throw Exception(
-          'Ollama /api/chat returned ${resp.statusCode}: $errMsg$hint',
+          'Ollama /api/generate returned ${resp.statusCode}: $errMsg$hint',
         );
       }
-      final content = resp.data?['message']?['content'] as String?;
-      if (content == null) {
-        throw Exception('Ollama response missing message.content: ${resp.data}');
-      }
-      return content;
+
+      return await _readStream(resp.data!);
     } on DioException catch (e) {
-      // Most common case: daemon isn't running.
       if (e.type == DioExceptionType.connectionError) {
         throw Exception(
           'Cannot reach Ollama at $url. Start the daemon from Settings '
@@ -376,6 +407,76 @@ class OllamaService {
       }
       throw Exception('Ollama error: ${e.message}');
     }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Stream reader
+  // ---------------------------------------------------------------------------
+
+  Future<String> _readStream(ResponseBody body) async {
+    final buffer = StringBuffer();
+    final response = StringBuffer();
+
+    await for (final chunk in body.stream) {
+      buffer.write(utf8.decode(chunk, allowMalformed: true));
+      final raw = buffer.toString();
+      final lines = raw.split('\n');
+      buffer.clear();
+      buffer.write(lines.removeLast());
+
+      for (final line in lines) {
+        final trimmed = line.trim();
+        if (trimmed.isEmpty) continue;
+        try {
+          final obj = jsonDecode(trimmed) as Map<String, dynamic>;
+          final chunkText = obj['response'] as String? ?? '';
+          if (chunkText.isNotEmpty) response.write(chunkText);
+          if (obj['error'] is String) {
+            throw Exception('Ollama generate error: ${obj['error']}');
+          }
+        } catch (e) {
+          if (e is Exception && e.toString().contains('Ollama generate error')) {
+            rethrow;
+          }
+        }
+      }
+    }
+
+    // Flush trailing partial line.
+    final tail = buffer.toString().trim();
+    if (tail.isNotEmpty) {
+      try {
+        final obj = jsonDecode(tail) as Map<String, dynamic>;
+        final chunkText = obj['response'] as String? ?? '';
+        if (chunkText.isNotEmpty) response.write(chunkText);
+      } catch (_) {}
+    }
+
+    return response.toString().trim();
+  }
+
+  // ---------------------------------------------------------------------------
+  // Prompt builder
+  // ---------------------------------------------------------------------------
+
+  String _buildPrompt(List<ChatMessage> turns) {
+    if (turns.isEmpty) return '';
+    final sb = StringBuffer();
+    for (final m in turns) {
+      switch (m.role) {
+        case MessageRole.user:
+          sb.write('User: ${m.content}\n');
+          break;
+        case MessageRole.assistant:
+          sb.write('Assistant: ${m.content}\n');
+          break;
+        case MessageRole.system:
+          sb.write('[System: ${m.content}]\n');
+          break;
+      }
+    }
+    sb.write('Assistant:');
+    return sb.toString();
   }
 
   /// Build an actionable hint for the "model requires more system memory than
@@ -455,17 +556,6 @@ class OllamaService {
   /// (Ollama exposes this in `/api/show` -> `capabilities`).
   static bool supportsToolCalling(OllamaCatalogModel m) {
     return m.capabilities.any((c) => c.toLowerCase() == 'tools');
-  }
-
-  String _roleToApi(MessageRole r) {
-    switch (r) {
-      case MessageRole.user:
-        return 'user';
-      case MessageRole.assistant:
-        return 'assistant';
-      case MessageRole.system:
-        return 'system';
-    }
   }
 }
 

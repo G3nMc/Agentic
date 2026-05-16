@@ -12,6 +12,8 @@ REQUIRED_PACKAGES = {
     "ollama": "ollama",
     "groq": "groq",
     "google.genai": "google-genai",
+    "pymysql": "pymysql",
+    "pymssql": "pymssql",
 }
 
 # Per-backend dependency manifest. Used by the entry point to validate

@@ -786,7 +786,7 @@ class OrchestratorManager {
       try {
         final tmp = await getTemporaryDirectory();
         final dbConnPath = '${tmp.path}/agentic_db_connections.json';
-        await DatabaseConnectionsRepository.instance.writeConfigJson(dbConnPath);
+        await DatabaseConnectionsRepository.instance.writeConfigJson(dbConnPath, workingDir: ProjectService().currentPath);
         args.addAll(['--db-connections-config', dbConnPath]);
         _appendLog('[manager] DB connections written -> $dbConnPath');
       } catch (e) {

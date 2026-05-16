@@ -397,6 +397,7 @@ class ToolRegistry:
             "   - FORBIDDEN PHRASES (when work remains):",
             "     * 'I will ...'",
             "     * 'Let me to proceed ...'",
+            "     * 'Is there anything specific ...'",
             "     * 'Would you like me to proceed with...?'",
             "     * 'Shall I continue...?'",
             "     * 'Should I now...?'",

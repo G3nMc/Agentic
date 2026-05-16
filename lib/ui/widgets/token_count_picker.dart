@@ -49,6 +49,7 @@ class TokenCountPicker extends StatefulWidget {
     131072,
     262144,
     524288,
+    1048576,
   ];
 
   /// Sensible presets for `num_predict` / `max_tokens` — reply-length cap
@@ -65,6 +66,7 @@ class TokenCountPicker extends StatefulWidget {
     16384,
     32768,
     65536,
+    131072,
   ];
 
   static String formatK(int tokens) {
