@@ -61,14 +61,14 @@ class _SettingsScreenState extends State<SettingsScreen> {
   LlmBackend _activeBackend = LlmBackend.huggingFace;
   String? _localServerUrl;
 
-  // Settings side-nav: 0 = Project Folders, 1 = Model Settings,
-  // 2 = Orchestrator, 3 = Workflow Agents, 4 = Developer (debug-only),
-  // 5 = Agent Context.
+  // Settings side-nav: 0 = Projects (folders + agent context),
+  // 1 = Model Settings, 2 = Orchestrator, 3 = Workflow Agents,
+  // 4 = Developer (debug-only).
   int _settingsSection = 0;
 
   // Agent Context editor state
   final TextEditingController _agentContextController = TextEditingController();
-  bool _agentContextLoaded = false;
+  String? _agentContextLoadedPath;
   bool _agentContextSaving = false;
 
   // Developer / installer panel state.
@@ -3819,16 +3819,14 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 const VerticalDivider(width: 1, thickness: 1, color: AppTheme.border),
                 Expanded(
                   child: _settingsSection == 0
-                      ? _buildProjectFoldersSection()
+                      ? _buildProjectsSection()
                       : _settingsSection == 1
                           ? _buildModelSettings()
                           : _settingsSection == 2
                               ? _buildOrchestratorPanel()
                               : _settingsSection == 3
                                   ? _buildAgentWorkflowPanel()
-                                  : _settingsSection == 4
-                                      ? _buildDeveloperPanel()
-                                      : _buildAgentContextPanel(),
+                                  : _buildDeveloperPanel(),
                 ),
               ],
             ),
@@ -3844,17 +3842,15 @@ class _SettingsScreenState extends State<SettingsScreen> {
       child: ListView(
         padding: const EdgeInsets.symmetric(vertical: 16, horizontal: 8),
         children: [
-          _navItem("Project Folders", 0, Icons.folder_outlined),
+          _navItem("Projects", 0, Icons.folder_outlined),
           const SizedBox(height: 4),
           _navItem("Model Settings", 1, Icons.tune_outlined),
           const SizedBox(height: 4),
-          _navItem("Orchestrator", 2, Icons.memory_outlined),
-          const SizedBox(height: 4),
           _navItem("Workflow Agents", 3, Icons.account_tree_outlined),
           const SizedBox(height: 4),
-          _navItem("Developer", 4, Icons.developer_mode_outlined),
+          _navItem("Orchestrator", 2, Icons.memory_outlined),
           const SizedBox(height: 4),
-          _navItem("Agent Context", 5, Icons.psychology_outlined),
+          _navItem("Developer", 4, Icons.developer_mode_outlined),
         ],
       ),
     );
@@ -3893,9 +3889,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
     );
   }
 
-  // ---- Project Folders panel -------------------------------------------------
+  // ---- Projects panel (folders + agent context) -------------------------------
 
-  Widget _buildProjectFoldersSection() {
+  Widget _buildProjectsSection() {
     return SingleChildScrollView(
       padding: const EdgeInsets.all(24),
       child: Center(
@@ -3904,6 +3900,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
+              // -- Project Folders --
               _section(
                 title: 'Project Folders',
                 subtitle: 'Manage the folders the agent can work in. '
@@ -3956,6 +3953,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   ],
                 ),
               ),
+              const SizedBox(height: 32),
+              // -- Agent Context (inline, per active project) --
+              _buildAgentContextInline(),
             ],
           ),
         ),
@@ -4004,7 +4004,12 @@ class _SettingsScreenState extends State<SettingsScreen> {
         trailing: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
-            if (!isActive)
+            if (isActive)
+              const Padding(
+                padding: EdgeInsets.symmetric(horizontal: 8),
+                child: Icon(Icons.check_circle, size: 18, color: AppTheme.success),
+              )
+            else
               IconButton(
                 tooltip: 'Activate this project',
                 icon: const Icon(Icons.check_circle_outline, size: 18),
@@ -4038,6 +4043,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     final picked = await ProjectService().pickProjectFolder();
     if (picked == null || picked.isEmpty) return;
     await ProjectService().addProjectFolder(picked, select: true);
+    _resetAgentContext();
     if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
@@ -4051,6 +4057,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   Future<void> _activateProjectFolder(String path) async {
     final switched = await ProjectService().selectProjectFolder(path);
     if (!switched || !mounted) return;
+    _resetAgentContext();
     // Restart orchestrator so it picks up the new --base-path
     await OrchestratorManager.instance.stop();
     ScaffoldMessenger.of(context).showSnackBar(
@@ -6135,20 +6142,20 @@ class _SettingsScreenState extends State<SettingsScreen> {
     );
   }
 
-  // ---- Agent Context panel ---------------------------------------------------
+  // ---- Agent Context (inline, rendered inside Projects section) ---------------
 
   String? get _agentContextFilePath {
     final projectPath = ProjectService().activeProjectKey;
     if (projectPath == null || projectPath.isEmpty) return null;
     // Use .agent.md as the canonical name (matches Python backend's first candidate).
-    return '${projectPath}${Platform.pathSeparator}.agent.md';
+    return '$projectPath${Platform.pathSeparator}.agent.md';
   }
 
   Future<void> _loadAgentContext() async {
-    if (_agentContextLoaded) return;
-    _agentContextLoaded = true;
     final filePath = _agentContextFilePath;
     if (filePath == null) return;
+    if (_agentContextLoadedPath == filePath) return;
+    _agentContextLoadedPath = filePath;
     final file = File(filePath);
     if (await file.exists()) {
       _agentContextController.text = await file.readAsString();
@@ -6192,6 +6199,12 @@ Brief overview of this project.
     setState(() {});
   }
 
+  void _resetAgentContext() {
+    _agentContextLoadedPath = null;
+    _agentContextController.clear();
+    if (mounted) setState(() {});
+  }
+
   Future<void> _saveAgentContext() async {
     final filePath = _agentContextFilePath;
     if (filePath == null) {
@@ -6222,156 +6235,143 @@ Brief overview of this project.
     }
   }
 
-  Widget _buildAgentContextPanel() {
+  Widget _buildAgentContextInline() {
     // Load on first render.
-    if (!_agentContextLoaded) {
+    if (_agentContextLoadedPath != _agentContextFilePath) {
       _loadAgentContext();
     }
 
     final filePath = _agentContextFilePath;
     final hasProject = filePath != null;
 
-    return SingleChildScrollView(
-      padding: const EdgeInsets.all(24),
-      child: Center(
-        child: ConstrainedBox(
-          constraints: const BoxConstraints(maxWidth: 720),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              _section(
-                title: 'Agent Context (.agent.md)',
-                subtitle: hasProject
-                    ? 'Edit the per-project agent configuration file. '
-                        'This Markdown file is merged into the system prompt '
-                        'before every agent run, allowing you to set coding '
-                        'standards, behavioral rules, and project-specific '
-                        'knowledge for the agent.\n\n'
-                        'File: $filePath'
-                    : 'Select a project folder first to edit its agent context.',
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.stretch,
-                  children: [
-                    if (!hasProject)
-                      Container(
-                        padding: const EdgeInsets.all(16),
-                        decoration: BoxDecoration(
-                          border: Border.all(color: AppTheme.border),
-                          borderRadius: BorderRadius.circular(8),
-                        ),
-                        child: const Text(
-                          'No active project. Go to "Project Folders" and '
-                          'activate a project to edit its agent context.',
-                          style: TextStyle(
-                            fontSize: 13,
-                            color: AppTheme.textMuted,
-                          ),
-                          textAlign: TextAlign.center,
-                        ),
-                      )
-                    else ...[
-                      // Toolbar
-                      Row(
-                        children: [
-                          const Icon(Icons.info_outline, size: 16,
-                              color: AppTheme.textSecondary),
-                          const SizedBox(width: 6),
-                          const Expanded(
-                            child: Text(
-                              'Sections starting with "##" are parsed and '
-                              'merged into the system prompt.',
-                              style: TextStyle(
-                                fontSize: 11,
-                                color: AppTheme.textSecondary,
-                              ),
-                            ),
-                          ),
-                          const SizedBox(width: 8),
-                          TextButton.icon(
-                            onPressed: _agentContextSaving
-                                ? null
-                                : _saveAgentContext,
-                            icon: _agentContextSaving
-                                ? const SizedBox(
-                                    width: 14,
-                                    height: 14,
-                                    child: CircularProgressIndicator(
-                                        strokeWidth: 2),
-                                  )
-                                : const Icon(Icons.save_outlined, size: 18),
-                            label: const Text('Save'),
-                          ),
-                        ],
-                      ),
-                      const SizedBox(height: 8),
-                      // Editor
-                      Container(
-                        decoration: BoxDecoration(
-                          border: Border.all(color: AppTheme.border),
-                          borderRadius: BorderRadius.circular(8),
-                        ),
-                        child: TextField(
-                          controller: _agentContextController,
-                          maxLines: null,
-                          minLines: 20,
-                          style: const TextStyle(
-                            fontFamily: 'monospace',
-                            fontSize: 13,
-                            height: 1.5,
-                          ),
-                          decoration: const InputDecoration(
-                            border: InputBorder.none,
-                            contentPadding: EdgeInsets.all(16),
-                          ),
-                        ),
-                      ),
-                      const SizedBox(height: 12),
-                      // Quick-reference card
-                      Container(
-                        padding: const EdgeInsets.all(12),
-                        decoration: BoxDecoration(
-                          color: AppTheme.bgSecondary,
-                          borderRadius: BorderRadius.circular(8),
-                          border: Border.all(
-                            color: AppTheme.accentDarkMarrone.withAlpha(60),
-                          ),
-                        ),
-                        child: const Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Text(
-                              'Recognised sections',
-                              style: TextStyle(
-                                fontSize: 12,
-                                fontWeight: FontWeight.w600,
-                              ),
-                            ),
-                            SizedBox(height: 6),
-                            Text(
-                              '## Agent Identity & Role\n'
-                              '## Knowledge & Skills\n'
-                              '## Project Structure & Standards\n'
-                              '## Current State & Working Context\n'
-                              '## Behavioral Rules\n'
-                              '## Communication Style\n'
-                              '## Tools & Workflow',
-                              style: TextStyle(
-                                fontFamily: 'monospace',
-                                fontSize: 11,
-                                color: AppTheme.textSecondary,
-                                height: 1.6,
-                              ),
-                            ),
-                          ],
-                        ),
-                      ),
-                    ],
-                  ],
+    return _section(
+      title: 'Agent Context (.agent.md)',
+      subtitle: hasProject
+          ? 'Edit the per-project agent configuration file. '
+              'This Markdown file is merged into the system prompt '
+              'before every agent run, allowing you to set coding '
+              'standards, behavioral rules, and project-specific '
+              'knowledge for the agent.\n\n'
+              'File: $filePath'
+          : 'Select a project folder above and activate it to edit its agent context.',
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          if (!hasProject)
+            Container(
+              padding: const EdgeInsets.all(16),
+              decoration: BoxDecoration(
+                border: Border.all(color: AppTheme.border),
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: const Text(
+                'No active project. Activate a project folder above '
+                'to edit its agent context.',
+                style: TextStyle(
+                  fontSize: 13,
+                  color: AppTheme.textMuted,
+                ),
+                textAlign: TextAlign.center,
+              ),
+            )
+          else ...[
+            // Toolbar
+            Row(
+              children: [
+                const Icon(Icons.info_outline, size: 16,
+                    color: AppTheme.textSecondary),
+                const SizedBox(width: 6),
+                const Expanded(
+                  child: Text(
+                    'Sections starting with "##" are parsed and '
+                    'merged into the system prompt.',
+                    style: TextStyle(
+                      fontSize: 11,
+                      color: AppTheme.textSecondary,
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                TextButton.icon(
+                  onPressed: _agentContextSaving
+                      ? null
+                      : _saveAgentContext,
+                  icon: _agentContextSaving
+                      ? const SizedBox(
+                          width: 14,
+                          height: 14,
+                          child: CircularProgressIndicator(
+                              strokeWidth: 2),
+                        )
+                      : const Icon(Icons.save_outlined, size: 18),
+                  label: const Text('Save'),
+                ),
+              ],
+            ),
+            const SizedBox(height: 8),
+            // Editor
+            Container(
+              decoration: BoxDecoration(
+                border: Border.all(color: AppTheme.border),
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: TextField(
+                controller: _agentContextController,
+                maxLines: null,
+                minLines: 20,
+                style: const TextStyle(
+                  fontFamily: 'monospace',
+                  fontSize: 13,
+                  height: 1.5,
+                ),
+                decoration: const InputDecoration(
+                  border: InputBorder.none,
+                  contentPadding: EdgeInsets.all(16),
                 ),
               ),
-            ],
-          ),
-        ),
+            ),
+            const SizedBox(height: 12),
+            // Quick-reference card
+            Container(
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: AppTheme.bgSecondary,
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(
+                  color: AppTheme.accentDarkMarrone.withAlpha(60),
+                ),
+              ),
+              child: const Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    'Recognised sections',
+                    style: TextStyle(
+                      fontSize: 12,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                  SizedBox(height: 6),
+                  Text(
+                    '## Agent Identity & Role\n'
+                    '## Knowledge & Skills\n'
+                    '## Project Structure & Standards\n'
+                    '## Current State & Working Context\n'
+                    '## Behavioral Rules\n'
+                    '## Communication Style\n'
+                    '## Tools & Workflow',
+                    style: TextStyle(
+                      fontFamily: 'monospace',
+                      fontSize: 11,
+                      color: AppTheme.textSecondary,
+                      height: 1.6,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ],
       ),
     );
   }
@@ -6832,8 +6832,9 @@ Brief overview of this project.
       title: "Database Connections",
       subtitle:
           "Configure database connections for the db_query tool. "
-          "Use MariaDB connection strings (mysql+pymysql://user:pass@host:port/db) "
-          "or SQLite file paths.",
+          "MariaDB: mysql+pymysql://user:pass@host:3306/dbname\n"
+          "SQL Server: mssql://user:pass@host:1433/dbname\n"
+          "SQLite: /absolute/path/to/file.db or relative/path.db",
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
@@ -6898,9 +6899,7 @@ Brief overview of this project.
                       Container(
                         padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
                         decoration: BoxDecoration(
-                          color: conn.type == 'mariadb'
-                              ? AppTheme.accentMarrone.withValues(alpha: 51)
-                              : AppTheme.success.withValues(alpha: 51),
+                          color: _dbTypeColor(conn.type).withValues(alpha: 51),
                           borderRadius: BorderRadius.circular(4),
                         ),
                         child: Text(
@@ -6908,9 +6907,7 @@ Brief overview of this project.
                           style: TextStyle(
                             fontSize: 10,
                             fontWeight: FontWeight.bold,
-                            color: conn.type == 'mariadb'
-                                ? AppTheme.accentMarrone
-                                : AppTheme.success,
+                            color: _dbTypeColor(conn.type),
                           ),
                         ),
                       ),
@@ -6944,6 +6941,18 @@ Brief overview of this project.
         ),
       ),
     );
+  }
+
+  Color _dbTypeColor(String type) {
+    switch (type) {
+      case 'mariadb':
+        return AppTheme.accentMarrone;
+      case 'sqlserver':
+        return AppTheme.accent;
+      case 'sqlite':
+      default:
+        return AppTheme.success;
+    }
   }
 
   // ---- Filesystem filters (Developer panel) --------------------------------
@@ -7600,6 +7609,45 @@ Brief overview of this project.
       }
       _appendInstallerLog('Project root: ${root.path}');
 
+      // 0) Run previous uninstaller if present.
+      final localAppData = Platform.environment['LOCALAPPDATA'];
+      if (localAppData != null) {
+        final installDir = Directory('$localAppData\\Programs\\Agentic');
+        if (await installDir.exists()) {
+          // Inno Setup names uninstallers unins000.exe, unins001.exe, etc.
+          final unins = await installDir
+              .list()
+              .where((e) =>
+                  e is File &&
+                  e.path.endsWith('.exe') &&
+                  RegExp(r'unins\d{3}\.exe$').hasMatch(e.path))
+              .toList();
+          if (unins.isNotEmpty) {
+            unins.sort((a, b) => b.path.compareTo(a.path)); // newest first
+            final uninsPath = (unins.first as File).path;
+            _appendInstallerLog(
+                'Found previous uninstaller: $uninsPath');
+            _appendInstallerLog('Running uninstaller silently...');
+            final uninsExit = await _runStreamed(
+              uninsPath,
+              ['/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART'],
+            );
+            if (uninsExit == 0) {
+              _appendInstallerLog('Previous installation removed.');
+            } else {
+              _appendInstallerLog(
+                  'Uninstaller exited with code $uninsExit (continuing anyway).');
+            }
+          } else {
+            _appendInstallerLog(
+                'Install directory exists but no unins???exe found — skipping uninstall.');
+          }
+        } else {
+          _appendInstallerLog(
+              'No previous installation found at ${installDir.path}.');
+        }
+      }
+
       // 1) flutter build windows --release
       _appendInstallerLog('Running: flutter build windows --release');
       final buildExit = await _runStreamed(
@@ -7855,6 +7903,7 @@ class _DatabaseConnectionDialogState
               items: const [
                 DropdownMenuItem(value: 'sqlite', child: Text('SQLite (file path)')),
                 DropdownMenuItem(value: 'mariadb', child: Text('MariaDB (connection string)')),
+                DropdownMenuItem(value: 'sqlserver', child: Text('SQL Server (connection string)')),
               ],
               onChanged: (v) {
                 if (v != null) setState(() => _selectedType = v);
@@ -7870,13 +7919,19 @@ class _DatabaseConnectionDialogState
                     decoration: InputDecoration(
                       labelText: _selectedType == 'sqlite'
                           ? 'SQLite Database Path'
-                          : 'MariaDB Connection String',
+                          : _selectedType == 'sqlserver'
+                              ? 'SQL Server Connection String'
+                              : 'MariaDB Connection String',
                       hintText: _selectedType == 'sqlite'
                           ? 'e.g., data/mydb.sqlite or /home/user/data.db'
-                          : 'mysql+pymysql://user:pass@localhost:3306/mydb',
+                          : _selectedType == 'sqlserver'
+                              ? 'mssql://user:pass@host:1433/dbname'
+                              : 'mysql+pymysql://user:pass@localhost:3306/mydb',
                       helperText: _selectedType == 'sqlite'
                           ? 'Absolute or relative path to the .sqlite file'
-                          : 'Format: mysql+pymysql://user:password@host:port/database',
+                          : _selectedType == 'sqlserver'
+                              ? 'Format: mssql://user:password@host:port/database'
+                              : 'Format: mysql+pymysql://user:password@host:port/database',
                     ),
                     maxLines: 2,
                     onChanged: (_) => setState(() => _error = null),

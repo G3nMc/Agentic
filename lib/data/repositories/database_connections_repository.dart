@@ -7,7 +7,7 @@ import 'settings_repository.dart';
 class DatabaseConnection {
   final String key;
   final String value;
-  final String type; // 'mariadb' or 'sqlite'
+  final String type; // 'mariadb', 'sqlserver', or 'sqlite'
 
   DatabaseConnection({
     required this.key,

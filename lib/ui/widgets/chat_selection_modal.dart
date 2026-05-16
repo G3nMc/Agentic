@@ -9,6 +9,7 @@ import '../../data/models/conversation.dart';
 import '../../data/models/message.dart';
 import '../../data/repositories/conversation_repository.dart';
 import '../../data/repositories/message_repository.dart';
+import '../../services/project_service.dart';
 import '../../statemanagement/method_listener.dart';
 import '../screens/home_screen.dart';
 
@@ -266,6 +267,7 @@ class _ChatSelectionModalState extends State<ChatSelectionModal> {
         createdAt: DateTime.now().millisecondsSinceEpoch,
         updatedAt: DateTime.now().millisecondsSinceEpoch,
         groupId: null,
+        projectPath: ProjectService().activeProjectKey,
       );
 
       await ConversationRepository.instance.insert(newConv);

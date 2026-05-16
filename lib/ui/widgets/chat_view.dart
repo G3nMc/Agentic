@@ -18,6 +18,7 @@ import '../../data/repositories/backend_settings_repository.dart';
 import '../../data/repositories/conversation_repository.dart';
 import '../../data/repositories/local_server_config_repository.dart';
 import '../../data/repositories/message_repository.dart';
+import '../../data/repositories/dev_filters_repository.dart';
 import '../../data/repositories/settings_repository.dart';
 import '../../services/chat_processing_service.dart';
 import '../../services/context_summary_service.dart';
@@ -25,6 +26,7 @@ import '../../services/huggingface_service.dart';
 import '../../services/llm_service.dart';
 import '../../services/local_server_manager.dart';
 import '../../services/orchestrator_manager.dart';
+import '../../services/project_service.dart';
 import '../../statemanagement/method_data.dart';
 import '../../statemanagement/method_listener.dart';
 import '../../statemanagement/state_manager.dart';
@@ -97,6 +99,11 @@ class _ChatViewState extends StateManager<ChatView> with WidgetsBindingObserver 
   /// list). When non-null, [_sendMessage] truncates the conversation at this
   /// message before appending the new one.
   String? _editingMessageId;
+
+  /// Text staged for auto-send after a new conversation is created and the
+  /// orchestrator is up. Used by the auto-generate-agent-context flow so the
+  /// prompt fires with zero prior history in a fresh conversation.
+  static String? _pendingAutoSend;
 
   @override
   void initState() {
@@ -193,6 +200,16 @@ class _ChatViewState extends StateManager<ChatView> with WidgetsBindingObserver 
     OrchestratorManager.instance.loadLogFromDisk(id);
 
     WidgetsBinding.instance.addPostFrameCallback((_) => _scrollToBottom());
+
+    // If a pending-send text was staged (e.g. from auto-generate-agent-context),
+    // fire it now that the conversation is loaded and the orchestrator is up.
+    final pending = _pendingAutoSend;
+    if (pending != null && pending.trim().isNotEmpty) {
+      _pendingAutoSend = null;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) _sendMessage(pending);
+      });
+    }
   }
 
   bool _isOrchestratorBackend(LlmBackend backend) {
@@ -231,6 +248,304 @@ class _ChatViewState extends StateManager<ChatView> with WidgetsBindingObserver 
     _currentCancel?.cancel();
     _currentCancel = null;
     if (mounted) setState(() => _sending = false);
+  }
+
+  /// Builds the auto-generate-agent-context prompt, creates a fresh
+  /// conversation, and stages the prompt so it fires with zero prior
+  /// history once the orchestrator is up.
+  Future<void> _autoGenerateAgentContext() async {
+    if (_sending) return;
+
+    final projectService = ProjectService();
+    if (!projectService.hasExplicitFolder) return;
+
+    final projectPath = projectService.currentPath;
+    final agentMdPath = '$projectPath${Platform.pathSeparator}.agent.md';
+
+    // 1. Read existing .agent.md if present (as current state of art).
+    String existingContext = '';
+    try {
+      final agentFile = File(agentMdPath);
+      if (await agentFile.exists()) {
+        existingContext = await agentFile.readAsString();
+      }
+    } catch (_) {
+      // Ignore — file doesn't exist or can't be read.
+    }
+
+    // 2. Build a directory tree snapshot (capped), respecting filesystem filters.
+    String dirTree = '';
+    try {
+      final dir = Directory(projectPath);
+      if (await dir.exists()) {
+        // Load filesystem filters so we only pass what the user configured
+        // in Settings → Developer → Filesystem Filters.
+        final filters = await DevFiltersRepository.instance.getAll(projectPath);
+        final includeDirs = filters[DevFiltersRepository.kIncludeDirs] ?? <String>[];
+        final excludeDirs = filters[DevFiltersRepository.kExcludeDirs] ?? <String>[];
+        final includeFiles = filters[DevFiltersRepository.kIncludeFiles] ?? <String>[];
+        final excludeFiles = filters[DevFiltersRepository.kExcludeFiles] ?? <String>[];
+
+        final dirWhitelist = includeDirs.isNotEmpty && excludeDirs.isEmpty;
+        final fileWhitelist = includeFiles.isNotEmpty && excludeFiles.isEmpty;
+
+        final entries = await dir
+            .list(recursive: true)
+            .take(500)
+            .toList();
+        final lines = <String>[];
+        for (final e in entries) {
+          final relPath = e.path.substring(projectPath.length + 1);
+          final isDir = e is Directory;
+
+          if (isDir) {
+            if (!_filterAllowsDir(relPath, includeDirs, excludeDirs, dirWhitelist)) {
+              continue;
+            }
+          } else {
+            if (!_filterAllowsFile(relPath, includeFiles, excludeFiles, fileWhitelist)) {
+              continue;
+            }
+            // Also check that the file's parent directory is visible.
+            final parentRel = relPath.contains(Platform.pathSeparator)
+                ? relPath.substring(0, relPath.lastIndexOf(Platform.pathSeparator))
+                : '';
+            if (parentRel.isNotEmpty &&
+                !_filterAllowsDir(parentRel, includeDirs, excludeDirs, dirWhitelist)) {
+              continue;
+            }
+          }
+
+          lines.add('${isDir ? '[DIR]' : '[FILE]'} $relPath');
+        }
+        dirTree = lines.join('\n');
+      }
+    } catch (_) {
+      dirTree = '(could not list directory)';
+    }
+
+    // 3. Build the prompt.
+    final hasExisting = existingContext.trim().isNotEmpty;
+    final prompt = StringBuffer();
+    prompt.writeln('## TASK');
+    prompt.writeln();
+    if (hasExisting) {
+      prompt.writeln(
+        'Below is the CURRENT `.agent.md` for this project. '
+        'Read it, then analyse the project directory tree to see if '
+        'anything has changed. Update the file to reflect the current '
+        'state of the project. Use write_file to overwrite `.agent.md`.',
+      );
+      prompt.writeln();
+      prompt.writeln('### CURRENT .agent.md');
+      prompt.writeln('```markdown');
+      prompt.writeln(existingContext);
+      prompt.writeln('```');
+    } else {
+      prompt.writeln(
+        'Analyse the project directory tree below and create a '
+        '`.agent.md` file that describes this project for future '
+        'coding agents. Use write_file to create `.agent.md`.',
+      );
+    }
+    prompt.writeln();
+    prompt.writeln('### PROJECT DIRECTORY TREE');
+    prompt.writeln('```');
+    prompt.writeln(dirTree);
+    prompt.writeln('```');
+    prompt.writeln();
+    prompt.writeln('### .agent.md TEMPLATE (use these sections)');
+    prompt.writeln('```markdown');
+    prompt.writeln('## Agent Identity & Role');
+    prompt.writeln('- **Agent Name**: ');
+    prompt.writeln('- **Role / Persona**: ');
+    prompt.writeln('- **Tech Stack**: ');
+    prompt.writeln();
+    prompt.writeln('## Knowledge & Skills');
+    prompt.writeln('- **Core Competencies**: ');
+    prompt.writeln('- **Domain Knowledge**: ');
+    prompt.writeln();
+    prompt.writeln('## Project Structure & Standards');
+    prompt.writeln('- **Project Structure**: ');
+    prompt.writeln('- **Coding Standards**: ');
+    prompt.writeln('- **Testing Requirements**: ');
+    prompt.writeln();
+    prompt.writeln('## Current State & Working Context');
+    prompt.writeln('- **Codebase Overview**: ');
+    prompt.writeln('- **Recent Changes**: ');
+    prompt.writeln('- **Known Issues / Tech Debt**: ');
+    prompt.writeln('- **Immediate Focus**: ');
+    prompt.writeln();
+    prompt.writeln('## Behavioral Rules');
+    prompt.writeln('- **Must Always**: ');
+    prompt.writeln('- **Must Never**: ');
+    prompt.writeln();
+    prompt.writeln('## Communication Style');
+    prompt.writeln();
+    prompt.writeln('## Tools & Workflow');
+    prompt.writeln('- **Available Tools**: ');
+    prompt.writeln('- **Workflow Notes**: ');
+    prompt.writeln('```');
+    prompt.writeln();
+    prompt.writeln(
+      'IMPORTANT: Only output the tool call to write_file. '
+      'No explanation before or after.',
+    );
+
+    final promptText = prompt.toString();
+
+    // 4. Create a fresh conversation and stage the prompt.
+    // Use the model from the current conversation so the agent the user
+    // is already chatting with performs the generation — no hardcoded fallback.
+    final now = DateTime.now().millisecondsSinceEpoch;
+    final id = const Uuid().v4();
+    final backend = await BackendSettingsRepository.instance.getActiveBackend();
+    final selectedModel = _conversation?.modelId ?? '';
+
+    final conversation = Conversation(
+      id: id,
+      title: 'Agent context generation',
+      modelId: selectedModel,
+      backend: backend.name,
+      createdAt: now,
+      updatedAt: now,
+      projectPath: ProjectService().activeProjectKey,
+    );
+    await ConversationRepository.instance.insert(conversation);
+
+    // Stage the prompt so it fires after the conversation loads.
+    _pendingAutoSend = promptText;
+
+    // Stop orchestrator so it restarts fresh for the new conversation.
+    if (OrchestratorManager.instance.isRunning) {
+      await OrchestratorManager.instance.stop();
+    }
+
+    // Open the new conversation — _loadConversation will pick up
+    // _pendingAutoSend and fire it.
+    await MethodListener<HomeScreen>().callMethod(
+      'openConversation',
+      params: {'conversationId': id},
+    );
+  }
+
+  // ---------------------------------------------------------------------------
+  // Filesystem-filter helpers for auto-generate-agent-context
+  // ---------------------------------------------------------------------------
+
+  /// Hardcoded baseline of noise directories, matching Python's
+  /// `_BASELINE_EXCLUDE_DIRS` in `agent/path_filter.py`.
+  static const _baselineExcludeDirs = <String>{
+    '.git', '.idea', '.claude', '.agent',
+    '__pycache__', '.dart_tool', 'build', 'node_modules', '.gradle',
+  };
+
+  /// Returns `true` when [relPath] (a relative directory path) should be
+  /// visible given the user's include/exclude lists.
+  bool _filterAllowsDir(
+    String relPath,
+    List<String> includeDirs,
+    List<String> excludeDirs,
+    bool whitelistMode,
+  ) {
+    final name = relPath.split(Platform.pathSeparator).last;
+
+    // Baseline noise: always excluded unless explicitly included.
+    if (_baselineExcludeDirs.contains(name) && !includeDirs.contains(name)) {
+      return false;
+    }
+
+    if (whitelistMode) {
+      // Whitelist: only dirs matching an include (or ancestors of one) pass.
+      return _matchesAnyDir(relPath, includeDirs) ||
+          _isAncestorOfAnyInclude(relPath, includeDirs);
+    }
+
+    // Blacklist / default-allow mode.
+    if (_matchesAnyDir(relPath, excludeDirs)) {
+      // Excluded — unless an include overrides.
+      return _matchesAnyDir(relPath, includeDirs);
+    }
+    return true; // default-allow
+  }
+
+  /// Returns `true` when [relPath] (a relative file path) should be
+  /// visible given the user's include/exclude lists.
+  bool _filterAllowsFile(
+    String relPath,
+    List<String> includeFiles,
+    List<String> excludeFiles,
+    bool whitelistMode,
+  ) {
+    final name = relPath.split(Platform.pathSeparator).last;
+    final ext = name.contains('.') ? '.${name.substring(name.lastIndexOf('.') + 1)}' : '';
+
+    if (whitelistMode) {
+      // Whitelist: only files matching an include pass.
+      return _matchesAnyFile(relPath, name, ext, includeFiles);
+    }
+
+    // Blacklist / default-allow mode.
+    if (_matchesAnyFile(relPath, name, ext, excludeFiles)) {
+      // Excluded — unless an include overrides.
+      return _matchesAnyFile(relPath, name, ext, includeFiles);
+    }
+    return true; // default-allow
+  }
+
+  /// True when [relPath] matches any entry in [patterns].
+  bool _matchesAnyDir(String relPath, List<String> patterns) {
+    final name = relPath.split(Platform.pathSeparator).last;
+    for (final p in patterns) {
+      if (p.isEmpty) continue;
+      // Absolute path match
+      if (Platform.isWindows ? p.toLowerCase() == relPath.toLowerCase() : p == relPath) {
+        return true;
+      }
+      // Bare basename match
+      if (p == name) return true;
+      // Multi-segment relative match (e.g. "installer/Output")
+      if (p.contains('/') || p.contains('\\')) {
+        final normP = p.replaceAll('\\', '/');
+        final normRel = relPath.replaceAll('\\', '/');
+        if (normRel == normP || normRel.startsWith('$normP/')) return true;
+      }
+    }
+    return false;
+  }
+
+  /// True when [relPath] is an ancestor of any include target (needed so
+  /// recursive walks can descend through an excluded ancestor to reach a
+  /// deeper include).
+  bool _isAncestorOfAnyInclude(String relPath, List<String> includes) {
+    final normRel = relPath.replaceAll('\\', '/');
+    for (final inc in includes) {
+      if (inc.isEmpty) continue;
+      final normInc = inc.replaceAll('\\', '/');
+      // Skip bare names and *.ext globs — they match anywhere.
+      if (!normInc.contains('/')) continue;
+      if (normInc.startsWith('$normRel/')) return true;
+    }
+    return false;
+  }
+
+  /// True when [relPath] (with [name] and [ext]) matches any entry in [patterns].
+  bool _matchesAnyFile(String relPath, String name, String ext, List<String> patterns) {
+    for (final p in patterns) {
+      if (p.isEmpty) continue;
+      // Absolute path match
+      if (Platform.isWindows ? p.toLowerCase() == relPath.toLowerCase() : p == relPath) {
+        return true;
+      }
+      // *.ext glob
+      if (p.startsWith('*.') && ext.isNotEmpty) {
+        final targetExt = p.substring(1).toLowerCase(); // ".ext"
+        if (ext.toLowerCase() == targetExt) return true;
+      }
+      // Bare name match
+      if (p == name) return true;
+    }
+    return false;
   }
 
   Future<void> _sendMessage(String text) async {
@@ -853,6 +1168,7 @@ class _ChatViewState extends StateManager<ChatView> with WidgetsBindingObserver 
           onCopyToClipboardAsMarkdown: _copyChatToClipboardAsMarkdown,
           onNewChatFromJson: _newChatFromJson,
           controller: _inputController,
+          onAutoGenerateAgentContext: _autoGenerateAgentContext,
         ),
         if (showServerPanel)
           QuickServerPanel(
@@ -1302,6 +1618,7 @@ class _ChatViewState extends StateManager<ChatView> with WidgetsBindingObserver 
       createdAt: DateTime.now().millisecondsSinceEpoch,
       updatedAt: DateTime.now().millisecondsSinceEpoch,
       groupId: _conversation?.groupId,
+      projectPath: ProjectService().activeProjectKey,
     );
     await ConversationRepository.instance.insert(newConv);
 

@@ -50,6 +50,11 @@ class ChatInput extends StatefulWidget {
   /// Callback to create a new chat from JSON context (excluding conversation node).
   final Future<void> Function(String jsonContent)? onNewChatFromJson;
 
+  /// Called when the user taps the auto-generate-agent-context (magic wand)
+  /// button. The parent is expected to start a fresh conversation and send
+  /// the analysis prompt with zero prior history.
+  final VoidCallback? onAutoGenerateAgentContext;
+
   /// Optional externally-owned controller. When provided, the parent can drive
   /// the input text (e.g. to load a message body for editing). When null, the
   /// widget creates and owns its own controller.
@@ -70,6 +75,7 @@ class ChatInput extends StatefulWidget {
     this.onDownloadAsMarkdown,
     this.onCopyToClipboardAsMarkdown,
     this.onNewChatFromJson,
+    this.onAutoGenerateAgentContext,
     this.controller,
   });
 
@@ -78,8 +84,7 @@ class ChatInput extends StatefulWidget {
 }
 
 class _ChatInputState extends State<ChatInput> {
-  late final TextEditingController _controller =
-      widget.controller ?? TextEditingController();
+  late final TextEditingController _controller = widget.controller ?? TextEditingController();
   final _focusNode = FocusNode();
   final _projectService = ProjectService();
   String _currentProjectFolder = 'Select folder...';
@@ -281,6 +286,14 @@ class _ChatInputState extends State<ChatInput> {
         builder: (_) => const SettingsScreen(initialSection: 0),
       ),
     );
+  }
+
+  /// Delegates to the parent via [onAutoGenerateAgentContext] so the parent
+  /// can create a fresh conversation and send the analysis prompt with zero
+  /// prior history.
+  void _autoGenerateAgentContext() {
+    if (!widget.enabled || widget.sending) return;
+    widget.onAutoGenerateAgentContext?.call();
   }
 
   Future<void> _handleNewChatFromJsonFile() async {
@@ -765,6 +778,11 @@ class _ChatInputState extends State<ChatInput> {
                             onSelectProject: _switchToProject,
                             onOpenSettings: _openSettingsForProjects,
                           ),
+                          const SizedBox(width: 6),
+                          _AutoAgentContextButton(
+                            enabled: widget.enabled && !widget.sending && _projectService.hasExplicitFolder,
+                            onTap: widget.onAutoGenerateAgentContext != null ? _autoGenerateAgentContext : null,
+                          ),
                           const SizedBox(width: 8),
                           if (widget.showLogToggle) ...[
                             _LogToggleButton(
@@ -987,6 +1005,7 @@ class _ProjectFolderButton extends StatelessWidget {
     final items = <PopupMenuEntry<String>>[
       for (final p in projectFolders)
         PopupMenuItem<String>(
+          height: 30,
           value: p,
           child: Row(
             children: [
@@ -1002,14 +1021,15 @@ class _ProjectFolderButton extends StatelessWidget {
             ],
           ),
         ),
-      const PopupMenuDivider(),
-      PopupMenuItem<String>(
+      const PopupMenuDivider(height: 4),
+      const PopupMenuItem<String>(
+        height: 30,
         value: '__add__',
         child: Row(
           children: [
-            const Icon(Icons.add, size: 16, color: AppTheme.accent),
-            const SizedBox(width: 8),
-            const Text('Manage projects\u2026', style: TextStyle(fontSize: 13, color: AppTheme.accent)),
+            Icon(Icons.add, size: 16, color: AppTheme.accent),
+            SizedBox(width: 8),
+            Text('Manage projects...', style: TextStyle(fontSize: 13, color: AppTheme.accent)),
           ],
         ),
       ),
@@ -1017,7 +1037,7 @@ class _ProjectFolderButton extends StatelessWidget {
 
     return PopupMenuButton<String>(
       tooltip: 'Switch project folder',
-      offset: const Offset(0, 40),
+      offset: const Offset(0, 32),
       onSelected: (value) {
         if (value == '__add__') {
           onOpenSettings();
@@ -1243,6 +1263,42 @@ class _TemplateButton extends StatelessWidget {
               Icons.description_outlined,
               size: 18,
               color: active ? AppTheme.accent : (enabled ? AppTheme.textSecondary : AppTheme.textMuted),
+            ),
+          ),
+        ),
+      );
+}
+
+/// Small icon button placed right next to the project-folder dropdown.
+/// On tap it fires a one-shot prompt that asks the current agent to analyse
+/// the project and write a `.agent.md` file.
+class _AutoAgentContextButton extends StatelessWidget {
+  final bool enabled;
+  final VoidCallback? onTap;
+
+  const _AutoAgentContextButton({required this.enabled, required this.onTap});
+
+  @override
+  Widget build(BuildContext context) => Tooltip(
+        message: 'Auto-generate .agent.md from project analysis',
+        child: InkWell(
+          onTap: (enabled && onTap != null) ? onTap : null,
+          borderRadius: BorderRadius.circular(6),
+          child: Container(
+            width: 28,
+            height: 28,
+            alignment: Alignment.center,
+            decoration: BoxDecoration(
+              color: enabled ? AppTheme.accent.withAlpha(25) : AppTheme.bgSecondary,
+              borderRadius: BorderRadius.circular(6),
+              border: Border.all(
+                color: enabled ? AppTheme.accentMarrone : AppTheme.border,
+              ),
+            ),
+            child: Icon(
+              Icons.auto_awesome,
+              size: 14,
+              color: enabled ? AppTheme.accentMarrone : AppTheme.textMuted,
             ),
           ),
         ),

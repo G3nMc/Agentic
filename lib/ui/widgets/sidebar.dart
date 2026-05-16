@@ -12,6 +12,7 @@ import '../../services/github_models_service.dart';
 import '../../services/groq_service.dart';
 import '../../services/llm_service.dart';
 import '../../services/orchestrator_manager.dart';
+import '../../services/project_service.dart';
 import '../../statemanagement/method_data.dart';
 import '../../statemanagement/method_listener.dart';
 import '../../statemanagement/state_manager.dart';
@@ -111,7 +112,7 @@ class _SidebarState extends StateManager<Sidebar> {
   Future<void> _loadConversations() async {
     print('[DEBUG] _loadConversations() called');
     final backend = _activeBackend ?? await BackendSettingsRepository.instance.getActiveBackend();
-    var list = await ConversationRepository.instance.listByBackend(backend.name);
+    var list = await ConversationRepository.instance.listByBackend(backend.name, projectPath: ProjectService().activeProjectKey);
     if (_activeGroupId.isNotEmpty) {
       list = list.where((c) => c.groupId == _activeGroupId).toList();
     }
@@ -146,6 +147,7 @@ class _SidebarState extends StateManager<Sidebar> {
       createdAt: now,
       updatedAt: now,
       groupId: _activeGroupId.isNotEmpty ? _activeGroupId : null,
+      projectPath: ProjectService().activeProjectKey,
     );
     await ConversationRepository.instance.insert(conversation);
     await _loadConversations();
@@ -275,7 +277,7 @@ class _SidebarState extends StateManager<Sidebar> {
   Future<void> _openChatSelectionModal() async {
     // Load all conversations for the current backend (ignoring group filter for the modal)
     final backend = _activeBackend ?? await BackendSettingsRepository.instance.getActiveBackend();
-    final allConversations = await ConversationRepository.instance.listByBackend(backend.name);
+    final allConversations = await ConversationRepository.instance.listByBackend(backend.name, projectPath: ProjectService().activeProjectKey);
 
     if (!mounted) return;
 

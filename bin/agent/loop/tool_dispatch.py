@@ -169,7 +169,9 @@ def looks_like_malformed_tool_call(text: str) -> Tuple[bool, str | None]:
         'or <tool>{"tool":"tool_name","parameters":{...}}</tool>'
     )
 
-    if re.search(r'"\w+"\s*>', text):
+    # Require JSON key position context ({  or ,) to avoid false positives
+    # on comparison operators like  "count" > 0  in narrative text.
+    if re.search(r'[{,]\s*"\w+"\s*>', text):
         return True, (
             f"Malformed tool call: JSON syntax error. Found '\"key\">' instead of '\"key\":'. "
             f"{correct_format}"
@@ -181,7 +183,8 @@ def looks_like_malformed_tool_call(text: str) -> Tuple[bool, str | None]:
             f"{correct_format}"
         )
 
-    if re.search(r'\{[^}]*"\w+"\s*>', text):
+    # Require JSON key position context to avoid false positives.
+    if re.search(r'\{[^}]*[{,]\s*"\w+"\s*>', text):
         return True, (
             f"Malformed tool call: Invalid JSON syntax. Found '>' instead of ':' as a key-value separator. "
             f"{correct_format}"
@@ -192,26 +195,13 @@ def looks_like_malformed_tool_call(text: str) -> Tuple[bool, str | None]:
             f"Malformed tool call: Missing colon after 'tool' key. {correct_format}"
         )
 
-    # Unclosed tool tags are NOT flagged here — they are handled by the
-    # truncation-detection path (looks_like_unclosed_tool + finish_reason)
-    # which gives better corrective feedback ("Your reply was CUT OFF"
-    # vs "Malformed tool call"). A model that writes "<tool>" in a
-    # narrative final answer will pass through here and be treated as
-    # plain text, which is the right outcome.
-
-    if re.search(r'["\']parameters["\']\s*>', text):
+    # Require JSON key position context for the same reason as above.
+    if re.search(r'[{,]\s*["\']parameters["\']\s*>', text):
         return True, (
             f"Malformed tool call: Invalid syntax after 'parameters' key. Use ':' not '>'. {correct_format}"
         )
 
-    # If none of the specific malformation patterns matched, the text is
-    # probably a final answer that happens to mention tool-like keywords
-    # (e.g. "tool_call" or "function_call" from another prompt style).
-    # Don't flag it as malformed — treating a valid final answer as a
-    # malformed tool call is far more disruptive than letting a genuinely
-    # malformed call slip through (it'll be caught on the next iteration).
     return False, None
-
 
 # ---------------------------------------------------------------------------
 # Tool-call parsing

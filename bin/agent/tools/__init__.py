@@ -18,7 +18,7 @@ _sys.dont_write_bytecode = True
 
 def collect_all_tools(registry) -> None:
     """Populate ``registry.tools`` and ``registry.definitions`` in-place."""
-    from . import fs_read, fs_write, shell, git, flutter, python_tools, database
+    from . import fs_read, fs_write, shell, git, flutter, python_tools, database, web
     fs_read.register(registry)
     fs_write.register(registry)
     shell.register(registry)
@@ -26,3 +26,4 @@ def collect_all_tools(registry) -> None:
     flutter.register(registry)
     python_tools.register(registry)
     database.register(registry)
+    web.register(registry)

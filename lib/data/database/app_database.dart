@@ -12,7 +12,7 @@ class AppDatabase {
   static final AppDatabase instance = AppDatabase._();
 
   static const String _dbName = "hf_chat.db";
-  static const int _dbVersion = 9;
+  static const int _dbVersion = 10;
 
   Database? _db;
   Completer<Database>? _opening;
@@ -287,6 +287,18 @@ class AppDatabase {
             REFERENCES conversations(id)
             ON DELETE CASCADE
         )
+      ''');
+    }
+    if (oldVersion < 10) {
+      // Migrate to v10: add project_path to conversations for project scoping.
+      // Existing rows get NULL — they will appear in all projects until the
+      // user explicitly assigns them (or we backfill from a heuristic later).
+      await db.execute(
+        'ALTER TABLE conversations ADD COLUMN project_path TEXT',
+      );
+      await db.execute('''
+        CREATE INDEX IF NOT EXISTS idx_conversations_project_path
+        ON conversations(project_path)
       ''');
     }
   }

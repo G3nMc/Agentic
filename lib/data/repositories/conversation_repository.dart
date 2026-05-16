@@ -11,25 +11,46 @@ class ConversationRepository {
 
   static final ConversationRepository instance = ConversationRepository._();
 
-  Future<List<Conversation>> listAll() async {
+  Future<List<Conversation>> listAll({String? projectPath}) async {
     final db = await AppDatabase.instance.database;
+    final (where, whereArgs) = _projectWhere(projectPath);
     final rows = await db.query(
       "conversations",
+      where: where,
+      whereArgs: whereArgs,
       orderBy: "updated_at DESC",
     );
     print('[DEBUG] listAll() returned ${rows.length} conversations');
     return rows.map(Conversation.fromMap).toList();
   }
 
-  Future<List<Conversation>> listByBackend(String backend) async {
+  Future<List<Conversation>> listByBackend(String backend, {String? projectPath}) async {
     final db = await AppDatabase.instance.database;
+    final (projWhere, projArgs) = _projectWhere(projectPath);
+    final where = _andWhere("backend = ?", projWhere);
+    final whereArgs = [backend, ...projArgs];
     final rows = await db.query(
       "conversations",
-      where: "backend = ?",
-      whereArgs: [backend],
+      where: where,
+      whereArgs: whereArgs,
       orderBy: "updated_at DESC",
     );
     return rows.map(Conversation.fromMap).toList();
+  }
+
+  /// Returns (WHERE clause, args) for project scoping.
+  /// NULL projectPath means "return all" (no filter).
+  /// An empty string means "unscoped" — conversations with NULL project_path.
+  static (String?, List<String>) _projectWhere(String? projectPath) {
+    if (projectPath == null) return (null, []);
+    if (projectPath.isEmpty) return ("project_path IS NULL", []);
+    return ("project_path = ?", [projectPath]);
+  }
+
+  static String? _andWhere(String? a, String? b) {
+    if (a == null) return b;
+    if (b == null) return a;
+    return "$a AND $b";
   }
 
   Future<void> updateBackend(String id, String backend) async {
