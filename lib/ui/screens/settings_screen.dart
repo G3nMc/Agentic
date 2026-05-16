@@ -619,27 +619,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          // API Key
-          TextField(
-            controller: _groqApiKeyController,
-            obscureText: !_groqApiKeyVisible,
-            decoration: InputDecoration(
-              labelText: 'Groq API Key',
-              hintText: 'gsk_...',
-              helperText: 'Free key from console.groq.com/keys',
-              suffixIcon: IconButton(
-                icon: Icon(
-                  _groqApiKeyVisible ? Icons.visibility_off : Icons.visibility,
-                  size: 18,
-                ),
-                onPressed: () => setState(() => _groqApiKeyVisible = !_groqApiKeyVisible),
-              ),
-            ),
-            onChanged: _scheduleGroqApiKeySave,
-          ),
-          const SizedBox(height: 16),
-
-          // Model selector
+          // Model selector (first, before API key)
           Row(
             children: [
               const Text('Model', style: TextStyle(fontSize: 13)),
@@ -673,6 +653,25 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 onPressed: _groqApiKeyController.text.trim().isNotEmpty ? () => _refreshGroqModels(_groqApiKeyController.text.trim()) : null,
               ),
             ],
+          ),
+          const SizedBox(height: 16),
+          // API Key
+          TextField(
+            controller: _groqApiKeyController,
+            obscureText: !_groqApiKeyVisible,
+            decoration: InputDecoration(
+              labelText: 'Groq API Key',
+              hintText: 'gsk_...',
+              helperText: 'Free key from console.groq.com/keys',
+              suffixIcon: IconButton(
+                icon: Icon(
+                  _groqApiKeyVisible ? Icons.visibility_off : Icons.visibility,
+                  size: 18,
+                ),
+                onPressed: () => setState(() => _groqApiKeyVisible = !_groqApiKeyVisible),
+              ),
+            ),
+            onChanged: _scheduleGroqApiKeySave,
           ),
           const SizedBox(height: 20),
 
@@ -1019,26 +1018,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          TextField(
-            controller: _openRouterApiKeyController,
-            obscureText: !_openRouterApiKeyVisible,
-            decoration: InputDecoration(
-              labelText: 'OpenRouter API Key',
-              hintText: 'sk-or-v1-...',
-              helperText: 'Create one at openrouter.ai/keys',
-              suffixIcon: IconButton(
-                icon: Icon(
-                  _openRouterApiKeyVisible ? Icons.visibility_off : Icons.visibility,
-                  size: 18,
-                ),
-                onPressed: () => setState(
-                  () => _openRouterApiKeyVisible = !_openRouterApiKeyVisible,
-                ),
-              ),
-            ),
-            onChanged: _scheduleOpenRouterApiKeySave,
-          ),
-          const SizedBox(height: 16),
+          // Model selector (first)
           Row(
             children: [
               const Text('Model', style: TextStyle(fontSize: 13)),
@@ -1121,6 +1101,27 @@ class _SettingsScreenState extends State<SettingsScreen> {
             'Need a model not shown here? Use the chat-header model picker to '
             'type any valid OpenRouter model ID manually.',
             style: TextStyle(fontSize: 11, color: Colors.grey[600]),
+          ),
+          const SizedBox(height: 16),
+          // API Key
+          TextField(
+            controller: _openRouterApiKeyController,
+            obscureText: !_openRouterApiKeyVisible,
+            decoration: InputDecoration(
+              labelText: 'OpenRouter API Key',
+              hintText: 'sk-or-v1-...',
+              helperText: 'Create one at openrouter.ai/keys',
+              suffixIcon: IconButton(
+                icon: Icon(
+                  _openRouterApiKeyVisible ? Icons.visibility_off : Icons.visibility,
+                  size: 18,
+                ),
+                onPressed: () => setState(
+                  () => _openRouterApiKeyVisible = !_openRouterApiKeyVisible,
+                ),
+              ),
+            ),
+            onChanged: _scheduleOpenRouterApiKeySave,
           ),
           const SizedBox(height: 20),
           Row(
@@ -1612,27 +1613,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          TextField(
-            controller: _githubApiKeyController,
-            obscureText: !_githubApiKeyVisible,
-            decoration: InputDecoration(
-              labelText: 'GitHub PAT (models:read)',
-              hintText: 'github_pat_...',
-              helperText:
-                  'Create one at github.com/settings/personal-access-tokens/new',
-              suffixIcon: IconButton(
-                icon: Icon(
-                  _githubApiKeyVisible ? Icons.visibility_off : Icons.visibility,
-                  size: 18,
-                ),
-                onPressed: () => setState(
-                  () => _githubApiKeyVisible = !_githubApiKeyVisible,
-                ),
-              ),
-            ),
-            onChanged: _scheduleGithubApiKeySave,
-          ),
-          const SizedBox(height: 16),
+          // Model selector (first)
           Row(
             children: [
               const Text('Model', style: TextStyle(fontSize: 13)),
@@ -1714,6 +1695,28 @@ class _SettingsScreenState extends State<SettingsScreen> {
             'support tool calling — they\'re fine for plain chat / reasoning, '
             'but filesystem tools will be auto-disabled for them.',
             style: TextStyle(fontSize: 11, color: Colors.grey[600]),
+          ),
+          const SizedBox(height: 16),
+          // API Key
+          TextField(
+            controller: _githubApiKeyController,
+            obscureText: !_githubApiKeyVisible,
+            decoration: InputDecoration(
+              labelText: 'GitHub PAT (models:read)',
+              hintText: 'github_pat_...',
+              helperText:
+                  'Create one at github.com/settings/personal-access-tokens/new',
+              suffixIcon: IconButton(
+                icon: Icon(
+                  _githubApiKeyVisible ? Icons.visibility_off : Icons.visibility,
+                  size: 18,
+                ),
+                onPressed: () => setState(
+                  () => _githubApiKeyVisible = !_githubApiKeyVisible,
+                ),
+              ),
+            ),
+            onChanged: _scheduleGithubApiKeySave,
           ),
           const SizedBox(height: 20),
           Row(
@@ -2161,26 +2164,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          TextField(
-            controller: _geminiApiKeyController,
-            obscureText: !_geminiApiKeyVisible,
-            decoration: InputDecoration(
-              labelText: 'Gemini API Key',
-              hintText: 'AIza...',
-              helperText: 'Free key from Google AI Studio.',
-              suffixIcon: IconButton(
-                icon: Icon(
-                  _geminiApiKeyVisible ? Icons.visibility_off : Icons.visibility,
-                  size: 18,
-                ),
-                onPressed: () => setState(
-                  () => _geminiApiKeyVisible = !_geminiApiKeyVisible,
-                ),
-              ),
-            ),
-            onChanged: _scheduleGeminiApiKeySave,
-          ),
-          const SizedBox(height: 16),
+          // Model selector (first)
           Row(
             children: [
               const Text('Model', style: TextStyle(fontSize: 13)),
@@ -2244,6 +2228,27 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   ),
                 )
                 .toList(),
+          ),
+          const SizedBox(height: 16),
+          // API Key
+          TextField(
+            controller: _geminiApiKeyController,
+            obscureText: !_geminiApiKeyVisible,
+            decoration: InputDecoration(
+              labelText: 'Gemini API Key',
+              hintText: 'AIza...',
+              helperText: 'Free key from Google AI Studio.',
+              suffixIcon: IconButton(
+                icon: Icon(
+                  _geminiApiKeyVisible ? Icons.visibility_off : Icons.visibility,
+                  size: 18,
+                ),
+                onPressed: () => setState(
+                  () => _geminiApiKeyVisible = !_geminiApiKeyVisible,
+                ),
+              ),
+            ),
+            onChanged: _scheduleGeminiApiKeySave,
           ),
           const SizedBox(height: 20),
           Row(
@@ -4307,14 +4312,49 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 ),
               ),
               const SizedBox(height: 28),
+              // --- Default model (HF / Ollama only; other backends have their own model selector at the top of their control panel) ---
+              if (!isGroqBackend && !isGeminiBackend && !isOpenRouterBackend && !isGithubBackend) ...[
+                _section(
+                  title: "Default model",
+                  subtitle: "Used for new chats. You can still override per conversation.",
+                  child: isOllamaBackend
+                      ? _ollamaDefaultModelPicker()
+                      : Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+                          decoration: BoxDecoration(
+                            border: Border.all(color: AppTheme.border),
+                            borderRadius: BorderRadius.circular(10),
+                          ),
+                          child: DropdownButtonHideUnderline(
+                            child: DropdownButton<String>(
+                              isExpanded: true,
+                              value: _models.any((m) => m.id == _selectedModelId) ? _selectedModelId : null,
+                              hint: const Text("Select default model"),
+                              items: _models
+                                  .map(
+                                    (m) => DropdownMenuItem<String>(
+                                      value: m.id,
+                                      child: Text(
+                                        m.name,
+                                        overflow: TextOverflow.ellipsis,
+                                      ),
+                                    ),
+                                  )
+                                  .toList(),
+                              onChanged: (v) {
+                                if (v != null) _setSelected(v);
+                              },
+                            ),
+                          ),
+                        ),
+                ),
+                const SizedBox(height: 28),
+              ],
+              // --- Backend-specific control panels (model selector moved to top for Groq/Gemini/OpenRouter/GitHub) ---
               if (_activeBackend == LlmBackend.ollama) ...[
                 _ollamaControlPanel(),
                 const SizedBox(height: 28),
               ] else if (_activeBackend == LlmBackend.ollamaOrchestrator) ...[
-                // Show the same Ollama panel (so the user can pull /
-                // select a model) plus a header explaining what this
-                // backend does differently — it wraps the local model
-                // in the orchestrator, granting filesystem tools.
                 _section(
                   title: "🦙🛠️ Ollama + filesystem tools",
                   subtitle: "Routes a local Ollama model through the same "
@@ -4454,90 +4494,50 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 ),
                 const SizedBox(height: 28),
               ],
-              // "Default model" and "Saved models" are HF-specific.
-              // Groq and Gemini manage their own models inside their
-              // dedicated control panels, so we hide these sections
-              // for those backends.
-              if (!isGroqBackend && !isGeminiBackend && !isOpenRouterBackend && !isGithubBackend) ...[
+              // Saved models (HF only, non-Ollama)
+              if (!isOllamaBackend && (_activeBackend == LlmBackend.orchestrator || _activeBackend == LlmBackend.huggingFace)) ...[
                 const SizedBox(height: 28),
                 _section(
-                  title: "Default model",
-                  subtitle: "Used for new chats. You can still override per conversation.",
-                  child: isOllamaBackend
-                      ? _ollamaDefaultModelPicker()
-                      : Container(
-                          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
-                          decoration: BoxDecoration(
-                            border: Border.all(color: AppTheme.border),
-                            borderRadius: BorderRadius.circular(10),
-                          ),
-                          child: DropdownButtonHideUnderline(
-                            child: DropdownButton<String>(
-                              isExpanded: true,
-                              value: _models.any((m) => m.id == _selectedModelId) ? _selectedModelId : null,
-                              hint: const Text("Select default model"),
-                              items: _models
-                                  .map(
-                                    (m) => DropdownMenuItem<String>(
-                                      value: m.id,
-                                      child: Text(
-                                        m.name,
-                                        overflow: TextOverflow.ellipsis,
-                                      ),
-                                    ),
-                                  )
-                                  .toList(),
-                              onChanged: (v) {
-                                if (v != null) _setSelected(v);
-                              },
-                            ),
-                          ),
-                        ),
-                ),
-                if (!isOllamaBackend) ...[
-                  const SizedBox(height: 28),
-                  _section(
-                    title: "Saved models",
-                    subtitle: "Add any model id supported by the HF router.",
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.stretch,
-                      children: [
-                        Row(
-                          children: [
-                            Expanded(
-                              child: TextField(
-                                controller: _newModelController,
-                                decoration: const InputDecoration(
-                                  hintText: "e.g. Qwen/Qwen3-Coder-480B-A35B-Instruct:hyperbolic",
-                                ),
-                                onSubmitted: (_) => _addModel(),
+                  title: "Saved models",
+                  subtitle: "Add any model id supported by the HF router.",
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      Row(
+                        children: [
+                          Expanded(
+                            child: TextField(
+                              controller: _newModelController,
+                              decoration: const InputDecoration(
+                                hintText: "e.g. Qwen/Qwen3-Coder-480B-A35B-Instruct:hyperbolic",
                               ),
+                              onSubmitted: (_) => _addModel(),
                             ),
-                            const SizedBox(width: 10),
-                            SizedBox(
-                                height: 48,
-                                child: OutlinedButton.icon(
-                                  onPressed: _addModel,
-                                  icon: const Icon(Icons.add, size: 16),
-                                  label: const Text("Add"),
-                                )),
-                          ],
-                        ),
-                        const SizedBox(height: 14),
-                        if (_models.isEmpty)
-                          const Text(
-                            "No models saved yet.",
-                            style: TextStyle(color: AppTheme.textMuted),
-                          )
-                        else
-                          Column(
-                            children: _models.map((m) => _modelRow(m)).toList(),
                           ),
-                      ],
-                    ),
+                          const SizedBox(width: 10),
+                          SizedBox(
+                              height: 48,
+                              child: OutlinedButton.icon(
+                                onPressed: _addModel,
+                                icon: const Icon(Icons.add, size: 16),
+                                label: const Text("Add"),
+                              )),
+                        ],
+                      ),
+                      const SizedBox(height: 14),
+                      if (_models.isEmpty)
+                        const Text(
+                          "No models saved yet.",
+                          style: TextStyle(color: AppTheme.textMuted),
+                        )
+                      else
+                        Column(
+                          children: _models.map((m) => _modelRow(m)).toList(),
+                        ),
+                    ],
                   ),
-                ]
-              ], // closes if (!isOllamaBackend) and HF-only model sections
+                ),
+              ],
               const SizedBox(height: 40),
             ],
           ),
@@ -7698,6 +7698,10 @@ Brief overview of this project.
       if (!await binDir.exists()) {
         _appendInstallerLog(
             'WARN: bin folder not found at ${binDir.path} (continuing without it).');
+      } else {
+        // Delete __pycache__ directories from backend before packaging
+        _appendInstallerLog('Cleaning __pycache__ directories from backend...');
+        await _deletePycacheDirs(binDir);
       }
 
       // 4) installer/ directory.
@@ -7803,6 +7807,20 @@ Brief overview of this project.
       _appendInstallerLog(st.toString());
     } finally {
       if (mounted) setState(() => _installerBusy = false);
+    }
+  }
+
+  /// Recursively delete all __pycache__ directories under [dir].
+  Future<void> _deletePycacheDirs(Directory dir) async {
+    await for (final entity in dir.list(recursive: true, followLinks: false)) {
+      if (entity is Directory && entity.path.endsWith('\\__pycache__')) {
+        try {
+          await entity.delete(recursive: true);
+          _appendInstallerLog('Deleted: ${entity.path}');
+        } catch (e) {
+          _appendInstallerLog('WARN: could not delete ${entity.path}: $e');
+        }
+      }
     }
   }
 }
