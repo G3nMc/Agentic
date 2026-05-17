@@ -260,7 +260,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
             fontSize: 13,
             color: Colors.white,
             fontWeight: FontWeight.bold,
-            backgroundColor: AppTheme.accentMarrone,
+            backgroundColor: AppTheme.accentSecondary,
           ),
         ));
       }
@@ -837,7 +837,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
       return Container(
         padding: const EdgeInsets.all(16),
         decoration: BoxDecoration(
-          border: Border.all(color: AppTheme.accentDarkMarrone.withAlpha(100)),
+          border: Border.all(color: AppTheme.accentTernary.withAlpha(100)),
           borderRadius: BorderRadius.circular(8),
         ),
         child: Text(
@@ -852,7 +852,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
     return Container(
       decoration: BoxDecoration(
-        border: Border.all(color: AppTheme.accentDarkMarrone.withAlpha(100)),
+        border: Border.all(color: AppTheme.accentTernary.withAlpha(100)),
         borderRadius: BorderRadius.circular(8),
       ),
       child: Column(
@@ -887,9 +887,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
               color: AppTheme.bgSecondary,
               border: Border(
                 top: BorderSide(
-                    color: AppTheme.accentDarkMarrone.withAlpha(80)),
+                    color: AppTheme.accentTernary.withAlpha(80)),
                 bottom: BorderSide(
-                    color: AppTheme.accentDarkMarrone.withAlpha(80)),
+                    color: AppTheme.accentTernary.withAlpha(80)),
               ),
             ),
             child: const Row(
@@ -909,7 +909,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 separatorBuilder: (_, __) => Divider(
                   height: 1,
                   thickness: 1,
-                  color: AppTheme.accentDarkMarrone.withAlpha(30),
+                  color: AppTheme.accentTernary.withAlpha(30),
                 ),
                 itemBuilder: (ctx, i) {
                   final m = _groqCatalog[i];
@@ -1220,7 +1220,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
               style: TextStyle(
                 fontSize: 11,
                 fontWeight: FontWeight.bold,
-                color: active ? AppTheme.accentMarrone : null,
+                color: active ? AppTheme.accentSecondary : null,
               ),
               textAlign: TextAlign.right,
               overflow: TextOverflow.ellipsis,
@@ -1229,7 +1229,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
           const SizedBox(width: 2),
           Icon(icon,
               size: 12,
-              color: active ? AppTheme.accentMarrone : Colors.grey),
+              color: active ? AppTheme.accentSecondary : Colors.grey),
         ],
       ),
     );
@@ -1389,7 +1389,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
       return Container(
         padding: const EdgeInsets.all(16),
         decoration: BoxDecoration(
-          border: Border.all(color: AppTheme.accentDarkMarrone.withAlpha(100)),
+          border: Border.all(color: AppTheme.accentTernary.withAlpha(100)),
           borderRadius: BorderRadius.circular(8),
         ),
         child: Text(
@@ -1404,7 +1404,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
     return Container(
       decoration: BoxDecoration(
-        border: Border.all(color: AppTheme.accentDarkMarrone.withAlpha(100)),
+        border: Border.all(color: AppTheme.accentTernary.withAlpha(100)),
         borderRadius: BorderRadius.circular(8),
       ),
       child: Column(
@@ -1439,9 +1439,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
               color: AppTheme.bgSecondary,
               border: Border(
                 top: BorderSide(
-                    color: AppTheme.accentDarkMarrone.withAlpha(80)),
+                    color: AppTheme.accentTernary.withAlpha(80)),
                 bottom: BorderSide(
-                    color: AppTheme.accentDarkMarrone.withAlpha(80)),
+                    color: AppTheme.accentTernary.withAlpha(80)),
               ),
             ),
             child: Row(
@@ -1463,7 +1463,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 separatorBuilder: (_, __) => Divider(
                   height: 1,
                   thickness: 1,
-                  color: AppTheme.accentDarkMarrone.withAlpha(30),
+                  color: AppTheme.accentTernary.withAlpha(30),
                 ),
                 itemBuilder: (ctx, i) {
                   final m = sorted[i];
@@ -1890,7 +1890,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
       return Container(
         padding: const EdgeInsets.all(16),
         decoration: BoxDecoration(
-          border: Border.all(color: AppTheme.accentDarkMarrone.withAlpha(100)),
+          border: Border.all(color: AppTheme.accentTernary.withAlpha(100)),
           borderRadius: BorderRadius.circular(8),
         ),
         child: Text(
@@ -1905,7 +1905,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
     return Container(
       decoration: BoxDecoration(
-        border: Border.all(color: AppTheme.accentDarkMarrone.withAlpha(100)),
+        border: Border.all(color: AppTheme.accentTernary.withAlpha(100)),
         borderRadius: BorderRadius.circular(8),
       ),
       child: Column(
@@ -1942,9 +1942,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
               color: AppTheme.bgSecondary,
               border: Border(
                 top: BorderSide(
-                    color: AppTheme.accentDarkMarrone.withAlpha(80)),
+                    color: AppTheme.accentTernary.withAlpha(80)),
                 bottom: BorderSide(
-                    color: AppTheme.accentDarkMarrone.withAlpha(80)),
+                    color: AppTheme.accentTernary.withAlpha(80)),
               ),
             ),
             child: const Row(
@@ -1964,7 +1964,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 separatorBuilder: (_, __) => Divider(
                   height: 1,
                   thickness: 1,
-                  color: AppTheme.accentDarkMarrone.withAlpha(30),
+                  color: AppTheme.accentTernary.withAlpha(30),
                 ),
                 itemBuilder: (ctx, i) {
                   final m = _githubCatalog[i];
@@ -2786,7 +2786,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
           isAvailable ? "✓ Server is reachable" : "✗ Server not reachable. Check URL and ensure server is running.",
         ),
         duration: const Duration(seconds: 2),
-        backgroundColor: isAvailable ? AppTheme.accentMarrone : AppTheme.danger,
+        backgroundColor: isAvailable ? AppTheme.accentSecondary : AppTheme.danger,
       ),
     );
   }
@@ -2818,7 +2818,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
         content: Text(ok ? '✓ Dependencies installed' : '✗ Install failed — see log'),
-        backgroundColor: ok ? AppTheme.accentMarrone : AppTheme.danger,
+        backgroundColor: ok ? AppTheme.accentSecondary : AppTheme.danger,
       ),
     );
   }
@@ -2840,7 +2840,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
         content: Text(ok ? '✓ google-genai installed' : '✗ Install failed — see log'),
-        backgroundColor: ok ? AppTheme.accentMarrone : AppTheme.danger,
+        backgroundColor: ok ? AppTheme.accentSecondary : AppTheme.danger,
       ),
     );
   }
@@ -2886,7 +2886,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
         content: Text(started ? '✓ Orchestrator running' : '✗ Failed to start — check log'),
-        backgroundColor: started ? AppTheme.accentMarrone : AppTheme.danger,
+        backgroundColor: started ? AppTheme.accentSecondary : AppTheme.danger,
       ),
     );
   }
@@ -2945,7 +2945,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
         content: Text(started ? '✓ Groq orchestrator running' : '✗ Failed to start — check log'),
-        backgroundColor: started ? AppTheme.accentMarrone : AppTheme.danger,
+        backgroundColor: started ? AppTheme.accentSecondary : AppTheme.danger,
       ),
     );
   }
@@ -2991,7 +2991,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
         content: Text(started ? '✓ Gemini orchestrator running' : '✗ Failed to start — check log'),
-        backgroundColor: started ? AppTheme.accentMarrone : AppTheme.danger,
+        backgroundColor: started ? AppTheme.accentSecondary : AppTheme.danger,
       ),
     );
   }
@@ -3038,7 +3038,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
         content: Text(started ? 'Ollama orchestrator running' : 'Failed to start Ollama orchestrator'),
-        backgroundColor: started ? AppTheme.accentMarrone : AppTheme.danger,
+        backgroundColor: started ? AppTheme.accentSecondary : AppTheme.danger,
       ),
     );
   }
@@ -3199,7 +3199,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
         content: Text(ok ? 'Ollama installed successfully' : 'Ollama install failed - see log'),
-        backgroundColor: ok ? AppTheme.accentMarrone : AppTheme.danger,
+        backgroundColor: ok ? AppTheme.accentSecondary : AppTheme.danger,
       ),
     );
   }
@@ -3221,7 +3221,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
         content: Text(ok ? '✓ Ollama server is ready' : '✗ Ollama server failed to start — see log'),
-        backgroundColor: ok ? AppTheme.accentMarrone : AppTheme.danger,
+        backgroundColor: ok ? AppTheme.accentSecondary : AppTheme.danger,
       ),
     );
   }
@@ -3296,7 +3296,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text('✓ Model "$name" pulled'),
-            backgroundColor: AppTheme.accentMarrone,
+            backgroundColor: AppTheme.accentSecondary,
           ),
         );
       }
@@ -3452,7 +3452,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text('✓ Model "$name" deleted'),
-            backgroundColor: AppTheme.accentMarrone,
+            backgroundColor: AppTheme.accentSecondary,
           ),
         );
       }
@@ -3754,7 +3754,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
         content: Text(ok ? 'Python package installed' : 'Python package install failed - see log'),
-        backgroundColor: ok ? AppTheme.accentMarrone : AppTheme.danger,
+        backgroundColor: ok ? AppTheme.accentSecondary : AppTheme.danger,
       ),
     );
   }
@@ -3775,7 +3775,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
         content: Text(ok ? 'Ollama Python bridge is ready' : 'Python bridge failed to start - see log'),
-        backgroundColor: ok ? AppTheme.accentMarrone : AppTheme.danger,
+        backgroundColor: ok ? AppTheme.accentSecondary : AppTheme.danger,
       ),
     );
   }
@@ -4560,7 +4560,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
             width: 9,
             height: 9,
             decoration: BoxDecoration(
-              color: running ? AppTheme.accentMarrone : AppTheme.textMuted,
+              color: running ? AppTheme.accentSecondary : AppTheme.textMuted,
               shape: BoxShape.circle,
             ),
           ),
@@ -4569,7 +4569,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
             running ? "Running" : "Stopped",
             style: TextStyle(
               fontSize: 13,
-              color: running ? AppTheme.accentMarrone : AppTheme.textMuted,
+              color: running ? AppTheme.accentSecondary : AppTheme.textMuted,
               fontWeight: FontWeight.w600,
             ),
           ),
@@ -4635,7 +4635,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                       width: 10,
                       height: 10,
                       decoration: BoxDecoration(
-                        color: running ? AppTheme.accentMarrone : AppTheme.textMuted,
+                        color: running ? AppTheme.accentSecondary : AppTheme.textMuted,
                         shape: BoxShape.circle,
                       ),
                     ),
@@ -4644,7 +4644,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                       running ? "Running" : "Stopped",
                       style: TextStyle(
                         fontSize: 13,
-                        color: running ? AppTheme.accentMarrone : AppTheme.textMuted,
+                        color: running ? AppTheme.accentSecondary : AppTheme.textMuted,
                         fontWeight: FontWeight.w600,
                       ),
                     ),
@@ -4786,24 +4786,24 @@ class _SettingsScreenState extends State<SettingsScreen> {
               // --- Status row -------------------------------------------------
               Row(
                 children: [
-                  _statusDot(hasBinary ? AppTheme.accentMarrone : AppTheme.textMuted),
+                  _statusDot(hasBinary ? AppTheme.accentSecondary : AppTheme.textMuted),
                   const SizedBox(width: 8),
                   Text(
                     hasBinary ? 'Binary: ${_ollamaBinaryVersion!}' : 'Binary: not detected',
                     style: TextStyle(
                       fontSize: 13,
-                      color: hasBinary ? AppTheme.accentMarrone : AppTheme.textMuted,
+                      color: hasBinary ? AppTheme.accentSecondary : AppTheme.textMuted,
                       fontWeight: FontWeight.w600,
                     ),
                   ),
                   const SizedBox(width: 16),
-                  _statusDot(serverUp ? AppTheme.accentMarrone : AppTheme.textMuted),
+                  _statusDot(serverUp ? AppTheme.accentSecondary : AppTheme.textMuted),
                   const SizedBox(width: 8),
                   Text(
                     serverUp ? 'Server: running' : (managing ? 'Server: starting…' : 'Server: stopped'),
                     style: TextStyle(
                       fontSize: 13,
-                      color: serverUp ? AppTheme.accentMarrone : AppTheme.textMuted,
+                      color: serverUp ? AppTheme.accentSecondary : AppTheme.textMuted,
                       fontWeight: FontWeight.w600,
                     ),
                   ),
@@ -5365,7 +5365,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
       return Container(
         padding: const EdgeInsets.all(16),
         decoration: BoxDecoration(
-          border: Border.all(color: AppTheme.accentDarkMarrone.withAlpha(100)),
+          border: Border.all(color: AppTheme.accentTernary.withAlpha(100)),
           borderRadius: BorderRadius.circular(8),
         ),
         child: const Text(
@@ -5378,7 +5378,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
       return Container(
         padding: const EdgeInsets.all(16),
         decoration: BoxDecoration(
-          border: Border.all(color: AppTheme.accentDarkMarrone.withAlpha(100)),
+          border: Border.all(color: AppTheme.accentTernary.withAlpha(100)),
           borderRadius: BorderRadius.circular(8),
         ),
         child: Text(
@@ -5392,7 +5392,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
     return Container(
       decoration: BoxDecoration(
-        border: Border.all(color: AppTheme.accentDarkMarrone.withAlpha(100)),
+        border: Border.all(color: AppTheme.accentTernary.withAlpha(100)),
         borderRadius: BorderRadius.circular(8),
       ),
       child: Column(
@@ -5442,9 +5442,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
               color: AppTheme.bgSecondary,
               border: Border(
                 top: BorderSide(
-                    color: AppTheme.accentDarkMarrone.withAlpha(80)),
+                    color: AppTheme.accentTernary.withAlpha(80)),
                 bottom: BorderSide(
-                    color: AppTheme.accentDarkMarrone.withAlpha(80)),
+                    color: AppTheme.accentTernary.withAlpha(80)),
               ),
             ),
             child: const Row(
@@ -5532,7 +5532,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 separatorBuilder: (_, __) => Divider(
                   height: 1,
                   thickness: 1,
-                  color: AppTheme.accentDarkMarrone.withAlpha(30),
+                  color: AppTheme.accentTernary.withAlpha(30),
                 ),
                 itemBuilder: (ctx, i) {
                   final m = _ollamaCatalog[i];
@@ -5694,7 +5694,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   Widget _ollamaLibraryPanel({required bool serverUp}) {
     return Container(
       decoration: BoxDecoration(
-        border: Border.all(color: AppTheme.accentDarkMarrone.withAlpha(100)),
+        border: Border.all(color: AppTheme.accentTernary.withAlpha(100)),
         borderRadius: BorderRadius.circular(8),
       ),
       child: Column(
@@ -5777,7 +5777,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   separatorBuilder: (_, __) => Divider(
                     height: 1,
                     thickness: 1,
-                    color: AppTheme.accentDarkMarrone.withAlpha(30),
+                    color: AppTheme.accentTernary.withAlpha(30),
                   ),
                   itemBuilder: (ctx, i) =>
                       _ollamaLibraryRow(_filteredLibrary()[i], serverUp),
@@ -6054,7 +6054,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
       decoration: BoxDecoration(
         color: Colors.white,
-        border: Border.all(color: ok ? AppTheme.accentMarrone : AppTheme.border),
+        border: Border.all(color: ok ? AppTheme.accentSecondary : AppTheme.border),
         borderRadius: BorderRadius.circular(999),
       ),
       child: Text(
@@ -6062,7 +6062,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
         style: TextStyle(
           fontSize: 12,
           fontWeight: FontWeight.w600,
-          color: ok ? AppTheme.accentMarrone : AppTheme.textMuted,
+          color: ok ? AppTheme.accentSecondary : AppTheme.textMuted,
         ),
       ),
     );
@@ -6363,7 +6363,7 @@ Brief overview of this project.
                 color: AppTheme.bgSecondary,
                 borderRadius: BorderRadius.circular(8),
                 border: Border.all(
-                  color: AppTheme.accentDarkMarrone.withAlpha(60),
+                  color: AppTheme.accentTernary.withAlpha(60),
                 ),
               ),
               child: const Column(
@@ -6484,7 +6484,7 @@ Brief overview of this project.
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
         content: Text(started ? 'OpenRouter orchestrator running' : 'Failed to start — check log'),
-        backgroundColor: started ? AppTheme.accentMarrone : AppTheme.danger,
+        backgroundColor: started ? AppTheme.accentSecondary : AppTheme.danger,
       ),
     );
   }
@@ -6554,7 +6554,7 @@ Brief overview of this project.
         content: Text(started
             ? 'GitHub Models orchestrator running'
             : 'Failed to start — check log'),
-        backgroundColor: started ? AppTheme.accentMarrone : AppTheme.danger,
+        backgroundColor: started ? AppTheme.accentSecondary : AppTheme.danger,
       ),
     );
   }
@@ -6960,7 +6960,7 @@ Brief overview of this project.
   Color _dbTypeColor(String type) {
     switch (type) {
       case 'mariadb':
-        return AppTheme.accentMarrone;
+        return AppTheme.accentSecondary;
       case 'sqlserver':
         return AppTheme.accent;
       case 'sqlite':
@@ -7368,7 +7368,7 @@ Brief overview of this project.
             padding: const EdgeInsets.fromLTRB(12, 10, 12, 4),
             child: Row(
               children: [
-                Icon(icon, size: 18, color: AppTheme.accentMarrone),
+                Icon(icon, size: 18, color: AppTheme.accentSecondary),
                 const SizedBox(width: 8),
                 Expanded(
                   child: Text(
@@ -7798,7 +7798,7 @@ Brief overview of this project.
           SnackBar(
             content: Text(
                 'Installer built at ${outputDir.path}\\AgenticSetup.exe'),
-            backgroundColor: AppTheme.accentMarrone,
+            backgroundColor: AppTheme.accentSecondary,
           ),
         );
       }

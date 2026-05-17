@@ -797,7 +797,7 @@ class _ChatInputState extends State<ChatInput> {
                             padding: const EdgeInsets.symmetric(horizontal: 6),
                             constraints: const BoxConstraints(maxHeight: 28),
                             alignment: Alignment.centerRight,
-                            decoration: BoxDecoration(color: AppTheme.bgSecondary, borderRadius: BorderRadius.circular(6), border: Border.all(color: AppTheme.accentMarrone)),
+                            decoration: BoxDecoration(color: AppTheme.bgSecondary, borderRadius: BorderRadius.circular(6), border: Border.all(color: AppTheme.accentSecondary, width: 0.5)),
                             child: Row(
                               mainAxisSize: MainAxisSize.min,
                               children: [
@@ -874,7 +874,7 @@ class _AttachButton extends StatelessWidget {
             decoration: BoxDecoration(
               color: AppTheme.bgSecondary,
               borderRadius: BorderRadius.circular(6),
-              border: Border.all(color: AppTheme.border),
+              border: Border.all(color: AppTheme.border, width: 0.5),
             ),
             child: Icon(
               Icons.attach_file,
@@ -975,12 +975,12 @@ class _LogToggleButton extends StatelessWidget {
             padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 4),
             decoration: BoxDecoration(
               borderRadius: BorderRadius.circular(6),
-              border: Border.all(color: AppTheme.accentMarrone),
+              border: Border.all(color: AppTheme.accentSecondary, width: 0.5),
             ),
             child: Icon(
               visible ? Icons.terminal : Icons.terminal_outlined,
               size: 16,
-              color: visible ? AppTheme.accentDarkMarrone : AppTheme.textSecondary,
+              color: visible ? AppTheme.accentTernary : AppTheme.textSecondary,
             ),
           ),
         ),
@@ -1051,7 +1051,7 @@ class _ProjectFolderButton extends StatelessWidget {
         decoration: BoxDecoration(
           color: AppTheme.bgSecondary,
           borderRadius: BorderRadius.circular(6),
-          border: Border.all(color: AppTheme.accentMarrone),
+          border: Border.all(color: AppTheme.accentSecondary, width: 0.5),
         ),
         child: Row(mainAxisSize: MainAxisSize.min, children: [
           const Icon(Icons.folder, size: 14, color: AppTheme.textSecondary),
@@ -1102,7 +1102,7 @@ class _SendButton extends StatelessWidget {
     }
     // Normal send button.
     return Material(
-      color: enabled ? AppTheme.accentMarrone : AppTheme.border,
+      color: enabled ? AppTheme.accentSecondary : AppTheme.border,
       borderRadius: BorderRadius.circular(8),
       child: InkWell(
         borderRadius: BorderRadius.circular(8),
@@ -1218,7 +1218,7 @@ class _DownloadButtonState extends State<_DownloadButton> {
             decoration: BoxDecoration(
               color: AppTheme.bgSecondary,
               borderRadius: BorderRadius.circular(6),
-              border: Border.all(color: AppTheme.border),
+              border: Border.all(color: AppTheme.border, width: 0.5),
             ),
             child: Icon(
               Icons.download_outlined,
@@ -1257,7 +1257,7 @@ class _TemplateButton extends StatelessWidget {
             decoration: BoxDecoration(
               color: active ? AppTheme.accent.withAlpha(30) : AppTheme.bgSecondary,
               borderRadius: BorderRadius.circular(6),
-              border: Border.all(color: active ? AppTheme.accent : AppTheme.border),
+              border: Border.all(color: active ? AppTheme.accent : AppTheme.border, width: 0.5),
             ),
             child: Icon(
               Icons.description_outlined,
@@ -1292,13 +1292,13 @@ class _AutoAgentContextButton extends StatelessWidget {
               color: enabled ? AppTheme.accent.withAlpha(25) : AppTheme.bgSecondary,
               borderRadius: BorderRadius.circular(6),
               border: Border.all(
-                color: enabled ? AppTheme.accentMarrone : AppTheme.border,
+                color: enabled ? AppTheme.accentSecondary : AppTheme.border,  width: 0.5
               ),
             ),
             child: Icon(
               Icons.auto_awesome,
               size: 14,
-              color: enabled ? AppTheme.accentMarrone : AppTheme.textMuted,
+              color: enabled ? AppTheme.accentSecondary : AppTheme.textMuted,
             ),
           ),
         ),
@@ -1326,12 +1326,12 @@ class _NewChatFromJsonButton extends StatelessWidget {
             decoration: BoxDecoration(
               color: enabled ? AppTheme.accent.withAlpha(30) : AppTheme.bgSecondary,
               borderRadius: BorderRadius.circular(6),
-              border: Border.all(color: enabled ? AppTheme.accentMarrone : AppTheme.border),
+              border: Border.all(color: enabled ? AppTheme.accentSecondary : AppTheme.border, width: 0.5),
             ),
             child: Icon(
               Icons.chat_outlined,
               size: 18,
-              color: enabled ? AppTheme.accentMarrone : AppTheme.textMuted,
+              color: enabled ? AppTheme.accentSecondary : AppTheme.textMuted,
             ),
           ),
         ),

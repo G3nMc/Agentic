@@ -71,7 +71,7 @@ class _LocalServerConfigWidgetState extends State<LocalServerConfigWidget> {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text("Server running on $serverUrl"),
-          backgroundColor: AppTheme.accentMarrone,
+          backgroundColor: AppTheme.accentSecondary,
         ),
       );
     } catch (e) {
@@ -144,18 +144,18 @@ class _LocalServerConfigWidgetState extends State<LocalServerConfigWidget> {
                 Container(
                   padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
                   decoration: BoxDecoration(
-                    color: AppTheme.accentMarrone,
+                    color: AppTheme.accentSecondary,
                     borderRadius: BorderRadius.circular(8),
                   ),
                   child: const Row(
                     mainAxisSize: MainAxisSize.min,
                     children: [
-                      Icon(Icons.cloud_done, size: 16, color: AppTheme.accentMarrone),
+                      Icon(Icons.cloud_done, size: 16, color: AppTheme.accentSecondary),
                       SizedBox(width: 6),
                       Text(
                         "Running",
                         style: TextStyle(
-                          color: AppTheme.accentMarrone,
+                          color: AppTheme.accentSecondary,
                           fontSize: 12,
                           fontWeight: FontWeight.w600,
                         ),
@@ -273,16 +273,16 @@ class _LocalServerConfigWidgetState extends State<LocalServerConfigWidget> {
             Container(
               padding: const EdgeInsets.all(12),
               decoration: BoxDecoration(
-                color: _statusMessage!.startsWith("✓") ? AppTheme.accentMarrone : Colors.red[100],
+                color: _statusMessage!.startsWith("✓") ? AppTheme.accentSecondary : Colors.red[100],
                 borderRadius: BorderRadius.circular(8),
                 border: Border.all(
-                  color: _statusMessage!.startsWith("✓") ? AppTheme.accentMarrone : Colors.red[300]!,
+                  color: _statusMessage!.startsWith("✓") ? AppTheme.accentSecondary : Colors.red[300]!,
                 ),
               ),
               child: SelectableText(
                 _statusMessage!,
                 style: TextStyle(
-                  color: _statusMessage!.startsWith("✓") ? AppTheme.accentMarrone : Colors.red[900],
+                  color: _statusMessage!.startsWith("✓") ? AppTheme.accentSecondary : Colors.red[900],
                   fontSize: 12,
                 ),
               ),
@@ -310,7 +310,7 @@ class _LocalServerConfigWidgetState extends State<LocalServerConfigWidget> {
                   ),
                   label: Text(_isStarting ? "Starting..." : "Start Server"),
                   style: ElevatedButton.styleFrom(
-                    backgroundColor: AppTheme.accentMarrone,
+                    backgroundColor: AppTheme.accentSecondary,
                   ),
                 ),
               ),

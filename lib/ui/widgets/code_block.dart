@@ -20,7 +20,7 @@ class CodeBlockBuilder extends MarkdownElementBuilder {
         text: TextSpan(
           text: text,
           style: const TextStyle(
-            backgroundColor: AppTheme.codeDarkBlue,
+            backgroundColor: AppTheme.code,
             fontFamily: "monospace",
             color: AppTheme.textPrimary,
             fontSize: 13.5,

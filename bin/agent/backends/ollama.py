@@ -308,7 +308,10 @@ class OllamaBackend(ModelBackend):
         )
 
         if is_cloud_model:
-            generate_options: Dict[str, Any] = {"temperature": temperature}
+            generate_options: Dict[str, Any] = {
+                "temperature": temperature,
+                "num_predict": max_tokens,
+            }
         else:
             generate_options = {
                 "temperature": temperature,

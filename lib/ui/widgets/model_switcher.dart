@@ -253,7 +253,7 @@ class _ModelSwitcherState extends State<ModelSwitcher> with WidgetsBindingObserv
     return Container(
       height: 48,
       decoration: BoxDecoration(
-        border: Border.all(color: AppTheme.accentMarrone),
+        border: Border.all(color: AppTheme.accentSecondary, width: 0.5),
         borderRadius: BorderRadius.circular(8),
       ),
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),

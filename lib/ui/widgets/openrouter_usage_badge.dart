@@ -107,7 +107,7 @@ class _OpenRouterUsageBadgeState extends State<OpenRouterUsageBadge> {
         final remaining = info.limitRemaining ?? 0;
         label = '${_fmtUsd(remaining)} / ${_fmtUsd(info.limit!)}';
         final ratio = info.limit! > 0 ? remaining / info.limit! : 0;
-        color = ratio <= 0.1 ? AppTheme.danger : (ratio <= 0.25 ? Colors.orange : AppTheme.accentMarrone);
+        color = ratio <= 0.1 ? AppTheme.danger : (ratio <= 0.25 ? Colors.orange : AppTheme.accentSecondary);
         tooltip = 'OpenRouter credits remaining\n'
             'Used total: ${_fmtUsd(info.usage)}\n'
             'Today: ${_fmtUsd(info.usageDaily)} · '

@@ -95,7 +95,7 @@ class _MessageBubbleState extends State<MessageBubble> {
                     style: const TextStyle(
                       fontSize: 11,
                       fontWeight: FontWeight.w700,
-                      color: AppTheme.accentMarrone,
+                      color: AppTheme.accentSecondary,
                       letterSpacing: 0.5,
                     ),
                   ),
@@ -108,7 +108,7 @@ class _MessageBubbleState extends State<MessageBubble> {
                       child: const Icon(
                         Icons.delete_outline,
                         size: 14,
-                        color: AppTheme.accentMarrone,
+                        color: AppTheme.accentSecondary,
                       ),
                     ),
                 ],
@@ -116,7 +116,7 @@ class _MessageBubbleState extends State<MessageBubble> {
               const SizedBox(height: 10),
               Container(
                 height: 0.5,
-                color: AppTheme.accentDarkMarrone,
+                color: AppTheme.accentTernary,
               ),
               const SizedBox(height: 10),
               // ── Message body (markdown) ────────────────────────────
@@ -175,7 +175,7 @@ class _MessageBubbleState extends State<MessageBubble> {
                         child: const Icon(
                           Icons.edit_outlined,
                           size: 14,
-                          color: AppTheme.accentMarrone,
+                          color: AppTheme.accentSecondary,
                         ),
                       ),
                       const SizedBox(width: 6),
@@ -185,7 +185,7 @@ class _MessageBubbleState extends State<MessageBubble> {
                       child: Icon(
                         _copied ? Icons.check : Icons.copy,
                         size: 14,
-                        color: _copied ? AppTheme.textMuted : AppTheme.accentMarrone,
+                        color: _copied ? AppTheme.textMuted : AppTheme.accentSecondary,
                       ),
                     ),
                     if (widget.onResend != null) ...[
@@ -195,7 +195,7 @@ class _MessageBubbleState extends State<MessageBubble> {
                         child: const Icon(
                           Icons.refresh,
                           size: 14,
-                          color: AppTheme.accentMarrone,
+                          color: AppTheme.accentSecondary,
                         ),
                       ),
                     ],

@@ -112,7 +112,8 @@ class _SidebarState extends StateManager<Sidebar> {
   Future<void> _loadConversations() async {
     print('[DEBUG] _loadConversations() called');
     final backend = _activeBackend ?? await BackendSettingsRepository.instance.getActiveBackend();
-    var list = await ConversationRepository.instance.listByBackend(backend.name, projectPath: ProjectService().activeProjectKey);
+    var list = await ConversationRepository.instance
+        .listByBackend(backend.name, projectPath: ProjectService().activeProjectKey);
     if (_activeGroupId.isNotEmpty) {
       list = list.where((c) => c.groupId == _activeGroupId).toList();
     }
@@ -132,10 +133,18 @@ class _SidebarState extends StateManager<Sidebar> {
     final id = const Uuid().v4();
     final backend = await BackendSettingsRepository.instance.getActiveBackend();
     final selectedModel = switch (backend) {
-      LlmBackend.ollama || LlmBackend.ollamaPython || LlmBackend.ollamaOrchestrator => await BackendSettingsRepository.instance.getOllamaModel(),
-      LlmBackend.groq || LlmBackend.groqOrchestrator => await BackendSettingsRepository.instance.getGroqModel() ?? GroqService.fallbackModels.first,
-      LlmBackend.openRouter || LlmBackend.openRouterOrchestrator => await BackendSettingsRepository.instance.getOpenRouterModel() ?? '',
-      LlmBackend.githubOrchestrator => await BackendSettingsRepository.instance.getGithubModel() ?? GithubModelsService.fallbackModels.first,
+      LlmBackend.ollama ||
+      LlmBackend.ollamaPython ||
+      LlmBackend.ollamaOrchestrator =>
+        await BackendSettingsRepository.instance.getOllamaModel(),
+      LlmBackend.groq ||
+      LlmBackend.groqOrchestrator =>
+        await BackendSettingsRepository.instance.getGroqModel() ?? GroqService.fallbackModels.first,
+      LlmBackend.openRouter ||
+      LlmBackend.openRouterOrchestrator =>
+        await BackendSettingsRepository.instance.getOpenRouterModel() ?? '',
+      LlmBackend.githubOrchestrator =>
+        await BackendSettingsRepository.instance.getGithubModel() ?? GithubModelsService.fallbackModels.first,
       _ => (await SettingsRepository.instance.getSelectedModelId()) ?? '',
     };
 
@@ -277,7 +286,8 @@ class _SidebarState extends StateManager<Sidebar> {
   Future<void> _openChatSelectionModal() async {
     // Load all conversations for the current backend (ignoring group filter for the modal)
     final backend = _activeBackend ?? await BackendSettingsRepository.instance.getActiveBackend();
-    final allConversations = await ConversationRepository.instance.listByBackend(backend.name, projectPath: ProjectService().activeProjectKey);
+    final allConversations = await ConversationRepository.instance
+        .listByBackend(backend.name, projectPath: ProjectService().activeProjectKey);
 
     if (!mounted) return;
 
@@ -303,7 +313,8 @@ class _SidebarState extends StateManager<Sidebar> {
       context: context,
       builder: (ctx) => AlertDialog(
         title: const Text("Delete conversations"),
-        content: Text('Delete ${_selectedConversationIds.length} conversation${_selectedConversationIds.length == 1 ? '' : 's'}? This cannot be undone.'),
+        content: Text(
+            'Delete ${_selectedConversationIds.length} conversation${_selectedConversationIds.length == 1 ? '' : 's'}? This cannot be undone.'),
         actions: [
           TextButton(
             onPressed: () => Navigator.of(ctx).pop(false),
@@ -338,7 +349,8 @@ class _SidebarState extends StateManager<Sidebar> {
 
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text("✓ ${_selectedConversationIds.length} conversation${_selectedConversationIds.length == 1 ? '' : 's'} deleted"),
+          content: Text(
+              "✓ ${_selectedConversationIds.length} conversation${_selectedConversationIds.length == 1 ? '' : 's'} deleted"),
           duration: const Duration(seconds: 1),
         ),
       );
@@ -369,7 +381,7 @@ class _SidebarState extends StateManager<Sidebar> {
                 child: Container(
                   constraints: const BoxConstraints(minHeight: 38),
                   decoration: BoxDecoration(
-                    border: Border.all(color: AppTheme.accentMarrone),
+                    border: Border.all(color: AppTheme.accentSecondary, width: 0.5),
                     borderRadius: BorderRadius.circular(8),
                   ),
                   padding: const EdgeInsets.symmetric(horizontal: 10),
@@ -379,7 +391,9 @@ class _SidebarState extends StateManager<Sidebar> {
                       if (multiAgent) {
                         final activeGroup = _workflowGroups.firstWhere(
                           (g) => g.id == _activeGroupId,
-                          orElse: () => _workflowGroups.isNotEmpty ? _workflowGroups.first : const WorkflowGroup(id: '', title: 'Default', roles: {}),
+                          orElse: () => _workflowGroups.isNotEmpty
+                              ? _workflowGroups.first
+                              : const WorkflowGroup(id: '', title: 'Default', roles: {}),
                         );
                         return DropdownButtonHideUnderline(
                           child: DropdownButton<WorkflowGroup>(
@@ -494,7 +508,7 @@ class _SidebarState extends StateManager<Sidebar> {
                     style: OutlinedButton.styleFrom(
                       alignment: Alignment.centerLeft,
                       padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
-                      side: const BorderSide(color: AppTheme.accentMarrone),
+                      side: const BorderSide(color: AppTheme.accentSecondary, width: 0.5),
                     ),
                   ),
                 ),
@@ -671,7 +685,7 @@ class _SidebarConversationTileState extends State<_SidebarConversationTile> {
                       style: TextStyle(
                         // fontSize: 14,
                         fontWeight: widget.isActive ? FontWeight.bold : FontWeight.normal,
-                        color: widget.isActive ? AppTheme.accentMarrone : AppTheme.textPrimary,
+                        color: widget.isActive ? AppTheme.accentSecondary : AppTheme.textPrimary,
                       ),
                     ),
                   ),
@@ -681,11 +695,11 @@ class _SidebarConversationTileState extends State<_SidebarConversationTile> {
                     constraints: const BoxConstraints(maxHeight: 30),
                     decoration: BoxDecoration(
                       borderRadius: BorderRadius.circular(8),
-                      border: Border.all(color: AppTheme.accentMarrone),
+                      border: Border.all(color: AppTheme.accentSecondary),
                     ),
                     child: PopupMenuButton<String>(
                       tooltip: "More",
-                      icon: const Icon(Icons.more_horiz, size: 14, color: AppTheme.accentMarrone),
+                      icon: const Icon(Icons.more_horiz, size: 14, color: AppTheme.accentSecondary),
                       splashRadius: 14,
                       padding: EdgeInsets.zero,
                       onOpened: () {

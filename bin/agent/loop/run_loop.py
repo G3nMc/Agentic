@@ -21,7 +21,7 @@ from ..utils.token_estimator import chars_for_tokens, estimate_messages_tokens
 # runtime via ``self._max_tool_result_chars`` so a 128K cloud model
 # isn't throttled by the 12K value sized for 8K Ollama.
 _MAX_TOOL_RESULT_CHARS_FALLBACK = 12_000
-
+_MAX_TRUNCATION_RETRY = 10
 # Idempotent validation tools. Calling these more than twice in a row
 # without intervening edits almost always means the model is stalling
 # rather than making progress — we nudge it to finalize before the
@@ -887,7 +887,7 @@ class Orchestrator:
                     "a different model."
                 )
 
-            if is_malformed and malformed_tool_retries < 2:
+            if is_malformed and malformed_tool_retries < 3:
                 malformed_tool_retries += 1
                 print(
                     f"[orch] Malformed tool call detected (retry {malformed_tool_retries}): {malformed_error}",
@@ -942,7 +942,7 @@ class Orchestrator:
                     finish_reason == "length"
                     or _td.looks_like_unclosed_tool(text_clean)
             )
-            if looks_truncated and truncation_retries < 2:
+            if looks_truncated and truncation_retries < _MAX_TRUNCATION_RETRY:
                 truncation_retries += 1
                 # Determine whether this is a truncated tool call or a
                 # truncated final answer. A tool call has <tool> tags or

@@ -69,7 +69,7 @@ class _QuickServerPanelState extends State<QuickServerPanel> {
               Icon(
                 Icons.code,
                 size: 16,
-                color: isRunning ? AppTheme.accentMarrone : AppTheme.textSecondary,
+                color: isRunning ? AppTheme.accentSecondary : AppTheme.textSecondary,
               ),
               const SizedBox(width: 8),
               Expanded(
@@ -78,7 +78,7 @@ class _QuickServerPanelState extends State<QuickServerPanel> {
                   style: TextStyle(
                     fontSize: 13,
                     fontWeight: FontWeight.w600,
-                    color: isRunning ? AppTheme.accentMarrone : AppTheme.textPrimary,
+                    color: isRunning ? AppTheme.accentSecondary : AppTheme.textPrimary,
                   ),
                 ),
               ),
@@ -86,7 +86,7 @@ class _QuickServerPanelState extends State<QuickServerPanel> {
                 Container(
                   padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
                   decoration: BoxDecoration(
-                    color: AppTheme.accentMarrone,
+                    color: AppTheme.accentSecondary,
                     borderRadius: BorderRadius.circular(4),
                   ),
                   child: const Text(
@@ -94,7 +94,7 @@ class _QuickServerPanelState extends State<QuickServerPanel> {
                     style: TextStyle(
                       fontSize: 11,
                       fontWeight: FontWeight.w600,
-                      color: AppTheme.accentMarrone,
+                      color: AppTheme.accentSecondary,
                     ),
                   ),
                 ),
@@ -118,7 +118,7 @@ class _QuickServerPanelState extends State<QuickServerPanel> {
                     icon: const Icon(Icons.play_arrow, size: 14),
                     label: const Text("Start"),
                     style: ElevatedButton.styleFrom(
-                      backgroundColor: AppTheme.accentMarrone,
+                      backgroundColor: AppTheme.accentSecondary,
                     ),
                   ),
                 )
@@ -161,7 +161,7 @@ class _QuickServerPanelState extends State<QuickServerPanel> {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text("✓ Server running at http://${config.host}:${config.port}"),
-          backgroundColor: AppTheme.accentMarrone,
+          backgroundColor: AppTheme.accentSecondary,
           duration: const Duration(seconds: 2),
         ),
       );

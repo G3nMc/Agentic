@@ -16,9 +16,9 @@ import '../../data/repositories/agent_credentials_repository.dart';
 import '../../data/repositories/agent_role_settings_repository.dart';
 import '../../data/repositories/backend_settings_repository.dart';
 import '../../data/repositories/conversation_repository.dart';
+import '../../data/repositories/dev_filters_repository.dart';
 import '../../data/repositories/local_server_config_repository.dart';
 import '../../data/repositories/message_repository.dart';
-import '../../data/repositories/dev_filters_repository.dart';
 import '../../data/repositories/settings_repository.dart';
 import '../../services/chat_processing_service.dart';
 import '../../services/context_summary_service.dart';
@@ -289,10 +289,7 @@ class _ChatViewState extends StateManager<ChatView> with WidgetsBindingObserver 
         final dirWhitelist = includeDirs.isNotEmpty && excludeDirs.isEmpty;
         final fileWhitelist = includeFiles.isNotEmpty && excludeFiles.isEmpty;
 
-        final entries = await dir
-            .list(recursive: true)
-            .take(500)
-            .toList();
+        final entries = await dir.list(recursive: true).take(500).toList();
         final lines = <String>[];
         for (final e in entries) {
           final relPath = e.path.substring(projectPath.length + 1);
@@ -310,8 +307,7 @@ class _ChatViewState extends StateManager<ChatView> with WidgetsBindingObserver 
             final parentRel = relPath.contains(Platform.pathSeparator)
                 ? relPath.substring(0, relPath.lastIndexOf(Platform.pathSeparator))
                 : '';
-            if (parentRel.isNotEmpty &&
-                !_filterAllowsDir(parentRel, includeDirs, excludeDirs, dirWhitelist)) {
+            if (parentRel.isNotEmpty && !_filterAllowsDir(parentRel, includeDirs, excludeDirs, dirWhitelist)) {
               continue;
             }
           }
@@ -436,8 +432,15 @@ class _ChatViewState extends StateManager<ChatView> with WidgetsBindingObserver 
   /// Hardcoded baseline of noise directories, matching Python's
   /// `_BASELINE_EXCLUDE_DIRS` in `agent/path_filter.py`.
   static const _baselineExcludeDirs = <String>{
-    '.git', '.idea', '.claude', '.agent',
-    '__pycache__', '.dart_tool', 'build', 'node_modules', '.gradle',
+    '.git',
+    '.idea',
+    '.claude',
+    '.agent',
+    '__pycache__',
+    '.dart_tool',
+    'build',
+    'node_modules',
+    '.gradle',
   };
 
   /// Returns `true` when [relPath] (a relative directory path) should be
@@ -457,8 +460,7 @@ class _ChatViewState extends StateManager<ChatView> with WidgetsBindingObserver 
 
     if (whitelistMode) {
       // Whitelist: only dirs matching an include (or ancestors of one) pass.
-      return _matchesAnyDir(relPath, includeDirs) ||
-          _isAncestorOfAnyInclude(relPath, includeDirs);
+      return _matchesAnyDir(relPath, includeDirs) || _isAncestorOfAnyInclude(relPath, includeDirs);
     }
 
     // Blacklist / default-allow mode.
@@ -597,7 +599,9 @@ class _ChatViewState extends StateManager<ChatView> with WidgetsBindingObserver 
         });
         return;
       }
-    } else if (backend == LlmBackend.ollama || backend == LlmBackend.ollamaPython || backend == LlmBackend.ollamaOrchestrator) {
+    } else if (backend == LlmBackend.ollama ||
+        backend == LlmBackend.ollamaPython ||
+        backend == LlmBackend.ollamaOrchestrator) {
       final resolvedModel = (conv.modelId != null && conv.modelId!.trim().isNotEmpty) ? conv.modelId! : ollamaModel;
 
       if (resolvedModel == null || resolvedModel.trim().isEmpty) {
@@ -633,12 +637,17 @@ class _ChatViewState extends StateManager<ChatView> with WidgetsBindingObserver 
     }
 
     final modelId = switch (backend) {
-      LlmBackend.ollama || LlmBackend.ollamaPython || LlmBackend.ollamaOrchestrator => (conv.modelId != null && conv.modelId!.trim().isNotEmpty) ? conv.modelId! : (ollamaModel ?? ''),
+      LlmBackend.ollama ||
+      LlmBackend.ollamaPython ||
+      LlmBackend.ollamaOrchestrator =>
+        (conv.modelId != null && conv.modelId!.trim().isNotEmpty) ? conv.modelId! : (ollamaModel ?? ''),
       LlmBackend.openRouter => resolveOpenRouterModel(
           conv.modelId ?? '',
           openRouterModel ?? '',
         ),
-      LlmBackend.geminiOrchestrator => (conv.modelId != null && conv.modelId!.startsWith('gemini')) ? conv.modelId! : (geminiModel ?? BackendSettingsRepository.defaultGeminiModel),
+      LlmBackend.geminiOrchestrator => (conv.modelId != null && conv.modelId!.startsWith('gemini'))
+          ? conv.modelId!
+          : (geminiModel ?? BackendSettingsRepository.defaultGeminiModel),
       _ => conv.modelId ?? '',
     };
 
@@ -717,9 +726,7 @@ class _ChatViewState extends StateManager<ChatView> with WidgetsBindingObserver 
 
       final historyForRequest = _isOrchestratorBackend(backend)
           ? history
-          : (prepared.historyToSend.isNotEmpty
-              ? prepared.historyToSend
-              : history);
+          : (prepared.historyToSend.isNotEmpty ? prepared.historyToSend : history);
 
       final reply = await LlmService.instance.sendChat(
         backend: backend,
@@ -1178,8 +1185,7 @@ class _ChatViewState extends StateManager<ChatView> with WidgetsBindingObserver 
         if (showOrchestratorLog && _logVisible) ...[
           ResizeHandle(
             height: _logPanelHeight,
-            onHeightChanged: (newHeight) =>
-                setState(() => _logPanelHeight = newHeight),
+            onHeightChanged: (newHeight) => setState(() => _logPanelHeight = newHeight),
             minHeight: 40.0,
           ),
           OrchestratorLogPanel(height: _logPanelHeight),
@@ -1242,7 +1248,7 @@ class _ChatViewState extends StateManager<ChatView> with WidgetsBindingObserver 
               width: 46,
               height: 46,
               decoration: BoxDecoration(
-                border: Border.all(color: AppTheme.accentMarrone, width: 1),
+                border: Border.all(color: AppTheme.accentSecondary, width: 0.5),
                 borderRadius: BorderRadius.circular(8),
               ),
               child: IconButton(
@@ -1250,7 +1256,7 @@ class _ChatViewState extends StateManager<ChatView> with WidgetsBindingObserver 
                 icon: Icon(
                   OrchestratorManager.instance.isRunning ? Icons.stop_outlined : Icons.play_arrow_outlined,
                   size: 20,
-                  color: OrchestratorManager.instance.isRunning ? AppTheme.accentMarrone : AppTheme.accent,
+                  color: OrchestratorManager.instance.isRunning ? AppTheme.accentSecondary : AppTheme.accent,
                 ),
                 onPressed: () => OrchestratorManager.instance.isRunning ? _stopOrchestrator() : _startOrchestrator(),
               )),
@@ -1266,7 +1272,7 @@ class _ChatViewState extends StateManager<ChatView> with WidgetsBindingObserver 
                   icon: Icon(
                     isRunning ? Icons.cloud_done : Icons.cloud_upload_outlined,
                     size: 16,
-                    color: isRunning ? AppTheme.accentMarrone : AppTheme.textSecondary,
+                    color: isRunning ? AppTheme.accentSecondary : AppTheme.textSecondary,
                   ),
                   onPressed: isRunning ? null : () => _startLocalServer(modelId),
                 );
@@ -1716,7 +1722,9 @@ class _ChatViewState extends StateManager<ChatView> with WidgetsBindingObserver 
         case OrchestratorBackend.groq:
           groqApiKey = await settings.getGroqApiKey() ?? '';
           final savedGroqModel = await settings.getGroqModel() ?? '';
-          modelId = (convModelId.isNotEmpty && !convModelId.contains(':')) ? convModelId : (savedGroqModel.isNotEmpty ? savedGroqModel : convModelId);
+          modelId = (convModelId.isNotEmpty && !convModelId.contains(':'))
+              ? convModelId
+              : (savedGroqModel.isNotEmpty ? savedGroqModel : convModelId);
           temperature = await settings.getGroqTemperature();
           maxTokens = await settings.getGroqMaxTokens();
           tpmLimit = await settings.getGroqTpmLimit();
@@ -2137,13 +2145,13 @@ class _ChatViewState extends StateManager<ChatView> with WidgetsBindingObserver 
             height: 40,
             alignment: Alignment.center,
             decoration: BoxDecoration(
-              border: Border.all(color: AppTheme.accentMarrone, width: 1),
+              border: Border.all(color: AppTheme.accentSecondary, width: 1),
               borderRadius: BorderRadius.circular(20),
             ),
             child: const Icon(
               Icons.keyboard_arrow_down_rounded,
               size: 30,
-              color: AppTheme.accentMarrone,
+              color: AppTheme.accentSecondary,
             ),
           ),
         ),
@@ -2254,7 +2262,7 @@ class _TypingIndicatorState extends State<_TypingIndicator> with SingleTickerPro
                         width: 6,
                         height: 6,
                         decoration: const BoxDecoration(
-                          color: AppTheme.accentMarrone,
+                          color: AppTheme.accentSecondary,
                           shape: BoxShape.circle,
                         ),
                       ),
@@ -2267,7 +2275,7 @@ class _TypingIndicatorState extends State<_TypingIndicator> with SingleTickerPro
           const SizedBox(width: 10),
           Text(
             _label,
-            style: const TextStyle(color: AppTheme.accentMarrone, fontSize: 13),
+            style: const TextStyle(color: AppTheme.accentSecondary, fontSize: 13),
           ),
         ],
       ),
