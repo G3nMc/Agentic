@@ -260,7 +260,18 @@ class _ChatViewState extends StateManager<ChatView> with WidgetsBindingObserver 
     if (!projectService.hasExplicitFolder) return;
 
     final projectPath = projectService.currentPath;
-    final agentMdPath = '$projectPath${Platform.pathSeparator}.agent.md';
+    final agenticDirPath = '$projectPath${Platform.pathSeparator}.agentic';
+    final agentMdPath = '$agenticDirPath${Platform.pathSeparator}.agent.md';
+
+    // Ensure .agentic/ directory exists.
+    try {
+      final agenticDir = Directory(agenticDirPath);
+      if (!await agenticDir.exists()) {
+        await agenticDir.create(recursive: true);
+      }
+    } catch (_) {
+      // Ignore — can't create directory; agent will handle it.
+    }
 
     // 1. Read existing .agent.md if present (as current state of art).
     String existingContext = '';
@@ -327,21 +338,23 @@ class _ChatViewState extends StateManager<ChatView> with WidgetsBindingObserver 
     prompt.writeln();
     if (hasExisting) {
       prompt.writeln(
-        'Below is the CURRENT `.agent.md` for this project. '
+        'Below is the CURRENT `.agentic/.agent.md` for this project. '
         'Read it, then analyse the project directory tree to see if '
         'anything has changed. Update the file to reflect the current '
-        'state of the project. Use write_file to overwrite `.agent.md`.',
+        'state of the project. Use write_file to overwrite `.agentic/.agent.md`. '
+        'Ensure the `.agentic/` directory exists before writing.',
       );
       prompt.writeln();
-      prompt.writeln('### CURRENT .agent.md');
+      prompt.writeln('### CURRENT .agentic/.agent.md');
       prompt.writeln('```markdown');
       prompt.writeln(existingContext);
       prompt.writeln('```');
     } else {
       prompt.writeln(
         'Analyse the project directory tree below and create a '
-        '`.agent.md` file that describes this project for future '
-        'coding agents. Use write_file to create `.agent.md`.',
+        '`.agentic/.agent.md` file that describes this project for future '
+        'coding agents. Use write_file to create `.agentic/.agent.md`. '
+        'First create the `.agentic/` directory if it does not exist.',
       );
     }
     prompt.writeln();
@@ -350,7 +363,7 @@ class _ChatViewState extends StateManager<ChatView> with WidgetsBindingObserver 
     prompt.writeln(dirTree);
     prompt.writeln('```');
     prompt.writeln();
-    prompt.writeln('### .agent.md TEMPLATE (use these sections)');
+    prompt.writeln('### .agentic/.agent.md TEMPLATE (use these sections)');
     prompt.writeln('```markdown');
     prompt.writeln('## Agent Identity & Role');
     prompt.writeln('- **Agent Name**: ');
@@ -373,7 +386,7 @@ class _ChatViewState extends StateManager<ChatView> with WidgetsBindingObserver 
     prompt.writeln('- **Immediate Focus**: ');
     prompt.writeln();
     prompt.writeln('## Behavioral Rules');
-    prompt.writeln('- **Must Always**: ');
+    prompt.writeln('- **Must Always**: Place all temporary helper scripts, data files, and intermediate artifacts inside a `.agentic/` directory (create it if missing). After the task is complete and the files are no longer needed, delete them. Never create such files directly in the project root.');
     prompt.writeln('- **Must Never**: ');
     prompt.writeln();
     prompt.writeln('## Communication Style');

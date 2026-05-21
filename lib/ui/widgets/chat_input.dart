@@ -1280,7 +1280,7 @@ class _AutoAgentContextButton extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => Tooltip(
-        message: 'Auto-generate .agent.md from project analysis',
+        message: 'Auto-generate .agentic/.agent.md from project analysis',
         child: InkWell(
           onTap: (enabled && onTap != null) ? onTap : null,
           borderRadius: BorderRadius.circular(6),

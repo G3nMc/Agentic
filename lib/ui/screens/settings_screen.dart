@@ -6171,8 +6171,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
   String? get _agentContextFilePath {
     final projectPath = ProjectService().activeProjectKey;
     if (projectPath == null || projectPath.isEmpty) return null;
-    // Use .agent.md as the canonical name (matches Python backend's first candidate).
-    return '$projectPath${Platform.pathSeparator}.agent.md';
+    // Use .agentic/.agent.md as the canonical name (matches Python backend's first candidate).
+    return '$projectPath${Platform.pathSeparator}.agentic${Platform.pathSeparator}.agent.md';
   }
 
   Future<void> _loadAgentContext() async {
@@ -6241,6 +6241,7 @@ Brief overview of this project.
     setState(() => _agentContextSaving = true);
     try {
       final file = File(filePath);
+      await file.parent.create(recursive: true);
       await file.writeAsString(_agentContextController.text);
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
