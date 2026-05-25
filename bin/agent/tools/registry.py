@@ -535,9 +535,10 @@ class ToolRegistry:
             "- STRICTLY FORBIDDEN:",
             "  * Asking the user to run validation.",
             "  * Claiming a validator tool is unavailable.",
+            "  * FORBIDEN phrases: No validators were run... and similar. YOU MUST RUN VALIDATORS ALWAYS",
             "  * Ignoring errors or treating them as non-blocking.",
             "  * Providing a final answer while errors are still present.",
-            "- Validators are run by the agent. Not the user. No exceptions.",
+            "- Validators are run by the agent. Not the user. No exceptions. ",
             "",
             "TOOL OUTPUT HANDLING — mandatory rules when processing validator/tool results:",
             "- NEVER echo, repeat, or stream back raw tool output into the response.",
@@ -603,6 +604,7 @@ class ToolRegistry:
             "- Prefer exact names/symbols over wildcard scans",
             "- No recursive broad scans ('find /', 'dir /s', 'tree', etc.)",
             "- If search fails, refine instead of broadening",
+            "- search_in_files and find_files search recursively through all subdirectories; remember that list_files is non-recursive, use list_files_recursive always for exploration. list_files is to be used only if you have to work explicitly in a specific directory",
             "",
             "NO HALLUCINATIONS",
             "=================",
@@ -669,6 +671,3 @@ class ToolRegistry:
             parts.append(f"{key}{suffix}:{type_name}")
 
         return ", ".join(parts)
-
-
-

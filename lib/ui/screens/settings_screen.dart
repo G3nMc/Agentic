@@ -78,8 +78,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   // External-tools paths (Flutter SDK + Python interpreter). Loaded from
   // SettingsRepository when the Developer panel opens; saved on demand.
-  final TextEditingController _flutterSdkPathController =
-      TextEditingController();
+  final TextEditingController _flutterSdkPathController = TextEditingController();
   final TextEditingController _pythonPathController = TextEditingController();
   bool _externalPathsLoaded = false;
 
@@ -93,16 +92,13 @@ class _SettingsScreenState extends State<SettingsScreen> {
   List<String> _includeDirs = [];
   List<String> _excludeFiles = [];
   List<String> _includeFiles = [];
-  bool _filtersLoaded = false;
+  final bool _filtersLoaded = false;
   String? _filtersWorkingDir;
 
   // Database connections (Developer panel).
   List<DatabaseConnection> _dbConnections = [];
-  bool _dbConnectionsLoaded = false;
+  final bool _dbConnectionsLoaded = false;
   String? _dbConnectionsWorkingDir;
-
-  // Listener for active project changes to refresh project-scoped settings.
-  VoidCallback? _activeProjectListener;
 
   // Orchestrator log persistence
   List<String> _persistedLog = [];
@@ -119,6 +115,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   bool _ollamaApiKeyVisible = false;
   Timer? _ollamaApiKeySaveTimer;
   bool _ollamaBusy = false;
+
   // In-progress pull tracking — populated only while a download is running.
   CancelToken? _ollamaPullCancelToken;
   String? _ollamaPullingModel;
@@ -132,13 +129,13 @@ class _SettingsScreenState extends State<SettingsScreen> {
   List<OllamaCatalogModel> _ollamaCatalog = const [];
   bool _ollamaCatalogLoading = false;
   final ScrollController _ollamaCatalogScrollController = ScrollController();
+
   // Library scrape (ollama.com/library) — separate from the local catalog.
   List<OllamaLibraryModel> _ollamaLibrary = const [];
   bool _ollamaLibraryLoading = false;
   String? _ollamaLibraryError;
   final ScrollController _ollamaLibraryScrollController = ScrollController();
-  final TextEditingController _ollamaLibraryFilterController =
-      TextEditingController();
+  final TextEditingController _ollamaLibraryFilterController = TextEditingController();
   String _ollamaLibraryFilter = '';
   String? _ollamaSelectedModel;
   final TextEditingController _ollamaPythonUrlController = TextEditingController();
@@ -175,8 +172,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   List<String> _geminiModels = List<String>.from(
     BackendSettingsRepository.defaultGeminiModels,
   );
-  final TextEditingController _geminiNewModelController =
-      TextEditingController();
+  final TextEditingController _geminiNewModelController = TextEditingController();
   final TextEditingController _geminiApiKeyController = TextEditingController();
   bool _geminiApiKeyVisible = false;
   Timer? _geminiApiKeySaveTimer;
@@ -201,6 +197,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   final TextEditingController _openRouterTpmLimitController = TextEditingController();
   Timer? _openRouterTpmLimitSaveTimer;
   final ScrollController _openRouterCatalogScrollController = ScrollController();
+
   // Sort state for the OpenRouter catalog table — null = original (id) order.
   String? _orSortColumn; // 'priceIn' | 'priceOut'
   bool _orSortAsc = true;
@@ -218,6 +215,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   Timer? _githubMaxTokensSaveTimer;
   final TextEditingController _githubTpmLimitController = TextEditingController();
   Timer? _githubTpmLimitSaveTimer;
+
   // Dedicated controller for the catalog ListView so the Scrollbar can
   // attach to a real ScrollPosition (avoids the PrimaryScrollController
   // assertion on desktop when the catalog list is short).
@@ -419,8 +417,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     _groqTpmLimitSaveTimer = Timer(const Duration(milliseconds: 600), () async {
       final v = int.tryParse(value.trim()) ?? 0;
       // 0 is a valid value (= unlimited); just clamp negatives to 0.
-      await BackendSettingsRepository.instance
-          .setGroqTpmLimit(v < 0 ? 0 : v);
+      await BackendSettingsRepository.instance.setGroqTpmLimit(v < 0 ? 0 : v);
     });
   }
 
@@ -473,18 +470,15 @@ class _SettingsScreenState extends State<SettingsScreen> {
     _geminiTpmLimitSaveTimer?.cancel();
     _geminiTpmLimitSaveTimer = Timer(const Duration(milliseconds: 600), () async {
       final v = int.tryParse(value.trim()) ?? 0;
-      await BackendSettingsRepository.instance
-          .setGeminiTpmLimit(v < 0 ? 0 : v);
+      await BackendSettingsRepository.instance.setGeminiTpmLimit(v < 0 ? 0 : v);
     });
   }
 
   void _scheduleOpenRouterTpmLimitSave(String value) {
     _openRouterTpmLimitSaveTimer?.cancel();
-    _openRouterTpmLimitSaveTimer =
-        Timer(const Duration(milliseconds: 600), () async {
+    _openRouterTpmLimitSaveTimer = Timer(const Duration(milliseconds: 600), () async {
       final v = int.tryParse(value.trim()) ?? 0;
-      await BackendSettingsRepository.instance
-          .setOpenRouterTpmLimit(v < 0 ? 0 : v);
+      await BackendSettingsRepository.instance.setOpenRouterTpmLimit(v < 0 ? 0 : v);
     });
   }
 
@@ -492,9 +486,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     if (!mounted) return;
     setState(() => _groqLoadingModels = true);
     final catalog = await GroqService.instance.listCatalog(apiKey);
-    final models = catalog.isEmpty
-        ? GroqService.fallbackModels
-        : catalog.map((m) => m.id).toList();
+    final models = catalog.isEmpty ? GroqService.fallbackModels : catalog.map((m) => m.id).toList();
     if (!mounted) return;
     setState(() {
       _groqCatalog = catalog;
@@ -523,11 +515,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
       models = [selected, ...models];
     }
 
-    final String? nextSelected = models.isEmpty
-        ? null
-        : (models.contains(_openRouterSelectedModel)
-            ? _openRouterSelectedModel
-            : models.first);
+    final String? nextSelected =
+        models.isEmpty ? null : (models.contains(_openRouterSelectedModel) ? _openRouterSelectedModel : models.first);
 
     if (!mounted) return;
     setState(() {
@@ -562,11 +551,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   void _scheduleGithubTpmLimitSave(String value) {
     _githubTpmLimitSaveTimer?.cancel();
-    _githubTpmLimitSaveTimer =
-        Timer(const Duration(milliseconds: 600), () async {
+    _githubTpmLimitSaveTimer = Timer(const Duration(milliseconds: 600), () async {
       final v = int.tryParse(value.trim()) ?? 0;
-      await BackendSettingsRepository.instance
-          .setGithubTpmLimit(v < 0 ? 0 : v);
+      await BackendSettingsRepository.instance.setGithubTpmLimit(v < 0 ? 0 : v);
     });
   }
 
@@ -589,9 +576,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     if (selected.isNotEmpty && !models.contains(selected)) {
       models = [selected, ...models];
     }
-    final nextSelected = models.contains(_githubSelectedModel)
-        ? (_githubSelectedModel ?? models.first)
-        : models.first;
+    final nextSelected = models.contains(_githubSelectedModel) ? (_githubSelectedModel ?? models.first) : models.first;
 
     if (!mounted) return;
     setState(() {
@@ -606,8 +591,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
       (m) => m.id == nextSelected,
       orElse: () => GithubModel.fromJson(const {}),
     );
-    final disable =
-        cat.id.isNotEmpty && !GithubModelsService.supportsToolCalling(cat);
+    final disable = cat.id.isNotEmpty && !GithubModelsService.supportsToolCalling(cat);
     await BackendSettingsRepository.instance.setGithubDisableTools(disable);
   }
 
@@ -650,7 +634,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
               IconButton(
                 icon: const Icon(Icons.refresh, size: 18),
                 tooltip: 'Refresh model list',
-                onPressed: _groqApiKeyController.text.trim().isNotEmpty ? () => _refreshGroqModels(_groqApiKeyController.text.trim()) : null,
+                onPressed: _groqApiKeyController.text.trim().isNotEmpty
+                    ? () => _refreshGroqModels(_groqApiKeyController.text.trim())
+                    : null,
               ),
             ],
           ),
@@ -732,8 +718,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
             decoration: const InputDecoration(
               labelText: 'TPM limit (0 = unlimited)',
               hintText: '0',
-              helperText:
-                  'Tokens-per-minute cap for the orchestrator. Free tier '
+              helperText: 'Tokens-per-minute cap for the orchestrator. Free tier '
                   'Groq models typically allow 6000–8000 TPM. When set, the '
                   'orchestrator queues oversize requests and auto-trims '
                   'history that would exceed the minute budget.',
@@ -762,42 +747,32 @@ class _SettingsScreenState extends State<SettingsScreen> {
   static const List<Widget> _kGroqCatalogHeaderCells = [
     Expanded(
       flex: _kGroqColFlexName,
-      child: Text('Name / ID',
-          style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold)),
+      child: Text('Name / ID', style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold)),
     ),
     SizedBox(width: 8),
     Expanded(
       flex: _kGroqColFlexOwner,
-      child: Text('Owner',
-          style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold)),
+      child: Text('Owner', style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold)),
     ),
     SizedBox(width: 8),
     Expanded(
       flex: _kGroqColFlexCtx,
-      child: Text('Context',
-          style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold),
-          textAlign: TextAlign.right),
+      child: Text('Context', style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold), textAlign: TextAlign.right),
     ),
     SizedBox(width: 8),
     Expanded(
       flex: _kGroqColFlexMaxOut,
-      child: Text('Max out',
-          style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold),
-          textAlign: TextAlign.right),
+      child: Text('Max out', style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold), textAlign: TextAlign.right),
     ),
     SizedBox(width: 8),
     SizedBox(
       width: _kGroqColWidthActive,
-      child: Text('Active',
-          style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold),
-          textAlign: TextAlign.center),
+      child: Text('Active', style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold), textAlign: TextAlign.center),
     ),
     SizedBox(width: 8),
     SizedBox(
       width: _kGroqColWidthTools,
-      child: Text('Tools',
-          style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold),
-          textAlign: TextAlign.center),
+      child: Text('Tools', style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold), textAlign: TextAlign.center),
     ),
   ];
 
@@ -866,15 +841,13 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 const SizedBox(width: 6),
                 Text(
                   'Catalog (${_groqCatalog.length} models)',
-                  style: const TextStyle(
-                      fontSize: 13, fontWeight: FontWeight.w600),
+                  style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600),
                 ),
                 const Spacer(),
                 IconButton(
                   tooltip: 'Copy all rows as TSV',
                   padding: EdgeInsets.zero,
-                  constraints:
-                      const BoxConstraints(minWidth: 28, minHeight: 28),
+                  constraints: const BoxConstraints(minWidth: 28, minHeight: 28),
                   icon: const Icon(Icons.copy_all, size: 16),
                   onPressed: _copyGroqCatalog,
                 ),
@@ -886,10 +859,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
             decoration: BoxDecoration(
               color: AppTheme.bgSecondary,
               border: Border(
-                top: BorderSide(
-                    color: AppTheme.accentTernary.withAlpha(80)),
-                bottom: BorderSide(
-                    color: AppTheme.accentTernary.withAlpha(80)),
+                top: BorderSide(color: AppTheme.accentTernary.withAlpha(80)),
+                bottom: BorderSide(color: AppTheme.accentTernary.withAlpha(80)),
               ),
             ),
             child: const Row(
@@ -915,8 +886,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   final m = _groqCatalog[i];
                   final tools = GroqService.supportsToolCalling(m.id);
                   return Padding(
-                    padding: const EdgeInsets.symmetric(
-                        horizontal: 10, vertical: 8),
+                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
                     child: Row(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
@@ -927,9 +897,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                             children: [
                               Text(
                                 m.id,
-                                style: const TextStyle(
-                                    fontSize: 12,
-                                    fontWeight: FontWeight.w600),
+                                style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600),
                                 softWrap: true,
                               ),
                             ],
@@ -967,9 +935,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                           width: _kGroqColWidthActive,
                           child: Center(
                             child: Icon(
-                              m.active
-                                  ? Icons.check_circle
-                                  : Icons.remove_circle_outline,
+                              m.active ? Icons.check_circle : Icons.remove_circle_outline,
                               size: 16,
                               color: m.active ? Colors.green : Colors.grey,
                             ),
@@ -980,9 +946,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                           width: _kGroqColWidthTools,
                           child: Center(
                             child: Icon(
-                              tools
-                                  ? Icons.check_circle
-                                  : Icons.remove_circle_outline,
+                              tools ? Icons.check_circle : Icons.remove_circle_outline,
                               size: 16,
                               color: tools ? Colors.green : Colors.grey,
                             ),
@@ -1027,26 +991,21 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 child: _openRouterLoadingModels
                     ? const LinearProgressIndicator()
                     : modelOptions.isEmpty
-                    ? Text(
-                        _openRouterApiKeyController.text.trim().isEmpty
-                            ? 'Save an API key to load the model catalog.'
-                            : 'No models available — refresh to retry.',
-                        style: TextStyle(
-                            fontSize: 12, color: Colors.grey[600]),
-                      )
-                    : DropdownButton<String>(
-                        isExpanded: true,
-                        value: selectedModel,
-                        items: modelOptions
-                            .map((m) {
+                        ? Text(
+                            _openRouterApiKeyController.text.trim().isEmpty
+                                ? 'Save an API key to load the model catalog.'
+                                : 'No models available — refresh to retry.',
+                            style: TextStyle(fontSize: 12, color: Colors.grey[600]),
+                          )
+                        : DropdownButton<String>(
+                            isExpanded: true,
+                            value: selectedModel,
+                            items: modelOptions.map((m) {
                               final cat = _openRouterCatalog.firstWhere(
                                 (c) => c.id == m,
-                                orElse: () =>
-                                    OpenRouterModel.fromJson(const {}),
+                                orElse: () => OpenRouterModel.fromJson(const {}),
                               );
-                              final tools = cat.id.isEmpty
-                                  ? true
-                                  : OpenRouterService.supportsToolCalling(cat);
+                              final tools = cat.id.isEmpty ? true : OpenRouterService.supportsToolCalling(cat);
                               return DropdownMenuItem<String>(
                                 value: m,
                                 child: Row(
@@ -1063,28 +1022,24 @@ class _SettingsScreenState extends State<SettingsScreen> {
                                     if (!tools) ...[
                                       const SizedBox(width: 4),
                                       const Tooltip(
-                                        message:
-                                            'No tool calling — chat / reasoning only.\n'
+                                        message: 'No tool calling — chat / reasoning only.\n'
                                             'Filesystem tools won\'t work with this model.',
-                                        child: Icon(
-                                            Icons.warning_amber_rounded,
-                                            size: 14,
-                                            color: Colors.orange),
+                                        child: Icon(Icons.warning_amber_rounded, size: 14, color: Colors.orange),
                                       ),
                                     ],
                                   ],
                                 ),
                               );
                             }).toList(),
-                        onChanged: (v) async {
-                          if (v == null) return;
-                          setState(() => _openRouterSelectedModel = v);
-                          await BackendSettingsRepository.instance.setOpenRouterModel(v);
-                          if (OrchestratorManager.instance.isRunning) {
-                            await OrchestratorManager.instance.stop();
-                          }
-                        },
-                      ),
+                            onChanged: (v) async {
+                              if (v == null) return;
+                              setState(() => _openRouterSelectedModel = v);
+                              await BackendSettingsRepository.instance.setOpenRouterModel(v);
+                              if (OrchestratorManager.instance.isRunning) {
+                                await OrchestratorManager.instance.stop();
+                              }
+                            },
+                          ),
               ),
               const SizedBox(width: 8),
               IconButton(
@@ -1159,8 +1114,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
             presets: TokenCountPicker.maxTokensPresets,
             labelText: 'Max completion tokens',
             hintText: '4096',
-            helperText:
-                'Reply-length cap only — OpenRouter uses `max_tokens`. The provider manages the full context '
+            helperText: 'Reply-length cap only — OpenRouter uses `max_tokens`. The provider manages the full context '
                 'window itself; you are billed per emitted output token, so larger values do not pre-charge.',
             onChanged: _scheduleOpenRouterMaxTokensSave,
           ),
@@ -1171,7 +1125,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
             decoration: const InputDecoration(
               labelText: 'TPM limit (0 = unlimited)',
               hintText: '0',
-              helperText: 'Tokens-per-minute cap applied by the orchestrator. Set to stay under the provider/free-tier limit.',
+              helperText:
+                  'Tokens-per-minute cap applied by the orchestrator. Set to stay under the provider/free-tier limit.',
               suffixText: 'TPM',
             ),
             onChanged: _scheduleOpenRouterTpmLimitSave,
@@ -1206,9 +1161,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   Widget _orSortableHeader(String label, String column) {
     final active = _orSortColumn == column;
-    final icon = !active
-        ? Icons.unfold_more
-        : (_orSortAsc ? Icons.arrow_upward : Icons.arrow_downward);
+    final icon = !active ? Icons.unfold_more : (_orSortAsc ? Icons.arrow_upward : Icons.arrow_downward);
     return InkWell(
       onTap: () => _toggleOrSort(column),
       child: Row(
@@ -1227,9 +1180,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
             ),
           ),
           const SizedBox(width: 2),
-          Icon(icon,
-              size: 12,
-              color: active ? AppTheme.accentSecondary : Colors.grey),
+          Icon(icon, size: 12, color: active ? AppTheme.accentSecondary : Colors.grey),
         ],
       ),
     );
@@ -1238,22 +1189,19 @@ class _SettingsScreenState extends State<SettingsScreen> {
   List<Widget> _orCatalogHeaderCells() => [
         const Expanded(
           flex: _kOrColFlexName,
-          child: Text('Name / ID',
-              style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold)),
+          child: Text('Name / ID', style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold)),
         ),
         const SizedBox(width: 8),
         const Expanded(
           flex: _kOrColFlexCtx,
-          child: Text('Context',
-              style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold),
-              textAlign: TextAlign.right),
+          child:
+              Text('Context', style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold), textAlign: TextAlign.right),
         ),
         const SizedBox(width: 8),
         const Expanded(
           flex: _kOrColFlexMaxOut,
-          child: Text('Max out',
-              style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold),
-              textAlign: TextAlign.right),
+          child:
+              Text('Max out', style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold), textAlign: TextAlign.right),
         ),
         const SizedBox(width: 8),
         Expanded(
@@ -1268,22 +1216,18 @@ class _SettingsScreenState extends State<SettingsScreen> {
         const SizedBox(width: 8),
         const Expanded(
           flex: _kOrColFlexModalities,
-          child: Text('Modalities',
-              style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold)),
+          child: Text('Modalities', style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold)),
         ),
         const SizedBox(width: 8),
         const SizedBox(
           width: _kOrColWidthTools,
-          child: Text('Tools',
-              style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold),
-              textAlign: TextAlign.center),
+          child:
+              Text('Tools', style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold), textAlign: TextAlign.center),
         ),
         const SizedBox(width: 8),
         const SizedBox(
           width: _kOrColWidthPage,
-          child: Text('Page',
-              style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold),
-              textAlign: TextAlign.center),
+          child: Text('Page', style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold), textAlign: TextAlign.center),
         ),
       ];
 
@@ -1304,8 +1248,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
       return Align(
         alignment: Alignment.centerRight,
         child: Container(
-          padding:
-              const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
           decoration: BoxDecoration(
             color: Colors.green.shade600,
             borderRadius: BorderRadius.circular(999),
@@ -1370,13 +1313,12 @@ class _SettingsScreenState extends State<SettingsScreen> {
     if (_orSortColumn == null) return _openRouterCatalog;
     final list = [..._openRouterCatalog];
     double key(OpenRouterModel m) {
-      final v = _orSortColumn == 'priceIn'
-          ? m.promptPricePerToken
-          : m.completionPricePerToken;
+      final v = _orSortColumn == 'priceIn' ? m.promptPricePerToken : m.completionPricePerToken;
       // Sort missing prices to the bottom regardless of direction.
       if (v == null) return _orSortAsc ? double.infinity : double.negativeInfinity;
       return v;
     }
+
     list.sort((a, b) {
       final c = key(a).compareTo(key(b));
       return _orSortAsc ? c : -c;
@@ -1418,15 +1360,13 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 const SizedBox(width: 6),
                 Text(
                   'Catalog (${_openRouterCatalog.length} models)',
-                  style: const TextStyle(
-                      fontSize: 13, fontWeight: FontWeight.w600),
+                  style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600),
                 ),
                 const Spacer(),
                 IconButton(
                   tooltip: 'Copy all rows as TSV',
                   padding: EdgeInsets.zero,
-                  constraints:
-                      const BoxConstraints(minWidth: 28, minHeight: 28),
+                  constraints: const BoxConstraints(minWidth: 28, minHeight: 28),
                   icon: const Icon(Icons.copy_all, size: 16),
                   onPressed: _copyOpenRouterCatalog,
                 ),
@@ -1438,10 +1378,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
             decoration: BoxDecoration(
               color: AppTheme.bgSecondary,
               border: Border(
-                top: BorderSide(
-                    color: AppTheme.accentTernary.withAlpha(80)),
-                bottom: BorderSide(
-                    color: AppTheme.accentTernary.withAlpha(80)),
+                top: BorderSide(color: AppTheme.accentTernary.withAlpha(80)),
+                bottom: BorderSide(color: AppTheme.accentTernary.withAlpha(80)),
               ),
             ),
             child: Row(
@@ -1452,145 +1390,126 @@ class _SettingsScreenState extends State<SettingsScreen> {
           Builder(builder: (_) {
             final sorted = _sortedOpenRouterCatalog();
             return ConstrainedBox(
-            constraints: const BoxConstraints(maxHeight: 380),
-            child: Scrollbar(
-              controller: _openRouterCatalogScrollController,
-              child: ListView.separated(
+              constraints: const BoxConstraints(maxHeight: 380),
+              child: Scrollbar(
                 controller: _openRouterCatalogScrollController,
-                shrinkWrap: true,
-                padding: EdgeInsets.zero,
-                itemCount: sorted.length,
-                separatorBuilder: (_, __) => Divider(
-                  height: 1,
-                  thickness: 1,
-                  color: AppTheme.accentTernary.withAlpha(30),
+                child: ListView.separated(
+                  controller: _openRouterCatalogScrollController,
+                  shrinkWrap: true,
+                  padding: EdgeInsets.zero,
+                  itemCount: sorted.length,
+                  separatorBuilder: (_, __) => Divider(
+                    height: 1,
+                    thickness: 1,
+                    color: AppTheme.accentTernary.withAlpha(30),
+                  ),
+                  itemBuilder: (ctx, i) {
+                    final m = sorted[i];
+                    final tools = OpenRouterService.supportsToolCalling(m);
+                    final modalities = m.inputModalities.isEmpty ? '—' : m.inputModalities.join(', ');
+                    final bothFree = (m.promptPricePerToken ?? -1) == 0 && (m.completionPricePerToken ?? -1) == 0;
+                    return Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+                      child: Row(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Expanded(
+                            flex: _kOrColFlexName,
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(
+                                  m.name.isNotEmpty ? m.name : m.id,
+                                  style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600),
+                                  softWrap: true,
+                                ),
+                                Text(
+                                  m.id,
+                                  style: const TextStyle(fontSize: 10, color: AppTheme.textSecondary),
+                                  softWrap: true,
+                                ),
+                              ],
+                            ),
+                          ),
+                          const SizedBox(width: 8),
+                          Expanded(
+                            flex: _kOrColFlexCtx,
+                            child: Text(
+                              m.contextLength?.toString() ?? '—',
+                              style: const TextStyle(fontSize: 12),
+                              textAlign: TextAlign.right,
+                            ),
+                          ),
+                          const SizedBox(width: 8),
+                          Expanded(
+                            flex: _kOrColFlexMaxOut,
+                            child: Text(
+                              m.maxCompletionTokens?.toString() ?? '—',
+                              style: const TextStyle(fontSize: 12),
+                              textAlign: TextAlign.right,
+                            ),
+                          ),
+                          const SizedBox(width: 8),
+                          Expanded(
+                            flex: _kOrColFlexPriceIn,
+                            child: _orPriceCell(m.promptPricePerToken, highlightFree: bothFree),
+                          ),
+                          const SizedBox(width: 8),
+                          Expanded(
+                            flex: _kOrColFlexPriceOut,
+                            child: _orPriceCell(m.completionPricePerToken, highlightFree: bothFree),
+                          ),
+                          const SizedBox(width: 8),
+                          Expanded(
+                            flex: _kOrColFlexModalities,
+                            child: Text(
+                              modalities,
+                              style: const TextStyle(fontSize: 12),
+                              softWrap: true,
+                            ),
+                          ),
+                          const SizedBox(width: 8),
+                          SizedBox(
+                            width: _kOrColWidthTools,
+                            child: Center(
+                              child: Icon(
+                                tools ? Icons.check_circle : Icons.remove_circle_outline,
+                                size: 16,
+                                color: tools ? Colors.green : Colors.grey,
+                              ),
+                            ),
+                          ),
+                          const SizedBox(width: 8),
+                          SizedBox(
+                            width: _kOrColWidthPage,
+                            child: Center(
+                              child: IconButton(
+                                tooltip: m.htmlUrl.isEmpty ? 'No marketplace URL' : 'Copy ${m.htmlUrl} to clipboard',
+                                padding: EdgeInsets.zero,
+                                constraints: const BoxConstraints(minWidth: 28, minHeight: 28),
+                                icon: const Icon(Icons.open_in_new, size: 16),
+                                onPressed: m.htmlUrl.isEmpty
+                                    ? null
+                                    : () async {
+                                        await Clipboard.setData(ClipboardData(text: m.htmlUrl));
+                                        if (!mounted) return;
+                                        ScaffoldMessenger.of(context).showSnackBar(
+                                          SnackBar(
+                                            content: Text('Copied URL: ${m.htmlUrl}'),
+                                            duration: const Duration(seconds: 2),
+                                          ),
+                                        );
+                                      },
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                    );
+                  },
                 ),
-                itemBuilder: (ctx, i) {
-                  final m = sorted[i];
-                  final tools = OpenRouterService.supportsToolCalling(m);
-                  final modalities = m.inputModalities.isEmpty
-                      ? '—'
-                      : m.inputModalities.join(', ');
-                  final bothFree = (m.promptPricePerToken ?? -1) == 0 &&
-                      (m.completionPricePerToken ?? -1) == 0;
-                  return Padding(
-                    padding: const EdgeInsets.symmetric(
-                        horizontal: 10, vertical: 8),
-                    child: Row(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Expanded(
-                          flex: _kOrColFlexName,
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Text(
-                                m.name.isNotEmpty ? m.name : m.id,
-                                style: const TextStyle(
-                                    fontSize: 12,
-                                    fontWeight: FontWeight.w600),
-                                softWrap: true,
-                              ),
-                              Text(
-                                m.id,
-                                style: const TextStyle(
-                                    fontSize: 10,
-                                    color: AppTheme.textSecondary),
-                                softWrap: true,
-                              ),
-                            ],
-                          ),
-                        ),
-                        const SizedBox(width: 8),
-                        Expanded(
-                          flex: _kOrColFlexCtx,
-                          child: Text(
-                            m.contextLength?.toString() ?? '—',
-                            style: const TextStyle(fontSize: 12),
-                            textAlign: TextAlign.right,
-                          ),
-                        ),
-                        const SizedBox(width: 8),
-                        Expanded(
-                          flex: _kOrColFlexMaxOut,
-                          child: Text(
-                            m.maxCompletionTokens?.toString() ?? '—',
-                            style: const TextStyle(fontSize: 12),
-                            textAlign: TextAlign.right,
-                          ),
-                        ),
-                        const SizedBox(width: 8),
-                        Expanded(
-                          flex: _kOrColFlexPriceIn,
-                          child: _orPriceCell(m.promptPricePerToken,
-                              highlightFree: bothFree),
-                        ),
-                        const SizedBox(width: 8),
-                        Expanded(
-                          flex: _kOrColFlexPriceOut,
-                          child: _orPriceCell(m.completionPricePerToken,
-                              highlightFree: bothFree),
-                        ),
-                        const SizedBox(width: 8),
-                        Expanded(
-                          flex: _kOrColFlexModalities,
-                          child: Text(
-                            modalities,
-                            style: const TextStyle(fontSize: 12),
-                            softWrap: true,
-                          ),
-                        ),
-                        const SizedBox(width: 8),
-                        SizedBox(
-                          width: _kOrColWidthTools,
-                          child: Center(
-                            child: Icon(
-                              tools
-                                  ? Icons.check_circle
-                                  : Icons.remove_circle_outline,
-                              size: 16,
-                              color: tools ? Colors.green : Colors.grey,
-                            ),
-                          ),
-                        ),
-                        const SizedBox(width: 8),
-                        SizedBox(
-                          width: _kOrColWidthPage,
-                          child: Center(
-                            child: IconButton(
-                              tooltip: m.htmlUrl.isEmpty
-                                  ? 'No marketplace URL'
-                                  : 'Copy ${m.htmlUrl} to clipboard',
-                              padding: EdgeInsets.zero,
-                              constraints: const BoxConstraints(
-                                  minWidth: 28, minHeight: 28),
-                              icon: const Icon(Icons.open_in_new, size: 16),
-                              onPressed: m.htmlUrl.isEmpty
-                                  ? null
-                                  : () async {
-                                      await Clipboard.setData(
-                                          ClipboardData(text: m.htmlUrl));
-                                      if (!mounted) return;
-                                      ScaffoldMessenger.of(context)
-                                          .showSnackBar(
-                                        SnackBar(
-                                          content: Text(
-                                              'Copied URL: ${m.htmlUrl}'),
-                                          duration:
-                                              const Duration(seconds: 2),
-                                        ),
-                                      );
-                                    },
-                            ),
-                          ),
-                        ),
-                      ],
-                    ),
-                  );
-                },
               ),
-            ),
-          );
+            );
           }),
         ],
       ),
@@ -1598,12 +1517,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
   }
 
   Widget _githubControlPanel() {
-    final modelOptions = _githubModels.isNotEmpty
-        ? _githubModels
-        : GithubModelsService.fallbackModels;
-    final selectedModel = modelOptions.contains(_githubSelectedModel)
-        ? _githubSelectedModel
-        : modelOptions.first;
+    final modelOptions = _githubModels.isNotEmpty ? _githubModels : GithubModelsService.fallbackModels;
+    final selectedModel = modelOptions.contains(_githubSelectedModel) ? _githubSelectedModel : modelOptions.first;
 
     return _section(
       title: 'GitHub Models',
@@ -1624,58 +1539,46 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     : DropdownButton<String>(
                         isExpanded: true,
                         value: selectedModel,
-                        items: modelOptions
-                            .map(
-                              (m) {
-                                final cat = _githubCatalog.firstWhere(
-                                    (c) => c.id == m,
-                                    orElse: () => GithubModel.fromJson(const {}));
-                                final tools =
-                                    GithubModelsService.supportsToolCalling(cat);
-                                return DropdownMenuItem<String>(
-                                  value: m,
-                                  child: Row(
-                                    mainAxisSize: MainAxisSize.min,
-                                    children: [
-                                      Flexible(
-                                        child: Text(m,
-                                            style:
-                                                const TextStyle(fontSize: 13),
-                                            overflow: TextOverflow.ellipsis),
-                                      ),
-                                      if (!tools && cat.id.isNotEmpty) ...[
-                                        const SizedBox(width: 4),
-                                        const Tooltip(
-                                          message:
-                                              'No tool calling — chat / reasoning only.\n'
-                                              'Filesystem tools will be disabled for this model.',
-                                          child: Icon(Icons.warning_amber_rounded,
-                                              size: 14, color: Colors.orange),
-                                        ),
-                                      ],
-                                    ],
+                        items: modelOptions.map(
+                          (m) {
+                            final cat = _githubCatalog.firstWhere((c) => c.id == m,
+                                orElse: () => GithubModel.fromJson(const {}));
+                            final tools = GithubModelsService.supportsToolCalling(cat);
+                            return DropdownMenuItem<String>(
+                              value: m,
+                              child: Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  Flexible(
+                                    child:
+                                        Text(m, style: const TextStyle(fontSize: 13), overflow: TextOverflow.ellipsis),
                                   ),
-                                );
-                              },
-                            )
-                            .toList(),
+                                  if (!tools && cat.id.isNotEmpty) ...[
+                                    const SizedBox(width: 4),
+                                    const Tooltip(
+                                      message: 'No tool calling — chat / reasoning only.\n'
+                                          'Filesystem tools will be disabled for this model.',
+                                      child: Icon(Icons.warning_amber_rounded, size: 14, color: Colors.orange),
+                                    ),
+                                  ],
+                                ],
+                              ),
+                            );
+                          },
+                        ).toList(),
                         onChanged: (v) async {
                           if (v == null) return;
                           setState(() => _githubSelectedModel = v);
-                          await BackendSettingsRepository.instance
-                              .setGithubModel(v);
+                          await BackendSettingsRepository.instance.setGithubModel(v);
                           if (OrchestratorManager.instance.isRunning) {
                             await OrchestratorManager.instance.stop();
                           }
                           // Auto-toggle plain-chat mode for non-tool models so
                           // the orchestrator skips the tool loop on next start.
-                          final cat = _githubCatalog.firstWhere(
-                              (c) => c.id == v,
-                              orElse: () => GithubModel.fromJson(const {}));
-                          final disable = cat.id.isNotEmpty &&
-                              !GithubModelsService.supportsToolCalling(cat);
-                          await BackendSettingsRepository.instance
-                              .setGithubDisableTools(disable);
+                          final cat =
+                              _githubCatalog.firstWhere((c) => c.id == v, orElse: () => GithubModel.fromJson(const {}));
+                          final disable = cat.id.isNotEmpty && !GithubModelsService.supportsToolCalling(cat);
+                          await BackendSettingsRepository.instance.setGithubDisableTools(disable);
                         },
                       ),
               ),
@@ -1704,8 +1607,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
             decoration: InputDecoration(
               labelText: 'GitHub PAT (models:read)',
               hintText: 'github_pat_...',
-              helperText:
-                  'Create one at github.com/settings/personal-access-tokens/new',
+              helperText: 'Create one at github.com/settings/personal-access-tokens/new',
               suffixIcon: IconButton(
                 icon: Icon(
                   _githubApiKeyVisible ? Icons.visibility_off : Icons.visibility,
@@ -1734,8 +1636,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   label: _githubTemperature.toStringAsFixed(2),
                   onChanged: (v) async {
                     setState(() => _githubTemperature = v);
-                    await BackendSettingsRepository.instance
-                        .setGithubTemperature(v);
+                    await BackendSettingsRepository.instance.setGithubTemperature(v);
                   },
                 ),
               ),
@@ -1767,8 +1668,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
             decoration: const InputDecoration(
               labelText: 'TPM limit (0 = unlimited)',
               hintText: '0',
-              helperText:
-                  'Tokens-per-minute cap applied by the orchestrator. '
+              helperText: 'Tokens-per-minute cap applied by the orchestrator. '
                   'GitHub Models has per-tier rate limits — see the catalog table below.',
               suffixText: 'TPM',
             ),
@@ -1796,54 +1696,42 @@ class _SettingsScreenState extends State<SettingsScreen> {
   static const List<Widget> _kGithubCatalogHeaderCells = [
     Expanded(
       flex: _kGithubColFlexName,
-      child: Text('Name / ID',
-          style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold)),
+      child: Text('Name / ID', style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold)),
     ),
     SizedBox(width: 8),
     Expanded(
       flex: _kGithubColFlexPublisher,
-      child: Text('Publisher',
-          style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold)),
+      child: Text('Publisher', style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold)),
     ),
     SizedBox(width: 8),
     Expanded(
       flex: _kGithubColFlexSummary,
-      child: Text('Summary',
-          style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold)),
+      child: Text('Summary', style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold)),
     ),
     SizedBox(width: 8),
     Expanded(
       flex: _kGithubColFlexTier,
-      child: Text('Tier',
-          style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold)),
+      child: Text('Tier', style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold)),
     ),
     SizedBox(width: 8),
     Expanded(
       flex: _kGithubColFlexMaxIn,
-      child: Text('Max in',
-          style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold),
-          textAlign: TextAlign.right),
+      child: Text('Max in', style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold), textAlign: TextAlign.right),
     ),
     SizedBox(width: 8),
     Expanded(
       flex: _kGithubColFlexMaxOut,
-      child: Text('Max out',
-          style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold),
-          textAlign: TextAlign.right),
+      child: Text('Max out', style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold), textAlign: TextAlign.right),
     ),
     SizedBox(width: 8),
     SizedBox(
       width: _kGithubColWidthTools,
-      child: Text('Tools',
-          style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold),
-          textAlign: TextAlign.center),
+      child: Text('Tools', style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold), textAlign: TextAlign.center),
     ),
     SizedBox(width: 8),
     SizedBox(
       width: _kGithubColWidthPage,
-      child: Text('Page',
-          style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold),
-          textAlign: TextAlign.center),
+      child: Text('Page', style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold), textAlign: TextAlign.center),
     ),
   ];
 
@@ -1878,8 +1766,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
-        content:
-            Text('Copied ${_githubCatalog.length} GitHub models to clipboard'),
+        content: Text('Copied ${_githubCatalog.length} GitHub models to clipboard'),
         duration: const Duration(seconds: 2),
       ),
     );
@@ -1919,15 +1806,13 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 const SizedBox(width: 6),
                 Text(
                   'Catalog (${_githubCatalog.length} models)',
-                  style: const TextStyle(
-                      fontSize: 13, fontWeight: FontWeight.w600),
+                  style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600),
                 ),
                 const Spacer(),
                 IconButton(
                   tooltip: 'Copy all rows as TSV',
                   padding: EdgeInsets.zero,
-                  constraints:
-                      const BoxConstraints(minWidth: 28, minHeight: 28),
+                  constraints: const BoxConstraints(minWidth: 28, minHeight: 28),
                   icon: const Icon(Icons.copy_all, size: 16),
                   onPressed: _copyGithubCatalog,
                 ),
@@ -1941,10 +1826,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
             decoration: BoxDecoration(
               color: AppTheme.bgSecondary,
               border: Border(
-                top: BorderSide(
-                    color: AppTheme.accentTernary.withAlpha(80)),
-                bottom: BorderSide(
-                    color: AppTheme.accentTernary.withAlpha(80)),
+                top: BorderSide(color: AppTheme.accentTernary.withAlpha(80)),
+                bottom: BorderSide(color: AppTheme.accentTernary.withAlpha(80)),
               ),
             ),
             child: const Row(
@@ -1969,8 +1852,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 itemBuilder: (ctx, i) {
                   final m = _githubCatalog[i];
                   return Padding(
-                    padding:
-                        const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
                     child: Row(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
@@ -1982,16 +1864,12 @@ class _SettingsScreenState extends State<SettingsScreen> {
                             children: [
                               Text(
                                 m.name.isNotEmpty ? m.name : m.id,
-                                style: const TextStyle(
-                                    fontSize: 12,
-                                    fontWeight: FontWeight.w600),
+                                style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600),
                                 softWrap: true,
                               ),
                               Text(
                                 m.id,
-                                style: const TextStyle(
-                                    fontSize: 10,
-                                    color: AppTheme.textSecondary),
+                                style: const TextStyle(fontSize: 10, color: AppTheme.textSecondary),
                                 softWrap: true,
                               ),
                             ],
@@ -2052,9 +1930,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                                   ? Icons.check_circle
                                   : Icons.remove_circle_outline,
                               size: 16,
-                              color: GithubModelsService.supportsToolCalling(m)
-                                  ? Colors.green
-                                  : Colors.grey,
+                              color: GithubModelsService.supportsToolCalling(m) ? Colors.green : Colors.grey,
                             ),
                           ),
                         ),
@@ -2063,26 +1939,19 @@ class _SettingsScreenState extends State<SettingsScreen> {
                           width: _kGithubColWidthPage,
                           child: Center(
                             child: IconButton(
-                              tooltip: m.htmlUrl.isEmpty
-                                  ? 'No marketplace URL'
-                                  : 'Copy ${m.htmlUrl} to clipboard',
+                              tooltip: m.htmlUrl.isEmpty ? 'No marketplace URL' : 'Copy ${m.htmlUrl} to clipboard',
                               padding: EdgeInsets.zero,
-                              constraints: const BoxConstraints(
-                                  minWidth: 28, minHeight: 28),
+                              constraints: const BoxConstraints(minWidth: 28, minHeight: 28),
                               icon: const Icon(Icons.open_in_new, size: 16),
                               onPressed: m.htmlUrl.isEmpty
                                   ? null
                                   : () async {
-                                      await Clipboard.setData(
-                                          ClipboardData(text: m.htmlUrl));
+                                      await Clipboard.setData(ClipboardData(text: m.htmlUrl));
                                       if (!mounted) return;
-                                      ScaffoldMessenger.of(context)
-                                          .showSnackBar(
+                                      ScaffoldMessenger.of(context).showSnackBar(
                                         SnackBar(
-                                          content: Text(
-                                              'Copied URL: ${m.htmlUrl}'),
-                                          duration:
-                                              const Duration(seconds: 2),
+                                          content: Text('Copied URL: ${m.htmlUrl}'),
+                                          duration: const Duration(seconds: 2),
                                         ),
                                       );
                                     },
@@ -2291,8 +2160,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
             presets: TokenCountPicker.maxTokensPresets,
             labelText: 'Max output tokens',
             hintText: '2048',
-            helperText:
-                'Reply-length cap only. Gemini handles its own context window (1M on 2.5 Pro, 2M on 1.5 Pro). '
+            helperText: 'Reply-length cap only. Gemini handles its own context window (1M on 2.5 Pro, 2M on 1.5 Pro). '
                 'You are billed per emitted output token, so raising this does not pre-charge — Gemini 2.5 Pro '
                 'can emit up to 64K in one call.',
             onChanged: _scheduleGeminiMaxTokensSave,
@@ -2304,7 +2172,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
             decoration: const InputDecoration(
               labelText: 'TPM limit (0 = unlimited)',
               hintText: '0',
-              helperText: 'Tokens-per-minute cap applied by the orchestrator. Set to stay under the provider/free-tier limit.',
+              helperText:
+                  'Tokens-per-minute cap applied by the orchestrator. Set to stay under the provider/free-tier limit.',
               suffixText: 'TPM',
             ),
             onChanged: _scheduleGeminiTpmLimitSave,
@@ -2327,8 +2196,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     );
   }
 
-  String get pythonExecutableLabel =>
-      OrchestratorManager.defaultPythonExecutable;
+  String get pythonExecutableLabel => OrchestratorManager.defaultPythonExecutable;
 
   Widget _generateControlPanel() {
     return _section(
@@ -2436,8 +2304,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
             presets: TokenCountPicker.maxTokensPresets,
             labelText: 'Max tokens (num_predict)',
             hintText: '2048',
-            helperText:
-                'Cap on the reply only. Must fit inside (num_ctx − prompt − history); '
+            helperText: 'Cap on the reply only. Must fit inside (num_ctx − prompt − history); '
                 'on cloud endpoints you only pay for tokens actually emitted.',
             onChanged: (v) async {
               final n = int.tryParse(v.trim());
@@ -2454,8 +2321,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
             presets: TokenCountPicker.numCtxPresets,
             labelText: 'Context window (num_ctx)',
             hintText: '4096',
-            helperText:
-                'Total budget for the call (prompt + history + reply). Must comfortably exceed Max tokens — '
+            helperText: 'Total budget for the call (prompt + history + reply). Must comfortably exceed Max tokens — '
                 'rule of thumb: keep num_ctx ≥ 4× Max tokens. Default 4096; cloud Ollama models often support 32K+.',
             onChanged: (v) async {
               final n = int.tryParse(v.trim());
@@ -2551,7 +2417,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
         SnackBar(content: Text('Failed to set env var: $errorMsg')),
       );
     } else {
-      final where = Platform.isWindows ? 'user environment (restart apps to pick it up)' : '~/.zshrc / ~/.bashrc (re-open terminal to pick it up)';
+      final where = Platform.isWindows
+          ? 'user environment (restart apps to pick it up)'
+          : '~/.zshrc / ~/.bashrc (re-open terminal to pick it up)';
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('OLLAMA_API_KEY saved to $where')),
       );
@@ -2635,7 +2503,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
       _groqTpmLimitController.text = groqTpmLimit.toString();
       _geminiApiKeyController.text = geminiApiKey ?? '';
       _geminiModels = geminiModels;
-      _geminiSelectedModel = (geminiModel == null || geminiModel.trim().isEmpty) ? BackendSettingsRepository.defaultGeminiModel : geminiModel.trim();
+      _geminiSelectedModel = (geminiModel == null || geminiModel.trim().isEmpty)
+          ? BackendSettingsRepository.defaultGeminiModel
+          : geminiModel.trim();
       _geminiTemperature = geminiTemperature;
       _geminiMaxTokensController.text = geminiMaxTokens.toString();
       _geminiTpmLimitController.text = geminiTpmLimit.toString();
@@ -2645,9 +2515,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
       _openRouterMaxTokensController.text = openRouterMaxTokens.toString();
       _openRouterTpmLimitController.text = openRouterTpmLimit.toString();
       _githubApiKeyController.text = githubApiKey ?? '';
-      _githubSelectedModel = (githubModel == null || githubModel.isEmpty)
-          ? GithubModelsService.fallbackModels.first
-          : githubModel;
+      _githubSelectedModel =
+          (githubModel == null || githubModel.isEmpty) ? GithubModelsService.fallbackModels.first : githubModel;
       _githubTemperature = githubTemperature;
       _githubMaxTokensController.text = githubMaxTokens.toString();
       _githubTpmLimitController.text = githubTpmLimit.toString();
@@ -2661,7 +2530,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
       _loading = false;
     });
 
-    if (backend == LlmBackend.ollama || backend == LlmBackend.ollamaPython || backend == LlmBackend.ollamaOrchestrator) {
+    if (backend == LlmBackend.ollama ||
+        backend == LlmBackend.ollamaPython ||
+        backend == LlmBackend.ollamaOrchestrator) {
       // ignore: unawaited_futures
       _refreshOllamaStatus();
     }
@@ -2679,8 +2550,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
       // ignore: unawaited_futures
       _refreshOpenRouterModels(openRouterApiKey!);
     }
-    if (backend == LlmBackend.githubOrchestrator &&
-        (githubApiKey ?? '').isNotEmpty) {
+    if (backend == LlmBackend.githubOrchestrator && (githubApiKey ?? '').isNotEmpty) {
       // ignore: unawaited_futures
       _refreshGithubCatalog(githubApiKey!);
     }
@@ -2847,7 +2717,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   Future<void> _startOrchestrator() async {
     if (_orchestratorBusy) return;
-    if (OrchestratorManager.instance.isRunning && OrchestratorManager.instance.currentBackend == OrchestratorBackend.huggingface) {
+    if (OrchestratorManager.instance.isRunning &&
+        OrchestratorManager.instance.currentBackend == OrchestratorBackend.huggingface) {
       return;
     }
 
@@ -2861,7 +2732,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
     // Persist it in case the user hasn't pressed Save.
     await AgentCredentialsRepository.instance.saveCredentials(AgentCredentials(hfToken: token));
 
-    if (OrchestratorManager.instance.isRunning && OrchestratorManager.instance.currentBackend != OrchestratorBackend.huggingface) {
+    if (OrchestratorManager.instance.isRunning &&
+        OrchestratorManager.instance.currentBackend != OrchestratorBackend.huggingface) {
       await OrchestratorManager.instance.stop();
     }
 
@@ -2913,7 +2785,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
     }
     final model = _groqSelectedModel ?? GroqService.fallbackModels.first;
 
-    if (OrchestratorManager.instance.isRunning && OrchestratorManager.instance.currentBackend != OrchestratorBackend.groq) {
+    if (OrchestratorManager.instance.isRunning &&
+        OrchestratorManager.instance.currentBackend != OrchestratorBackend.groq) {
       await OrchestratorManager.instance.stop();
     }
 
@@ -2924,7 +2797,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
     _appendLog('Starting Groq orchestrator (model: $model)…');
 
     final temperature = _groqTemperature;
-    final maxTokens = int.tryParse(_groqMaxTokensController.text.trim()) ?? BackendSettingsRepository.defaultGroqMaxTokens;
+    final maxTokens =
+        int.tryParse(_groqMaxTokensController.text.trim()) ?? BackendSettingsRepository.defaultGroqMaxTokens;
 
     final started = await OrchestratorManager.instance.start(
       backend: OrchestratorBackend.groq,
@@ -2960,9 +2834,12 @@ class _SettingsScreenState extends State<SettingsScreen> {
       );
       return;
     }
-    final model = (_geminiSelectedModel != null && _geminiSelectedModel!.trim().isNotEmpty) ? _geminiSelectedModel!.trim() : BackendSettingsRepository.defaultGeminiModel;
+    final model = (_geminiSelectedModel != null && _geminiSelectedModel!.trim().isNotEmpty)
+        ? _geminiSelectedModel!.trim()
+        : BackendSettingsRepository.defaultGeminiModel;
 
-    if (OrchestratorManager.instance.isRunning && OrchestratorManager.instance.currentBackend != OrchestratorBackend.gemini) {
+    if (OrchestratorManager.instance.isRunning &&
+        OrchestratorManager.instance.currentBackend != OrchestratorBackend.gemini) {
       await OrchestratorManager.instance.stop();
     }
 
@@ -2977,7 +2854,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
       modelId: model,
       geminiApiKey: apiKey,
       temperature: _geminiTemperature,
-      maxTokens: int.tryParse(_geminiMaxTokensController.text.trim()) ?? BackendSettingsRepository.defaultGeminiMaxTokens,
+      maxTokens:
+          int.tryParse(_geminiMaxTokensController.text.trim()) ?? BackendSettingsRepository.defaultGeminiMaxTokens,
     );
     final stderr = OrchestratorManager.instance.stderrLog;
     if (stderr.isNotEmpty) {
@@ -3008,7 +2886,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
       return;
     }
 
-    if (OrchestratorManager.instance.isRunning && OrchestratorManager.instance.currentBackend != OrchestratorBackend.ollama) {
+    if (OrchestratorManager.instance.isRunning &&
+        OrchestratorManager.instance.currentBackend != OrchestratorBackend.ollama) {
       await OrchestratorManager.instance.stop();
     }
 
@@ -3272,9 +3151,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
           if (!mounted) return;
           // Avoid spamming setState — only rebuild when the percentage
           // actually changes by at least one point (or transfer finishes).
-          final prevPct = _ollamaPullTotal > 0
-              ? (_ollamaPullCompleted * 100 / _ollamaPullTotal).floor()
-              : -1;
+          final prevPct = _ollamaPullTotal > 0 ? (_ollamaPullCompleted * 100 / _ollamaPullTotal).floor() : -1;
           final nextPct = total > 0 ? (completed * 100 / total).floor() : -1;
           if (nextPct != prevPct || completed == total) {
             setState(() {
@@ -3365,9 +3242,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   Widget _ollamaPullProgressBar() {
     final hasTotal = _ollamaPullTotal > 0;
-    final pct = hasTotal
-        ? (_ollamaPullCompleted * 100 / _ollamaPullTotal)
-        : null;
+    final pct = hasTotal ? (_ollamaPullCompleted * 100 / _ollamaPullTotal) : null;
     return Padding(
       padding: const EdgeInsets.only(top: 10),
       child: Column(
@@ -3379,8 +3254,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 child: Text(
                   'Pulling ${_ollamaPullingModel ?? ''}'
                   '${_ollamaPullCancelled ? ' — cancelling…' : ''}',
-                  style: const TextStyle(
-                      fontSize: 12, fontWeight: FontWeight.w600),
+                  style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600),
                   overflow: TextOverflow.ellipsis,
                 ),
               ),
@@ -3389,8 +3263,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   '${_formatBytes(_ollamaPullCompleted)} / '
                   '${_formatBytes(_ollamaPullTotal)}'
                   '  •  ${pct!.toStringAsFixed(1)}%',
-                  style: const TextStyle(
-                      fontSize: 11, color: AppTheme.textSecondary),
+                  style: const TextStyle(fontSize: 11, color: AppTheme.textSecondary),
                 ),
             ],
           ),
@@ -3903,12 +3776,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
   Widget _buildProjectsSection() {
     // Lazy-load project-scoped settings when the panel is shown or the
     // active project changes.
-    if (!_dbConnectionsLoaded ||
-        _dbConnectionsWorkingDir != ProjectService().currentPath) {
+    if (!_dbConnectionsLoaded || _dbConnectionsWorkingDir != ProjectService().currentPath) {
       _loadDatabaseConnections();
     }
-    if (!_filtersLoaded ||
-        _filtersWorkingDir != ProjectService().currentPath) {
+    if (!_filtersLoaded || _filtersWorkingDir != ProjectService().currentPath) {
       _loadFilters();
     }
     return SingleChildScrollView(
@@ -3944,8 +3815,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                       builder: (ctx, folders, _) {
                         if (folders.isEmpty) {
                           return Container(
-                            padding: const EdgeInsets.symmetric(
-                                horizontal: 16, vertical: 24),
+                            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 24),
                             decoration: BoxDecoration(
                               border: Border.all(color: AppTheme.border),
                               borderRadius: BorderRadius.circular(8),
@@ -3963,8 +3833,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                         }
                         return Column(
                           children: [
-                            for (int i = 0; i < folders.length; i++)
-                              _projectFolderTile(folders[i]),
+                            for (int i = 0; i < folders.length; i++) _projectFolderTile(folders[i]),
                           ],
                         );
                       },
@@ -4044,8 +3913,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 icon: const Icon(Icons.check_circle_outline, size: 18),
                 onPressed: () => _activateProjectFolder(path),
                 padding: EdgeInsets.zero,
-                constraints:
-                    const BoxConstraints(minWidth: 32, minHeight: 32),
+                constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
               ),
             IconButton(
               tooltip: 'Edit (change path)',
@@ -4056,8 +3924,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
             ),
             IconButton(
               tooltip: 'Remove',
-              icon: const Icon(Icons.delete_outline,
-                  size: 18, color: AppTheme.danger),
+              icon: const Icon(Icons.delete_outline, size: 18, color: AppTheme.danger),
               onPressed: () => _removeProjectFolder(path),
               padding: EdgeInsets.zero,
               constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
@@ -4076,8 +3943,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
-        content: Text(
-            'Added and activated: ${picked.split(Platform.pathSeparator).last}'),
+        content: Text('Added and activated: ${picked.split(Platform.pathSeparator).last}'),
         duration: const Duration(seconds: 2),
       ),
     );
@@ -4091,8 +3957,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     await OrchestratorManager.instance.stop();
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
-        content: Text(
-            'Switched to: ${path.split(Platform.pathSeparator).last}'),
+        content: Text('Switched to: ${path.split(Platform.pathSeparator).last}'),
         duration: const Duration(seconds: 2),
       ),
     );
@@ -4116,8 +3981,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
       context: context,
       builder: (ctx) => AlertDialog(
         title: const Text('Remove project folder'),
-        content: Text(
-            'Remove "${path.split(Platform.pathSeparator).last}" from the list?\n'
+        content: Text('Remove "${path.split(Platform.pathSeparator).last}" from the list?\n'
             'This does not delete any files on disk.'),
         actions: [
           TextButton(
@@ -4146,11 +4010,14 @@ class _SettingsScreenState extends State<SettingsScreen> {
   // ---- Model Settings panel -------------------------------------------------
 
   Widget _buildModelSettings() {
-    final isOllamaBackend =
-        _activeBackend == LlmBackend.ollama || _activeBackend == LlmBackend.ollamaPython || _activeBackend == LlmBackend.ollamaOrchestrator || _activeBackend == LlmBackend.ollamaGenerate;
+    final isOllamaBackend = _activeBackend == LlmBackend.ollama ||
+        _activeBackend == LlmBackend.ollamaPython ||
+        _activeBackend == LlmBackend.ollamaOrchestrator ||
+        _activeBackend == LlmBackend.ollamaGenerate;
     final isGroqBackend = _activeBackend == LlmBackend.groq || _activeBackend == LlmBackend.groqOrchestrator;
     final isGeminiBackend = _activeBackend == LlmBackend.geminiOrchestrator;
-    final isOpenRouterBackend = _activeBackend == LlmBackend.openRouter || _activeBackend == LlmBackend.openRouterOrchestrator;
+    final isOpenRouterBackend =
+        _activeBackend == LlmBackend.openRouter || _activeBackend == LlmBackend.openRouterOrchestrator;
     final isGithubBackend = _activeBackend == LlmBackend.githubOrchestrator;
 
     return SingleChildScrollView(
@@ -4254,7 +4121,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
                                 await OrchestratorManager.instance.stop();
                               }
 
-                              if (v == LlmBackend.ollama || v == LlmBackend.ollamaPython || v == LlmBackend.ollamaOrchestrator) {
+                              if (v == LlmBackend.ollama ||
+                                  v == LlmBackend.ollamaPython ||
+                                  v == LlmBackend.ollamaOrchestrator) {
                                 // ignore: unawaited_futures
                                 _refreshOllamaStatus();
                               }
@@ -4303,7 +4172,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
                       ),
                       const SizedBox(height: 8),
                       ElevatedButton.icon(
-                        onPressed: _localServerUrl != null && _localServerUrl!.isNotEmpty ? () => _testLocalServer() : null,
+                        onPressed:
+                            _localServerUrl != null && _localServerUrl!.isNotEmpty ? () => _testLocalServer() : null,
                         icon: const Icon(Icons.cloud_done, size: 16),
                         label: const Text("Test Connection"),
                       ),
@@ -4444,7 +4314,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
                                 );
                                 return;
                               }
-                              await AgentCredentialsRepository.instance.saveCredentials(AgentCredentials(hfToken: token));
+                              await AgentCredentialsRepository.instance
+                                  .saveCredentials(AgentCredentials(hfToken: token));
                               if (!mounted) return;
                               messenger.showSnackBar(
                                 const SnackBar(content: Text("Agent token saved")),
@@ -4495,7 +4366,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 const SizedBox(height: 28),
               ],
               // Saved models (HF only, non-Ollama)
-              if (!isOllamaBackend && (_activeBackend == LlmBackend.orchestrator || _activeBackend == LlmBackend.huggingFace)) ...[
+              if (!isOllamaBackend &&
+                  (_activeBackend == LlmBackend.orchestrator || _activeBackend == LlmBackend.huggingFace)) ...[
                 const SizedBox(height: 28),
                 _section(
                   title: "Saved models",
@@ -4850,7 +4722,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
                         runSpacing: 8,
                         children: [
                           ElevatedButton.icon(
-                            onPressed: (_ollamaBusy || !OllamaManager.instance.supportsUiInstall) ? null : _installOllamaBinary,
+                            onPressed: (_ollamaBusy || !OllamaManager.instance.supportsUiInstall)
+                                ? null
+                                : _installOllamaBinary,
                             icon: const Icon(Icons.download_outlined, size: 14),
                             label: Text(
                               OllamaManager.instance.supportsUiInstall ? 'Install from UI' : 'UI install unavailable',
@@ -5035,12 +4909,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
                       icon: Icon(
                         Icons.stop_circle_outlined,
                         size: 22,
-                        color: _ollamaPullCancelled
-                            ? AppTheme.textMuted
-                            : AppTheme.danger,
+                        color: _ollamaPullCancelled ? AppTheme.textMuted : AppTheme.danger,
                       ),
-                      onPressed:
-                          _ollamaPullCancelled ? null : _cancelOllamaPull,
+                      onPressed: _ollamaPullCancelled ? null : _cancelOllamaPull,
                     ),
                   ],
                 ],
@@ -5348,8 +5219,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
-        content:
-            Text('Copied ${_ollamaCatalog.length} Ollama models to clipboard'),
+        content: Text('Copied ${_ollamaCatalog.length} Ollama models to clipboard'),
         duration: const Duration(seconds: 2),
       ),
     );
@@ -5406,8 +5276,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 const SizedBox(width: 6),
                 Text(
                   'Catalog (${_ollamaCatalog.length} models)',
-                  style: const TextStyle(
-                      fontSize: 13, fontWeight: FontWeight.w600),
+                  style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600),
                 ),
                 const Spacer(),
                 if (_ollamaCatalogLoading)
@@ -5419,17 +5288,14 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 IconButton(
                   tooltip: 'Refresh catalog',
                   padding: EdgeInsets.zero,
-                  constraints:
-                      const BoxConstraints(minWidth: 28, minHeight: 28),
+                  constraints: const BoxConstraints(minWidth: 28, minHeight: 28),
                   icon: const Icon(Icons.refresh, size: 16),
-                  onPressed:
-                      _ollamaCatalogLoading ? null : _refreshOllamaCatalog,
+                  onPressed: _ollamaCatalogLoading ? null : _refreshOllamaCatalog,
                 ),
                 IconButton(
                   tooltip: 'Copy all rows as TSV',
                   padding: EdgeInsets.zero,
-                  constraints:
-                      const BoxConstraints(minWidth: 28, minHeight: 28),
+                  constraints: const BoxConstraints(minWidth: 28, minHeight: 28),
                   icon: const Icon(Icons.copy_all, size: 16),
                   onPressed: _copyOllamaCatalog,
                 ),
@@ -5441,10 +5307,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
             decoration: BoxDecoration(
               color: AppTheme.bgSecondary,
               border: Border(
-                top: BorderSide(
-                    color: AppTheme.accentTernary.withAlpha(80)),
-                bottom: BorderSide(
-                    color: AppTheme.accentTernary.withAlpha(80)),
+                top: BorderSide(color: AppTheme.accentTernary.withAlpha(80)),
+                bottom: BorderSide(color: AppTheme.accentTernary.withAlpha(80)),
               ),
             ),
             child: const Row(
@@ -5452,70 +5316,52 @@ class _SettingsScreenState extends State<SettingsScreen> {
               children: [
                 Expanded(
                   flex: _kOlColFlexName,
-                  child: Text('Name',
-                      style: TextStyle(
-                          fontSize: 11, fontWeight: FontWeight.bold)),
+                  child: Text('Name', style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold)),
                 ),
                 SizedBox(width: 8),
                 Expanded(
                   flex: _kOlColFlexFamily,
-                  child: Text('Family',
-                      style: TextStyle(
-                          fontSize: 11, fontWeight: FontWeight.bold)),
+                  child: Text('Family', style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold)),
                 ),
                 SizedBox(width: 8),
                 Expanded(
                   flex: _kOlColFlexParams,
                   child: Text('Params',
-                      style: TextStyle(
-                          fontSize: 11, fontWeight: FontWeight.bold),
-                      textAlign: TextAlign.right),
+                      style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold), textAlign: TextAlign.right),
                 ),
                 SizedBox(width: 8),
                 Expanded(
                   flex: _kOlColFlexQuant,
-                  child: Text('Quant',
-                      style: TextStyle(
-                          fontSize: 11, fontWeight: FontWeight.bold)),
+                  child: Text('Quant', style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold)),
                 ),
                 SizedBox(width: 8),
                 Expanded(
                   flex: _kOlColFlexSize,
                   child: Text('Size',
-                      style: TextStyle(
-                          fontSize: 11, fontWeight: FontWeight.bold),
-                      textAlign: TextAlign.right),
+                      style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold), textAlign: TextAlign.right),
                 ),
                 SizedBox(width: 8),
                 Expanded(
                   flex: _kOlColFlexModified,
-                  child: Text('Modified',
-                      style: TextStyle(
-                          fontSize: 11, fontWeight: FontWeight.bold)),
+                  child: Text('Modified', style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold)),
                 ),
                 SizedBox(width: 8),
                 SizedBox(
                   width: _kOlColWidthInstalled,
                   child: Text('Inst.',
-                      style: TextStyle(
-                          fontSize: 11, fontWeight: FontWeight.bold),
-                      textAlign: TextAlign.center),
+                      style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold), textAlign: TextAlign.center),
                 ),
                 SizedBox(width: 8),
                 SizedBox(
                   width: _kOlColWidthTools,
                   child: Text('Tools',
-                      style: TextStyle(
-                          fontSize: 11, fontWeight: FontWeight.bold),
-                      textAlign: TextAlign.center),
+                      style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold), textAlign: TextAlign.center),
                 ),
                 SizedBox(width: 8),
                 SizedBox(
                   width: _kOlColWidthActions,
                   child: Text('Actions',
-                      style: TextStyle(
-                          fontSize: 11, fontWeight: FontWeight.bold),
-                      textAlign: TextAlign.center),
+                      style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold), textAlign: TextAlign.center),
                 ),
               ],
             ),
@@ -5538,8 +5384,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   final m = _ollamaCatalog[i];
                   final tools = OllamaService.supportsToolCalling(m);
                   return Padding(
-                    padding: const EdgeInsets.symmetric(
-                        horizontal: 10, vertical: 8),
+                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
                     child: Row(
                       crossAxisAlignment: CrossAxisAlignment.center,
                       children: [
@@ -5547,8 +5392,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                           flex: _kOlColFlexName,
                           child: Text(
                             m.name,
-                            style: const TextStyle(
-                                fontSize: 12, fontWeight: FontWeight.w600),
+                            style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600),
                             softWrap: true,
                           ),
                         ),
@@ -5573,9 +5417,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                         Expanded(
                           flex: _kOlColFlexQuant,
                           child: Text(
-                            m.quantizationLevel.isEmpty
-                                ? '—'
-                                : m.quantizationLevel,
+                            m.quantizationLevel.isEmpty ? '—' : m.quantizationLevel,
                             style: const TextStyle(fontSize: 12),
                           ),
                         ),
@@ -5593,9 +5435,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                           flex: _kOlColFlexModified,
                           child: Text(
                             _formatRelative(m.modifiedAt),
-                            style: const TextStyle(
-                                fontSize: 12,
-                                color: AppTheme.textSecondary),
+                            style: const TextStyle(fontSize: 12, color: AppTheme.textSecondary),
                           ),
                         ),
                         const SizedBox(width: 8),
@@ -5614,9 +5454,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                           width: _kOlColWidthTools,
                           child: Center(
                             child: Icon(
-                              tools
-                                  ? Icons.check_circle
-                                  : Icons.remove_circle_outline,
+                              tools ? Icons.check_circle : Icons.remove_circle_outline,
                               size: 16,
                               color: tools ? Colors.green : Colors.grey,
                             ),
@@ -5631,23 +5469,16 @@ class _SettingsScreenState extends State<SettingsScreen> {
                               IconButton(
                                 tooltip: 'Re-pull / update ${m.name}',
                                 padding: EdgeInsets.zero,
-                                constraints: const BoxConstraints(
-                                    minWidth: 28, minHeight: 28),
+                                constraints: const BoxConstraints(minWidth: 28, minHeight: 28),
                                 icon: const Icon(Icons.download, size: 16),
-                                onPressed: _ollamaBusy
-                                    ? null
-                                    : () => _pullOllamaCatalogRow(m.name),
+                                onPressed: _ollamaBusy ? null : () => _pullOllamaCatalogRow(m.name),
                               ),
                               IconButton(
                                 tooltip: 'Delete ${m.name}',
                                 padding: EdgeInsets.zero,
-                                constraints: const BoxConstraints(
-                                    minWidth: 28, minHeight: 28),
-                                icon: const Icon(Icons.delete_outline,
-                                    size: 16, color: AppTheme.danger),
-                                onPressed: _ollamaBusy
-                                    ? null
-                                    : () => _deleteOllamaModel(m.name),
+                                constraints: const BoxConstraints(minWidth: 28, minHeight: 28),
+                                icon: const Icon(Icons.delete_outline, size: 16, color: AppTheme.danger),
+                                onPressed: _ollamaBusy ? null : () => _deleteOllamaModel(m.name),
                               ),
                             ],
                           ),
@@ -5713,8 +5544,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                           '(${_filteredLibrary().length}'
                           '${_ollamaLibraryFilter.isEmpty ? '' : ' / ${_ollamaLibrary.length}'} '
                           'models)',
-                  style: const TextStyle(
-                      fontSize: 13, fontWeight: FontWeight.w600),
+                  style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600),
                 ),
                 const Spacer(),
                 if (_ollamaLibraryLoading)
@@ -5724,15 +5554,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     child: CircularProgressIndicator(strokeWidth: 2),
                   ),
                 IconButton(
-                  tooltip: _ollamaLibrary.isEmpty
-                      ? 'Fetch library'
-                      : 'Refresh library',
+                  tooltip: _ollamaLibrary.isEmpty ? 'Fetch library' : 'Refresh library',
                   padding: EdgeInsets.zero,
-                  constraints:
-                      const BoxConstraints(minWidth: 28, minHeight: 28),
+                  constraints: const BoxConstraints(minWidth: 28, minHeight: 28),
                   icon: const Icon(Icons.refresh, size: 16),
-                  onPressed:
-                      _ollamaLibraryLoading ? null : _refreshOllamaLibrary,
+                  onPressed: _ollamaLibraryLoading ? null : _refreshOllamaLibrary,
                 ),
               ],
             ),
@@ -5746,8 +5572,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     : 'Click refresh to fetch the public model catalog from '
                         'ollama.com/library. Scraped HTML — Ollama has no '
                         'public JSON API, so layout changes may break this.',
-                style: TextStyle(
-                    fontSize: 12, color: Colors.grey[700], height: 1.4),
+                style: TextStyle(fontSize: 12, color: Colors.grey[700], height: 1.4),
               ),
             ),
           ] else if (_ollamaLibrary.isNotEmpty) ...[
@@ -5761,8 +5586,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   hintText: 'Filter by name, size, capability…',
                   border: OutlineInputBorder(),
                 ),
-                onChanged: (v) =>
-                    setState(() => _ollamaLibraryFilter = v),
+                onChanged: (v) => setState(() => _ollamaLibraryFilter = v),
               ),
             ),
             ConstrainedBox(
@@ -5779,8 +5603,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     thickness: 1,
                     color: AppTheme.accentTernary.withAlpha(30),
                   ),
-                  itemBuilder: (ctx, i) =>
-                      _ollamaLibraryRow(_filteredLibrary()[i], serverUp),
+                  itemBuilder: (ctx, i) => _ollamaLibraryRow(_filteredLibrary()[i], serverUp),
                 ),
               ),
             ),
@@ -5813,8 +5636,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     ),
                     if (installed) ...[
                       const SizedBox(width: 6),
-                      const Icon(Icons.check_circle,
-                          size: 14, color: Colors.green),
+                      const Icon(Icons.check_circle, size: 14, color: Colors.green),
                     ],
                   ],
                 ),
@@ -5822,8 +5644,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   const SizedBox(height: 2),
                   Text(
                     m.description,
-                    style: const TextStyle(
-                        fontSize: 12, color: AppTheme.textSecondary),
+                    style: const TextStyle(fontSize: 12, color: AppTheme.textSecondary),
                   ),
                 ],
                 const SizedBox(height: 6),
@@ -5833,10 +5654,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   children: [
                     if (m.isCloud) _libChip('cloud', color: Colors.indigo),
                     for (final s in m.sizes) _libChip(s),
-                    for (final c in m.capabilities)
-                      _libChip(c, color: Colors.teal),
-                    for (final t in m.tags.where((t) => t != 'cloud'))
-                      _libChip(t),
+                    for (final c in m.capabilities) _libChip(c, color: Colors.teal),
+                    for (final t in m.tags.where((t) => t != 'cloud')) _libChip(t),
                   ],
                 ),
                 if (m.pulls.isNotEmpty || m.updated.isNotEmpty) ...[
@@ -5846,8 +5665,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                       if (m.pulls.isNotEmpty) '${m.pulls} pulls',
                       if (m.updated.isNotEmpty) 'updated ${m.updated}',
                     ].join(' • '),
-                    style: const TextStyle(
-                        fontSize: 11, color: AppTheme.textMuted),
+                    style: const TextStyle(fontSize: 11, color: AppTheme.textMuted),
                   ),
                 ],
               ],
@@ -5861,8 +5679,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
               IconButton(
                 tooltip: 'Copy name',
                 padding: EdgeInsets.zero,
-                constraints:
-                    const BoxConstraints(minWidth: 28, minHeight: 28),
+                constraints: const BoxConstraints(minWidth: 28, minHeight: 28),
                 icon: const Icon(Icons.copy, size: 14),
                 onPressed: () async {
                   await Clipboard.setData(ClipboardData(text: m.name));
@@ -5876,12 +5693,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 },
               ),
               IconButton(
-                tooltip: m.url.isEmpty
-                    ? 'No URL'
-                    : 'Copy ${m.url}',
+                tooltip: m.url.isEmpty ? 'No URL' : 'Copy ${m.url}',
                 padding: EdgeInsets.zero,
-                constraints:
-                    const BoxConstraints(minWidth: 28, minHeight: 28),
+                constraints: const BoxConstraints(minWidth: 28, minHeight: 28),
                 icon: const Icon(Icons.open_in_new, size: 14),
                 onPressed: m.url.isEmpty
                     ? null
@@ -5898,17 +5712,12 @@ class _SettingsScreenState extends State<SettingsScreen> {
               ),
               IconButton(
                 tooltip: serverUp
-                    ? (installed
-                        ? 'Re-pull / update ${m.name}'
-                        : 'Pull ${m.name}')
+                    ? (installed ? 'Re-pull / update ${m.name}' : 'Pull ${m.name}')
                     : 'Start the Ollama server first',
                 padding: EdgeInsets.zero,
-                constraints:
-                    const BoxConstraints(minWidth: 28, minHeight: 28),
+                constraints: const BoxConstraints(minWidth: 28, minHeight: 28),
                 icon: const Icon(Icons.download, size: 14),
-                onPressed: (!serverUp || _ollamaBusy)
-                    ? null
-                    : () => _pullOllamaCatalogRow(m.name),
+                onPressed: (!serverUp || _ollamaBusy) ? null : () => _pullOllamaCatalogRow(m.name),
               ),
             ],
           ),
@@ -5928,8 +5737,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
       ),
       child: Text(
         label,
-        style: TextStyle(
-            fontSize: 10, fontWeight: FontWeight.w600, color: fg),
+        style: TextStyle(fontSize: 10, fontWeight: FontWeight.w600, color: fg),
       ),
     );
   }
@@ -6303,8 +6111,7 @@ Brief overview of this project.
             // Toolbar
             Row(
               children: [
-                const Icon(Icons.info_outline, size: 16,
-                    color: AppTheme.textSecondary),
+                const Icon(Icons.info_outline, size: 16, color: AppTheme.textSecondary),
                 const SizedBox(width: 6),
                 const Expanded(
                   child: Text(
@@ -6318,15 +6125,12 @@ Brief overview of this project.
                 ),
                 const SizedBox(width: 8),
                 TextButton.icon(
-                  onPressed: _agentContextSaving
-                      ? null
-                      : _saveAgentContext,
+                  onPressed: _agentContextSaving ? null : _saveAgentContext,
                   icon: _agentContextSaving
                       ? const SizedBox(
                           width: 14,
                           height: 14,
-                          child: CircularProgressIndicator(
-                              strokeWidth: 2),
+                          child: CircularProgressIndicator(strokeWidth: 2),
                         )
                       : const Icon(Icons.save_outlined, size: 18),
                   label: const Text('Save'),
@@ -6447,13 +6251,13 @@ Brief overview of this project.
     final model = _openRouterSelectedModel?.trim() ?? '';
     if (model.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text(
-            'Pick an OpenRouter model first (refresh the catalog if empty).')),
+        const SnackBar(content: Text('Pick an OpenRouter model first (refresh the catalog if empty).')),
       );
       return;
     }
 
-    if (OrchestratorManager.instance.isRunning && OrchestratorManager.instance.currentBackend != OrchestratorBackend.openrouter) {
+    if (OrchestratorManager.instance.isRunning &&
+        OrchestratorManager.instance.currentBackend != OrchestratorBackend.openrouter) {
       await OrchestratorManager.instance.stop();
     }
 
@@ -6464,7 +6268,8 @@ Brief overview of this project.
     _appendLog('Starting OpenRouter orchestrator (model: $model)...');
 
     final temperature = _openRouterTemperature;
-    final maxTokens = int.tryParse(_openRouterMaxTokensController.text.trim()) ?? BackendSettingsRepository.defaultOpenRouterMaxTokens;
+    final maxTokens = int.tryParse(_openRouterMaxTokensController.text.trim()) ??
+        BackendSettingsRepository.defaultOpenRouterMaxTokens;
 
     final started = await OrchestratorManager.instance.start(
       backend: OrchestratorBackend.openrouter,
@@ -6493,21 +6298,17 @@ Brief overview of this project.
   Future<void> _startGithubOrchestrator() async {
     if (_orchestratorBusy) return;
     final apiKey = _githubApiKeyController.text.trim();
-    final envKey = Platform.environment['GITHUB_TOKEN'] ??
-        Platform.environment['GITHUB_API_KEY'] ??
-        '';
+    final envKey = Platform.environment['GITHUB_TOKEN'] ?? Platform.environment['GITHUB_API_KEY'] ?? '';
     if (apiKey.isEmpty && envKey.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Save the GitHub PAT first.')),
       );
       return;
     }
-    final model =
-        _githubSelectedModel ?? GithubModelsService.fallbackModels.first;
+    final model = _githubSelectedModel ?? GithubModelsService.fallbackModels.first;
 
     if (OrchestratorManager.instance.isRunning &&
-        OrchestratorManager.instance.currentBackend !=
-            OrchestratorBackend.github) {
+        OrchestratorManager.instance.currentBackend != OrchestratorBackend.github) {
       await OrchestratorManager.instance.stop();
     }
 
@@ -6519,15 +6320,11 @@ Brief overview of this project.
 
     final temperature = _githubTemperature;
     final maxTokens =
-        int.tryParse(_githubMaxTokensController.text.trim()) ??
-            BackendSettingsRepository.defaultGithubMaxTokens;
-    final tpmLimit =
-        int.tryParse(_githubTpmLimitController.text.trim()) ?? 0;
-    final disableTools =
-        await BackendSettingsRepository.instance.getGithubDisableTools();
+        int.tryParse(_githubMaxTokensController.text.trim()) ?? BackendSettingsRepository.defaultGithubMaxTokens;
+    final tpmLimit = int.tryParse(_githubTpmLimitController.text.trim()) ?? 0;
+    final disableTools = await BackendSettingsRepository.instance.getGithubDisableTools();
     if (disableTools) {
-      _appendLog(
-          '"$model" is a non-tool-calling model — running in plain-chat mode.');
+      _appendLog('"$model" is a non-tool-calling model — running in plain-chat mode.');
     }
 
     final started = await OrchestratorManager.instance.start(
@@ -6545,16 +6342,12 @@ Brief overview of this project.
         _appendLog(l);
       }
     }
-    _appendLog(started
-        ? 'GitHub Models orchestrator running.'
-        : 'Failed to start GitHub Models orchestrator.');
+    _appendLog(started ? 'GitHub Models orchestrator running.' : 'Failed to start GitHub Models orchestrator.');
     if (!mounted) return;
     setState(() => _orchestratorBusy = false);
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
-        content: Text(started
-            ? 'GitHub Models orchestrator running'
-            : 'Failed to start — check log'),
+        content: Text(started ? 'GitHub Models orchestrator running' : 'Failed to start — check log'),
         backgroundColor: started ? AppTheme.accentSecondary : AppTheme.danger,
       ),
     );
@@ -6590,8 +6383,7 @@ Brief overview of this project.
   Widget _buildExternalToolsSection() {
     return _section(
       title: "External Tools",
-      subtitle:
-          "Tell the orchestrator subprocess where to find the Flutter SDK and "
+      subtitle: "Tell the orchestrator subprocess where to find the Flutter SDK and "
           "the Python interpreter. The Flutter SDK path is prepended to the "
           "subprocess PATH so tools like `flutter analyze` resolve without "
           "needing system-wide PATH setup. The Python path overrides the "
@@ -6611,9 +6403,7 @@ Brief overview of this project.
           const SizedBox(height: 16),
           _pathField(
             label: "Python interpreter path",
-            hint: Platform.isWindows
-                ? r"e.g. C:\Python312\python.exe"
-                : "e.g. /usr/bin/python3.12",
+            hint: Platform.isWindows ? r"e.g. C:\Python312\python.exe" : "e.g. /usr/bin/python3.12",
             controller: _pythonPathController,
             onPick: () => _pickPythonPath(),
             onSave: () => _savePythonPath(),
@@ -6663,8 +6453,7 @@ Brief overview of this project.
                     color: AppTheme.textMuted,
                   ),
                   isDense: true,
-                  contentPadding: const EdgeInsets.symmetric(
-                      horizontal: 12, vertical: 12),
+                  contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
                   border: const OutlineInputBorder(),
                 ),
               ),
@@ -6692,8 +6481,7 @@ Brief overview of this project.
   }
 
   Future<void> _loadExternalToolPaths() async {
-    final flutter =
-        await SettingsRepository.instance.getFlutterSdkPath() ?? '';
+    final flutter = await SettingsRepository.instance.getFlutterSdkPath() ?? '';
     final python = await SettingsRepository.instance.getPythonPath() ?? '';
     if (!mounted) return;
     setState(() {
@@ -6810,9 +6598,7 @@ Brief overview of this project.
     await _saveDatabaseConnections();
   }
 
-  Future<void> _editDatabaseConnection(
-      DatabaseConnection connection,
-      int index) async {
+  Future<void> _editDatabaseConnection(DatabaseConnection connection, int index) async {
     final otherKeys = <String>{};
     for (int i = 0; i < _dbConnections.length; i++) {
       if (i != index) otherKeys.add(_dbConnections[i].key);
@@ -6845,8 +6631,7 @@ Brief overview of this project.
   Widget _buildDatabaseConnectionsSection() {
     return _section(
       title: "Database Connections",
-      subtitle:
-          "Configure database connections for the db_query tool. "
+      subtitle: "Configure database connections for the db_query tool. "
           "MariaDB: mysql+pymysql://user:pass@host:3306/dbname\n"
           "SQL Server: mssql://user:pass@host:1433/dbname\n"
           "SQLite: /absolute/path/to/file.db or relative/path.db",
@@ -6888,8 +6673,7 @@ Brief overview of this project.
     );
   }
 
-  Widget _databaseConnectionRow(
-      DatabaseConnection conn, int index) {
+  Widget _databaseConnectionRow(DatabaseConnection conn, int index) {
     return Card(
       margin: const EdgeInsets.only(bottom: 8),
       child: Padding(
@@ -7029,15 +6813,14 @@ Brief overview of this project.
   }) async {
     final controller = TextEditingController(text: initial);
     final label = _filterLabel(category);
-    final isDirCategory = category == DevFiltersRepository.kExcludeDirs ||
-        category == DevFiltersRepository.kIncludeDirs;
+    final isDirCategory =
+        category == DevFiltersRepository.kExcludeDirs || category == DevFiltersRepository.kIncludeDirs;
 
     Future<void> browse() async {
       if (isDirCategory) {
         final picked = await FilePicker.getDirectoryPath(
           dialogTitle: 'Select directory',
-          initialDirectory:
-              _filtersWorkingDir ?? ProjectService().currentPath,
+          initialDirectory: _filtersWorkingDir ?? ProjectService().currentPath,
         );
         if (picked != null && picked.isNotEmpty) {
           controller.text = picked;
@@ -7045,8 +6828,7 @@ Brief overview of this project.
       } else {
         final result = await FilePicker.pickFiles(
           dialogTitle: 'Select file',
-          initialDirectory:
-              _filtersWorkingDir ?? ProjectService().currentPath,
+          initialDirectory: _filtersWorkingDir ?? ProjectService().currentPath,
           type: FileType.any,
         );
         final picked = result?.files.single.path;
@@ -7075,8 +6857,7 @@ Brief overview of this project.
                     child: TextField(
                       controller: controller,
                       autofocus: true,
-                      style: const TextStyle(
-                          fontFamily: 'monospace', fontSize: 13),
+                      style: const TextStyle(fontFamily: 'monospace', fontSize: 13),
                       decoration: InputDecoration(
                         hintText: _filterHint(category),
                         helperText: _filterHelper(category),
@@ -7095,9 +6876,7 @@ Brief overview of this project.
                         ? 'Browse for a directory'
                         : 'Browse for a file (type *.ext for an extension instead)',
                     icon: Icon(
-                      isDirCategory
-                          ? Icons.folder_open_outlined
-                          : Icons.upload_file_outlined,
+                      isDirCategory ? Icons.folder_open_outlined : Icons.upload_file_outlined,
                       size: 20,
                     ),
                     onPressed: browse,
@@ -7477,8 +7256,7 @@ Brief overview of this project.
           Row(
             children: [
               ElevatedButton.icon(
-                onPressed:
-                    _installerBusy ? null : _createInnoSetupInstaller,
+                onPressed: _installerBusy ? null : _createInnoSetupInstaller,
                 icon: _installerBusy
                     ? const SizedBox(
                         width: 14,
@@ -7486,15 +7264,12 @@ Brief overview of this project.
                         child: CircularProgressIndicator(strokeWidth: 2),
                       )
                     : const Icon(Icons.archive_outlined, size: 16),
-                label: Text(_installerBusy
-                    ? "Building..."
-                    : "Create Inno Setup Installer"),
+                label: Text(_installerBusy ? "Building..." : "Create Inno Setup Installer"),
               ),
               const SizedBox(width: 12),
               if (!_installerBusy && _installerLog.isNotEmpty)
                 TextButton.icon(
-                  onPressed: () =>
-                      setState(() => _installerLog.clear()),
+                  onPressed: () => setState(() => _installerLog.clear()),
                   icon: const Icon(Icons.clear_all, size: 16),
                   label: const Text("Clear log"),
                 ),
@@ -7537,8 +7312,7 @@ Brief overview of this project.
     setState(() => _installerLog.add(line));
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (_installerLogScroll.hasClients) {
-        _installerLogScroll.jumpTo(
-            _installerLogScroll.position.maxScrollExtent);
+        _installerLogScroll.jumpTo(_installerLogScroll.position.maxScrollExtent);
       }
     });
   }
@@ -7546,8 +7320,7 @@ Brief overview of this project.
   Future<Directory?> _findProjectRoot() async {
     var dir = Directory.current;
     for (var i = 0; i < 6; i++) {
-      if (await File('${dir.path}${Platform.pathSeparator}pubspec.yaml')
-          .exists()) {
+      if (await File('${dir.path}${Platform.pathSeparator}pubspec.yaml').exists()) {
         return dir;
       }
       final parent = dir.parent;
@@ -7618,8 +7391,7 @@ Brief overview of this project.
     try {
       final root = await _findProjectRoot();
       if (root == null) {
-        _appendInstallerLog(
-            'ERROR: could not locate project root (pubspec.yaml not found).');
+        _appendInstallerLog('ERROR: could not locate project root (pubspec.yaml not found).');
         return;
       }
       _appendInstallerLog('Project root: ${root.path}');
@@ -7632,16 +7404,12 @@ Brief overview of this project.
           // Inno Setup names uninstallers unins000.exe, unins001.exe, etc.
           final unins = await installDir
               .list()
-              .where((e) =>
-                  e is File &&
-                  e.path.endsWith('.exe') &&
-                  RegExp(r'unins\d{3}\.exe$').hasMatch(e.path))
+              .where((e) => e is File && e.path.endsWith('.exe') && RegExp(r'unins\d{3}\.exe$').hasMatch(e.path))
               .toList();
           if (unins.isNotEmpty) {
             unins.sort((a, b) => b.path.compareTo(a.path)); // newest first
             final uninsPath = (unins.first as File).path;
-            _appendInstallerLog(
-                'Found previous uninstaller: $uninsPath');
+            _appendInstallerLog('Found previous uninstaller: $uninsPath');
             _appendInstallerLog('Running uninstaller silently...');
             final uninsExit = await _runStreamed(
               uninsPath,
@@ -7650,16 +7418,13 @@ Brief overview of this project.
             if (uninsExit == 0) {
               _appendInstallerLog('Previous installation removed.');
             } else {
-              _appendInstallerLog(
-                  'Uninstaller exited with code $uninsExit (continuing anyway).');
+              _appendInstallerLog('Uninstaller exited with code $uninsExit (continuing anyway).');
             }
           } else {
-            _appendInstallerLog(
-                'Install directory exists but no unins???exe found — skipping uninstall.');
+            _appendInstallerLog('Install directory exists but no unins???exe found — skipping uninstall.');
           }
         } else {
-          _appendInstallerLog(
-              'No previous installation found at ${installDir.path}.');
+          _appendInstallerLog('No previous installation found at ${installDir.path}.');
         }
       }
 
@@ -7688,8 +7453,7 @@ Brief overview of this project.
         }
       }
       if (releaseDir == null) {
-        _appendInstallerLog(
-            'ERROR: could not find Flutter Windows release output.');
+        _appendInstallerLog('ERROR: could not find Flutter Windows release output.');
         return;
       }
       _appendInstallerLog('Release output: ${releaseDir.path}');
@@ -7697,8 +7461,7 @@ Brief overview of this project.
       // 3) /bin folder.
       final binDir = Directory('${root.path}\\bin');
       if (!await binDir.exists()) {
-        _appendInstallerLog(
-            'WARN: bin folder not found at ${binDir.path} (continuing without it).');
+        _appendInstallerLog('WARN: bin folder not found at ${binDir.path} (continuing without it).');
       } else {
         // Delete __pycache__ directories from backend before packaging
         _appendInstallerLog('Cleaning __pycache__ directories from backend...');
@@ -7743,28 +7506,23 @@ Brief overview of this project.
         ..writeln('UninstallDisplayIcon={app}\\$exeName')
         ..writeln()
         ..writeln('[Languages]')
-        ..writeln(
-            'Name: "english"; MessagesFile: "compiler:Default.isl"')
+        ..writeln('Name: "english"; MessagesFile: "compiler:Default.isl"')
         ..writeln()
         ..writeln('[Files]')
         // Flutter app binaries go into {app} (= {localappdata}\Programs\Agentic).
-        ..writeln(
-            'Source: "${releaseDir.path}\\*"; DestDir: "{app}"; '
+        ..writeln('Source: "${releaseDir.path}\\*"; DestDir: "{app}"; '
             'Flags: ignoreversion recursesubdirs createallsubdirs');
       if (await binDir.exists()) {
         // /bin is shipped under {app}\bin — same install root, which is
         // already a writable user location ({localappdata}\Programs\Agentic).
-        iss.writeln(
-            'Source: "${binDir.path}\\*"; DestDir: "{app}\\bin"; '
+        iss.writeln('Source: "${binDir.path}\\*"; DestDir: "{app}\\bin"; '
             'Flags: ignoreversion recursesubdirs createallsubdirs');
       }
       iss
         ..writeln()
         ..writeln('[Icons]')
-        ..writeln(
-            'Name: "{group}\\$appName"; Filename: "{app}\\$exeName"')
-        ..writeln(
-            'Name: "{userdesktop}\\$appName"; Filename: "{app}\\$exeName"; Tasks: desktopicon')
+        ..writeln('Name: "{group}\\$appName"; Filename: "{app}\\$exeName"')
+        ..writeln('Name: "{userdesktop}\\$appName"; Filename: "{app}\\$exeName"; Tasks: desktopicon')
         ..writeln()
         ..writeln('[Tasks]')
         ..writeln(
@@ -7780,10 +7538,8 @@ Brief overview of this project.
       // 5) Run ISCC if available.
       final iscc = await _findIscc();
       if (iscc == null) {
-        _appendInstallerLog(
-            'ISCC.exe not found. Install Inno Setup 6 from https://jrsoftware.org/isinfo.php');
-        _appendInstallerLog(
-            'Then compile manually: "<InnoSetup>\\ISCC.exe" "$issPath"');
+        _appendInstallerLog('ISCC.exe not found. Install Inno Setup 6 from https://jrsoftware.org/isinfo.php');
+        _appendInstallerLog('Then compile manually: "<InnoSetup>\\ISCC.exe" "$issPath"');
         return;
       }
       _appendInstallerLog('Found Inno Setup compiler: $iscc');
@@ -7792,13 +7548,11 @@ Brief overview of this project.
         _appendInstallerLog('ISCC failed (exit $isccExit).');
         return;
       }
-      _appendInstallerLog(
-          'Installer built: ${outputDir.path}\\AgenticSetup.exe');
+      _appendInstallerLog('Installer built: ${outputDir.path}\\AgenticSetup.exe');
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text(
-                'Installer built at ${outputDir.path}\\AgenticSetup.exe'),
+            content: Text('Installer built at ${outputDir.path}\\AgenticSetup.exe'),
             backgroundColor: AppTheme.accentSecondary,
           ),
         );
@@ -7838,12 +7592,10 @@ class _DatabaseConnectionDialog extends StatefulWidget {
   });
 
   @override
-  State<_DatabaseConnectionDialog> createState() =>
-      _DatabaseConnectionDialogState();
+  State<_DatabaseConnectionDialog> createState() => _DatabaseConnectionDialogState();
 }
 
-class _DatabaseConnectionDialogState
-    extends State<_DatabaseConnectionDialog> {
+class _DatabaseConnectionDialogState extends State<_DatabaseConnectionDialog> {
   late TextEditingController _keyController;
   late TextEditingController _valueController;
   late String _selectedType;
@@ -7892,8 +7644,7 @@ class _DatabaseConnectionDialogState
       setState(() => _error = 'Connection string/path is required');
       return;
     }
-    if (widget.existingKeys.contains(key) &&
-        widget.connection?.key != key) {
+    if (widget.existingKeys.contains(key) && widget.connection?.key != key) {
       setState(() => _error = 'A connection with this name already exists');
       return;
     }

@@ -46,6 +46,7 @@ class _SidebarState extends StateManager<Sidebar> {
     _loadWorkflowGroups();
     AgentRoleSettingsRepository.instance.activeGroupNotifier.addListener(_onActiveGroupChanged);
     AgentRoleSettingsRepository.instance.groupsChangedNotifier.addListener(_onGroupsChanged);
+    ProjectService().currentPathNotifier.addListener(_onProjectChanged);
   }
 
   void _onActiveGroupChanged() {
@@ -54,6 +55,10 @@ class _SidebarState extends StateManager<Sidebar> {
 
   void _onGroupsChanged() {
     _loadWorkflowGroups();
+  }
+
+  void _onProjectChanged() {
+    _loadConversations();
   }
 
   Future<void> _loadWorkflowGroups() async {
@@ -628,6 +633,12 @@ class _SidebarState extends StateManager<Sidebar> {
       ],
     );
   }
+
+  @override
+  void dispose() {
+    ProjectService().currentPathNotifier.removeListener(_onProjectChanged);
+    super.dispose();
+  }
 }
 
 class _SidebarConversationTile extends StatefulWidget {
@@ -726,6 +737,7 @@ class _SidebarConversationTileState extends State<_SidebarConversationTile> {
       ),
     );
   }
+
 }
 
 class _SidebarConversationTileSelect extends StatefulWidget {

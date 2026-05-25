@@ -502,7 +502,7 @@ def register(registry) -> None:
             "type": "function",
             "function": {
                 "name": "search_in_files",
-                "description": "Grep-like search: find lines matching a regex pattern across all files in a directory. Use this to locate where a symbol, function, or string is defined or used.",
+                "description": "Grep-like search: recursively find lines matching a regex pattern across all files in a directory and its subdirectories. Use this to locate where a symbol, function, or string is defined or used.",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -518,7 +518,7 @@ def register(registry) -> None:
             "type": "function",
             "function": {
                 "name": "find_files",
-                "description": "Find files or directories whose name matches a glob pattern, e.g. '*.dart', 'main.*', 'settings*'.",
+                "description": "Recursively find files or directories whose name matches a glob pattern, e.g. '*.dart', 'main.*', 'settings*'.",
                 "parameters": {
                     "type": "object",
                     "properties": {

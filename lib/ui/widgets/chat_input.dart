@@ -193,18 +193,31 @@ class _ChatInputState extends State<ChatInput> {
       final result = await Process.run('git', ['-C', repoPath, 'branch', '--format=%(refname:short)']);
       if (result.exitCode == 0) {
         final output = result.stdout as String;
-        final branches = output.split('\n').where((b) => b.trim().isNotEmpty).toList();
+        final branches = output
+            .split('\n')
+            .where((b) => b.trim().isNotEmpty)
+            .toSet()
+            .toList(); // deduplicate
         setState(() {
           _branches = branches;
-          // Set selected branch to current HEAD if not already set
-          if (_selectedBranch.isEmpty && branches.isNotEmpty) {
-            // Determine current branch
+          // Determine current branch
+          String currentBranch = '';
+          try {
             final headResult = Process.runSync('git', ['-C', repoPath, 'rev-parse', '--abbrev-ref', 'HEAD']);
             if (headResult.exitCode == 0) {
-              _selectedBranch = (headResult.stdout as String).trim();
-            } else {
-              _selectedBranch = branches.first;
+              currentBranch = (headResult.stdout as String).trim();
             }
+          } catch (_) {}
+          // If we have a previously selected branch that still exists, keep it;
+          // otherwise fall back to current HEAD, then first branch, then empty.
+          if (_selectedBranch.isNotEmpty && branches.contains(_selectedBranch)) {
+            // keep
+          } else if (currentBranch.isNotEmpty && branches.contains(currentBranch)) {
+            _selectedBranch = currentBranch;
+          } else if (branches.isNotEmpty) {
+            _selectedBranch = branches.first;
+          } else {
+            _selectedBranch = '';
           }
         });
       }
