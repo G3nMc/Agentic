@@ -140,7 +140,7 @@ def register(registry) -> None:
             })
 
         try:
-            cfg = _parse_url(connection_string, ("mysql+pymysql", "mysql", "mariadb"))
+            cfg = _parse_url(connection_string, ("mysql+pymysql", "mysql", "mariadb", "mariadb+pymysql"))
             conn = pymysql.connect(
                 host=cfg["host"],
                 port=cfg["port"] or 3306,
