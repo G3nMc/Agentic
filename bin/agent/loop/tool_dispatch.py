@@ -101,6 +101,25 @@ def looks_like_unclosed_tool(text: str) -> bool:
 
     return False
 
+#
+# Matches:
+#   ```json
+#   {...}
+#   ```
+#
+#   ```python
+#   read_file(...)
+#   ```
+#
+#   ```
+#   anything
+#   ```
+#
+# Non-greedy + DOTALL so multiple blocks are handled safely.
+_CODE_BLOCK_RE = re.compile(
+    r"```(?:[a-zA-Z0-9_+\-]+)?\s*.*?```",
+    re.DOTALL,
+)
 
 _REFUSAL_PATTERNS = [
     r"as an? ai",

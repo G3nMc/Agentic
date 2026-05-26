@@ -30,6 +30,7 @@ class _OrchestratorLogPanelState extends State<OrchestratorLogPanel> {
   final ScrollController _scroll = ScrollController();
   StreamSubscription<String>? _sub;
   bool _expanded = false;
+  bool _autoScroll = true;
 
   @override
   void initState() {
@@ -43,16 +44,18 @@ class _OrchestratorLogPanelState extends State<OrchestratorLogPanel> {
         _lines.add(line);
         if (_lines.length > _maxVisible) _lines.removeAt(0);
       });
-      // Auto-scroll to bottom on new line.
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (_scroll.hasClients) {
-          _scroll.animateTo(
-            _scroll.position.maxScrollExtent,
-            duration: const Duration(milliseconds: 120),
-            curve: Curves.easeOut,
-          );
-        }
-      });
+      // Auto-scroll to bottom on new line if enabled.
+      if (_autoScroll) {
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (_scroll.hasClients) {
+            _scroll.animateTo(
+              _scroll.position.maxScrollExtent,
+              duration: const Duration(milliseconds: 120),
+              curve: Curves.easeOut,
+            );
+          }
+        });
+      }
     });
   }
 
@@ -84,7 +87,7 @@ class _OrchestratorLogPanelState extends State<OrchestratorLogPanel> {
         mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          // ── Header bar ─────────────────────────────────────────────────────
+          // ── Header bar ───────────────────────────────────────────────────
           InkWell(
             borderRadius: const BorderRadius.vertical(top: Radius.circular(8)),
             onTap: () => setState(() => _expanded = !_expanded),
@@ -146,6 +149,23 @@ class _OrchestratorLogPanelState extends State<OrchestratorLogPanel> {
                         ),
                       ),
                     ),
+                  // Auto-scroll button (visible when auto-scroll is off)
+                  if (!_autoScroll)
+                    Tooltip(
+                      message: 'Resume auto-scroll',
+                      child: InkWell(
+                        borderRadius: BorderRadius.circular(4),
+                        onTap: _enableAutoScroll,
+                        child: const Padding(
+                          padding: EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                          child: Icon(
+                            Icons.arrow_downward,
+                            size: 14,
+                            color: Color(0xFF6C7086),
+                          ),
+                        ),
+                      ),
+                    ),
                   const SizedBox(width: 4),
                   // Only show expand/collapse icon when not in drag mode
                   if (widget.height == null) ...[
@@ -160,7 +180,7 @@ class _OrchestratorLogPanelState extends State<OrchestratorLogPanel> {
             ),
           ),
 
-          // ── Log lines ──────────────────────────────────────────────────────
+          // ── Log lines ────────────────────────────────────────────────────
           AnimatedContainer(
             duration: widget.height != null ? const Duration(milliseconds: 50) : const Duration(milliseconds: 200),
             curve: Curves.easeInOut,
@@ -176,23 +196,34 @@ class _OrchestratorLogPanelState extends State<OrchestratorLogPanel> {
                       ),
                     ),
                   )
-                : SelectionArea(
-                    child: ListView.builder(
-                      controller: _scroll,
-                      padding: const EdgeInsets.fromLTRB(10, 10, 10, 6),
-                      itemCount: _lines.length,
-                      itemBuilder: (_, i) {
-                        final line = _lines[i];
-                        return Text(
-                          line,
-                          style: TextStyle(
-                            fontSize: 11,
-                            fontFamily: 'monospace',
-                            color: _lineColor(line),
-                            height: 1.4,
-                          ),
-                        );
-                      },
+                : NotificationListener<ScrollNotification>(
+                    onNotification: (notification) {
+                      if (notification is ScrollStartNotification &&
+                          notification.dragDetails != null) {
+                        setState(() => _autoScroll = false);
+                      } else if (notification is UserScrollNotification) {
+                        setState(() => _autoScroll = false);
+                      }
+                      return false;
+                    },
+                    child: SelectionArea(
+                      child: ListView.builder(
+                        controller: _scroll,
+                        padding: const EdgeInsets.fromLTRB(10, 10, 10, 6),
+                        itemCount: _lines.length,
+                        itemBuilder: (_, i) {
+                          final line = _lines[i];
+                          return Text(
+                            line,
+                            style: TextStyle(
+                              fontSize: 11,
+                              fontFamily: 'monospace',
+                              color: _lineColor(line),
+                              height: 1.4,
+                            ),
+                          );
+                        },
+                      ),
                     ),
                   ),
           ),
@@ -211,6 +242,21 @@ class _OrchestratorLogPanelState extends State<OrchestratorLogPanel> {
         duration: const Duration(milliseconds: 1200),
       ),
     );
+  }
+
+  void _enableAutoScroll() {
+    setState(() => _autoScroll = true);
+    _scrollToBottom();
+  }
+
+  void _scrollToBottom() {
+    if (_scroll.hasClients) {
+      _scroll.animateTo(
+        _scroll.position.maxScrollExtent,
+        duration: const Duration(milliseconds: 120),
+        curve: Curves.easeOut,
+      );
+    }
   }
 
   /// Colour-code lines by content so users can quickly spot what matters.
