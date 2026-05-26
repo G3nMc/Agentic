@@ -939,6 +939,12 @@ def _gather_candidates(response: str, tool_defs) -> List[str]:
             seen_fragments.add(fragment)
             candidates.append(fragment)
 
+    # Strip markdown code blocks before extraction so that example tool calls
+    # inside a code fence (e.g. a Python prompt array) are not mistaken for
+    # real tool invocations. The model must never emit a real tool call inside
+    # a code block, so this is always safe.
+    response = _CODE_BLOCK_RE.sub("", response)
+
     # glm/qwen builds occasionally splice <arg_key>/<arg_value> tags into the
     # parameters JSON. Normalize once up front and run the full extraction
     # over the repaired text in addition to the original — keeping the
