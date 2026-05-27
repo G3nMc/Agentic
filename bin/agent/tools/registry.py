@@ -33,6 +33,20 @@ _TOOL_MARKER_RE = re.compile(
 ResponseKind = Literal["tool_call", "final_answer", "malformed"]
 
 
+def _parse_tool_result(result: str) -> Dict[str, Any]:
+    """Parse tool result JSON, defaulting to success if unparseable."""
+    try:
+        parsed = json.loads(result)
+        return parsed if isinstance(parsed, dict) else {"status": "success"}
+    except (json.JSONDecodeError, ValueError):
+        return {"status": "success"}
+
+
+def _error_result(message: str) -> str:
+    """Wrap error message as JSON."""
+    return json.dumps({"status": "error", "message": message})
+
+
 class ToolRegistry:
     """
     Manages AI-callable tools with path confinement, security, and circuit breaking.
@@ -47,8 +61,8 @@ class ToolRegistry:
     }
 
     TOOL_CATEGORIES = {
-        'Filesystem': {'read_file', 'read_files', 'write_file', 'append_file',
-                       'delete_file', 'patch_file', 'move_file', 'create_directory'},
+        'Filesystem': {'read_files', 'patch_file', 'read_file', 'write_file', 'append_file',
+                       'delete_file', 'move_file', 'create_directory'},
         'Search': {'list_files', 'list_files_recursive', 'search_in_files', 'find_files'},
         'Git': lambda name: name.startswith('git_'),
         'Flutter': lambda name: name.startswith('flutter_'),
@@ -232,18 +246,6 @@ class ToolRegistry:
     # Execution
     # ------------------------------------------------------------------
 
-    def _parse_tool_result(self, result: str) -> Dict[str, Any]:
-        """Parse tool result JSON, defaulting to success if unparseable."""
-        try:
-            parsed = json.loads(result)
-            return parsed if isinstance(parsed, dict) else {"status": "success"}
-        except (json.JSONDecodeError, ValueError):
-            return {"status": "success"}
-
-    def _error_result(self, message: str) -> str:
-        """Wrap error message as JSON."""
-        return json.dumps({"status": "error", "message": message})
-
     def execute(self, tool_name: str, parameters: Dict[str, Any]) -> str:
         """Execute a tool with given parameters.
 
@@ -251,7 +253,7 @@ class ToolRegistry:
         All filesystem access is confined to base_path.
         """
         if tool_name not in self.tools:
-            err = self._error_result(
+            err = _error_result(
                 f"Unknown tool: {tool_name}. Available: {', '.join(sorted(self.tools.keys()))}"
             )
             audit_log(self._audit_logger, tool_name, parameters or {}, err)
@@ -267,7 +269,7 @@ class ToolRegistry:
         )
 
         if not cb.allow_request():
-            err = self._error_result(
+            err = _error_result(
                 f"Tool '{tool_name}' is temporarily disabled (too many failures). "
                 f"Recovers in {cb.recovery_timeout:.0f}s."
             )
@@ -278,7 +280,7 @@ class ToolRegistry:
             safe_params = self.relativise(parameters or {})
             result = self.tools[tool_name](**safe_params)
 
-            parsed = self._parse_tool_result(result)
+            parsed = _parse_tool_result(result)
             if parsed.get("status") == "error":
                 cb.record_failure()
             else:
@@ -288,19 +290,19 @@ class ToolRegistry:
             return result
 
         except TypeError as e:
-            err = self._error_result(f"Invalid parameters: {e}")
+            err = _error_result(f"Invalid parameters: {e}")
             cb.record_failure()
             audit_log(self._audit_logger, tool_name, parameters or {}, err)
             return err
 
         except ValueError as e:
-            err = self._error_result(f"Path error: {e}")
+            err = _error_result(f"Path error: {e}")
             cb.record_failure()
             audit_log(self._audit_logger, tool_name, parameters or {}, err)
             return err
 
         except Exception as e:
-            err = self._error_result(str(e))
+            err = _error_result(str(e))
             cb.record_failure()
             audit_log(self._audit_logger, tool_name, parameters or {}, err)
             return err
@@ -559,7 +561,7 @@ class ToolRegistry:
             "",
             "TEMPORARY FILES AND SCRIPTS (STRICT)",
             "====================================",
-            "- NEVER create any file directly in the project root directory.",
+            "- NEVER create any file directly in the project root directory. PERIOD.",
             "- All temporary helper scripts, data files, intermediate artifacts, and any generated files MUST be placed inside the `.agentic/` directory.",
             "- If `.agentic/` does not exist, create it first before writing any temporary file.",
             "- This rule applies to ALL file creation tools: write_file, append_file, patch_file, move_file, and any command that generates TEMPORARY files.",
@@ -569,7 +571,7 @@ class ToolRegistry:
             "=============",
             "- Always inspect a file before changing it.",
             "- Always inspect a file after changing it.",
-            "- Prefer the smallest safe edit that solves the problem.",
+            "- Prefer the most logic smallest safe edit that solves the problem.",
             "- Never ask the user to apply changes manually when tools exist.",
             "- Use relative paths only.",
             "- Do not repeat the same failing action if validation fails; adjust strategy.",
@@ -608,10 +610,10 @@ class ToolRegistry:
             "   -> NO: answer directly",
             "",
             "2. Multiple tool choices?",
-            "   -> Choose the most direct and reliable one",
+            "   -> Choose the first sugested or most direct and reliable one",
             "",
             "3. Unclear but solvable?",
-            "   -> Make the smallest safe assumption and proceed",
+            "   -> Make the most logic smallest safe assumption and proceed",
             "",
             "4. Genuinely ambiguous or blocked?",
             "   -> Ask the user only at this point",
@@ -642,7 +644,7 @@ class ToolRegistry:
             "- Stop after the current safe step is done.",
             "",
             "MANDATORY STEP REPORT",
-            "- After each implementation step, output this exact structure:",
+            "- After each implementation step, or file/files editing, output this exact structure:",
             "",
             "  STEP REPORT",
             "  -----------",
