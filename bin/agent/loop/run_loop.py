@@ -1304,6 +1304,7 @@ class Orchestrator:
 
         # Short announce-stubs only. A long final answer that happens
         # to start with "Let me explain..." is fine.
+        if len(stripped) <= 200 and self._ANNOUNCE_STUB_RE.search(stripped):
             return True
 
         return False
