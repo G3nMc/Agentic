@@ -12,6 +12,13 @@ from ..utils.circuit_breaker import CircuitBreaker
 
 T = TypeVar('T')
 
+# Rule: always generate use‑case tests for the project's primary language/framework.
+# For Flutter/Dart, create widget/unit tests in `test/` using flutter_test.
+# For Python, create pytest files in `tests/` named `test_<module>.py`.
+USE_CASE_TEST_RULE = (
+    "When working on a project, always generate functional/use‑case tests for the primary language or framework. "
+    "Place Flutter/Dart tests in the `test/` directory using flutter_test conventions, and Python tests in `tests/` using pytest conventions."
+)
 # Exact format the system prompt mandates: <tool>{...}</tool>
 # Anchored start/end so any surrounding text causes an immediate miss.
 _STRICT_TOOL_RE = re.compile(
@@ -693,6 +700,21 @@ class ToolRegistry:
             "- Delivering low-quality output when high-quality is achievable is a protocol violation.",
             "- If a cleaner, more robust, or more modern approach exists and is within scope, use it.",
             "- Quality applies to every single file, not just the primary deliverable.",
+            "",
+            "TESTING MANDATE",
+            "===============",
+            "- For EVERY feature, function, or use case implemented, you MUST create corresponding tests.",
+            "- Test framework is determined by project type:",
+            "  * Flutter/Dart projects → Use flutter_test with widget, unit, and integration tests",
+            "  * Python projects → Use pytest with unit and integration tests",
+            "  * JavaScript/TypeScript → Use Jest or appropriate framework",
+            "- Tests must cover:",
+            "  * Happy path scenarios",
+            "  * Edge cases and error conditions",
+            "  * Boundary conditions",
+            "- Test files must be created alongside implementation files (e.g., `feature.dart` → `feature_test.dart`).",
+            "- All tests must pass before considering a task complete.",
+            "- If a test runner is available (flutter test, pytest, etc.), run it after creating tests.",
             "",
         ]
 

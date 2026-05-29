@@ -331,6 +331,7 @@ class Orchestrator:
         # across the session for telemetry, but pressure decisions need a
         # turn-local view.
         self._writes_this_turn = 0
+        self._pending_step_report = False
         self._action_pressure_nudges = 0
 
         use_tools = (not self.disable_tools) and ToolIntentDetector.needs_tools(user_input)
@@ -393,6 +394,7 @@ class Orchestrator:
         empty_retries = 0
         truncation_retries = 0
         cliffhanger_retries = 0
+        step_report_retries = 0
         malformed_tool_retries = 0
         # Cumulative count of consecutive malformed iterations with no
         # successful tool call between them. A model that keeps emitting
@@ -733,6 +735,7 @@ class Orchestrator:
                             if file_path:
                                 self._files_modified.add(file_path)
                             self._writes_this_turn += 1
+                            self._pending_step_report = True
                         # Track consecutive successful idempotent validators —
                         # if the model ran two of these in a row clean, it
                         # almost always wants to "make sure once more" and
@@ -1070,6 +1073,45 @@ class Orchestrator:
                 iteration += 1
                 continue
 
+            # Step-report enforcement: after a write/patch/append, the model
+            # must include a STEP REPORT in its final answer. If missing,
+            # nudge and retry.
+            if (
+                self._pending_step_report
+                and step_report_retries < 2
+                and not self._looks_like_step_report(text_clean)
+            ):
+                step_report_retries += 1
+                print(
+                    f"[orch] Missing step report after write "
+                    f"(retry {step_report_retries}); nudging model.",
+                    file=sys.stderr,
+                )
+                self.conversation_history.append({
+                    "role": "user",
+                    "content": (
+                        "[STEP REPORT REQUIRED] Your previous reply was a "
+                        "final answer after modifying files, but it did not "
+                        "include the mandatory STEP REPORT. You MUST include "
+                        "a step report in this format:\n\n"
+                        "STEP REPORT\n"
+                        "-----------\n"
+                        "Done:\n"
+                        "  - [what you completed]\n"
+                        "Pending:\n"
+                        "  - [what remains, or 'None']\n"
+                        "Current state:\n"
+                        "  [1-3 sentences describing current state]\n\n"
+                        "Add this report to your final answer now. Do NOT "
+                        "call any more tools."
+                    ),
+                })
+                iteration += 1
+                continue
+
+            # Reset the flag after a successful step report or after giving up.
+            self._pending_step_report = False
+
             # Otherwise treat as final answer.
             return _td.clean_final_answer(text or "")
 
@@ -1228,6 +1270,17 @@ class Orchestrator:
         re.IGNORECASE,
     )
 
+    _STEP_REPORT_MARKER_RE = re.compile(
+        r"^\s*[_*]*STEP\s+REPORT[_*]*\s*$",
+        re.IGNORECASE | re.MULTILINE,
+    )
+
+    def _looks_like_step_report(self, text: str) -> bool:
+        """True when the text contains the mandatory step-report marker."""
+        if not text:
+            return False
+        return bool(self._STEP_REPORT_MARKER_RE.search(text))
+
     def _looks_like_cliffhanger(self, text: str) -> bool:
         """True when a plain-text reply hands work back to the user
         instead of either calling another tool or finishing the task.
@@ -1251,7 +1304,6 @@ class Orchestrator:
 
         # Short announce-stubs only. A long final answer that happens
         # to start with "Let me explain..." is fine.
-        if len(stripped) <= 400 and self._ANNOUNCE_STUB_RE.search(stripped):
             return True
 
         return False
