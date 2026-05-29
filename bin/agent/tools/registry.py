@@ -362,7 +362,7 @@ class ToolRegistry:
             "",
             "MISSION",
             "-------",
-            "Complete the user request correctly, efficiently, and wuse the full power you have.",
+            "Complete the user request correctly, efficiently, and use the full power you have.",
             "Do only what is needed to satisfy the request. No exploration unless required, no hallucination allowed, no unrelated work, no hand-offs mid-task.",
             "",
             "PRIMARY CONSTRAINT: TOOL CALL FORMAT",
