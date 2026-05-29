@@ -1220,8 +1220,8 @@ class Orchestrator:
     _ANNOUNCE_STUB_RE = re.compile(
         r"^(?:\s*)(?:"
         r"now\s+i'?ll|"
-        r"let\s+me\s+(?:examine|read|check|look\s+at|continue|proceed|see|verify|inspect|review)|"
-        r"i'?ll\s+(?:examine|read|check|look\s+at|continue|proceed|see|verify|inspect|review|now)|"
+        r"let\s+me\s+(?:examine|read|check|look\s+(?:at|into)|continue|proceed|see|verify|inspect|review|analyze|investigate|explore|search|scan)|"
+        r"i'?ll\s+(?:examine|read|check|look\s+(?:at|into)|continue|proceed|see|verify|inspect|review|analyze|investigate|explore|search|scan|now)|"
         r"next,?\s+i'?ll|"
         r"next,?\s+let\s+me"
         r")\b",
