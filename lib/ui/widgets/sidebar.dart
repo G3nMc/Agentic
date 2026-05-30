@@ -99,6 +99,9 @@ class _SidebarState extends StateManager<Sidebar> {
 
     await MethodListener<ChatView>().callMethod("backendChanged");
 
+    // Force a refresh of the active backend in ChatView to ensure it picks up the new value
+    await MethodListener<ChatView>().callMethod("refreshActiveBackend");
+
     NotificationHelper.showSuccess(context, "✓ Backend saved");
   }
 

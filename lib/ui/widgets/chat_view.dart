@@ -159,6 +159,9 @@ class _ChatViewState extends StateManager<ChatView> with WidgetsBindingObserver 
       case "backendChanged":
         _refreshActiveBackend();
         break;
+      case "refreshActiveBackend":
+        _refreshActiveBackend();
+        break;
     }
   }
 
