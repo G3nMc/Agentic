@@ -10,7 +10,7 @@ from ..policy import SecurityConfig
 from ..utils.audit import audit_log, setup_audit_logger
 from ..utils.circuit_breaker import CircuitBreaker
 
-T = TypeVar('T')
+T = TypeVar("T")
 
 # Rule: always generate use‑case tests for the project's primary language/framework.
 # For Flutter/Dart, create widget/unit tests in `test/` using flutter_test.
@@ -63,19 +63,32 @@ class ToolRegistry:
     """
 
     CIRCUIT_BREAKER_CONFIG = {
-        'failure_threshold': 5,
-        'recovery_timeout': 30.0,
+        "failure_threshold": 5,
+        "recovery_timeout": 30.0,
     }
 
     TOOL_CATEGORIES = {
-        'Filesystem': {'read_files', 'patch_file', 'read_file', 'write_file', 'append_file',
-                       'delete_file', 'move_file', 'create_directory'},
-        'Search': {'list_files', 'list_files_recursive', 'search_in_files', 'find_files'},
-        'Git': lambda name: name.startswith('git_'),
-        'Flutter': lambda name: name.startswith('flutter_'),
-        'Python': lambda name: name.startswith('python_'),
-        'Shell': {'run_command'},
-        'Web': {'web_fetch', 'web_search'},
+        "Filesystem": {
+            "read_files",
+            "patch_file",
+            "read_file",
+            "write_file",
+            "append_file",
+            "delete_file",
+            "move_file",
+            "create_directory",
+        },
+        "Search": {
+            "list_files",
+            "list_files_recursive",
+            "search_in_files",
+            "find_files",
+        },
+        "Git": lambda name: name.startswith("git_"),
+        "Flutter": lambda name: name.startswith("flutter_"),
+        "Python": lambda name: name.startswith("python_"),
+        "Shell": {"run_command"},
+        "Web": {"web_fetch", "web_search"},
     }
 
     def __init__(
@@ -127,6 +140,7 @@ class ToolRegistry:
         }
 
         from . import collect_all_tools
+
         collect_all_tools(self)
 
     # ------------------------------------------------------------------
@@ -169,7 +183,9 @@ class ToolRegistry:
     # Tool registration
     # ------------------------------------------------------------------
 
-    def register_tool(self, name: str, func: Callable, definition: Dict[str, Any]) -> None:
+    def register_tool(
+            self, name: str, func: Callable, definition: Dict[str, Any]
+    ) -> None:
         """Register a tool, its implementation, and its OpenAPI-style definition."""
         self.tools[name] = func
         self.definitions.append(definition)
@@ -270,8 +286,8 @@ class ToolRegistry:
             tool_name,
             CircuitBreaker(
                 name=f"tool:{tool_name}",
-                failure_threshold=self.CIRCUIT_BREAKER_CONFIG['failure_threshold'],
-                recovery_timeout=self.CIRCUIT_BREAKER_CONFIG['recovery_timeout'],
+                failure_threshold=self.CIRCUIT_BREAKER_CONFIG["failure_threshold"],
+                recovery_timeout=self.CIRCUIT_BREAKER_CONFIG["recovery_timeout"],
             ),
         )
 
@@ -335,7 +351,7 @@ class ToolRegistry:
             lines.append("")
 
         groups: Dict[str, List[str]] = {cat: [] for cat in self.TOOL_CATEGORIES}
-        groups['Other'] = []
+        groups["Other"] = []
 
         for defn in self.definitions:
             fn = defn.get("function", {})
@@ -345,7 +361,15 @@ class ToolRegistry:
             cat = self._get_tool_category(name)
             groups[cat].append(f"- {name}({sig}): {desc}")
 
-        for cat_name in ('Filesystem', 'Search', 'Git', 'Flutter', 'Python', 'Shell', 'Other'):
+        for cat_name in (
+                "Filesystem",
+                "Search",
+                "Git",
+                "Flutter",
+                "Python",
+                "Shell",
+                "Other",
+        ):
             entries = groups.get(cat_name, [])
             if not entries:
                 continue
@@ -400,9 +424,9 @@ class ToolRegistry:
             "Key rules visible in every correct example:",
             "  - The response starts with <tool> and ends with </tool>",
             "  - Nothing exists before <tool> or after </tool>",
-            "  - Inside the tags: a single JSON object with exactly two top-level keys: \"tool\" and \"parameters\"",
-            "  - \"tool\" is a string: the exact tool name",
-            "  - \"parameters\" is a JSON object (even if empty: {})",
+            '  - Inside the tags: a single JSON object with exactly two top-level keys: "tool" and "parameters"',
+            '  - "tool" is a string: the exact tool name',
+            '  - "parameters" is a JSON object (even if empty: {})',
             "  - All strings use double quotes, never single quotes",
             "  - No trailing commas anywhere",
             "  - No comments inside the JSON",
@@ -438,7 +462,7 @@ class ToolRegistry:
             "#9: Unquoted keys — JSON requires double-quoted keys",
             '<tool>{tool:"read_file",parameters:{path:"file.txt"}}</tool>',
             "",
-            "#10: Extra keys — only \"tool\" and \"parameters\" are allowed at the top level",
+            '#10: Extra keys — only "tool" and "parameters" are allowed at the top level',
             '<tool>{"tool":"read_file","parameters":{"path":"file.txt"},"comment":"please read this"}</tool>',
             "",
             "#11: Python-style function call — not valid",
@@ -450,10 +474,10 @@ class ToolRegistry:
             "#13: Nested wrapper keys — do NOT wrap parameters in an extra object",
             '<tool>{"tool":"read_file","parameters":{"parameters":{"path":"file.txt"}}}</tool>',
             "",
-            "#14: Using \"name\" instead of \"tool\"",
+            '#14: Using "name" instead of "tool"',
             '<tool>{"name":"read_file","parameters":{"path":"file.txt"}}</tool>',
             "",
-            "#15: Using \"args\" or \"arguments\" instead of \"parameters\"",
+            '#15: Using "args" or "arguments" instead of "parameters"',
             '<tool>{"tool":"read_file","args":{"path":"file.txt"}}</tool>',
             "",
             "#16: Leading whitespace — even a single space before <tool> causes rejection",
@@ -477,9 +501,9 @@ class ToolRegistry:
             "[ ] Does the response end with exactly '</tool>' (no trailing spaces or newlines)?",
             "[ ] Is there NOTHING else in the response besides the <tool>...</tool> block?",
             "[ ] Is the content between the tags valid JSON (double quotes, no trailing commas)?",
-            "[ ] Does the JSON have exactly two top-level keys: \"tool\" and \"parameters\"?",
-            "[ ] Is \"tool\" a string matching an available tool name exactly?",
-            "[ ] Is \"parameters\" a JSON object ({} if no parameters are needed)?",
+            '[ ] Does the JSON have exactly two top-level keys: "tool" and "parameters"?',
+            '[ ] Is "tool" a string matching an available tool name exactly?',
+            '[ ] Is "parameters" a JSON object ({} if no parameters are needed)?',
             "[ ] Are all parameter values the correct type?",
             "[ ] Is this the ONLY tool call in the response?",
             "",

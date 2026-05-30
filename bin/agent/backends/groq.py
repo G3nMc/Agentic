@@ -1,4 +1,5 @@
 """Groq Cloud backend — inherits from OpenAICompatBackend."""
+
 from __future__ import annotations
 
 import sys
@@ -23,6 +24,7 @@ class GroqBackend(OpenAICompatBackend):
     def __init__(self, api_key: str, model_id: str):
         super().__init__(api_key, model_id, label="Groq")
         from groq import Groq  # noqa: PLC0415
+
         self._client = Groq(api_key=api_key)
         _log(f"[Groq:init] Groq SDK client created for model={model_id}")
 
@@ -42,10 +44,10 @@ class GroqBackend(OpenAICompatBackend):
         )
 
         chat_kwargs: Dict[str, Any] = {
-            "model":                payload["model"],
-            "messages":             payload["messages"],
-            "stream":               True,
-            "temperature":          payload["temperature"],
+            "model": payload["model"],
+            "messages": payload["messages"],
+            "stream": True,
+            "temperature": payload["temperature"],
             "max_completion_tokens": payload["max_tokens"],
         }
         if effective_tools:

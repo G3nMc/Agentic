@@ -1,4 +1,5 @@
 import sys
+
 sys.dont_write_bytecode = True
 
 import os
@@ -42,9 +43,13 @@ class ArtifactRoundTripTests(unittest.TestCase):
         self.assertEqual(rebuilt.summary, "hi")
 
     def test_lenient_status_parse(self):
-        rebuilt = Artifact.from_dict({
-            "group": "g", "producer_model": "m", "status": "done-clean",
-        })
+        rebuilt = Artifact.from_dict(
+            {
+                "group": "g",
+                "producer_model": "m",
+                "status": "done-clean",
+            }
+        )
         self.assertEqual(rebuilt.status, Status.DONE_CLEAN)
 
 
@@ -69,11 +74,11 @@ class ArtifactTrimTests(unittest.TestCase):
 
     def test_trim_truncates_decisions_when_still_oversized(self):
         decisions = [
-            {"id": f"d{i}", "what": "x" * 200, "why": "y" * 200}
-            for i in range(50)
+            {"id": f"d{i}", "what": "x" * 200, "why": "y" * 200} for i in range(50)
         ]
-        a = Artifact(group="g", producer_model="m",
-                     summary="z" * 500, decisions=decisions)
+        a = Artifact(
+            group="g", producer_model="m", summary="z" * 500, decisions=decisions
+        )
         before = a.serialized_bytes()
         applied = a.trim_to_budget(max_bytes=2 * 1024)
         # Best-effort: each priority step ran and some shrinkage happened.

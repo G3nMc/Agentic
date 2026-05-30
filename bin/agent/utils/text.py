@@ -3,6 +3,7 @@
 Kept as a separate module so any new text-massaging helpers (truncation,
 secret redaction, etc.) have an obvious home.
 """
+
 from __future__ import annotations
 
 import re

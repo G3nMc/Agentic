@@ -11,6 +11,7 @@ snippets pushed back by the Executor, and emits one of:
 The tool-call grammar is identical to the single-agent loop's so the
 existing :mod:`agent.loop.tool_dispatch` parser keeps working unchanged.
 """
+
 from __future__ import annotations
 
 import json
@@ -65,18 +66,22 @@ _REASONER_SYSTEM_PROMPT_BASE = (
 class ReasonerAgent(Agent):
     name = "reasoner"
 
-    def __init__(self, backend, *,
-                 system_prompt: Optional[str] = None,
-                 tool_definitions: Optional[List[Dict[str, Any]]] = None,
-                 tools_catalog_text: str = "",
-                 temperature: float = 0.2,
-                 max_tokens: int = 4096):
+    def __init__(
+        self,
+        backend,
+        *,
+        system_prompt: Optional[str] = None,
+        tool_definitions: Optional[List[Dict[str, Any]]] = None,
+        tools_catalog_text: str = "",
+        temperature: float = 0.2,
+        max_tokens: int = 4096,
+    ):
         prompt = system_prompt or _REASONER_SYSTEM_PROMPT_BASE
         if tools_catalog_text:
             prompt = prompt + "\n\n" + tools_catalog_text
-        super().__init__(backend, prompt,
-                         temperature=temperature,
-                         max_tokens=max_tokens)
+        super().__init__(
+            backend, prompt, temperature=temperature, max_tokens=max_tokens
+        )
         # The Reasoner sends the tool catalog to the model as `tools=` so
         # backends with native tool calling (Gemini, Groq) can use it.
         # Backends that ignore the kwarg fall back to the prompt-embedded
@@ -102,18 +107,15 @@ class ReasonerAgent(Agent):
         text_clean = _td.clean_history_text(text or "")
 
         # Tool intents → hand off to the Executor.
-        tag_calls = _td.parse_all_tag_tool_calls(
-            text_clean, self.tool_definitions
-        )
+        tag_calls = _td.parse_all_tag_tool_calls(text_clean, self.tool_definitions)
         if tag_calls:
             state.tool_calls = [
-                {"tool": name, "parameters": params}
-                for name, params in tag_calls
+                {"tool": name, "parameters": params} for name, params in tag_calls
             ]
             preview = ", ".join(c["tool"] for c in state.tool_calls)
-            state.add_trace(self.name,
-                            output=f"plan tool: {preview}",
-                            detail=text_clean)
+            state.add_trace(
+                self.name, output=f"plan tool: {preview}", detail=text_clean
+            )
             # Tools requested → not a final answer yet.
             state.plan = state.plan or text_clean
             state.final_answer = None
@@ -124,9 +126,9 @@ class ReasonerAgent(Agent):
         state.final_answer = final
         state.plan = state.plan or text_clean
         first_line = next((l for l in final.splitlines() if l.strip()), final)
-        state.add_trace(self.name,
-                        output=first_line[:160] or "(empty answer)",
-                        detail=final)
+        state.add_trace(
+            self.name, output=first_line[:160] or "(empty answer)", detail=final
+        )
         return state
 
     # ------------------------------------------------------------------
@@ -197,7 +199,9 @@ class ReasonerAgent(Agent):
                         low = raw.lower()
                         if '"status": "error"' in low or '"status":"error"' in low:
                             status = "error"
-                        elif '"status": "success"' in low or '"status":"success"' in low:
+                        elif (
+                            '"status": "success"' in low or '"status":"success"' in low
+                        ):
                             status = "success"
                     parts.append(
                         f"{i + 1}. {tool}({params_str}) -> {status} "

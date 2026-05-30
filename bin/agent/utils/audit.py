@@ -1,4 +1,5 @@
 """Per-tool audit logging — sanitized parameter capture + status tracking."""
+
 from __future__ import annotations
 
 import json
@@ -41,20 +42,28 @@ def setup_audit_logger(config: SecurityConfig) -> Optional[logging.Logger]:
         try:
             handler = logging.FileHandler(config.audit_log_path, encoding="utf-8")
             handler.setFormatter(
-                logging.Formatter("%(asctime)s %(message)s", datefmt="%Y-%m-%dT%H:%M:%S")
+                logging.Formatter(
+                    "%(asctime)s %(message)s", datefmt="%Y-%m-%dT%H:%M:%S"
+                )
             )
             logger.addHandler(handler)
             logger.setLevel(logging.INFO)
             logger.propagate = False
         except OSError as e:
-            print(f"[audit] Cannot open audit log '{config.audit_log_path}': {e}",
-                  file=sys.stderr)
+            print(
+                f"[audit] Cannot open audit log '{config.audit_log_path}': {e}",
+                file=sys.stderr,
+            )
             return None
     return logger
 
 
-def audit_log(logger: Optional[logging.Logger], tool_name: str,
-              params: Dict[str, Any], result: str) -> None:
+def audit_log(
+    logger: Optional[logging.Logger],
+    tool_name: str,
+    params: Dict[str, Any],
+    result: str,
+) -> None:
     """Append one structured line to the audit log."""
     if logger is None:
         return

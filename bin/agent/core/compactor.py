@@ -28,6 +28,7 @@ The summarizer path is wired in but stays opt-in — callers pass a
 elide-only path is always available and is enough to keep the loop
 alive in the failure mode that motivated this work.
 """
+
 from __future__ import annotations
 
 import logging
@@ -82,10 +83,10 @@ _ELIDED_STUB = (
 # Richer stub for read_file: names the exact parameter syntax so the
 # model knows how to paginate instead of re-reading the whole file.
 _ELIDED_READ_FILE_STUB = (
-    "[read_file result elided: \"{path}\" returned {orig_chars} chars "
+    '[read_file result elided: "{path}" returned {orig_chars} chars '
     "(~{orig_tokens} tokens) — too large to hold in context alongside "
     "current history. DO NOT re-read the full file. Instead use "
-    "read_file(\"{path}\", start_line=N, end_line=M) to fetch only the "
+    'read_file("{path}", start_line=N, end_line=M) to fetch only the '
     "lines you need, or search_in_files to locate the relevant section first.]"
 )
 _ELIDED_HISTORY_STUB = (
@@ -193,6 +194,7 @@ def _elide_one_tool_result(
     params = r.get("parameters") or {}
     try:
         import json as _json
+
         params_str = _json.dumps(params, ensure_ascii=False)
         if len(params_str) > 120:
             params_str = params_str[:120] + "..."
@@ -203,16 +205,19 @@ def _elide_one_tool_result(
         path = str(params.get("path") or "?")
         orig_tokens = estimate_tokens_from_chars(orig_chars, "code")
         stub = _ELIDED_READ_FILE_STUB.format(
-            path=path, orig_chars=orig_chars, orig_tokens=orig_tokens,
+            path=path,
+            orig_chars=orig_chars,
+            orig_tokens=orig_tokens,
         )
     else:
         stub = _ELIDED_STUB.format(
-            tool=tool, params=params_str, orig_chars=orig_chars,
+            tool=tool,
+            params=params_str,
+            orig_chars=orig_chars,
         )
     r["result"] = stub
     actions.append(
-        f"elided tool_result[{idx}] {tool} ({orig_chars} chars -> "
-        f"{len(stub)})"
+        f"elided tool_result[{idx}] {tool} ({orig_chars} chars -> {len(stub)})"
     )
     return max(0, orig_chars - len(stub))
 
@@ -231,8 +236,7 @@ def _elide_one_history(
     m["content"] = stub
     m[_COMPACTED_FLAG] = True
     actions.append(
-        f"elided history[{idx}] role={role} ({orig_chars} chars -> "
-        f"{len(stub)})"
+        f"elided history[{idx}] role={role} ({orig_chars} chars -> {len(stub)})"
     )
     return max(0, orig_chars - len(stub))
 
@@ -308,7 +312,8 @@ def elide_oversized(
         role = m.get("role", "")
         content_preview = (
             (m.get("content", "") or "")[:60]
-            if isinstance(m.get("content"), str) else ""
+            if isinstance(m.get("content"), str)
+            else ""
         )
         if role == "system" and "Prior turn tool history" in content_preview:
             priority = sz * 2  # attack first
@@ -385,8 +390,8 @@ def fold_old_stubs(
     if n < min_total or n <= keep_recent:
         return 0
 
-    prefix = tool_results[:n - keep_recent]
-    suffix = tool_results[n - keep_recent:]
+    prefix = tool_results[: n - keep_recent]
+    suffix = tool_results[n - keep_recent :]
 
     stub_count = sum(1 for r in prefix if _is_stub_result(r))
     if stub_count < int(len(prefix) * min_stub_ratio):
@@ -406,9 +411,7 @@ def fold_old_stubs(
             if pat and isinstance(pat, str):
                 patterns_seen.add(pat[:40])
 
-    tool_summary = ", ".join(
-        f"{t}*{c}" for t, c in tool_counts.most_common(8)
-    )
+    tool_summary = ", ".join(f"{t}*{c}" for t, c in tool_counts.most_common(8))
     paths_list = sorted(paths_seen)
     paths_str = ", ".join(paths_list[:8])
     if len(paths_list) > 8:
@@ -433,9 +436,7 @@ def fold_old_stubs(
         "result": summary_result,
     }
 
-    chars_before = sum(
-        len(str(r.get("result", ""))) for r in prefix
-    )
+    chars_before = sum(len(str(r.get("result", ""))) for r in prefix)
     chars_after = len(summary_result)
     chars_saved = max(0, chars_before - chars_after)
 
@@ -555,8 +556,10 @@ def compact_if_needed(
     if current > target and summarizer is not None:
         try:
             current = _summarize_history(
-                state, summarizer=summarizer,
-                target_tokens=target, current_tokens=current,
+                state,
+                summarizer=summarizer,
+                target_tokens=target,
+                current_tokens=current,
                 actions=actions,
             )
         except Exception as e:  # noqa: BLE001
@@ -576,7 +579,8 @@ def compact_if_needed(
         print(
             f"[compactor] {before}->{current} tokens (target {target}, "
             f"limit {context_limit}); {len(actions)} action(s)",
-            file=sys.stderr, flush=True,
+            file=sys.stderr,
+            flush=True,
         )
         for a in actions:
             print(f"[compactor]   {a}", file=sys.stderr, flush=True)

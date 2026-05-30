@@ -10,6 +10,7 @@ The Executor has TWO modes:
     ``trivial`` route. Generates a plain-text answer with the cheapest
     backend and skips the Reasoner entirely.
 """
+
 from __future__ import annotations
 
 import concurrent.futures
@@ -31,15 +32,21 @@ _EXECUTOR_SYSTEM_PROMPT = (
 class ExecutorAgent(Agent):
     name = "executor"
 
-    def __init__(self, backend, *,
-                 system_prompt: Optional[str] = None,
-                 temperature: float = 0.4,
-                 max_tokens: int = 512,
-                 iteration_timeout: float = 30.0):
-        super().__init__(backend,
-                         system_prompt or _EXECUTOR_SYSTEM_PROMPT,
-                         temperature=temperature,
-                         max_tokens=max_tokens)
+    def __init__(
+        self,
+        backend,
+        *,
+        system_prompt: Optional[str] = None,
+        temperature: float = 0.4,
+        max_tokens: int = 512,
+        iteration_timeout: float = 30.0,
+    ):
+        super().__init__(
+            backend,
+            system_prompt or _EXECUTOR_SYSTEM_PROMPT,
+            temperature=temperature,
+            max_tokens=max_tokens,
+        )
         # Set by the dispatcher right after construction. Kept as an
         # attribute (not a constructor arg) so the agents-only build step
         # can run before the ToolRegistry exists.
@@ -51,17 +58,25 @@ class ExecutorAgent(Agent):
     # ------------------------------------------------------------------
     def run(self, state: WorkflowState) -> WorkflowState:
         if self.tool_registry is None:
-            state.add_trace(self.name, output="(no tool registry)",
-                            detail="Executor.run() called before tool_registry was attached.")
+            state.add_trace(
+                self.name,
+                output="(no tool registry)",
+                detail="Executor.run() called before tool_registry was attached.",
+            )
             return state
         if not state.tool_calls:
             state.add_trace(self.name, output="(no tool calls)")
             return state
 
         # Log input to stderr
-        tool_calls_str = " ".join([f"{c.get('tool')} {c.get('parameters')}" for c in state.tool_calls])
-        print(f"[agent:{self.name}→{self.model_id}] Tool calls: {_truncate(tool_calls_str)}",
-              file=sys.stderr, flush=True)
+        tool_calls_str = " ".join(
+            [f"{c.get('tool')} {c.get('parameters')}" for c in state.tool_calls]
+        )
+        print(
+            f"[agent:{self.name}→{self.model_id}] Tool calls: {_truncate(tool_calls_str)}",
+            file=sys.stderr,
+            flush=True,
+        )
 
         results: list[dict] = []
         previews: list[str] = []
@@ -71,17 +86,21 @@ class ExecutorAgent(Agent):
             params = call.get("parameters") or {}
             try:
                 # Get tool-specific timeout if configured, otherwise use default
-                tool_timeout = getattr(self.tool_registry, 'tool_timeouts', {}).get(tool, 30.0)
+                tool_timeout = getattr(self.tool_registry, "tool_timeouts", {}).get(
+                    tool, 30.0
+                )
                 # Execute tool with timeout
                 future = concurrent.futures.ThreadPoolExecutor().submit(
                     self.tool_registry.execute, tool, params
                 )
                 raw = future.result(timeout=tool_timeout)
             except concurrent.futures.TimeoutError:
-                raw = json.dumps({
-                    "status": "error", 
-                    "message": f"Tool '{tool}' exceeded timeout of {tool_timeout} seconds"
-                })
+                raw = json.dumps(
+                    {
+                        "status": "error",
+                        "message": f"Tool '{tool}' exceeded timeout of {tool_timeout} seconds",
+                    }
+                )
             except Exception as e:  # noqa: BLE001
                 raw = json.dumps({"status": "error", "message": str(e)})
             return {"tool": tool, "parameters": params, "result": raw}
@@ -89,38 +108,46 @@ class ExecutorAgent(Agent):
         # Use ThreadPoolExecutor with timeout handling
         with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
             # Submit all tool calls
-            futures = [
-                pool.submit(_exec, call) for call in state.tool_calls
-            ]
-            
+            futures = [pool.submit(_exec, call) for call in state.tool_calls]
+
             # Collect results with timeout
             results = []
             try:
-                for future in concurrent.futures.as_completed(futures, timeout=self.iteration_timeout):
+                for future in concurrent.futures.as_completed(
+                    futures, timeout=self.iteration_timeout
+                ):
                     try:
                         results.append(future.result())
                     except concurrent.futures.TimeoutError:
-                        results.append({
-                            "tool": "unknown", 
-                            "parameters": {}, 
-                            "result": json.dumps({
-                                "status": "error", 
-                                "message": f"Tool execution exceeded iteration timeout of {self.iteration_timeout} seconds"
-                            })
-                        })
+                        results.append(
+                            {
+                                "tool": "unknown",
+                                "parameters": {},
+                                "result": json.dumps(
+                                    {
+                                        "status": "error",
+                                        "message": f"Tool execution exceeded iteration timeout of {self.iteration_timeout} seconds",
+                                    }
+                                ),
+                            }
+                        )
             except concurrent.futures.TimeoutError:
                 # Handle case where overall collection times out
-                results.append({
-                    "tool": "executor", 
-                    "parameters": {}, 
-                    "result": json.dumps({
-                        "status": "error", 
-                        "message": f"Overall tool execution exceeded iteration timeout of {self.iteration_timeout} seconds"
-                    })
-                })
+                results.append(
+                    {
+                        "tool": "executor",
+                        "parameters": {},
+                        "result": json.dumps(
+                            {
+                                "status": "error",
+                                "message": f"Overall tool execution exceeded iteration timeout of {self.iteration_timeout} seconds",
+                            }
+                        ),
+                    }
+                )
 
         for r in results:
-            previews.append(self._preview(r['tool'], r['result']))
+            previews.append(self._preview(r["tool"], r["result"]))
 
         # Accumulate across iterations so the Reasoner sees the full history
         # of what it tried this turn — critical for weak/non-tool-tuned models
@@ -130,13 +157,18 @@ class ExecutorAgent(Agent):
         else:
             state.tool_results = results
         state.tool_calls = []  # consumed — dispatcher will hand back to Reasoner.
-        state.add_trace(self.name,
-                        output=" | ".join(previews)[:200],
-                        detail=json.dumps(results, indent=2))
+        state.add_trace(
+            self.name,
+            output=" | ".join(previews)[:200],
+            detail=json.dumps(results, indent=2),
+        )
 
         # Log output to stderr
-        print(f"[agent:{self.name}←{self.model_id}] Tool results: {_truncate(' | '.join(previews))}",
-              file=sys.stderr, flush=True)
+        print(
+            f"[agent:{self.name}←{self.model_id}] Tool results: {_truncate(' | '.join(previews))}",
+            file=sys.stderr,
+            flush=True,
+        )
 
         return state
 
@@ -145,8 +177,7 @@ class ExecutorAgent(Agent):
     # ------------------------------------------------------------------
     def run_no_tools(self, state: WorkflowState) -> WorkflowState:
         try:
-            messages = self._build_messages(state.user_input,
-                                            history=state.history)
+            messages = self._build_messages(state.user_input, history=state.history)
             text, _ = self._chat(messages)
         except Exception as e:  # noqa: BLE001
             print(f"[executor] direct-answer failed: {e}", file=sys.stderr)

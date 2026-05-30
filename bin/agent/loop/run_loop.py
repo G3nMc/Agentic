@@ -1,4 +1,5 @@
 """The Orchestrator class — runs the iterate-call-tool-call-call loop."""
+
 from __future__ import annotations
 
 import json
@@ -26,11 +27,18 @@ _MAX_TRUNCATION_RETRY = 10
 # without intervening edits almost always means the model is stalling
 # rather than making progress — we nudge it to finalize before the
 # repeat-call detector trips and bails the whole turn.
-_IDEMPOTENT_VALIDATORS = frozenset({
-    "python_check", "python_lint", "python_test",
-    "flutter_analyze", "flutter_test",
-    "git_status", "git_diff", "git_log",
-})
+_IDEMPOTENT_VALIDATORS = frozenset(
+    {
+        "python_check",
+        "python_lint",
+        "python_test",
+        "flutter_analyze",
+        "flutter_test",
+        "git_status",
+        "git_diff",
+        "git_log",
+    }
+)
 _MAX_CONSECUTIVE_VALIDATIONS = 3
 
 # Bare confirmations / continuations that mean "execute the prior plan", not
@@ -95,7 +103,18 @@ def _is_short_followup(text: str) -> bool:
     if _AFFIRMATION_RE.match(text):
         # Make sure it's not a mixed message with action words
         lower_text = text.lower()
-        action_words = ("proceed", "continue", "go", "do it", "next", "step", "follow", "execute", "run", "implement")
+        action_words = (
+            "proceed",
+            "continue",
+            "go",
+            "do it",
+            "next",
+            "step",
+            "follow",
+            "execute",
+            "run",
+            "implement",
+        )
         if not any(word in lower_text for word in action_words):
             return True
     if _FOLLOWUP_RE.match(text):
@@ -119,15 +138,15 @@ _FOLLOWUP_DIRECTIVE = (
 
 class Orchestrator:
     def __init__(
-            self,
-            backend: ModelBackend,
-            base_path: str = ".",
-            temperature: float = 0.2,
-            max_tokens: int = 2048,
-            security_config: Optional[SecurityConfig] = None,
-            disable_tools: bool = False,
-            path_filter: Optional[Any] = None,
-            db_connections: Optional[Dict[str, Dict[str, str]]] = None,
+        self,
+        backend: ModelBackend,
+        base_path: str = ".",
+        temperature: float = 0.2,
+        max_tokens: int = 2048,
+        security_config: Optional[SecurityConfig] = None,
+        disable_tools: bool = False,
+        path_filter: Optional[Any] = None,
+        db_connections: Optional[Dict[str, Dict[str, str]]] = None,
     ):
         self.backend = backend
         # When True, every request is routed as a plain chat call — the
@@ -137,10 +156,12 @@ class Orchestrator:
         self.disable_tools = disable_tools
         # Expose model_id for logging/diagnostics; both backends carry one.
         self.model_id = getattr(backend, "model_id", "(unknown)")
-        self.tool_registry = ToolRegistry(base_path=base_path,
-                                          security_config=security_config,
-                                          path_filter=path_filter,
-                                          db_connections=db_connections)
+        self.tool_registry = ToolRegistry(
+            base_path=base_path,
+            security_config=security_config,
+            path_filter=path_filter,
+            db_connections=db_connections,
+        )
         # Model-level circuit breaker: open after 5 consecutive API failures,
         # probe again after 60 s so a temporary outage doesn't loop forever.
         self._model_circuit_breaker = CircuitBreaker(
@@ -168,7 +189,9 @@ class Orchestrator:
         # bodies across many turns. Falls back to the original tight
         # defaults when the backend doesn't report context_limit.
         ctx_tokens = int(getattr(backend, "context_limit", 0) or 0)
-        ctx_chars = chars_for_tokens(ctx_tokens, "code")  # conservative code-aware budget
+        ctx_chars = chars_for_tokens(
+            ctx_tokens, "code"
+        )  # conservative code-aware budget
         if ctx_tokens > 0:
             # 1 turn = 1 user + 1 assistant msg. ~2_000 tokens per pair
             # (the average after the assistant's tool round-trips collapse
@@ -208,6 +231,7 @@ class Orchestrator:
     def _ensure_system_prompt(self) -> None:
         # Load per-project agent context (.agent.md / context.md) when present.
         from ..core.project_context import load_project_context
+
         project_context = load_project_context(str(self.tool_registry.base_path))
         _history.ensure_system_prompt(
             self.conversation_history,
@@ -334,7 +358,9 @@ class Orchestrator:
         self._pending_step_report = False
         self._action_pressure_nudges = 0
 
-        use_tools = (not self.disable_tools) and ToolIntentDetector.needs_tools(user_input)
+        use_tools = (not self.disable_tools) and ToolIntentDetector.needs_tools(
+            user_input
+        )
         # Force tool mode for bare confirmations — the prior plan almost
         # always required tools, and chat-mode would lose that intent.
         if is_followup and not self.disable_tools:
@@ -367,8 +393,10 @@ class Orchestrator:
                 # with two consecutive user messages, and so the failed
                 # error string never leaks into model context on the next
                 # turn (some models will parrot it back).
-                if self.conversation_history and \
-                        self.conversation_history[-1].get("role") == "user":
+                if (
+                    self.conversation_history
+                    and self.conversation_history[-1].get("role") == "user"
+                ):
                     self.conversation_history.pop()
                 return f"Model error: {e}"
             text_clean = _td.clean_history_text(text or "")
@@ -377,17 +405,21 @@ class Orchestrator:
                     "[orch] Chat-mode reply looked tool-related; retrying in tool mode.",
                     file=sys.stderr,
                 )
-                if self.conversation_history and \
-                        self.conversation_history[-1].get("role") == "user":
+                if (
+                    self.conversation_history
+                    and self.conversation_history[-1].get("role") == "user"
+                ):
                     self.conversation_history[-1]["content"] = (
-                            self._TOOL_REMINDER + user_input
+                        self._TOOL_REMINDER + user_input
                     )
                 use_tools = True
             else:
-                self.conversation_history.append({
-                    "role": "assistant",
-                    "content": text_clean,
-                })
+                self.conversation_history.append(
+                    {
+                        "role": "assistant",
+                        "content": text_clean,
+                    }
+                )
                 return _td.clean_final_answer(text or "")
 
         refusal_retries = 0
@@ -438,9 +470,9 @@ class Orchestrator:
             # without ever editing, escalate pressure rather than waiting
             # for max-iterations to expire.
             in_read_only_loop = (
-                    getattr(self, "_action_intent", False)
-                    and self._writes_this_turn == 0
-                    and self._successful_tool_count >= 4
+                getattr(self, "_action_intent", False)
+                and self._writes_this_turn == 0
+                and self._successful_tool_count >= 4
             )
             if in_read_only_loop:
                 if iteration >= 28:
@@ -451,49 +483,53 @@ class Orchestrator:
                     )
                     return self._build_recap_answer(
                         reason=f"action-task stalled at iter {iteration} "
-                               f"with zero writes despite "
-                               f"{self._successful_tool_count} successful reads"
+                        f"with zero writes despite "
+                        f"{self._successful_tool_count} successful reads"
                     )
                 if iteration >= 20 and self._action_pressure_nudges < 2:
                     self._action_pressure_nudges = 2
-                    self.conversation_history.append({
-                        "role": "user",
-                        "content": (
-                            "[FINAL WARNING] You have used 20+ iterations "
-                            "reading files but have written nothing. The "
-                            "request asked for an action.\n"
-                            "Your IMMEDIATE next message MUST be either:\n"
-                            "  1) A single write_file / patch_file / "
-                            "append_file tool call, OR\n"
-                            "  2) Your final plain-text answer (no more "
-                            "tool calls).\n"
-                            "Stop researching. Act or answer."
-                        ),
-                    })
+                    self.conversation_history.append(
+                        {
+                            "role": "user",
+                            "content": (
+                                "[FINAL WARNING] You have used 20+ iterations "
+                                "reading files but have written nothing. The "
+                                "request asked for an action.\n"
+                                "Your IMMEDIATE next message MUST be either:\n"
+                                "  1) A single write_file / patch_file / "
+                                "append_file tool call, OR\n"
+                                "  2) Your final plain-text answer (no more "
+                                "tool calls).\n"
+                                "Stop researching. Act or answer."
+                            ),
+                        }
+                    )
                 elif iteration >= 10 and self._action_pressure_nudges < 1:
                     self._action_pressure_nudges = 1
-                    self.conversation_history.append({
-                        "role": "user",
-                        "content": (
-                            "[NUDGE] You have read several files but "
-                            "have not modified anything. The original "
-                            "request asked for an action (implementing "
-                            "a change). Either:\n"
-                            "  1) Make a write_file / patch_file / "
-                            "append_file call NOW, or\n"
-                            "  2) Give your final plain-text answer if "
-                            "the task is already complete.\n"
-                            "Avoid more read_file/search_in_files calls "
-                            "unless strictly necessary."
-                        ),
-                    })
+                    self.conversation_history.append(
+                        {
+                            "role": "user",
+                            "content": (
+                                "[NUDGE] You have read several files but "
+                                "have not modified anything. The original "
+                                "request asked for an action (implementing "
+                                "a change). Either:\n"
+                                "  1) Make a write_file / patch_file / "
+                                "append_file call NOW, or\n"
+                                "  2) Give your final plain-text answer if "
+                                "the task is already complete.\n"
+                                "Avoid more read_file/search_in_files calls "
+                                "unless strictly necessary."
+                            ),
+                        }
+                    )
 
             # === DYNAMIC ITERATION LIMIT ===
             # Extend budget proactively when progress is detected, not just at the end.
             # Check every 5 iterations and when approaching the limit.
             should_check_extension = (
-                    iteration % 5 == 0  # Periodic check
-                    or iteration >= self.max_iterations - 3  # Approaching limit
+                iteration % 5 == 0  # Periodic check
+                or iteration >= self.max_iterations - 3  # Approaching limit
             )
             if should_check_extension and self.max_iterations < self._max_iteration_cap:
                 # Measure progress: count successful tool calls in recent history
@@ -514,9 +550,9 @@ class Orchestrator:
                 # NOT extend — that just rewards the model for refusing
                 # to act. Pressure (below) will steer it instead.
                 read_only_loop = (
-                        getattr(self, "_action_intent", False)
-                        and self._writes_this_turn == 0
-                        and self._successful_tool_count >= 6
+                    getattr(self, "_action_intent", False)
+                    and self._writes_this_turn == 0
+                    and self._successful_tool_count >= 6
                 )
                 if read_only_loop:
                     print(
@@ -528,13 +564,16 @@ class Orchestrator:
                     # Skip both extension branches; fall through to the
                     # rest of the iteration so pressure-injection runs.
                 # Calculate extension multiplier based on progress rate
-                elif (success_count > 0
-                      and success_count > error_count
-                      and distinct_recent >= 3):
+                elif (
+                    success_count > 0
+                    and success_count > error_count
+                    and distinct_recent >= 3
+                ):
                     # Good progress: extend by 5-15 based on success rate
                     extension = min(
                         5 + (success_count * 2),  # More successes = larger extension
-                        self._max_iteration_cap - self.max_iterations  # Don't exceed cap
+                        self._max_iteration_cap
+                        - self.max_iterations,  # Don't exceed cap
                     )
                     old_limit = self.max_iterations
                     self.max_iterations += extension
@@ -550,10 +589,19 @@ class Orchestrator:
                 # Detect complex multi-file operations: extend more aggressively.
                 # Also suppressed by the read-only-loop guard: "files touched"
                 # for an action-task with zero writes is just files re-read.
-                files_touched = len(set(re.findall(r'\b[a-zA-Z_][\w/.-]*\.(?:dart|py|yaml|json|md)\b', recent_history)))
-                if (not read_only_loop
-                        and files_touched >= 3
-                        and self._successful_tool_count >= 5):
+                files_touched = len(
+                    set(
+                        re.findall(
+                            r"\b[a-zA-Z_][\w/.-]*\.(?:dart|py|yaml|json|md)\b",
+                            recent_history,
+                        )
+                    )
+                )
+                if (
+                    not read_only_loop
+                    and files_touched >= 3
+                    and self._successful_tool_count >= 5
+                ):
                     extension = min(20, self._max_iteration_cap - self.max_iterations)
                     old_limit = self.max_iterations
                     self.max_iterations += extension
@@ -599,8 +647,11 @@ class Orchestrator:
                 return f"Model error: {e}"
 
             preview = (text or "").replace("\n", " ")[:800]
-            print(f"[orch] Model reply (iter {iteration}, finish={finish_reason}, "
-                  f"len={len(text or '')}): {preview!r}", file=sys.stderr)
+            print(
+                f"[orch] Model reply (iter {iteration}, finish={finish_reason}, "
+                f"len={len(text or '')}): {preview!r}",
+                file=sys.stderr,
+            )
 
             # Strip <think> blocks AND chat-template control tokens before
             # storing in history — they waste context and confuse the tool
@@ -608,7 +659,9 @@ class Orchestrator:
             # for the final answer so the Flutter UI can render the
             # reasoning section.
             text_clean = _td.clean_history_text(text or "")
-            self.conversation_history.append({"role": "assistant", "content": text_clean})
+            self.conversation_history.append(
+                {"role": "assistant", "content": text_clean}
+            )
 
             # Parse tool calls from the cleaned text to avoid false positives
             # when a model embeds JSON examples inside its <tool_call> block.
@@ -632,21 +685,23 @@ class Orchestrator:
                         f"  - {tname}: rejected keys {dropped}; "
                         f"the only accepted keys are {kept or '[none — see schema]'}"
                     )
-                self.conversation_history.append({
-                    "role": "user",
-                    "content": (
+                self.conversation_history.append(
+                    {
+                        "role": "user",
+                        "content": (
                             "[SCHEMA FEEDBACK] Your last tool call(s) included "
                             "parameters that aren't part of the tool's schema. "
                             "Those keys were stripped before execution:\n"
                             + "\n".join(drop_lines)
                             + "\n\nDo NOT re-emit the same call — it would be "
-                              "identical to one you already ran. Either call the "
-                              "tool again with ONLY the accepted keys (changing "
-                              "the values that were in the rejected keys to "
-                              "supported alternatives), pick a different tool, "
-                              "or give your final answer."
-                    ),
-                })
+                            "identical to one you already ran. Either call the "
+                            "tool again with ONLY the accepted keys (changing "
+                            "the values that were in the rejected keys to "
+                            "supported alternatives), pick a different tool, "
+                            "or give your final answer."
+                        ),
+                    }
+                )
 
             if tag_calls:
                 # Reset the consecutive-malformed guard: a parseable call
@@ -691,26 +746,28 @@ class Orchestrator:
                         )
                         return self._build_recap_answer(
                             reason=f"repeat-call cap after {repeat_warnings} "
-                                   f"warnings on {[n for n, _, _ in repeat_keys]}"
+                            f"warnings on {[n for n, _, _ in repeat_keys]}"
                         )
 
                     summary = ", ".join(
                         f"{n}({json.dumps(p, ensure_ascii=False)[:120]})"
                         for n, p, _ in repeat_keys
                     )
-                    self.conversation_history.append({
-                        "role": "user",
-                        "content": (
-                            f"You already called: {summary} earlier this turn. "
-                            "Calling the same tool with the same arguments will "
-                            "return the same result. Either:\n"
-                            "  1. Call a DIFFERENT tool, or\n"
-                            "  2. Call the same tool with DIFFERENT arguments, or\n"
-                            "  3. Give your final plain-text answer to the user "
-                            "now (no more tool calls).\n"
-                            "Pick one."
-                        ),
-                    })
+                    self.conversation_history.append(
+                        {
+                            "role": "user",
+                            "content": (
+                                f"You already called: {summary} earlier this turn. "
+                                "Calling the same tool with the same arguments will "
+                                "return the same result. Either:\n"
+                                "  1. Call a DIFFERENT tool, or\n"
+                                "  2. Call the same tool with DIFFERENT arguments, or\n"
+                                "  3. Give your final plain-text answer to the user "
+                                "now (no more tool calls).\n"
+                                "Pick one."
+                            ),
+                        }
+                    )
                     iteration += 1
                     continue
 
@@ -727,7 +784,10 @@ class Orchestrator:
                     result = self.tool_registry.execute(name, params)
 
                     # Track successful tool executions for dynamic iteration extension
-                    if '"status": "success"' in result or '"status":"success"' in result:
+                    if (
+                        '"status": "success"' in result
+                        or '"status":"success"' in result
+                    ):
                         self._successful_tool_count += 1
                         # Track modified files for complexity detection
                         if name in ("write_file", "patch_file", "append_file"):
@@ -760,9 +820,9 @@ class Orchestrator:
                         half = max_tool_result_chars // 2
                         trunc_len = len(display_result) - max_tool_result_chars
                         display_result = (
-                                display_result[:half]
-                                + f"\n[... {trunc_len} chars truncated from middle ...]\n"
-                                + display_result[-half:]
+                            display_result[:half]
+                            + f"\n[... {trunc_len} chars truncated from middle ...]\n"
+                            + display_result[-half:]
                         )
 
                     # On the last two iterations force a final answer — no more tools.
@@ -780,16 +840,20 @@ class Orchestrator:
                             "[INTERNAL: Continue. Either call another tool or give the final answer. "
                             "Do NOT echo this instruction back to the user.]"
                         )
-                    self.conversation_history.append({"role": "user", "content": follow_up})
+                    self.conversation_history.append(
+                        {"role": "user", "content": follow_up}
+                    )
 
                 # Validation-stall guard: if the model just ran the Nth+
                 # idempotent validator clean in a row, replace the generic
                 # follow-up with a hard finalize directive. This catches the
                 # "I just ran python_check, let me run it once more to be
                 # sure" pattern before the repeat-call cap fires.
-                if (consecutive_validations >= _MAX_CONSECUTIVE_VALIDATIONS
-                        and self.conversation_history
-                        and self.conversation_history[-1].get("role") == "user"):
+                if (
+                    consecutive_validations >= _MAX_CONSECUTIVE_VALIDATIONS
+                    and self.conversation_history
+                    and self.conversation_history[-1].get("role") == "user"
+                ):
                     print(
                         f"[orch] {consecutive_validations} clean validations "
                         f"in a row; forcing finalize.",
@@ -826,7 +890,9 @@ class Orchestrator:
             #             reason="model emitted malformed tool calls repeatedly"
             #         )
 
-            is_malformed, malformed_error = _td.looks_like_malformed_tool_call(text_clean)
+            is_malformed, malformed_error = _td.looks_like_malformed_tool_call(
+                text_clean
+            )
             if is_malformed:
                 consecutive_malformed += 1
 
@@ -843,19 +909,21 @@ class Orchestrator:
                         f"{text_clean[:500]!r}",
                         file=sys.stderr,
                     )
-                    self.conversation_history.append({
-                        "role": "user",
-                        "content": (
-                            f"Your previous reply attempted a tool call but the "
-                            f"format was invalid. {malformed_error}\n"
-                            "Reply with EXACTLY ONE valid tool call on a single "
-                            "line in this format:\n"
-                            '<tool>{"tool":"NAME","parameters":{...}}</tool>\n'
-                            "No explanation, no markdown, no backticks. Keep the "
-                            "JSON valid. If a shell command contains quotes, "
-                            "prefer single quotes inside the command string."
-                        ),
-                    })
+                    self.conversation_history.append(
+                        {
+                            "role": "user",
+                            "content": (
+                                f"Your previous reply attempted a tool call but the "
+                                f"format was invalid. {malformed_error}\n"
+                                "Reply with EXACTLY ONE valid tool call on a single "
+                                "line in this format:\n"
+                                '<tool>{"tool":"NAME","parameters":{...}}</tool>\n'
+                                "No explanation, no markdown, no backticks. Keep the "
+                                "JSON valid. If a shell command contains quotes, "
+                                "prefer single quotes inside the command string."
+                            ),
+                        }
+                    )
                     iteration += 1
                     continue
 
@@ -897,23 +965,24 @@ class Orchestrator:
                     file=sys.stderr,
                 )
                 print(
-                    f"[orch] Unparseable reply (first 500 chars): "
-                    f"{text_clean[:500]!r}",
+                    f"[orch] Unparseable reply (first 500 chars): {text_clean[:500]!r}",
                     file=sys.stderr,
                 )
-                self.conversation_history.append({
-                    "role": "user",
-                    "content": (
-                        f"Your previous reply attempted a tool call but the "
-                        f"format was invalid. {malformed_error}\n"
-                        "Reply with EXACTLY ONE valid tool call on a single "
-                        "line in this format:\n"
-                        '<tool>{"tool":"NAME","parameters":{...}}</tool>\n'
-                        "No explanation, no markdown, no backticks. Keep the "
-                        "JSON valid. If a shell command contains quotes, "
-                        "prefer single quotes inside the command string."
-                    ),
-                })
+                self.conversation_history.append(
+                    {
+                        "role": "user",
+                        "content": (
+                            f"Your previous reply attempted a tool call but the "
+                            f"format was invalid. {malformed_error}\n"
+                            "Reply with EXACTLY ONE valid tool call on a single "
+                            "line in this format:\n"
+                            '<tool>{"tool":"NAME","parameters":{...}}</tool>\n'
+                            "No explanation, no markdown, no backticks. Keep the "
+                            "JSON valid. If a shell command contains quotes, "
+                            "prefer single quotes inside the command string."
+                        ),
+                    }
+                )
                 iteration += 1
                 continue
 
@@ -941,9 +1010,8 @@ class Orchestrator:
             #      off. This is the fix for "parts that are cutted" in long
             #      explanations: the old code always assumed a tool call,
             #      wasting retries on a continuation prompt that made no sense.
-            looks_truncated = (
-                    finish_reason == "length"
-                    or _td.looks_like_unclosed_tool(text_clean)
+            looks_truncated = finish_reason == "length" or _td.looks_like_unclosed_tool(
+                text_clean
             )
             if looks_truncated and truncation_retries < _MAX_TRUNCATION_RETRY:
                 truncation_retries += 1
@@ -961,20 +1029,22 @@ class Orchestrator:
                         f"(retry {truncation_retries}).",
                         file=sys.stderr,
                     )
-                    self.conversation_history.append({
-                        "role": "user",
-                        "content": (
-                            "Your previous reply was CUT OFF before the closing "
-                            "</tool> tag. Do NOT include any plan, preamble, or "
-                            "explanation. Emit ONLY the tool call on a single "
-                            "line, e.g.:\n"
-                            '<tool>{"tool":"write_file","parameters":'
-                            '{"path":"...","content":"..."}}</tool>\n'
-                            "If the content is very large, break the work into "
-                            "smaller steps: first create the file with a short "
-                            "content, then use append_file in follow-up calls."
-                        ),
-                    })
+                    self.conversation_history.append(
+                        {
+                            "role": "user",
+                            "content": (
+                                "Your previous reply was CUT OFF before the closing "
+                                "</tool> tag. Do NOT include any plan, preamble, or "
+                                "explanation. Emit ONLY the tool call on a single "
+                                "line, e.g.:\n"
+                                '<tool>{"tool":"write_file","parameters":'
+                                '{"path":"...","content":"..."}}</tool>\n'
+                                "If the content is very large, break the work into "
+                                "smaller steps: first create the file with a short "
+                                "content, then use append_file in follow-up calls."
+                            ),
+                        }
+                    )
                 else:
                     print(
                         f"[orch] Truncated final answer detected "
@@ -985,50 +1055,58 @@ class Orchestrator:
                     # ~800 chars of its own output so it can continue
                     # seamlessly instead of starting over.
                     tail = text_clean[-800:] if len(text_clean) > 800 else text_clean
-                    self.conversation_history.append({
-                        "role": "user",
-                        "content": (
-                            "Your previous reply was CUT OFF by the token "
-                            "limit. Continue EXACTLY from where you left off. "
-                            "Do NOT repeat what you already wrote. Do NOT "
-                            "start over. Just continue the text.\n\n"
-                            "--- LAST 800 CHARS OF YOUR PREVIOUS REPLY ---\n"
-                            f"{tail}\n"
-                            "--- END OF PREVIOUS REPLY ---\n\n"
-                            "Continue from here. Pick up mid-sentence if "
-                            "necessary. Do NOT add any preamble."
-                        ),
-                    })
+                    self.conversation_history.append(
+                        {
+                            "role": "user",
+                            "content": (
+                                "Your previous reply was CUT OFF by the token "
+                                "limit. Continue EXACTLY from where you left off. "
+                                "Do NOT repeat what you already wrote. Do NOT "
+                                "start over. Just continue the text.\n\n"
+                                "--- LAST 800 CHARS OF YOUR PREVIOUS REPLY ---\n"
+                                f"{tail}\n"
+                                "--- END OF PREVIOUS REPLY ---\n\n"
+                                "Continue from here. Pick up mid-sentence if "
+                                "necessary. Do NOT add any preamble."
+                            ),
+                        }
+                    )
                 iteration += 1
                 continue
 
             # No tool call. Classify the response.
             if _td.looks_like_refusal(text_clean) and refusal_retries < 2:
                 refusal_retries += 1
-                print(f"[orch] Refusal detected (retry {refusal_retries}).",
-                      file=sys.stderr)
-                self.conversation_history.append({
-                    "role": "user",
-                    "content": (
-                        "STOP. That is a refusal and it is wrong. You DO have "
-                        "filesystem access through the tools. Your entire next "
-                        "message must be exactly one line, e.g.:\n"
-                        '<tool>{"tool":"list_files","parameters":{"path":"."}}</tool>\n'
-                        "No apology, no explanation, no markdown fences. Just "
-                        "the tool call tag."
-                    ),
-                })
+                print(
+                    f"[orch] Refusal detected (retry {refusal_retries}).",
+                    file=sys.stderr,
+                )
+                self.conversation_history.append(
+                    {
+                        "role": "user",
+                        "content": (
+                            "STOP. That is a refusal and it is wrong. You DO have "
+                            "filesystem access through the tools. Your entire next "
+                            "message must be exactly one line, e.g.:\n"
+                            '<tool>{"tool":"list_files","parameters":{"path":"."}}</tool>\n'
+                            "No apology, no explanation, no markdown fences. Just "
+                            "the tool call tag."
+                        ),
+                    }
+                )
                 iteration += 1
                 continue
 
             if not text_clean and empty_retries < 1:
                 empty_retries += 1
-                self.conversation_history.append({
-                    "role": "user",
-                    "content": "Your reply was empty. Emit a single "
-                               '<tool>{"tool":"...","parameters":{...}}</tool> '
-                               "call or the final plain-text answer.",
-                })
+                self.conversation_history.append(
+                    {
+                        "role": "user",
+                        "content": "Your reply was empty. Emit a single "
+                        '<tool>{"tool":"...","parameters":{...}}</tool> '
+                        "call or the final plain-text answer.",
+                    }
+                )
                 iteration += 1
                 continue
 
@@ -1041,10 +1119,7 @@ class Orchestrator:
             # the user. Two retries, then give up — we don't want to
             # loop forever if the model genuinely has nothing more to
             # do but phrases its conclusion awkwardly.
-            if (
-                    cliffhanger_retries < 2
-                    and self._looks_like_cliffhanger(text_clean)
-            ):
+            if cliffhanger_retries < 2 and self._looks_like_cliffhanger(text_clean):
                 cliffhanger_retries += 1
                 print(
                     f"[orch] Cliffhanger reply detected "
@@ -1052,24 +1127,26 @@ class Orchestrator:
                     f"continue autonomously.",
                     file=sys.stderr,
                 )
-                self.conversation_history.append({
-                    "role": "user",
-                    "content": (
-                        "[AUTONOMY] Your previous reply ended with a "
-                        "cliffhanger or a request for confirmation. The "
-                        "user already approved the work — do NOT ask "
-                        "again. Your IMMEDIATE next message must be "
-                        "either:\n"
-                        "  1. A tool call performing the next concrete "
-                        "step (a <tool>...</tool> tag), OR\n"
-                        "  2. A real final answer that summarizes what "
-                        "you completed (no \"would you like me to...\", "
-                        "no \"shall I...\", no \"let me continue...\").\n"
-                        "Do not announce intent without acting. Do not "
-                        "split the remaining work across more user "
-                        "turns."
-                    ),
-                })
+                self.conversation_history.append(
+                    {
+                        "role": "user",
+                        "content": (
+                            "[AUTONOMY] Your previous reply ended with a "
+                            "cliffhanger or a request for confirmation. The "
+                            "user already approved the work — do NOT ask "
+                            "again. Your IMMEDIATE next message must be "
+                            "either:\n"
+                            "  1. A tool call performing the next concrete "
+                            "step (a <tool>...</tool> tag), OR\n"
+                            "  2. A real final answer that summarizes what "
+                            'you completed (no "would you like me to...", '
+                            'no "shall I...", no "let me continue...").\n'
+                            "Do not announce intent without acting. Do not "
+                            "split the remaining work across more user "
+                            "turns."
+                        ),
+                    }
+                )
                 iteration += 1
                 continue
 
@@ -1087,25 +1164,27 @@ class Orchestrator:
                     f"(retry {step_report_retries}); nudging model.",
                     file=sys.stderr,
                 )
-                self.conversation_history.append({
-                    "role": "user",
-                    "content": (
-                        "[STEP REPORT REQUIRED] Your previous reply was a "
-                        "final answer after modifying files, but it did not "
-                        "include the mandatory STEP REPORT. You MUST include "
-                        "a step report in this format:\n\n"
-                        "STEP REPORT\n"
-                        "-----------\n"
-                        "Done:\n"
-                        "  - [what you completed]\n"
-                        "Pending:\n"
-                        "  - [what remains, or 'None']\n"
-                        "Current state:\n"
-                        "  [1-3 sentences describing current state]\n\n"
-                        "Add this report to your final answer now. Do NOT "
-                        "call any more tools."
-                    ),
-                })
+                self.conversation_history.append(
+                    {
+                        "role": "user",
+                        "content": (
+                            "[STEP REPORT REQUIRED] Your previous reply was a "
+                            "final answer after modifying files, but it did not "
+                            "include the mandatory STEP REPORT. You MUST include "
+                            "a step report in this format:\n\n"
+                            "STEP REPORT\n"
+                            "-----------\n"
+                            "Done:\n"
+                            "  - [what you completed]\n"
+                            "Pending:\n"
+                            "  - [what remains, or 'None']\n"
+                            "Current state:\n"
+                            "  [1-3 sentences describing current state]\n\n"
+                            "Add this report to your final answer now. Do NOT "
+                            "call any more tools."
+                        ),
+                    }
+                )
                 iteration += 1
                 continue
 
@@ -1116,8 +1195,10 @@ class Orchestrator:
             return _td.clean_final_answer(text or "")
 
         # If we reach here, we've exhausted all iterations without a final answer.
-        print("[orch] Max iterations reached. Saving session to session_dump.json",
-              file=sys.stderr)
+        print(
+            "[orch] Max iterations reached. Saving session to session_dump.json",
+            file=sys.stderr,
+        )
         try:
             with open("session_dump.json", "w", encoding="utf-8") as f:
                 json.dump(self.conversation_history, f, indent=2)
@@ -1126,7 +1207,7 @@ class Orchestrator:
 
         return self._build_recap_answer(
             reason=f"max iterations ({self.max_iterations}) reached without "
-                   f"a synthesized answer"
+            f"a synthesized answer"
         )
 
     # ------------------------------------------------------------------
@@ -1180,10 +1261,12 @@ class Orchestrator:
         # Defensive copy so we don't pollute the live history with the
         # synthesis directive (the next turn shouldn't see it).
         synth_history = list(self.conversation_history)
-        synth_history.append({
-            "role": "user",
-            "content": self._SYNTHESIS_DIRECTIVE,
-        })
+        synth_history.append(
+            {
+                "role": "user",
+                "content": self._SYNTHESIS_DIRECTIVE,
+            }
+        )
 
         try:
             text, _ = self.backend.chat(
@@ -1209,9 +1292,7 @@ class Orchestrator:
         # Reject replies that are still trying to call tools — we asked
         # for plain text, anything else is the same failure mode under
         # a different costume.
-        if _td.parse_all_tag_tool_calls(
-                cleaned, self.tool_registry.definitions
-        ):
+        if _td.parse_all_tag_tool_calls(cleaned, self.tool_registry.definitions):
             print(
                 f"[orch] Synthesis reply still contained tool calls "
                 f"(len={len(cleaned)}); falling back to raw recap.",
@@ -1379,9 +1460,9 @@ class Orchestrator:
             deduped = deduped[-6:]
 
         return (
-                "\n".join(prefix_lines)
-                + "Here's a recap of what I found while investigating:\n\n"
-                + "\n\n".join(deduped)
+            "\n".join(prefix_lines)
+            + "Here's a recap of what I found while investigating:\n\n"
+            + "\n\n".join(deduped)
         )
 
     @staticmethod

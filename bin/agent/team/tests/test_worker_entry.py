@@ -1,5 +1,7 @@
 """Test ``worker_entry.main`` via in-process invocation with a fake Workflow."""
+
 import sys
+
 sys.dont_write_bytecode = True
 
 import io
@@ -20,17 +22,23 @@ from agent.team import worker_entry
 
 
 class _FakeWorkflow:
-    def __init__(self, response: str = "All steps complete.",
-                 tool_calls: List[Dict[str, Any]] | None = None):
+    def __init__(
+        self,
+        response: str = "All steps complete.",
+        tool_calls: List[Dict[str, Any]] | None = None,
+    ):
         self._response = response
         self._tool_calls = tool_calls or []
         self.calls: List[str] = []
 
     def run(self, prompt: str) -> Dict[str, Any]:
         self.calls.append(prompt)
-        return {"response": self._response, "trace": [],
-                "route": "reasoning",
-                "tool_calls": list(self._tool_calls)}
+        return {
+            "response": self._response,
+            "trace": [],
+            "route": "reasoning",
+            "tool_calls": list(self._tool_calls),
+        }
 
 
 @contextmanager
@@ -73,23 +81,43 @@ class WorkerEntryTests(unittest.TestCase):
         # Minimal agent-config to satisfy build_workflow_from_args path —
         # but we'll patch the builder anyway.
         self.cfg = Path(self.tmp) / "agents.json"
-        self.cfg.write_text('{"reasoner": {"backend": "gemini",'
-                            ' "model": "gemini-2.5-flash"}}',
-                            encoding="utf-8")
+        self.cfg.write_text(
+            '{"reasoner": {"backend": "gemini", "model": "gemini-2.5-flash"}}',
+            encoding="utf-8",
+        )
 
-    def _run_worker(self, *, group: str, response: str,
-                    deps_csv: str = "",
-                    tool_calls: List[Dict[str, Any]] | None = None) -> int:
+    def _run_worker(
+        self,
+        *,
+        group: str,
+        response: str,
+        deps_csv: str = "",
+        tool_calls: List[Dict[str, Any]] | None = None,
+    ) -> int:
         fake = _FakeWorkflow(response=response, tool_calls=tool_calls)
-        with _argv("worker_entry.py", "--group", group,
-                   "--multi-agent", "--agent-config", str(self.cfg),
-                   "--base-path", self.tmp), \
-             _envs(TEAM_BOARD_PATH=str(self.paths.board),
-                   TEAM_ARTIFACT_DIR=str(self.paths.artifacts_dir),
-                   TEAM_GROUP=group, TEAM_OWNER_MODEL="test-model",
-                   TEAM_DEPS=deps_csv, TEAM_BASE_PATH=self.tmp), \
-             patch("agent.team.worker_entry.build_workflow_from_args",
-                   return_value=fake):
+        with (
+            _argv(
+                "worker_entry.py",
+                "--group",
+                group,
+                "--multi-agent",
+                "--agent-config",
+                str(self.cfg),
+                "--base-path",
+                self.tmp,
+            ),
+            _envs(
+                TEAM_BOARD_PATH=str(self.paths.board),
+                TEAM_ARTIFACT_DIR=str(self.paths.artifacts_dir),
+                TEAM_GROUP=group,
+                TEAM_OWNER_MODEL="test-model",
+                TEAM_DEPS=deps_csv,
+                TEAM_BASE_PATH=self.tmp,
+            ),
+            patch(
+                "agent.team.worker_entry.build_workflow_from_args", return_value=fake
+            ),
+        ):
             return worker_entry.main()
 
     def test_clean_run_writes_artifact_and_stamps_done(self):
@@ -144,7 +172,8 @@ class WorkerEntryTests(unittest.TestCase):
         _seed_board(self.paths, "beta", plan=["one"])
         # Pre-write an upstream artifact for "alpha"
         upstream = Artifact(
-            group="alpha", producer_model="x",
+            group="alpha",
+            producer_model="x",
             status=Status.DONE_CLEAN,
             summary="schema designed",
             interfaces_exposed=[{"name": "users.id", "type": "uuid"}],
@@ -159,15 +188,30 @@ class WorkerEntryTests(unittest.TestCase):
                 captured["prompt"] = prompt
                 return {"response": "done", "trace": [], "route": "reasoning"}
 
-        with _argv("worker_entry.py", "--group", "beta",
-                   "--multi-agent", "--agent-config", str(self.cfg),
-                   "--base-path", self.tmp), \
-             _envs(TEAM_BOARD_PATH=str(self.paths.board),
-                   TEAM_ARTIFACT_DIR=str(self.paths.artifacts_dir),
-                   TEAM_GROUP="beta", TEAM_OWNER_MODEL="m",
-                   TEAM_DEPS="alpha", TEAM_BASE_PATH=self.tmp), \
-             patch("agent.team.worker_entry.build_workflow_from_args",
-                   return_value=_CaptureWf()):
+        with (
+            _argv(
+                "worker_entry.py",
+                "--group",
+                "beta",
+                "--multi-agent",
+                "--agent-config",
+                str(self.cfg),
+                "--base-path",
+                self.tmp,
+            ),
+            _envs(
+                TEAM_BOARD_PATH=str(self.paths.board),
+                TEAM_ARTIFACT_DIR=str(self.paths.artifacts_dir),
+                TEAM_GROUP="beta",
+                TEAM_OWNER_MODEL="m",
+                TEAM_DEPS="alpha",
+                TEAM_BASE_PATH=self.tmp,
+            ),
+            patch(
+                "agent.team.worker_entry.build_workflow_from_args",
+                return_value=_CaptureWf(),
+            ),
+        ):
             rc = worker_entry.main()
         self.assertEqual(rc, 0)
         self.assertIn("Upstream artifact: alpha", captured["prompt"])
@@ -181,15 +225,30 @@ class WorkerEntryTests(unittest.TestCase):
             def run(self, prompt: str):
                 raise RuntimeError("boom")
 
-        with _argv("worker_entry.py", "--group", "alpha",
-                   "--multi-agent", "--agent-config", str(self.cfg),
-                   "--base-path", self.tmp), \
-             _envs(TEAM_BOARD_PATH=str(self.paths.board),
-                   TEAM_ARTIFACT_DIR=str(self.paths.artifacts_dir),
-                   TEAM_GROUP="alpha", TEAM_OWNER_MODEL="m",
-                   TEAM_DEPS="", TEAM_BASE_PATH=self.tmp), \
-             patch("agent.team.worker_entry.build_workflow_from_args",
-                   return_value=_BoomWf()):
+        with (
+            _argv(
+                "worker_entry.py",
+                "--group",
+                "alpha",
+                "--multi-agent",
+                "--agent-config",
+                str(self.cfg),
+                "--base-path",
+                self.tmp,
+            ),
+            _envs(
+                TEAM_BOARD_PATH=str(self.paths.board),
+                TEAM_ARTIFACT_DIR=str(self.paths.artifacts_dir),
+                TEAM_GROUP="alpha",
+                TEAM_OWNER_MODEL="m",
+                TEAM_DEPS="",
+                TEAM_BASE_PATH=self.tmp,
+            ),
+            patch(
+                "agent.team.worker_entry.build_workflow_from_args",
+                return_value=_BoomWf(),
+            ),
+        ):
             rc = worker_entry.main()
         self.assertEqual(rc, 1)
         bf = read_board(self.paths.board)
@@ -202,11 +261,13 @@ class ClassifierTests(unittest.TestCase):
 
     def test_no_tools_called_yields_done_with_warnings(self):
         from agent.team.worker_entry import _classify_response
+
         st = _classify_response("I have analyzed the colors.", [])
         self.assertEqual(st, Status.DONE_WITH_WARNINGS)
 
     def test_error_response_overrides_tool_usage(self):
         from agent.team.worker_entry import _classify_response
+
         st = _classify_response(
             "ERROR: Empty model response",
             [{"tool": "write_file", "path": "x.dart", "status": "success"}],
@@ -215,6 +276,7 @@ class ClassifierTests(unittest.TestCase):
 
     def test_state_changing_call_yields_done_clean(self):
         from agent.team.worker_entry import _classify_response
+
         st = _classify_response(
             "Updated the bubble colors.",
             [{"tool": "write_file", "path": "lib/x.dart", "status": "success"}],
@@ -225,21 +287,27 @@ class ClassifierTests(unittest.TestCase):
         # An audit group that only reads files still engaged with the
         # codebase — DONE_CLEAN is appropriate.
         from agent.team.worker_entry import _classify_response
+
         st = _classify_response(
             "I read the relevant files.",
-            [{"tool": "read_file", "path": "x", "status": "success"},
-             {"tool": "search_in_files", "path": "", "status": "success"}],
+            [
+                {"tool": "read_file", "path": "x", "status": "success"},
+                {"tool": "search_in_files", "path": "", "status": "success"},
+            ],
         )
         self.assertEqual(st, Status.DONE_CLEAN)
 
     def test_files_touched_extracted_only_from_state_changing_calls(self):
         from agent.team.worker_entry import _files_touched_from_tool_calls
-        out = _files_touched_from_tool_calls([
-            {"tool": "read_file", "path": "a", "status": "success"},
-            {"tool": "write_file", "path": "b.dart", "status": "success"},
-            {"tool": "patch_file", "path": "c.py", "status": "success"},
-            {"tool": "write_file", "path": "d.txt", "status": "error"},  # failed
-        ])
+
+        out = _files_touched_from_tool_calls(
+            [
+                {"tool": "read_file", "path": "a", "status": "success"},
+                {"tool": "write_file", "path": "b.dart", "status": "success"},
+                {"tool": "patch_file", "path": "c.py", "status": "success"},
+                {"tool": "write_file", "path": "d.txt", "status": "error"},  # failed
+            ]
+        )
         actions = [(e["path"], e["action"]) for e in out]
         self.assertEqual(actions, [("b.dart", "wrote"), ("c.py", "patched")])
 
@@ -265,21 +333,36 @@ class FailedArtifactOnEarlyErrorTests(unittest.TestCase):
         def _boom(*a, **kw):
             raise RuntimeError("missing API key — Gemini auth failed")
 
-        with _argv("worker_entry.py", "--group", "alpha",
-                   "--multi-agent", "--agent-config", str(self.cfg),
-                   "--base-path", self.tmp), \
-             _envs(TEAM_BOARD_PATH=str(self.paths.board),
-                   TEAM_ARTIFACT_DIR=str(self.paths.artifacts_dir),
-                   TEAM_GROUP="alpha", TEAM_OWNER_MODEL="m",
-                   TEAM_DEPS="", TEAM_BASE_PATH=self.tmp), \
-             patch("agent.team.worker_entry.build_workflow_from_args",
-                   side_effect=_boom):
+        with (
+            _argv(
+                "worker_entry.py",
+                "--group",
+                "alpha",
+                "--multi-agent",
+                "--agent-config",
+                str(self.cfg),
+                "--base-path",
+                self.tmp,
+            ),
+            _envs(
+                TEAM_BOARD_PATH=str(self.paths.board),
+                TEAM_ARTIFACT_DIR=str(self.paths.artifacts_dir),
+                TEAM_GROUP="alpha",
+                TEAM_OWNER_MODEL="m",
+                TEAM_DEPS="",
+                TEAM_BASE_PATH=self.tmp,
+            ),
+            patch(
+                "agent.team.worker_entry.build_workflow_from_args", side_effect=_boom
+            ),
+        ):
             rc = worker_entry.main()
         self.assertEqual(rc, 1)
         # The artifact MUST exist with the failure reason embedded.
         ap = self.paths.artifact_path("alpha")
-        self.assertTrue(ap.exists(),
-                        "Worker must write a FAILED artifact even on early errors")
+        self.assertTrue(
+            ap.exists(), "Worker must write a FAILED artifact even on early errors"
+        )
         artifact = read_artifact(ap)
         self.assertEqual(artifact.status, Status.FAILED)
         self.assertIn("missing API key", artifact.summary)
@@ -291,15 +374,30 @@ class FailedArtifactOnEarlyErrorTests(unittest.TestCase):
             def run(self, prompt: str):
                 raise RuntimeError("provider returned 429")
 
-        with _argv("worker_entry.py", "--group", "alpha",
-                   "--multi-agent", "--agent-config", str(self.cfg),
-                   "--base-path", self.tmp), \
-             _envs(TEAM_BOARD_PATH=str(self.paths.board),
-                   TEAM_ARTIFACT_DIR=str(self.paths.artifacts_dir),
-                   TEAM_GROUP="alpha", TEAM_OWNER_MODEL="m",
-                   TEAM_DEPS="", TEAM_BASE_PATH=self.tmp), \
-             patch("agent.team.worker_entry.build_workflow_from_args",
-                   return_value=_BoomWf()):
+        with (
+            _argv(
+                "worker_entry.py",
+                "--group",
+                "alpha",
+                "--multi-agent",
+                "--agent-config",
+                str(self.cfg),
+                "--base-path",
+                self.tmp,
+            ),
+            _envs(
+                TEAM_BOARD_PATH=str(self.paths.board),
+                TEAM_ARTIFACT_DIR=str(self.paths.artifacts_dir),
+                TEAM_GROUP="alpha",
+                TEAM_OWNER_MODEL="m",
+                TEAM_DEPS="",
+                TEAM_BASE_PATH=self.tmp,
+            ),
+            patch(
+                "agent.team.worker_entry.build_workflow_from_args",
+                return_value=_BoomWf(),
+            ),
+        ):
             rc = worker_entry.main()
         self.assertEqual(rc, 1)
         artifact = read_artifact(self.paths.artifact_path("alpha"))

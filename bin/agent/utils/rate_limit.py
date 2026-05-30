@@ -4,6 +4,7 @@ The decorator that wraps a backend with the bucket lives in
 ``agent.backends.backend_base`` (RateLimitedBackend) — it depends on the
 ModelBackend ABC, so it can't sit here without creating a cycle.
 """
+
 from __future__ import annotations
 
 import collections

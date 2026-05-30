@@ -38,6 +38,7 @@ from __future__ import annotations
 import dataclasses
 from typing import Set, Optional
 
+
 @dataclasses.dataclass
 class SecurityConfig:
     """
@@ -52,6 +53,7 @@ class SecurityConfig:
         command_blocklist: Substrings that must never appear in run_command calls (case-insensitive).
         allowed_file_extensions: If set, only files with these extensions can be read/written.
     """
+
     sandbox_mode: bool = False
     max_file_size_bytes: int = 0  # 0 = no limit
     enable_audit_log: bool = True

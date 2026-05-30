@@ -5,6 +5,7 @@ holds the shaped context, so re-shaping every follow-up just burns tokens.
 Use a cheap-but-not-tiny model (Groq llama-3.1-8b, Gemini Flash) — too small
 and the rewrite degrades the prompt instead of improving it.
 """
+
 from __future__ import annotations
 
 import sys
@@ -21,8 +22,8 @@ _SHAPER_SYSTEM_PROMPT = (
     "tasks. Preserve the user's intent exactly.\n"
     "\n"
     "If the user's latest message is a short confirmation or follow-up "
-    "(\"ok\", \"ok proceed\", \"yes do it\", \"go ahead\", \"continue\", "
-    "\"fix it\", \"now do X\"), use the prior conversation in the message "
+    '("ok", "ok proceed", "yes do it", "go ahead", "continue", '
+    '"fix it", "now do X"), use the prior conversation in the message '
     "history to infer what concretely needs to be done next, and produce a "
     "spec for THAT — not for the literal short reply.\n"
     "\n"
@@ -39,12 +40,20 @@ _SHAPER_SYSTEM_PROMPT = (
 class ShaperAgent(Agent):
     name = "shaper"
 
-    def __init__(self, backend, *, system_prompt: Optional[str] = None,
-                 temperature: float = 0.2, max_tokens: int = 256):
-        super().__init__(backend,
-                         system_prompt or _SHAPER_SYSTEM_PROMPT,
-                         temperature=temperature,
-                         max_tokens=max_tokens)
+    def __init__(
+        self,
+        backend,
+        *,
+        system_prompt: Optional[str] = None,
+        temperature: float = 0.2,
+        max_tokens: int = 256,
+    ):
+        super().__init__(
+            backend,
+            system_prompt or _SHAPER_SYSTEM_PROMPT,
+            temperature=temperature,
+            max_tokens=max_tokens,
+        )
 
     # ------------------------------------------------------------------
     def run(self, state: WorkflowState) -> WorkflowState:
@@ -57,11 +66,9 @@ class ShaperAgent(Agent):
             )
             text, _ = self._chat(messages)
         except Exception as e:  # noqa: BLE001
-            print(f"[shaper] failed ({e}); falling back to raw input.",
-                  file=sys.stderr)
+            print(f"[shaper] failed ({e}); falling back to raw input.", file=sys.stderr)
             state.shaped_prompt = state.user_input
-            state.add_trace(self.name, output="(failed, raw input kept)",
-                            detail=str(e))
+            state.add_trace(self.name, output="(failed, raw input kept)", detail=str(e))
             return state
 
         shaped = (text or "").strip() or state.user_input

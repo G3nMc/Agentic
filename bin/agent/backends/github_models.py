@@ -1,4 +1,5 @@
 """GitHub Models backend — inherits from OpenAICompatBackend."""
+
 from __future__ import annotations
 
 import sys
@@ -97,8 +98,7 @@ class GitHubModelsBackend(OpenAICompatBackend):
             except Exception:
                 pass
             _log(
-                f"[GitHub Models:http_error] status={exc.code} "
-                f"body={body_err[:400]!r}"
+                f"[GitHub Models:http_error] status={exc.code} body={body_err[:400]!r}"
             )
             if exc.code == 429:
                 ra = exc.headers.get("Retry-After", "")
@@ -109,7 +109,9 @@ class GitHubModelsBackend(OpenAICompatBackend):
                     retry_after=retry_after,
                 ) from exc
             if exc.code == 400 and effective_tools and "tool" in body_err.lower():
-                _log(f"[GitHub Models:tools_unsupported] raising ToolsNotSupportedError")
+                _log(
+                    f"[GitHub Models:tools_unsupported] raising ToolsNotSupportedError"
+                )
                 raise ToolsNotSupportedError(body_err) from exc
             raise RuntimeError(
                 f"GitHub Models HTTP {exc.code}: {body_err[:400]}"

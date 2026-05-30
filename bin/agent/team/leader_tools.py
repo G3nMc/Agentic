@@ -14,6 +14,7 @@ Tools:
     compact_board()
     finalize(summary)
 """
+
 from __future__ import annotations
 
 import json
@@ -57,10 +58,10 @@ LEADER_TOOL_DEFINITIONS: List[Dict[str, Any]] = [
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "name":         {"type": "string"},
-                    "owner_model":  {"type": "string"},
-                    "plan_steps":   {"type": "array", "items": {"type": "string"}},
-                    "depends_on":   {"type": "array", "items": {"type": "string"}},
+                    "name": {"type": "string"},
+                    "owner_model": {"type": "string"},
+                    "plan_steps": {"type": "array", "items": {"type": "string"}},
+                    "depends_on": {"type": "array", "items": {"type": "string"}},
                 },
                 "required": ["name", "owner_model", "plan_steps"],
             },
@@ -76,7 +77,7 @@ LEADER_TOOL_DEFINITIONS: List[Dict[str, Any]] = [
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "group":      {"type": "string"},
+                    "group": {"type": "string"},
                     "depends_on": {"type": "array", "items": {"type": "string"}},
                 },
                 "required": ["group", "depends_on"],
@@ -112,9 +113,11 @@ LEADER_TOOL_DEFINITIONS: List[Dict[str, Any]] = [
                 "type": "object",
                 "properties": {
                     "failed_group": {"type": "string"},
-                    "decision":     {"type": "string",
-                                     "enum": ["retry", "skip_with_partial", "abort"]},
-                    "reason":       {"type": "string"},
+                    "decision": {
+                        "type": "string",
+                        "enum": ["retry", "skip_with_partial", "abort"],
+                    },
+                    "reason": {"type": "string"},
                 },
                 "required": ["failed_group", "decision"],
             },
@@ -172,10 +175,15 @@ class RecoveryDecision:
     at: str
 
     def to_log_line(self) -> str:
-        return json.dumps({
-            "at": self.at, "group": self.group,
-            "decision": self.decision, "reason": self.reason,
-        }, ensure_ascii=False)
+        return json.dumps(
+            {
+                "at": self.at,
+                "group": self.group,
+                "decision": self.decision,
+                "reason": self.reason,
+            },
+            ensure_ascii=False,
+        )
 
 
 # ----------------------------------------------------------------------
@@ -201,15 +209,24 @@ class LeaderTools:
     # names with a namespacing prefix like ``tool.create_group``,
     # ``functions.create_group``. Strip those before lookup so the
     # dispatcher tolerates the quirk instead of rejecting every call.
-    _NAME_PREFIXES = ("tool.", "tools.", "function.", "functions.",
-                      "namespace.", "leader.", "team.")
+    _NAME_PREFIXES = (
+        "tool.",
+        "tools.",
+        "function.",
+        "functions.",
+        "namespace.",
+        "leader.",
+        "team.",
+    )
 
     def execute(self, name: str, params: Dict[str, Any]) -> Dict[str, Any]:
         canonical = self._canonicalize_name(name)
         if canonical not in LEADER_TOOL_NAMES:
-            return {"status": "error",
-                    "message": f"Unknown leader tool: {name!r}. "
-                               f"Valid names: {sorted(LEADER_TOOL_NAMES)}"}
+            return {
+                "status": "error",
+                "message": f"Unknown leader tool: {name!r}. "
+                f"Valid names: {sorted(LEADER_TOOL_NAMES)}",
+            }
         method: Callable = getattr(self, f"_do_{canonical}")
         try:
             return method(**(params or {}))
@@ -226,7 +243,7 @@ class LeaderTools:
         lowered = s.lower()
         for pfx in cls._NAME_PREFIXES:
             if lowered.startswith(pfx):
-                return s[len(pfx):]
+                return s[len(pfx) :]
         return s
 
     # ------------------------------------------------------------------
@@ -273,13 +290,18 @@ class LeaderTools:
         deps = [str(d) for d in (depends_on or []) if d]
         for d in deps:
             if bf.find_row(d) is None:
-                return {"status": "error",
-                        "message": f"unknown dependency {d!r} for {name!r}"}
+                return {
+                    "status": "error",
+                    "message": f"unknown dependency {d!r} for {name!r}",
+                }
 
         artifact_relpath = f"artifacts/{name}.json"
-        bf.add_group(name, owner_model=owner_model,
-                     plan=[str(s) for s in plan_steps],
-                     artifact_relpath=artifact_relpath)
+        bf.add_group(
+            name,
+            owner_model=owner_model,
+            plan=[str(s) for s in plan_steps],
+            artifact_relpath=artifact_relpath,
+        )
         # Replace any existing dep row for this group (fresh insert)
         bf.dependencies = [d for d in bf.dependencies if d[0] != name]
         bf.dependencies.append((name, deps))
@@ -287,7 +309,9 @@ class LeaderTools:
         return {"status": "success", "group": name, "deps": deps}
 
     def _do_assign_dependency(
-        self, group: str, depends_on: List[str],
+        self,
+        group: str,
+        depends_on: List[str],
     ) -> Dict[str, Any]:
         bf = self._load()
         if bf.find_row(group) is None:
@@ -315,12 +339,14 @@ class LeaderTools:
             warnings: List[str] = []
             if section is not None:
                 warnings = [ln for ln in section.log if "warn" in ln.lower()]
-            out.append({
-                "prev_group": d,
-                "status": row.status.value if row else "PENDING",
-                "last_step": row.last_step if row else "—",
-                "warnings": warnings,
-            })
+            out.append(
+                {
+                    "prev_group": d,
+                    "status": row.status.value if row else "PENDING",
+                    "last_step": row.last_step if row else "—",
+                    "warnings": warnings,
+                }
+            )
         return {"status": "success", "deps": out}
 
     def _do_decide_recovery(
@@ -330,19 +356,25 @@ class LeaderTools:
         reason: str = "",
     ) -> Dict[str, Any]:
         if decision not in ("retry", "skip_with_partial", "abort"):
-            return {"status": "error",
-                    "message": f"decision must be retry|skip_with_partial|abort, got {decision!r}"}
+            return {
+                "status": "error",
+                "message": f"decision must be retry|skip_with_partial|abort, got {decision!r}",
+            }
         bf = self._load()
         row = bf.find_row(failed_group)
         if row is None:
             return {"status": "error", "message": f"unknown group {failed_group!r}"}
         if not is_failure(row.status):
-            return {"status": "error",
-                    "message": f"{failed_group!r} is not in a failure state ({row.status.value})"}
+            return {
+                "status": "error",
+                "message": f"{failed_group!r} is not in a failure state ({row.status.value})",
+            }
 
         rec = RecoveryDecision(
-            group=failed_group, decision=decision,
-            reason=reason or "", at=_utcnow_iso(),
+            group=failed_group,
+            decision=decision,
+            reason=reason or "",
+            at=_utcnow_iso(),
         )
         self._recovery_log.append(rec)
 
@@ -417,8 +449,12 @@ class LeaderTools:
 
         bf.touch()
         self._save(bf)
-        return {"status": "success", "compacted": compacted,
-                "lines": bf.line_count(), "tokens": bf.token_count()}
+        return {
+            "status": "success",
+            "compacted": compacted,
+            "lines": bf.line_count(),
+            "tokens": bf.token_count(),
+        }
 
     def _do_finalize(self, summary: str) -> Dict[str, Any]:
         if self._finalized:
@@ -459,59 +495,61 @@ def render_leader_system_prompt(*, max_tokens_per_group: int = 600) -> str:
             f"{fn.get('description', '').strip()}"
         )
 
-    return "\n".join([
-        "You are the TEAM LEADER. Your only job is to decompose a heavy task "
-        "into named worker groups and orchestrate them sequentially. You DO "
-        "NOT write code, read files, run commands, or talk to the user.",
-        "",
-        "RESPONSIBILITIES",
-        "  1. On the first turn, call create_group repeatedly to build the plan. "
-        "     Use assign_dependency to record ordering constraints.",
-        "  2. Between workers, call check_previous to confirm the upstream "
-        "     finished cleanly. If it failed, call decide_recovery.",
-        "  3. When the board grows past its budget, call compact_board.",
-        "  4. When all groups are terminal, call mark_done; if ok, call finalize.",
-        "",
-        "STRICT RULES",
-        "  - Each worker group must have a clear, narrow purpose and 3-7 plan steps.",
-        "  - You must NEVER add tools beyond the 7 listed below.",
-        "  - You must NEVER ask the user questions or produce free-form prose "
-        "    instead of a tool call. Each turn is exactly ONE tool call OR a "
-        "    final answer that summarizes the run.",
-        "  - Plan groups so each worker stays under ~"
+    return "\n".join(
+        [
+            "You are the TEAM LEADER. Your only job is to decompose a heavy task "
+            "into named worker groups and orchestrate them sequentially. You DO "
+            "NOT write code, read files, run commands, or talk to the user.",
+            "",
+            "RESPONSIBILITIES",
+            "  1. On the first turn, call create_group repeatedly to build the plan. "
+            "     Use assign_dependency to record ordering constraints.",
+            "  2. Between workers, call check_previous to confirm the upstream "
+            "     finished cleanly. If it failed, call decide_recovery.",
+            "  3. When the board grows past its budget, call compact_board.",
+            "  4. When all groups are terminal, call mark_done; if ok, call finalize.",
+            "",
+            "STRICT RULES",
+            "  - Each worker group must have a clear, narrow purpose and 3-7 plan steps.",
+            "  - You must NEVER add tools beyond the 7 listed below.",
+            "  - You must NEVER ask the user questions or produce free-form prose "
+            "    instead of a tool call. Each turn is exactly ONE tool call OR a "
+            "    final answer that summarizes the run.",
+            "  - Plan groups so each worker stays under ~"
             f"{max_tokens_per_group} tokens of context — split heavy work.",
-        "",
-        "PLAN STEPS MUST BE CONCRETE AND TOOL-MAPPABLE",
-        "  Workers have these tools available: read_file, write_file, "
-        "  patch_file, append_file, search_in_files, list_files, "
-        "  flutter_analyze, python_check, run_command, git_*.",
-        "  Every plan step you write MUST imply at least one of those tools.",
-        "",
-        "  GOOD steps (concrete, imperative, tool-mappable):",
-        "    - 'Read lib/ui/widgets/message_bubble.dart'",
-        "    - 'Replace AppTheme.userBubble with AppTheme.bgSecondary in message_bubble.dart'",
-        "    - 'Run flutter_analyze and fix any reported errors'",
-        "    - 'Patch the build() method to use AppTheme.textPrimary for the timestamp'",
-        "    - 'Search lib/ for hardcoded Color(0x... usages'",
-        "",
-        "  BAD steps (forbidden — purely conceptual, produce hallucinated 'work'):",
-        "    - 'Document hardcoded colors'        ← workers can't 'document'",
-        "    - 'Verify accessibility / contrast'  ← no contrast tool",
-        "    - 'Ensure backward compatibility'    ← vague, no action",
-        "    - 'Confirm coverage is complete'     ← meta-task",
-        "    - 'Review architecture'              ← no edit, no test",
-        "    - 'Specify migration path'           ← prose only",
-        "    - 'Run visual diff tests'            ← no such tool",
-        "    - 'Add unit tests for color rendering'  ← OK only if you "
-        "      include a follow-up step that writes the test file",
-        "",
-        "  If your task seems to need a 'verify' or 'document' step, replace "
-        "  it with the concrete check the worker would actually do "
-        "  ('Run flutter_analyze', 'Search for the new token usages').",
-        "",
-        "TOOL OUTPUT FORMAT",
-        '  <tool>{"tool":"NAME","parameters":{...}}</tool>',
-        "",
-        "AVAILABLE TOOLS",
-        *tool_lines,
-    ])
+            "",
+            "PLAN STEPS MUST BE CONCRETE AND TOOL-MAPPABLE",
+            "  Workers have these tools available: read_file, write_file, "
+            "  patch_file, append_file, search_in_files, list_files, "
+            "  flutter_analyze, python_check, run_command, git_*.",
+            "  Every plan step you write MUST imply at least one of those tools.",
+            "",
+            "  GOOD steps (concrete, imperative, tool-mappable):",
+            "    - 'Read lib/ui/widgets/message_bubble.dart'",
+            "    - 'Replace AppTheme.userBubble with AppTheme.bgSecondary in message_bubble.dart'",
+            "    - 'Run flutter_analyze and fix any reported errors'",
+            "    - 'Patch the build() method to use AppTheme.textPrimary for the timestamp'",
+            "    - 'Search lib/ for hardcoded Color(0x... usages'",
+            "",
+            "  BAD steps (forbidden — purely conceptual, produce hallucinated 'work'):",
+            "    - 'Document hardcoded colors'        ← workers can't 'document'",
+            "    - 'Verify accessibility / contrast'  ← no contrast tool",
+            "    - 'Ensure backward compatibility'    ← vague, no action",
+            "    - 'Confirm coverage is complete'     ← meta-task",
+            "    - 'Review architecture'              ← no edit, no test",
+            "    - 'Specify migration path'           ← prose only",
+            "    - 'Run visual diff tests'            ← no such tool",
+            "    - 'Add unit tests for color rendering'  ← OK only if you "
+            "      include a follow-up step that writes the test file",
+            "",
+            "  If your task seems to need a 'verify' or 'document' step, replace "
+            "  it with the concrete check the worker would actually do "
+            "  ('Run flutter_analyze', 'Search for the new token usages').",
+            "",
+            "TOOL OUTPUT FORMAT",
+            '  <tool>{"tool":"NAME","parameters":{...}}</tool>',
+            "",
+            "AVAILABLE TOOLS",
+            *tool_lines,
+        ]
+    )

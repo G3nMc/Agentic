@@ -23,6 +23,7 @@ Hard rules:
   - ``ARTIFACT_MAX_BYTES`` is the soft cap. ``Artifact.trim_to_budget``
     drops fields per priority list when the serialized payload is over.
 """
+
 from __future__ import annotations
 
 import json

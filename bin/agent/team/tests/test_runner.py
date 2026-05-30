@@ -1,4 +1,5 @@
 import sys
+
 sys.dont_write_bytecode = True
 
 import os
@@ -17,7 +18,7 @@ from agent.team.runner import (
 from agent.team.status import Status
 
 
-_BIN_DIR = Path(__file__).resolve().parents[3]   # bin/
+_BIN_DIR = Path(__file__).resolve().parents[3]  # bin/
 _MOCK_ENTRY = "agent.team.tests._mock_worker"
 
 
@@ -41,8 +42,11 @@ class ArgvEnvBuilderTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             tp = TeamPaths.from_base(d)
             env = build_worker_env(
-                paths=tp, group="alpha", owner_model="m",
-                deps=["beta", "gamma"], base_path=d,
+                paths=tp,
+                group="alpha",
+                owner_model="m",
+                deps=["beta", "gamma"],
+                base_path=d,
             )
             self.assertEqual(env["TEAM_GROUP"], "alpha")
             self.assertEqual(env["TEAM_OWNER_MODEL"], "m")
@@ -53,6 +57,7 @@ class ArgvEnvBuilderTests(unittest.TestCase):
 class RunWorkerTests(unittest.TestCase):
     def setUp(self):
         import shutil
+
         self._tmp = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, self._tmp, ignore_errors=True)
 
@@ -70,8 +75,9 @@ class RunWorkerTests(unittest.TestCase):
             worker_entry=_MOCK_ENTRY,
             extra_env={
                 "MOCK_BEHAVIOR": behavior,
-                "PYTHONPATH": str(_BIN_DIR) + os.pathsep
-                              + os.environ.get("PYTHONPATH", ""),
+                "PYTHONPATH": str(_BIN_DIR)
+                + os.pathsep
+                + os.environ.get("PYTHONPATH", ""),
             },
         )
         board = read_board(tp.board)
@@ -117,6 +123,7 @@ class TeeOutputTests(unittest.TestCase):
 
     def setUp(self):
         import shutil
+
         self._tmp = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, self._tmp, ignore_errors=True)
 
@@ -140,8 +147,9 @@ class TeeOutputTests(unittest.TestCase):
                 worker_entry=_MOCK_ENTRY,
                 extra_env={
                     "MOCK_BEHAVIOR": "clean",
-                    "PYTHONPATH": str(_BIN_DIR) + os.pathsep
-                                  + os.environ.get("PYTHONPATH", ""),
+                    "PYTHONPATH": str(_BIN_DIR)
+                    + os.pathsep
+                    + os.environ.get("PYTHONPATH", ""),
                 },
             )
         out = captured.getvalue()
@@ -158,12 +166,15 @@ class SequentialRunnerTests(unittest.TestCase):
             tp = TeamPaths.from_base(d)
             _seed_board(tp, ["a", "b", "c"])
             runner = SequentialRunner(
-                paths=tp, base_path=d, timeout_s=30.0,
+                paths=tp,
+                base_path=d,
+                timeout_s=30.0,
                 worker_entry=_MOCK_ENTRY,
                 extra_env={
                     "MOCK_BEHAVIOR": "clean",
-                    "PYTHONPATH": str(_BIN_DIR) + os.pathsep
-                                  + os.environ.get("PYTHONPATH", ""),
+                    "PYTHONPATH": str(_BIN_DIR)
+                    + os.pathsep
+                    + os.environ.get("PYTHONPATH", ""),
                 },
             )
             seen = []
@@ -183,12 +194,15 @@ class SequentialRunnerTests(unittest.TestCase):
             tp = TeamPaths.from_base(d)
             _seed_board(tp, ["a", "b"])
             runner = SequentialRunner(
-                paths=tp, base_path=d, timeout_s=30.0,
+                paths=tp,
+                base_path=d,
+                timeout_s=30.0,
                 worker_entry=_MOCK_ENTRY,
                 extra_env={
                     "MOCK_BEHAVIOR": "fail",
-                    "PYTHONPATH": str(_BIN_DIR) + os.pathsep
-                                  + os.environ.get("PYTHONPATH", ""),
+                    "PYTHONPATH": str(_BIN_DIR)
+                    + os.pathsep
+                    + os.environ.get("PYTHONPATH", ""),
                 },
             )
             results = runner.run_all(
@@ -204,12 +218,15 @@ class SequentialRunnerTests(unittest.TestCase):
             tp = TeamPaths.from_base(d)
             _seed_board(tp, ["a", "b"])
             runner = SequentialRunner(
-                paths=tp, base_path=d, timeout_s=30.0,
+                paths=tp,
+                base_path=d,
+                timeout_s=30.0,
                 worker_entry=_MOCK_ENTRY,
                 extra_env={
                     "MOCK_BEHAVIOR": "fail",
-                    "PYTHONPATH": str(_BIN_DIR) + os.pathsep
-                                  + os.environ.get("PYTHONPATH", ""),
+                    "PYTHONPATH": str(_BIN_DIR)
+                    + os.pathsep
+                    + os.environ.get("PYTHONPATH", ""),
                 },
             )
             results = runner.run_all(

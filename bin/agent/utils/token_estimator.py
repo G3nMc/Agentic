@@ -5,6 +5,7 @@ tokenize more densely than English prose (typically 2.5-3.0 chars/token
 vs 4.0 chars/token). Using a single global 4.0 multiplier underestimates
 token counts for code-heavy prompts and risks silent context overflow.
 """
+
 from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
@@ -12,9 +13,9 @@ from typing import Any, Dict, List, Optional
 # Multipliers derived from observation across Python/Dart/JSON tool output.
 # These are pessimistic (i.e. they OVER-estimate tokens slightly) so we
 # stay safely under the context window.
-CODE_CHARS_PER_TOKEN = 3.0      # source code, JSON, stack traces, diffs
-PROSE_CHARS_PER_TOKEN = 4.0     # natural language explanations
-DEFAULT_CHARS_PER_TOKEN = 3.5   # blended default for mixed content
+CODE_CHARS_PER_TOKEN = 3.0  # source code, JSON, stack traces, diffs
+PROSE_CHARS_PER_TOKEN = 4.0  # natural language explanations
+DEFAULT_CHARS_PER_TOKEN = 3.5  # blended default for mixed content
 
 # Safety margin applied on top of the raw estimate to absorb drift
 # from role separators, formatting overhead, and provider-specific

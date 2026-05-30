@@ -1,4 +1,5 @@
 """Google Gemini backend via the official google-genai SDK."""
+
 from __future__ import annotations
 
 import json
@@ -28,8 +29,11 @@ class GeminiBackend(ModelBackend):
     DEFAULT_MODEL = "gemini-2.5-flash"
 
     def __init__(self, api_key: str, model_id: str):
-        api_key = (api_key or os.environ.get("GOOGLE_API_KEY", "") or
-                   os.environ.get("GEMINI_API_KEY", "")).strip()
+        api_key = (
+            api_key
+            or os.environ.get("GOOGLE_API_KEY", "")
+            or os.environ.get("GEMINI_API_KEY", "")
+        ).strip()
         if not api_key:
             raise RuntimeError("Gemini backend requires --gemini-api-key.")
         if not model_id:
@@ -70,7 +74,9 @@ class GeminiBackend(ModelBackend):
                 if callable(body):
                     body = body()
             if isinstance(body, dict):
-                details = body.get("details") or body.get("error", {}).get("details") or []
+                details = (
+                    body.get("details") or body.get("error", {}).get("details") or []
+                )
                 for d in details:
                     if isinstance(d, dict) and d.get("@type", "").endswith("RetryInfo"):
                         raw = d.get("retryDelay", "")
@@ -175,8 +181,7 @@ class GeminiBackend(ModelBackend):
                 # (4xx auth errors, bad requests) fails immediately.
                 if status_code not in (429, 500, 502, 503, 504):
                     _log(
-                        f"[Gemini:error] model={self.model_id} "
-                        f"{type(e).__name__}: {e}"
+                        f"[Gemini:error] model={self.model_id} {type(e).__name__}: {e}"
                     )
                     raise RuntimeError(f"Gemini error: {e}") from e
                 if attempt >= _MAX_RETRIES - 1:
@@ -220,36 +225,50 @@ class GeminiBackend(ModelBackend):
                     function_calls.append(function_call)
 
         if function_calls:
-            _log(f"[Gemini:tool_calls] {len(function_calls)} function call(s) in response")
+            _log(
+                f"[Gemini:tool_calls] {len(function_calls)} function call(s) in response"
+            )
             if len(function_calls) > 1:
-                _log(f"[Gemini:tool_calls_multi] {len(function_calls)} calls — using first only")
+                _log(
+                    f"[Gemini:tool_calls_multi] {len(function_calls)} calls — using first only"
+                )
 
             fc = function_calls[0]
             call = getattr(fc, "function_call", fc)
             name = getattr(fc, "name", None) or getattr(call, "name", None)
             args = getattr(fc, "args", None)
             if args is None:
-                args = getattr(call, "args", None) or getattr(call, "arguments", None) or {}
+                args = (
+                    getattr(call, "args", None)
+                    or getattr(call, "arguments", None)
+                    or {}
+                )
 
             args = sanitize_for_agent(args)
             if not isinstance(args, dict):
                 try:
                     args = dict(args)
                 except Exception:
-                    _log(f"[Gemini:tool_call_args_error] cannot convert args to dict: {args!r}")
+                    _log(
+                        f"[Gemini:tool_call_args_error] cannot convert args to dict: {args!r}"
+                    )
                     args = {}
 
             if not name:
                 _log(f"[Gemini:tool_call_no_name] function call missing name — raising")
                 raise RuntimeError("Gemini returned function call without name.")
 
-            _log(f"[Gemini:tool_call] {name}({json.dumps(args, ensure_ascii=False)[:200]})")
+            _log(
+                f"[Gemini:tool_call] {name}({json.dumps(args, ensure_ascii=False)[:200]})"
+            )
             return (
-                f'<tool>{json.dumps({"tool": name, "parameters": args}, ensure_ascii=False)}</tool>',
+                f"<tool>{json.dumps({'tool': name, 'parameters': args}, ensure_ascii=False)}</tool>",
                 finish_reason,
             )
 
         text = getattr(response, "text", "") or ""
         result = text.strip()
-        _log(f"[Gemini:done] returning content ({len(result)} chars) finish_reason={finish_reason!r}")
+        _log(
+            f"[Gemini:done] returning content ({len(result)} chars) finish_reason={finish_reason!r}"
+        )
         return result, finish_reason

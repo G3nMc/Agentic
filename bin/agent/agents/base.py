@@ -1,4 +1,5 @@
 """Common base for every workflow agent."""
+
 from __future__ import annotations
 
 import os
@@ -48,8 +49,14 @@ class Agent(ABC):
 
     name: str = "agent"
 
-    def __init__(self, backend: ModelBackend, system_prompt: str,
-                 *, temperature: float = 0.2, max_tokens: int = 1024):
+    def __init__(
+        self,
+        backend: ModelBackend,
+        system_prompt: str,
+        *,
+        temperature: float = 0.2,
+        max_tokens: int = 1024,
+    ):
         self.backend = backend
         self.system_prompt = (system_prompt or "") + _NO_EMOJI_RULE
         self.temperature = temperature
@@ -66,10 +73,13 @@ class Agent(ABC):
     # ------------------------------------------------------------------
     # Helpers shared by concrete agents
     # ------------------------------------------------------------------
-    def _chat(self, messages: List[Dict[str, Any]],
-              tools: Optional[List[Dict[str, Any]]] = None,
-              max_tokens: Optional[int] = None,
-              temperature: Optional[float] = None) -> tuple[str, str]:
+    def _chat(
+        self,
+        messages: List[Dict[str, Any]],
+        tools: Optional[List[Dict[str, Any]]] = None,
+        max_tokens: Optional[int] = None,
+        temperature: Optional[float] = None,
+    ) -> tuple[str, str]:
         """Call the backend with this agent's defaults, allowing per-call overrides."""
         # Mirror what the user (or shaper/executor output) is sending into
         # this layer to stderr so the orchestrator log panel can show the
@@ -83,7 +93,8 @@ class Agent(ABC):
                 break
         print(
             f"[agent:{self.name}→{self.model_id}] {_truncate(last_user)}",
-            file=sys.stderr, flush=True,
+            file=sys.stderr,
+            flush=True,
         )
 
         text, finish_reason = self.backend.chat(
@@ -95,13 +106,14 @@ class Agent(ABC):
 
         print(
             f"[agent:{self.name}←{self.model_id}] {_truncate(text or '')}",
-            file=sys.stderr, flush=True,
+            file=sys.stderr,
+            flush=True,
         )
         return text, finish_reason
 
-    def _build_messages(self, user_content: str,
-                        history: Optional[List[Dict[str, Any]]] = None
-                        ) -> List[Dict[str, Any]]:
+    def _build_messages(
+        self, user_content: str, history: Optional[List[Dict[str, Any]]] = None
+    ) -> List[Dict[str, Any]]:
         """Compose ``[system, …history, user]`` for a one-shot agent call."""
         messages: List[Dict[str, Any]] = [
             {"role": "system", "content": self.system_prompt}

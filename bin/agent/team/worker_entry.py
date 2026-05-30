@@ -26,6 +26,7 @@ Exit code:
     0 on DONE_*, 1 on FAILED, anything else means crash → host stamps
     INTERRUPTED.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -41,12 +42,12 @@ sys.dont_write_bytecode = True
 
 # Make the ``agent`` package importable regardless of how we're launched.
 _THIS = Path(__file__).resolve()
-_BIN_DIR = _THIS.parents[2]   # bin/
+_BIN_DIR = _THIS.parents[2]  # bin/
 if str(_BIN_DIR) not in sys.path:
     sys.path.insert(0, str(_BIN_DIR))
 
-from agent.team.artifact import Artifact, read_artifact, write_artifact   # noqa: E402
-from agent.team.board import (                                             # noqa: E402
+from agent.team.artifact import Artifact, read_artifact, write_artifact  # noqa: E402
+from agent.team.board import (  # noqa: E402
     BoardSection,
     PlanStep,
     read_board,
@@ -54,14 +55,15 @@ from agent.team.board import (                                             # noq
     slice_status_table,
     write_board,
 )
-from agent.team.paths import TeamPaths                                     # noqa: E402
-from agent.team.soft_breaker import maybe_compact_section                  # noqa: E402
-from agent.team.status import Status                                       # noqa: E402
+from agent.team.paths import TeamPaths  # noqa: E402
+from agent.team.soft_breaker import maybe_compact_section  # noqa: E402
+from agent.team.status import Status  # noqa: E402
+
 # Imported at module level so tests can monkey-patch the symbol on
 # this module (rather than reaching into agent.core.workflow).
-from agent.core.workflow import build_workflow_from_args                   # noqa: E402
-from agent.path_filter import PathFilter                                   # noqa: E402
-from agent.policy import SecurityConfig                                    # noqa: E402
+from agent.core.workflow import build_workflow_from_args  # noqa: E402
+from agent.path_filter import PathFilter  # noqa: E402
+from agent.policy import SecurityConfig  # noqa: E402
 
 logger = logging.getLogger("team.worker")
 
@@ -75,10 +77,11 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--group", required=True)
     # Same flags as orchestrator.py (kept loose; we only NEED the
     # multi-agent + agent-config flags, but the host may forward more).
-    p.add_argument("--backend",
-                   choices=["huggingface", "ollama", "groq",
-                            "gemini", "openrouter", "github"],
-                   default="gemini")
+    p.add_argument(
+        "--backend",
+        choices=["huggingface", "ollama", "groq", "gemini", "openrouter", "github"],
+        default="gemini",
+    )
     p.add_argument("--hf-token", default="")
     p.add_argument("--model", default="")
     p.add_argument("--ollama-base-url", default="http://localhost:11434")
@@ -131,7 +134,8 @@ def _format_dep_summary(dep_group: str, artifact: Artifact) -> str:
 
 
 def _build_boot_prompt(
-    *, group: str,
+    *,
+    group: str,
     section_text: str,
     status_table: str,
     dep_artifacts: Dict[str, Artifact],
@@ -183,9 +187,9 @@ def _stamp_running(paths: TeamPaths, group: str) -> None:
     write_board(paths.board, bf)
 
 
-def _stamp_terminal(paths: TeamPaths, group: str,
-                    status: Status, last_step: str,
-                    log_line: str) -> None:
+def _stamp_terminal(
+    paths: TeamPaths, group: str, status: Status, last_step: str, log_line: str
+) -> None:
     bf = read_board(paths.board)
     bf.set_status(group, status, last_step=last_step)
     section = bf.sections.get(group)
@@ -215,10 +219,16 @@ def _load_dep_artifacts(paths: TeamPaths, deps: List[str]) -> Dict[str, Artifact
 # ----------------------------------------------------------------------
 # State-changing tools — a worker that called none of these did not
 # actually do any code-modification work.
-_STATE_CHANGING_TOOLS = frozenset({
-    "write_file", "append_file", "patch_file",
-    "delete_file", "move_file", "create_directory",
-})
+_STATE_CHANGING_TOOLS = frozenset(
+    {
+        "write_file",
+        "append_file",
+        "patch_file",
+        "delete_file",
+        "move_file",
+        "create_directory",
+    }
+)
 
 # Display-friendly action label per write tool.
 _TOOL_ACTION = {
@@ -289,7 +299,10 @@ def _summarize_tool_usage(tool_calls: List[Dict[str, Any]]) -> Dict[str, int]:
 
 
 def _write_failed_artifact(
-    paths: TeamPaths, group: str, owner_model: str, reason: str,
+    paths: TeamPaths,
+    group: str,
+    owner_model: str,
+    reason: str,
 ) -> None:
     """Write a minimal FAILED artifact so the host/leader can see WHY
     a worker died, even when it dies before reaching the normal
@@ -299,9 +312,11 @@ def _write_failed_artifact(
     if len(summary) > 1500:
         summary = summary[:1497] + "..."
     artifact = Artifact(
-        group=group, producer_model=owner_model,
+        group=group,
+        producer_model=owner_model,
         status=Status.FAILED,
-        summary=f"ERROR: {summary}" if not summary.lower().startswith("error")
+        summary=f"ERROR: {summary}"
+        if not summary.lower().startswith("error")
         else summary,
     )
     try:
@@ -309,13 +324,19 @@ def _write_failed_artifact(
     except Exception as e:
         # Last-ditch — log to stderr so the worker_entry stderr file
         # at least carries the original error.
-        print(f"[worker:{group}] failed to write FAILED artifact: {e}",
-              file=sys.stderr, flush=True)
+        print(
+            f"[worker:{group}] failed to write FAILED artifact: {e}",
+            file=sys.stderr,
+            flush=True,
+        )
 
 
 def _build_artifact_from_response(
-    *, group: str, owner_model: str,
-    response: str, status: Status,
+    *,
+    group: str,
+    owner_model: str,
+    response: str,
+    status: Status,
     section: Optional[BoardSection],
     tool_calls: Optional[List[Dict[str, Any]]] = None,
 ) -> Artifact:
@@ -327,7 +348,11 @@ def _build_artifact_from_response(
     # nothing populates the section log mid-workflow.
     files_touched = _files_touched_from_tool_calls(tool_calls or [])
     warnings: List[str] = []
-    if status == Status.DONE_WITH_WARNINGS and not files_touched and not (tool_calls or []):
+    if (
+        status == Status.DONE_WITH_WARNINGS
+        and not files_touched
+        and not (tool_calls or [])
+    ):
         warnings.append(
             "Worker produced prose only — no tools were called. "
             "The reported result is unreliable; verify nothing was "
@@ -338,9 +363,12 @@ def _build_artifact_from_response(
             if "warning" in entry.lower():
                 warnings.append(entry)
     return Artifact(
-        group=group, producer_model=owner_model,
-        status=status, summary=summary,
-        files_touched=files_touched, warnings=warnings,
+        group=group,
+        producer_model=owner_model,
+        status=status,
+        summary=summary,
+        files_touched=files_touched,
+        warnings=warnings,
     )
 
 
@@ -360,20 +388,29 @@ def main() -> int:
     base_path = os.environ.get("TEAM_BASE_PATH", args.base_path)
     session_id = os.environ.get("TEAM_SESSION_ID")
 
-    paths = TeamPaths.for_session(base_path, session_id) if session_id \
+    paths = (
+        TeamPaths.for_session(base_path, session_id)
+        if session_id
         else TeamPaths.from_base(base_path)
+    )
     paths.ensure_dirs()
 
-    print(f"[worker:{group}] starting (owner_model={owner_model}, deps={deps})",
-          file=sys.stderr, flush=True)
+    print(
+        f"[worker:{group}] starting (owner_model={owner_model}, deps={deps})",
+        file=sys.stderr,
+        flush=True,
+    )
 
     # Mark RUNNING — even if we crash before producing an artifact, the
     # board reflects that we tried.
     try:
         _stamp_running(paths, group)
     except Exception as e:
-        print(f"[worker:{group}] failed to stamp RUNNING: {e}",
-              file=sys.stderr, flush=True)
+        print(
+            f"[worker:{group}] failed to stamp RUNNING: {e}",
+            file=sys.stderr,
+            flush=True,
+        )
         return 2  # host will stamp INTERRUPTED
 
     # Read inputs
@@ -383,17 +420,16 @@ def main() -> int:
         status_table = slice_status_table(board_text)
         dep_artifacts = _load_dep_artifacts(paths, deps)
     except Exception as e:
-        print(f"[worker:{group}] read inputs failed: {e}",
-              file=sys.stderr, flush=True)
-        _stamp_terminal(paths, group, Status.FAILED, "0/?",
-                        f"read inputs failed: {e}")
-        _write_failed_artifact(paths, group, owner_model,
-                               f"read inputs failed: {e}")
+        print(f"[worker:{group}] read inputs failed: {e}", file=sys.stderr, flush=True)
+        _stamp_terminal(paths, group, Status.FAILED, "0/?", f"read inputs failed: {e}")
+        _write_failed_artifact(paths, group, owner_model, f"read inputs failed: {e}")
         return 1
 
     boot_prompt = _build_boot_prompt(
-        group=group, section_text=section_text,
-        status_table=status_table, dep_artifacts=dep_artifacts,
+        group=group,
+        section_text=section_text,
+        status_table=status_table,
+        dep_artifacts=dep_artifacts,
     )
 
     # Build the Workflow — the worker is essentially a one-shot run of
@@ -422,12 +458,15 @@ def main() -> int:
         )
     except Exception as e:
         tb = traceback.format_exc(limit=3)
-        print(f"[worker:{group}] workflow build failed: {e}\n{tb}",
-              file=sys.stderr, flush=True)
-        _stamp_terminal(paths, group, Status.FAILED, "0/?",
-                        f"workflow build failed: {e}")
-        _write_failed_artifact(paths, group, owner_model,
-                               f"workflow build failed: {e}")
+        print(
+            f"[worker:{group}] workflow build failed: {e}\n{tb}",
+            file=sys.stderr,
+            flush=True,
+        )
+        _stamp_terminal(
+            paths, group, Status.FAILED, "0/?", f"workflow build failed: {e}"
+        )
+        _write_failed_artifact(paths, group, owner_model, f"workflow build failed: {e}")
         return 1
 
     # Run
@@ -437,12 +476,15 @@ def main() -> int:
         tool_calls = list(result.get("tool_calls") or [])
     except Exception as e:
         tb = traceback.format_exc(limit=4)
-        print(f"[worker:{group}] workflow.run crashed: {e}\n{tb}",
-              file=sys.stderr, flush=True)
-        _stamp_terminal(paths, group, Status.FAILED, "0/?",
-                        f"workflow.run crashed: {e}")
-        _write_failed_artifact(paths, group, owner_model,
-                               f"workflow.run crashed: {e}")
+        print(
+            f"[worker:{group}] workflow.run crashed: {e}\n{tb}",
+            file=sys.stderr,
+            flush=True,
+        )
+        _stamp_terminal(
+            paths, group, Status.FAILED, "0/?", f"workflow.run crashed: {e}"
+        )
+        _write_failed_artifact(paths, group, owner_model, f"workflow.run crashed: {e}")
         return 1
 
     # Determine status from response + actual tool usage. A non-error
@@ -451,9 +493,12 @@ def main() -> int:
     # so the chat summary tells the truth.
     status = _classify_response(response, tool_calls)
     tool_summary = _summarize_tool_usage(tool_calls)
-    print(f"[worker:{group}] workflow finished | status={status.value} "
-          f"| response_chars={len(response)} | tools={tool_summary}",
-          file=sys.stderr, flush=True)
+    print(
+        f"[worker:{group}] workflow finished | status={status.value} "
+        f"| response_chars={len(response)} | tools={tool_summary}",
+        file=sys.stderr,
+        flush=True,
+    )
 
     # Read final section to attach files-touched hints
     bf = read_board(paths.board)
@@ -463,8 +508,11 @@ def main() -> int:
     last_step = f"{plan_done}/{plan_total}" if plan_total else "—"
 
     artifact = _build_artifact_from_response(
-        group=group, owner_model=owner_model,
-        response=response, status=status, section=section,
+        group=group,
+        owner_model=owner_model,
+        response=response,
+        status=status,
+        section=section,
         tool_calls=tool_calls,
     )
     if artifact.warnings and status == Status.DONE_CLEAN:
@@ -474,31 +522,40 @@ def main() -> int:
     # Soft size cap on artifact
     trim_applied = artifact.trim_to_budget()
     if trim_applied:
-        print(f"[worker:{group}] artifact trimmed: {','.join(trim_applied)}",
-              file=sys.stderr, flush=True)
+        print(
+            f"[worker:{group}] artifact trimmed: {','.join(trim_applied)}",
+            file=sys.stderr,
+            flush=True,
+        )
 
     # Soft breaker: roll older log entries before terminal stamp
     try:
         compacted, rolled = maybe_compact_section(paths, group)
         if compacted:
-            print(f"[worker:{group}] section log compacted "
-                  f"(rolled {rolled} entries)",
-                  file=sys.stderr, flush=True)
+            print(
+                f"[worker:{group}] section log compacted (rolled {rolled} entries)",
+                file=sys.stderr,
+                flush=True,
+            )
     except Exception as e:
-        print(f"[worker:{group}] section compaction failed (non-fatal): {e}",
-              file=sys.stderr, flush=True)
+        print(
+            f"[worker:{group}] section compaction failed (non-fatal): {e}",
+            file=sys.stderr,
+            flush=True,
+        )
 
     try:
         write_artifact(paths.artifact_path(group), artifact)
     except Exception as e:
-        print(f"[worker:{group}] artifact write failed: {e}",
-              file=sys.stderr, flush=True)
-        _stamp_terminal(paths, group, Status.FAILED, last_step,
-                        f"artifact write failed: {e}")
+        print(
+            f"[worker:{group}] artifact write failed: {e}", file=sys.stderr, flush=True
+        )
+        _stamp_terminal(
+            paths, group, Status.FAILED, last_step, f"artifact write failed: {e}"
+        )
         return 1
 
-    _stamp_terminal(paths, group, status, last_step,
-                    f"completed: {status.value}")
+    _stamp_terminal(paths, group, status, last_step, f"completed: {status.value}")
     return 0 if status in (Status.DONE_CLEAN, Status.DONE_WITH_WARNINGS) else 1
 
 

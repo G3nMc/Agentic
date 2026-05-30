@@ -5,7 +5,9 @@ perspective when the user typed "*.py, *.dart, *md, *.json, *.yaml" as
 a single include_files entry — exactly the bug seen in production. These
 tests pin the now-tolerant parsing.
 """
+
 import sys
+
 sys.dont_write_bytecode = True
 
 import unittest

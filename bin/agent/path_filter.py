@@ -50,6 +50,7 @@ Baseline
     ``node_modules``, ``.gradle``). The user can override any of them
     by adding the same name to ``include_dirs``.
 """
+
 from __future__ import annotations
 
 import sys as _sys
@@ -66,8 +67,15 @@ from typing import Iterable, List, Optional, Sequence, Tuple
 # bigger SKIP_EXT/SKIP_DIRS sets that used to live in fs_read.py are now
 # the user's responsibility to add (we no longer assume what they want).
 _BASELINE_EXCLUDE_DIRS: Tuple[str, ...] = (
-    ".git", ".idea", ".claude", ".agent",
-    "__pycache__", ".dart_tool", "build", "node_modules", ".gradle",
+    ".git",
+    ".idea",
+    ".claude",
+    ".agent",
+    "__pycache__",
+    ".dart_tool",
+    "build",
+    "node_modules",
+    ".gradle",
 )
 
 
@@ -97,10 +105,12 @@ def _looks_like_ext_glob_loose(entry: str) -> bool:
     (missing dot). Used only by the input-cleaning pass — the actual
     matching code still requires the canonical ``*.ext`` form.
     """
-    return (entry.startswith("*")
-            and len(entry) > 1
-            and "/" not in entry
-            and "\\" not in entry)
+    return (
+        entry.startswith("*")
+        and len(entry) > 1
+        and "/" not in entry
+        and "\\" not in entry
+    )
 
 
 def _normalize_user_filter_entries(entries):
@@ -118,7 +128,7 @@ def _normalize_user_filter_entries(entries):
        extension token.
     """
     out = []
-    for raw in (entries or []):
+    for raw in entries or []:
         if not isinstance(raw, str):
             continue
         s = raw.strip()
@@ -156,9 +166,9 @@ class PathFilter:
 
     @classmethod
     def from_config(
-            cls,
-            base_path: Path,
-            config: Optional[dict],
+        cls,
+        base_path: Path,
+        config: Optional[dict],
     ) -> "PathFilter":
         """Build a filter from a JSON-like config dict (or None).
 
@@ -267,7 +277,9 @@ class PathFilter:
         return False
 
     def _is_ancestor_of_any_include(
-            self, dir_path: Path, includes: list,
+        self,
+        dir_path: Path,
+        includes: list,
     ) -> bool:
         """True when dir_path is a parent of any include target.
 
@@ -307,9 +319,7 @@ class PathFilter:
                 # Bare name; could match anywhere, so the score check
                 # already covers it.
                 continue
-            normalized_segs = [
-                (s.lower() if os.name == "nt" else s) for s in segs
-            ]
+            normalized_segs = [(s.lower() if os.name == "nt" else s) for s in segs]
             # Test each proper prefix (excluding the full path itself,
             # which would be a direct match — handled by _score).
             for i in range(1, len(normalized_segs)):
@@ -399,8 +409,14 @@ class PathFilter:
             tail = f" (+{extra} more)" if extra > 0 else ""
             return f"  {name}: {', '.join(shown)}{tail}"
 
-        any_active = any((self.exclude_dirs, self.include_dirs,
-                          self.exclude_files, self.include_files))
+        any_active = any(
+            (
+                self.exclude_dirs,
+                self.include_dirs,
+                self.exclude_files,
+                self.include_files,
+            )
+        )
         if not any_active:
             return ""
 

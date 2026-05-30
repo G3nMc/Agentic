@@ -7,14 +7,20 @@ Tiered evaluation:
 The Router must never be the expensive model — that's the whole point of
 having it. Pair it with Ollama, Haiku-tier, or Groq-llama-8b in the UI.
 """
+
 from __future__ import annotations
 
 import re
 import sys
 from typing import Optional
 
-from ..core.state import (ALL_ROUTES, ROUTE_REASONING, ROUTE_TOOL,
-                           ROUTE_TRIVIAL, WorkflowState)
+from ..core.state import (
+    ALL_ROUTES,
+    ROUTE_REASONING,
+    ROUTE_TOOL,
+    ROUTE_TRIVIAL,
+    WorkflowState,
+)
 from .base import Agent
 
 
@@ -72,12 +78,36 @@ _CONTINUATION_PATTERNS = [
 # straight to ``tool``. Mirrors the heuristic in run_loop.Orchestrator but
 # trimmed to the markers that genuinely cannot be answered without tools.
 _TOOL_MARKERS = (
-    ".dart", ".py", ".js", ".ts", ".json", ".yaml", ".yml", ".md",
-    "lib/", "src/", "bin/", "test/", "pubspec",
-    "git ", "commit", "branch", "merge", "diff",
-    "run command", "shell", "build", "compile",
-    "flutter analyze", "flutter test", "get-content", "select-string",
-    "export chat", "download chat", "chat history", "conversation history",
+    ".dart",
+    ".py",
+    ".js",
+    ".ts",
+    ".json",
+    ".yaml",
+    ".yml",
+    ".md",
+    "lib/",
+    "src/",
+    "bin/",
+    "test/",
+    "pubspec",
+    "git ",
+    "commit",
+    "branch",
+    "merge",
+    "diff",
+    "run command",
+    "shell",
+    "build",
+    "compile",
+    "flutter analyze",
+    "flutter test",
+    "get-content",
+    "select-string",
+    "export chat",
+    "download chat",
+    "chat history",
+    "conversation history",
 )
 
 # Knowledge-domain markers — questions about external protocols, standards,
@@ -85,18 +115,50 @@ _TOOL_MARKERS = (
 # filesystem and should bypass the LLM-classifier (the cheap router model
 # tends to mis-label "explain X" as `tool` because of the imperative verb).
 _KNOWLEDGE_PHRASES = (
-    "explain ", "what is ", "what are ", "what's ", "whats ",
-    "how does ", "how do ", "why does ", "why do ",
-    "difference between ", "compare ", "vs ",
-    "tell me about ", "describe ",
+    "explain ",
+    "what is ",
+    "what are ",
+    "what's ",
+    "whats ",
+    "how does ",
+    "how do ",
+    "why does ",
+    "why do ",
+    "difference between ",
+    "compare ",
+    "vs ",
+    "tell me about ",
+    "describe ",
 )
 _KNOWLEDGE_TOPICS = (
-    "mcp", "model context protocol", "oauth", "openid", "saml", "jwt",
-    "http", "https", "tcp", "udp", "websocket", "grpc", "rest", "graphql",
-    "json-rpc", "rpc", "tls", "ssl",
-    "kubernetes", "k8s", "docker",
-    "react", "angular", "vue",
-    "transformer", "llm", "embedding", "rag",
+    "mcp",
+    "model context protocol",
+    "oauth",
+    "openid",
+    "saml",
+    "jwt",
+    "http",
+    "https",
+    "tcp",
+    "udp",
+    "websocket",
+    "grpc",
+    "rest",
+    "graphql",
+    "json-rpc",
+    "rpc",
+    "tls",
+    "ssl",
+    "kubernetes",
+    "k8s",
+    "docker",
+    "react",
+    "angular",
+    "vue",
+    "transformer",
+    "llm",
+    "embedding",
+    "rag",
 )
 
 # Hard cap on the user message we hand to the LLM classifier. Anything
@@ -108,12 +170,20 @@ _ROUTER_MAX_INPUT_CHARS = 2000
 class RouterAgent(Agent):
     name = "router"
 
-    def __init__(self, backend, *, system_prompt: Optional[str] = None,
-                 temperature: float = 0.0, max_tokens: int = 8):
-        super().__init__(backend,
-                         system_prompt or _ROUTER_SYSTEM_PROMPT,
-                         temperature=temperature,
-                         max_tokens=max_tokens)
+    def __init__(
+        self,
+        backend,
+        *,
+        system_prompt: Optional[str] = None,
+        temperature: float = 0.0,
+        max_tokens: int = 8,
+    ):
+        super().__init__(
+            backend,
+            system_prompt or _ROUTER_SYSTEM_PROMPT,
+            temperature=temperature,
+            max_tokens=max_tokens,
+        )
 
     # ------------------------------------------------------------------
     def run(self, state: WorkflowState) -> WorkflowState:
@@ -122,8 +192,9 @@ class RouterAgent(Agent):
         # Enhanced trivial pattern matching for direct routing
         if any(p.search(text) for p in _TRIVIAL_PATTERNS):
             state.route = ROUTE_TRIVIAL
-            state.add_trace(self.name, output=ROUTE_TRIVIAL,
-                            detail="rule-match (no LLM call)")
+            state.add_trace(
+                self.name, output=ROUTE_TRIVIAL, detail="rule-match (no LLM call)"
+            )
             return state
         # Tier 1b: continuation phrases like "Ok proceed", "yes do it" — go
         # straight to reasoning so the (history-aware) shaper can re-shape.
@@ -131,8 +202,11 @@ class RouterAgent(Agent):
         # produces conversational chatter for these inputs.
         if any(p.match(text) for p in _CONTINUATION_PATTERNS):
             state.route = ROUTE_REASONING
-            state.add_trace(self.name, output=ROUTE_REASONING,
-                            detail="continuation-match (no LLM call)")
+            state.add_trace(
+                self.name,
+                output=ROUTE_REASONING,
+                detail="continuation-match (no LLM call)",
+            )
             return state
         lowered = text.lower()
         # Deterministic shortcut for obvious tool requests.
@@ -150,8 +224,9 @@ class RouterAgent(Agent):
         # its own knowledge (its system prompt now forbids grep'ing the repo
         # for these). Requires BOTH a knowledge phrase AND a known topic to
         # avoid stealing genuine in-repo questions like "explain bin/agent".
-        if (any(p in lowered for p in _KNOWLEDGE_PHRASES)
-                and any(t in lowered for t in _KNOWLEDGE_TOPICS)):
+        if any(p in lowered for p in _KNOWLEDGE_PHRASES) and any(
+            t in lowered for t in _KNOWLEDGE_TOPICS
+        ):
             state.route = ROUTE_REASONING
             state.add_trace(
                 self.name,
@@ -162,23 +237,28 @@ class RouterAgent(Agent):
 
         # Tier 2: cheap classifier. Cap input so a long paste can't 413 the
         # cheap-tier endpoint — only the prefix is needed to classify.
-        classifier_input = text if len(text) <= _ROUTER_MAX_INPUT_CHARS \
+        classifier_input = (
+            text
+            if len(text) <= _ROUTER_MAX_INPUT_CHARS
             else text[:_ROUTER_MAX_INPUT_CHARS]
+        )
         try:
             messages = self._build_messages(classifier_input)
             label_text, _ = self._chat(messages)
         except Exception as e:  # noqa: BLE001 — broad on purpose
-            print(f"[router] classification failed ({e}); defaulting to reasoning.",
-                  file=sys.stderr)
+            print(
+                f"[router] classification failed ({e}); defaulting to reasoning.",
+                file=sys.stderr,
+            )
             state.route = ROUTE_REASONING
-            state.add_trace(self.name, output=ROUTE_REASONING,
-                            detail=f"fallback after error: {e}")
+            state.add_trace(
+                self.name, output=ROUTE_REASONING, detail=f"fallback after error: {e}"
+            )
             return state
 
         label = self._parse_label(label_text)
         state.route = label
-        state.add_trace(self.name, output=label,
-                        detail=f"raw={label_text!r}")
+        state.add_trace(self.name, output=label, detail=f"raw={label_text!r}")
         return state
 
     # ------------------------------------------------------------------

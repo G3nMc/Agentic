@@ -1,4 +1,5 @@
 import sys
+
 sys.dont_write_bytecode = True
 
 import shutil
@@ -29,8 +30,9 @@ class TeamPathsTests(unittest.TestCase):
         # Path traversal attempts and weirdness collapse to _default
         for bad in ["..", "../escape", "a/b", "a\\b", "", None, "."]:
             tp = TeamPaths.from_base("/p", session_id=bad)
-            self.assertEqual(tp.session_id, "_default",
-                             f"Expected sanitization for {bad!r}")
+            self.assertEqual(
+                tp.session_id, "_default", f"Expected sanitization for {bad!r}"
+            )
 
     def test_uuid_session_id_is_accepted(self):
         guid = "69790e60-06fa-4c14-9729-39f7ba49c5e2"

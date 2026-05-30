@@ -31,6 +31,7 @@ Usage:
   python orchestrator.py --hf-token YOUR_TOKEN --interactive
   python orchestrator.py --hf-token YOUR_TOKEN --model MODEL_ID
 """
+
 from __future__ import annotations
 
 import sys
@@ -44,6 +45,7 @@ sys.dont_write_bytecode = True
 # Ensure ``import agent`` works whether the script is launched as
 # ``python bin/orchestrator.py`` or ``python -m bin.orchestrator``.
 import os
+
 _THIS_DIR = os.path.dirname(os.path.abspath(__file__))
 if _THIS_DIR not in sys.path:
     sys.path.insert(0, _THIS_DIR)
@@ -103,12 +105,14 @@ def _prompt_with_visible_history(prompt: str, history: List[Dict[str, str]]) -> 
         role = msg["role"]
         content = msg["content"]
         lines.append(f"[{role}] {content}")
-    lines.extend([
-        "--- END CHAT HISTORY ---",
-        "",
-        "Latest user request:",
-        prompt,
-    ])
+    lines.extend(
+        [
+            "--- END CHAT HISTORY ---",
+            "",
+            "Latest user request:",
+            prompt,
+        ]
+    )
     return "\n".join(lines)
 
 
@@ -131,101 +135,109 @@ def main():
             "with `models:read` scope). All backends use the same tool protocol."
         ),
     )
-    parser.add_argument("--hf-token",
-                        help="Hugging Face API token (required when "
-                             "--backend=huggingface)")
+    parser.add_argument(
+        "--hf-token",
+        help="Hugging Face API token (required when --backend=huggingface)",
+    )
     parser.add_argument(
         "--model",
         default="",
         help="Model ID. For HF: e.g. 'meta-llama/Llama-3.1-70B-Instruct'. "
-             "For Gemini: e.g. 'gemini-2.5-flash' or 'gemini-2.5-pro'. "
-             "For Ollama: e.g. 'qwen2.5-coder:7b' or 'llama3:8b'. "
-             "Groq and Ollama backends require an explicit model. "
-             "Small models (<7B) frequently fail the tool-call protocol.",
+        "For Gemini: e.g. 'gemini-2.5-flash' or 'gemini-2.5-pro'. "
+        "For Ollama: e.g. 'qwen2.5-coder:7b' or 'llama3:8b'. "
+        "Groq and Ollama backends require an explicit model. "
+        "Small models (<7B) frequently fail the tool-call protocol.",
     )
     parser.add_argument(
         "--ollama-base-url",
         default="http://localhost:11434",
         help="Ollama daemon or cloud endpoint URL. Local default is "
-             "http://localhost:11434. Models tagged ':<size>-cloud' are "
-             "auto-routed to https://ollama.com when this flag is left at "
-             "the default — pass it explicitly only to override (e.g. a "
-             "self-hosted proxy).",
+        "http://localhost:11434. Models tagged ':<size>-cloud' are "
+        "auto-routed to https://ollama.com when this flag is left at "
+        "the default — pass it explicitly only to override (e.g. a "
+        "self-hosted proxy).",
     )
     parser.add_argument(
         "--ollama-api-key",
         default="",
         help="Bearer token for cloud-hosted Ollama endpoints. Leave empty "
-             "for a local daemon (no auth needed).",
+        "for a local daemon (no auth needed).",
     )
     parser.add_argument(
         "--ollama-num-ctx",
         type=int,
         default=OllamaBackend.DEFAULT_NUM_CTX,
         help="Context window for Ollama. Defaults to 8192. Do NOT raise "
-             "this to match the model's Modelfile default (often 128K) — "
-             "it explodes KV-cache RAM use. Drop to 4096 for very small "
-             "local models on tight RAM; raise to 16384/32768 for 7B+ "
-             "models on >=16 GB or for cloud-hosted backends.",
+        "this to match the model's Modelfile default (often 128K) — "
+        "it explodes KV-cache RAM use. Drop to 4096 for very small "
+        "local models on tight RAM; raise to 16384/32768 for 7B+ "
+        "models on >=16 GB or for cloud-hosted backends.",
     )
     parser.add_argument(
         "--temperature",
         type=float,
         default=0.2,
         help="Sampling temperature. Lower = more deterministic tool calls "
-             "(0.2 is the sweet spot for small models); raise to ~0.7 for "
-             "more natural free-form answers.",
+        "(0.2 is the sweet spot for small models); raise to ~0.7 for "
+        "more natural free-form answers.",
     )
     parser.add_argument(
         "--max-tokens",
         type=int,
         default=8192 * 2,
         help="Hard cap on generated tokens per model call. Covers any tool "
-             "call + typical file writes. Raising past ~4096 on a 3B model "
-             "(phi3) can push a single iteration over a minute.",
+        "call + typical file writes. Raising past ~4096 on a 3B model "
+        "(phi3) can push a single iteration over a minute.",
     )
     parser.add_argument(
         "--tpm-limit",
         type=int,
         default=0,
         help="Tokens-per-minute cap for the selected backend. 0 = unlimited "
-             "(default). When >0, the orchestrator wraps the backend in a "
-             "sliding-window rate limiter that sleeps before oversize calls "
-             "and auto-trims history when a single request exceeds the "
-             "budget. Use the free-tier TPM from your provider dashboard "
-             "(Groq free: 6000-8000 depending on model).",
+        "(default). When >0, the orchestrator wraps the backend in a "
+        "sliding-window rate limiter that sleeps before oversize calls "
+        "and auto-trims history when a single request exceeds the "
+        "budget. Use the free-tier TPM from your provider dashboard "
+        "(Groq free: 6000-8000 depending on model).",
     )
     parser.add_argument(
         "--groq-api-key",
         default="",
         help="Groq Cloud API key (required when --backend=groq). "
-             "Get one free at https://console.groq.com/keys.",
+        "Get one free at https://console.groq.com/keys.",
     )
     parser.add_argument(
         "--gemini-api-key",
         default="",
         help="Google AI Studio API key (required when --backend=gemini). "
-             "Get one free at https://aistudio.google.com/app/apikey.",
+        "Get one free at https://aistudio.google.com/app/apikey.",
     )
     parser.add_argument(
         "--openrouter-api-key",
         default="",
         help="OpenRouter API key (required when --backend=openrouter). "
-             "Get one free at https://openrouter.ai/keys.",
+        "Get one free at https://openrouter.ai/keys.",
     )
     parser.add_argument(
         "--github-api-key",
         default="",
         help="GitHub fine-grained PAT with `models:read` scope (required when "
-             "--backend=github). Create one at "
-             "https://github.com/settings/personal-access-tokens/new.",
+        "--backend=github). Create one at "
+        "https://github.com/settings/personal-access-tokens/new.",
     )
-    parser.add_argument("--interactive", action="store_true",
-                        help="Interactive mode (JSON-per-line protocol)")
-    parser.add_argument("--install-deps", action="store_true",
-                        help="Install required Python packages and exit")
-    parser.add_argument("--base-path", default=".",
-                        help="Base path that tools are allowed to touch")
+    parser.add_argument(
+        "--interactive",
+        action="store_true",
+        help="Interactive mode (JSON-per-line protocol)",
+    )
+    parser.add_argument(
+        "--install-deps",
+        action="store_true",
+        help="Install required Python packages and exit",
+    )
+    parser.add_argument(
+        "--base-path", default=".", help="Base path that tools are allowed to touch"
+    )
     parser.add_argument(
         "--sandbox",
         action="store_true",
@@ -317,7 +329,7 @@ def main():
             "Optional path to a JSON file listing user-configured database "
             "connections — written by the Flutter Settings UI (Developer → "
             "Database Connections). Each entry is "
-            "{\"key\": ..., \"value\": ..., \"type\": \"sqlite\"|\"mariadb\"}. "
+            '{"key": ..., "value": ..., "type": "sqlite"|"mariadb"}. '
             "Loaded once at startup and passed to the db_query tool so the "
             "model can address connections by key without touching the "
             "filesystem."
@@ -338,11 +350,15 @@ def main():
         audit_log_path=audit_log_path or "orchestrator_audit.log",
     )
     if args.sandbox:
-        print("[orch] SANDBOX MODE: write/delete/run_command are disabled.",
-              file=sys.stderr)
+        print(
+            "[orch] SANDBOX MODE: write/delete/run_command are disabled.",
+            file=sys.stderr,
+        )
     if security_config.enable_audit_log:
-        print(f"[orch] Audit logging enabled -> {security_config.audit_log_path}",
-              file=sys.stderr)
+        print(
+            f"[orch] Audit logging enabled -> {security_config.audit_log_path}",
+            file=sys.stderr,
+        )
 
     # Parse the user-configured filesystem filter (optional). Failures here
     # are non-fatal: a corrupt config means the user gets the inert filter
@@ -350,8 +366,7 @@ def main():
     path_filter = _load_path_filter(args.filters_config, args.base_path)
     if path_filter is not None:
         active = path_filter.summary_for_prompt(top=3) or "(none)"
-        print(f"[orch] Filesystem filter active:\n{active}",
-              file=sys.stderr)
+        print(f"[orch] Filesystem filter active:\n{active}", file=sys.stderr)
 
     # User-configured database connections written by the Flutter Settings UI.
     # Same non-fatal policy as filters: a missing or malformed file just means
@@ -372,18 +387,19 @@ def main():
     # ------------------------------------------------------------------
     if getattr(args, "team_mode", False):
         if not args.agent_config:
-            print("[orch] --team-mode requires --agent-config <path>.",
-                  file=sys.stderr)
+            print("[orch] --team-mode requires --agent-config <path>.", file=sys.stderr)
             sys.exit(2)
         try:
             from agent.team.bootstrap import build_team_session_from_args
+
             session = build_team_session_from_args(args)
         except Exception as e:  # noqa: BLE001
-            print(f"[orch] Failed to build Team Mode session: {e}",
-                  file=sys.stderr)
+            print(f"[orch] Failed to build Team Mode session: {e}", file=sys.stderr)
             sys.exit(2)
-        print("[orch] Team Mode ready. Heavy tasks will be decomposed by the leader.",
-              file=sys.stderr)
+        print(
+            "[orch] Team Mode ready. Heavy tasks will be decomposed by the leader.",
+            file=sys.stderr,
+        )
         if args.interactive:
             _run_interactive_team(session, args)
         else:
@@ -396,8 +412,9 @@ def main():
     # ------------------------------------------------------------------
     if args.multi_agent:
         if not args.agent_config:
-            print("[orch] --multi-agent requires --agent-config <path>.",
-                  file=sys.stderr)
+            print(
+                "[orch] --multi-agent requires --agent-config <path>.", file=sys.stderr
+            )
             sys.exit(2)
         try:
             workflow = build_workflow_from_args(
@@ -408,8 +425,7 @@ def main():
                 db_connections=db_connections,
             )
         except Exception as e:  # noqa: BLE001
-            print(f"[orch] Failed to build multi-agent workflow: {e}",
-                  file=sys.stderr)
+            print(f"[orch] Failed to build multi-agent workflow: {e}", file=sys.stderr)
             sys.exit(2)
         print(
             f"[orch] Multi-agent workflow ready. "
@@ -458,8 +474,7 @@ def main():
         db_connections=db_connections,
     )
     if args.disable_tools:
-        print("[orch] Tools disabled — running in plain-chat mode.",
-              file=sys.stderr)
+        print("[orch] Tools disabled — running in plain-chat mode.", file=sys.stderr)
 
     if args.interactive:
         _run_interactive_loop(orchestrator)
@@ -482,16 +497,19 @@ def _load_path_filter(filters_config_path: str, base_path: str):
         with open(path, "r", encoding="utf-8") as f:
             cfg = json.load(f)
     except FileNotFoundError:
-        print(f"[orch] --filters-config '{path}' not found; ignoring.",
-              file=sys.stderr)
+        print(f"[orch] --filters-config '{path}' not found; ignoring.", file=sys.stderr)
         return None
     except (json.JSONDecodeError, OSError) as e:
-        print(f"[orch] --filters-config could not be read ({e}); ignoring.",
-              file=sys.stderr)
+        print(
+            f"[orch] --filters-config could not be read ({e}); ignoring.",
+            file=sys.stderr,
+        )
         return None
     if not isinstance(cfg, dict):
-        print(f"[orch] --filters-config did not contain an object; ignoring.",
-              file=sys.stderr)
+        print(
+            f"[orch] --filters-config did not contain an object; ignoring.",
+            file=sys.stderr,
+        )
         return None
     return PathFilter.from_config(base_path, cfg)
 
@@ -512,8 +530,10 @@ def _load_db_connections(config_path: str):
         with open(path, "r", encoding="utf-8") as f:
             raw = json.load(f)
     except FileNotFoundError:
-        print(f"[orch] --db-connections-config '{path}' not found; ignoring.",
-              file=sys.stderr)
+        print(
+            f"[orch] --db-connections-config '{path}' not found; ignoring.",
+            file=sys.stderr,
+        )
         return {}
     except (json.JSONDecodeError, OSError) as e:
         print(
@@ -545,38 +565,42 @@ def _build_backend_for_args(args):
     if args.backend == "huggingface":
         missing = check_dependencies(BACKEND_REQUIRED_MODULES["huggingface"])
         if missing:
-            print("[orch] Missing dependencies: " + ", ".join(missing),
-                  file=sys.stderr)
-            print("[orch] Run `python orchestrator.py --install-deps` first.",
-                  file=sys.stderr)
+            print("[orch] Missing dependencies: " + ", ".join(missing), file=sys.stderr)
+            print(
+                "[orch] Run `python orchestrator.py --install-deps` first.",
+                file=sys.stderr,
+            )
             sys.exit(2)
         import_hf_runtime()
 
         if not args.hf_token:
-            print("[orch] --hf-token is required for --backend=huggingface.",
-                  file=sys.stderr)
+            print(
+                "[orch] --hf-token is required for --backend=huggingface.",
+                file=sys.stderr,
+            )
             sys.exit(2)
-        return build_backend("huggingface",
-                             hf_token=args.hf_token,
-                             model_id=args.model)
+        return build_backend("huggingface", hf_token=args.hf_token, model_id=args.model)
 
     if args.backend == "gemini":
         missing = check_dependencies(BACKEND_REQUIRED_MODULES["gemini"])
         if missing:
-            print("[orch] Missing dependencies: " + ", ".join(missing),
-                  file=sys.stderr)
-            print("[orch] Run `python orchestrator.py --install-deps` first.",
-                  file=sys.stderr)
+            print("[orch] Missing dependencies: " + ", ".join(missing), file=sys.stderr)
+            print(
+                "[orch] Run `python orchestrator.py --install-deps` first.",
+                file=sys.stderr,
+            )
             sys.exit(2)
         gemini_key = (
-                args.gemini_api_key
-                or os.environ.get("GOOGLE_API_KEY", "")
-                or os.environ.get("GEMINI_API_KEY", "")
+            args.gemini_api_key
+            or os.environ.get("GOOGLE_API_KEY", "")
+            or os.environ.get("GEMINI_API_KEY", "")
         )
         if not gemini_key:
-            print("[orch] --gemini-api-key (or GOOGLE_API_KEY / GEMINI_API_KEY "
-                  "env var) is required for --backend=gemini.",
-                  file=sys.stderr)
+            print(
+                "[orch] --gemini-api-key (or GOOGLE_API_KEY / GEMINI_API_KEY "
+                "env var) is required for --backend=gemini.",
+                file=sys.stderr,
+            )
             sys.exit(2)
         backend = build_backend("gemini", api_key=gemini_key, model_id=args.model)
         print(f"[orch] Using Gemini backend, model={args.model}", file=sys.stderr)
@@ -586,22 +610,26 @@ def _build_backend_for_args(args):
         missing = check_dependencies(BACKEND_REQUIRED_MODULES["groq"])
         if missing:
             print("[orch] Missing dependency: groq", file=sys.stderr)
-            print("[orch] Run `python orchestrator.py --install-deps` first.",
-                  file=sys.stderr)
+            print(
+                "[orch] Run `python orchestrator.py --install-deps` first.",
+                file=sys.stderr,
+            )
             sys.exit(2)
         groq_key = args.groq_api_key or os.environ.get("GROQ_API_KEY", "")
         if not groq_key:
-            print("[orch] --groq-api-key (or GROQ_API_KEY env var) is required "
-                  "for --backend=groq.", file=sys.stderr)
+            print(
+                "[orch] --groq-api-key (or GROQ_API_KEY env var) is required "
+                "for --backend=groq.",
+                file=sys.stderr,
+            )
             sys.exit(2)
         backend = build_backend("groq", api_key=groq_key, model_id=args.model)
         print(f"[orch] Using Groq backend, model={args.model}", file=sys.stderr)
         return backend
 
     if args.backend == "openrouter":
-        openrouter_key = (
-            args.openrouter_api_key
-            or os.environ.get("OPENROUTER_API_KEY", "")
+        openrouter_key = args.openrouter_api_key or os.environ.get(
+            "OPENROUTER_API_KEY", ""
         )
         if not openrouter_key:
             print(
@@ -610,9 +638,9 @@ def _build_backend_for_args(args):
                 file=sys.stderr,
             )
             sys.exit(2)
-        backend = build_backend("openrouter",
-                                api_key=openrouter_key,
-                                model_id=args.model)
+        backend = build_backend(
+            "openrouter", api_key=openrouter_key, model_id=args.model
+        )
         print(f"[orch] Using OpenRouter backend, model={args.model}", file=sys.stderr)
         return backend
 
@@ -629,19 +657,19 @@ def _build_backend_for_args(args):
                 file=sys.stderr,
             )
             sys.exit(2)
-        backend = build_backend("github",
-                                api_key=github_key,
-                                model_id=args.model)
-        print(f"[orch] Using GitHub Models backend, model={args.model}",
-              file=sys.stderr)
+        backend = build_backend("github", api_key=github_key, model_id=args.model)
+        print(
+            f"[orch] Using GitHub Models backend, model={args.model}", file=sys.stderr
+        )
         return backend
 
     # ollama (default fall-through)
     missing = check_dependencies(BACKEND_REQUIRED_MODULES["ollama"])
     if missing:
         print("[orch] Missing dependency: ollama", file=sys.stderr)
-        print("[orch] Run `python orchestrator.py --install-deps` first.",
-              file=sys.stderr)
+        print(
+            "[orch] Run `python orchestrator.py --install-deps` first.", file=sys.stderr
+        )
         sys.exit(2)
     backend = build_backend(
         "ollama",
@@ -782,8 +810,10 @@ def _run_interactive_team(session, args) -> None:
                 )
                 # Each prompt = one team session.
                 from agent.team.bootstrap import build_team_session_from_args
+
                 fresh_session = build_team_session_from_args(
-                    args, session_id=conv_id,
+                    args,
+                    session_id=conv_id,
                 )
                 result = fresh_session.run(prompt_with_context)
                 payload = {

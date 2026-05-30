@@ -6,9 +6,11 @@ exclude/include lists are respected. read_file is intentionally NOT
 filtered — the user can still ask the model to operate on a specific
 path inside an "excluded" location. See agent/path_filter.py.
 """
+
 from __future__ import annotations
 
 import sys as _sys
+
 _sys.dont_write_bytecode = True
 
 import fnmatch
@@ -34,7 +36,9 @@ def register(registry) -> None:
                         continue
                     items.append(p.name)
             items.sort()
-            return json.dumps({"status": "success", "files": items, "count": len(items)})
+            return json.dumps(
+                {"status": "success", "files": items, "count": len(items)}
+            )
         except Exception as e:
             return json.dumps({"status": "error", "message": str(e)})
 
@@ -58,7 +62,9 @@ def register(registry) -> None:
         try:
             fp = registry.resolve_path(path)
             if not fp.exists():
-                return json.dumps({"status": "error", "message": f"File not found: {path}"})
+                return json.dumps(
+                    {"status": "error", "message": f"File not found: {path}"}
+                )
             raw = fp.read_bytes()
             total = len(raw)
             full_text = raw.decode("utf-8", errors="replace")
@@ -100,7 +106,7 @@ def register(registry) -> None:
 
                 if e < s:
                     e = s
-                window = lines[s - 1:e]
+                window = lines[s - 1 : e]
                 # Prefix each line with its 1-indexed number so the model
                 # has unambiguous offsets when it asks for a follow-up
                 # range or composes a patch.
@@ -108,40 +114,44 @@ def register(registry) -> None:
                 numbered = "\n".join(
                     f"{str(s + i).rjust(pad)}\t{ln}" for i, ln in enumerate(window)
                 )
-                return json.dumps({
-                    "status": "success",
-                    "path": path,
-                    "content": numbered,
-                    "size": total,
-                    "line_count": line_count,
-                    "start_line": s,
-                    "end_line": e,
-                    "truncated": False,
-                })
+                return json.dumps(
+                    {
+                        "status": "success",
+                        "path": path,
+                        "content": numbered,
+                        "size": total,
+                        "line_count": line_count,
+                        "start_line": s,
+                        "end_line": e,
+                        "truncated": False,
+                    }
+                )
 
             truncated = total > MAX_BYTES
             if truncated:
                 line_count = full_text.count("\n") + 1
-                content = full_text.encode("utf-8", errors="replace")[:MAX_BYTES].decode(
-                    "utf-8", errors="replace"
-                )
+                content = full_text.encode("utf-8", errors="replace")[
+                    :MAX_BYTES
+                ].decode("utf-8", errors="replace")
                 content = (
                     f"[TRUNCATED: returned first {MAX_BYTES} bytes of {total} "
                     f"(~{line_count} lines total). "
-                    f"Use read_file(\"{path}\", start_line=N, end_line=M) "
+                    f'Use read_file("{path}", start_line=N, end_line=M) '
                     f"to read a specific section, or search_in_files to locate "
                     f"content without fetching the whole file.]\n\n"
                 ) + content
             else:
                 content = full_text
 
-            return json.dumps({
-                "status": "success",
-                "path": path,
-                "content": content,
-                "size": total,
-                "truncated": truncated,
-            })
+            return json.dumps(
+                {
+                    "status": "success",
+                    "path": path,
+                    "content": content,
+                    "size": total,
+                    "truncated": truncated,
+                }
+            )
         except Exception as e:
             return json.dumps({"status": "error", "message": str(e)})
 
@@ -155,7 +165,9 @@ def register(registry) -> None:
                 if depth > max_depth:
                     return
                 try:
-                    entries = sorted(p.iterdir(), key=lambda x: (x.is_file(), x.name.lower()))
+                    entries = sorted(
+                        p.iterdir(), key=lambda x: (x.is_file(), x.name.lower())
+                    )
                 except PermissionError:
                     return
                 for item in entries:
@@ -171,7 +183,9 @@ def register(registry) -> None:
                         walk(item, depth + 1)
 
             walk(target, 1)
-            return json.dumps({"status": "success", "tree": results, "total": len(results)})
+            return json.dumps(
+                {"status": "success", "tree": results, "total": len(results)}
+            )
         except Exception as e:
             return json.dumps({"status": "error", "message": str(e)})
 
@@ -181,6 +195,7 @@ def register(registry) -> None:
             target = registry.resolve_path(path)
             compiled = re.compile(pattern)
             matches = []
+
             # Walk manually so we can prune denied directories cheaply
             # instead of letting rglob descend into them.
             def walk(d):
@@ -224,12 +239,14 @@ def register(registry) -> None:
 
             if target.is_dir():
                 walk(target)
-            return json.dumps({
-                "status": "success",
-                "matches": matches,
-                "total": len(matches),
-                "truncated": len(matches) >= 300,
-            })
+            return json.dumps(
+                {
+                    "status": "success",
+                    "matches": matches,
+                    "total": len(matches),
+                    "truncated": len(matches) >= 300,
+                }
+            )
         except Exception as e:
             return json.dumps({"status": "error", "message": str(e)})
 
@@ -261,7 +278,9 @@ def register(registry) -> None:
 
             if target.is_dir():
                 walk(target)
-            return json.dumps({"status": "success", "matches": matches, "total": len(matches)})
+            return json.dumps(
+                {"status": "success", "matches": matches, "total": len(matches)}
+            )
         except Exception as e:
             return json.dumps({"status": "error", "message": str(e)})
 
@@ -286,20 +305,24 @@ def register(registry) -> None:
         PER_FILE_BYTE_CAP = 100 * 1024
 
         if not isinstance(paths, list) or len(paths) == 0:
-            return json.dumps({
-                "status": "error",
-                "message": "paths must be a non-empty list of file paths",
-            })
+            return json.dumps(
+                {
+                    "status": "error",
+                    "message": "paths must be a non-empty list of file paths",
+                }
+            )
 
         # Cap the number of files to prevent abuse / context explosion.
         if len(paths) > 50:
-            return json.dumps({
-                "status": "error",
-                "message": (
-                    f"Too many paths ({len(paths)}); maximum is 50. "
-                    "Reduce the list or use search_in_files to narrow down."
-                ),
-            })
+            return json.dumps(
+                {
+                    "status": "error",
+                    "message": (
+                        f"Too many paths ({len(paths)}); maximum is 50. "
+                        "Reduce the list or use search_in_files to narrow down."
+                    ),
+                }
+            )
 
         results: list[dict] = []
         total_bytes = 0
@@ -309,19 +332,23 @@ def register(registry) -> None:
             try:
                 fp = registry.resolve_path(file_path)
             except ValueError as exc:
-                results.append({
-                    "path": file_path,
-                    "status": "error",
-                    "message": str(exc),
-                })
+                results.append(
+                    {
+                        "path": file_path,
+                        "status": "error",
+                        "message": str(exc),
+                    }
+                )
                 continue
 
             if not fp.exists():
-                results.append({
-                    "path": file_path,
-                    "status": "error",
-                    "message": f"File not found: {file_path}",
-                })
+                results.append(
+                    {
+                        "path": file_path,
+                        "status": "error",
+                        "message": f"File not found: {file_path}",
+                    }
+                )
                 continue
 
             try:
@@ -329,11 +356,13 @@ def register(registry) -> None:
                 total_size = len(raw)
                 full_text = raw.decode("utf-8", errors="replace")
             except Exception as exc:
-                results.append({
-                    "path": file_path,
-                    "status": "error",
-                    "message": str(exc),
-                })
+                results.append(
+                    {
+                        "path": file_path,
+                        "status": "error",
+                        "message": str(exc),
+                    }
+                )
                 continue
 
             # Apply line limit if requested.
@@ -344,13 +373,12 @@ def register(registry) -> None:
                     window = lines[:max_lines_per_file]
                     pad = len(str(max_lines_per_file))
                     content = "\n".join(
-                        f"{str(i + 1).rjust(pad)}\t{ln}"
-                        for i, ln in enumerate(window)
+                        f"{str(i + 1).rjust(pad)}\t{ln}" for i, ln in enumerate(window)
                     )
                     content += (
                         f"\n\n[... {line_count - max_lines_per_file} more lines "
                         f"(total {line_count} lines). "
-                        f"Use read_file(\"{file_path}\", start_line={max_lines_per_file + 1}) "
+                        f'Use read_file("{file_path}", start_line={max_lines_per_file + 1}) '
                         f"to continue reading.]"
                     )
                     was_truncated = True
@@ -367,7 +395,7 @@ def register(registry) -> None:
                     content = (
                         f"[TRUNCATED: returned first {PER_FILE_BYTE_CAP} bytes "
                         f"of {total_size} (~{line_count} lines total). "
-                        f"Use read_file(\"{file_path}\", start_line=N, end_line=M) "
+                        f'Use read_file("{file_path}", start_line=N, end_line=M) '
                         f"to read a specific section.]\\n\\n"
                     ) + content
                     was_truncated = True
@@ -384,13 +412,15 @@ def register(registry) -> None:
                 continue
 
             total_bytes += entry_bytes
-            results.append({
-                "path": file_path,
-                "status": "success",
-                "content": content,
-                "size": total_size,
-                "truncated": was_truncated,
-            })
+            results.append(
+                {
+                    "path": file_path,
+                    "status": "success",
+                    "content": content,
+                    "size": total_size,
+                    "truncated": was_truncated,
+                }
+            )
 
         # Build the concatenated output with clear file separators.
         parts: list[str] = []
@@ -412,121 +442,165 @@ def register(registry) -> None:
                 + "]"
             )
 
-        return json.dumps({
-            "status": "success",
-            "files_read": len([r for r in results if r["status"] == "success"]),
-            "files_error": len([r for r in results if r["status"] == "error"]),
-            "files_omitted": len(truncated_files),
-            "total_bytes": total_bytes,
-            "content": "\n\n".join(parts),
-        })
+        return json.dumps(
+            {
+                "status": "success",
+                "files_read": len([r for r in results if r["status"] == "success"]),
+                "files_error": len([r for r in results if r["status"] == "error"]),
+                "files_omitted": len(truncated_files),
+                "total_bytes": total_bytes,
+                "content": "\n\n".join(parts),
+            }
+        )
 
-    registry.tools.update({
-        "list_files": list_files,
-        "list_files_recursive": list_files_recursive,
-        "read_file": read_file,
-        "read_files": read_files,
-        "search_in_files": search_in_files,
-        "find_files": find_files,
-    })
+    registry.tools.update(
+        {
+            "list_files": list_files,
+            "list_files_recursive": list_files_recursive,
+            "read_file": read_file,
+            "read_files": read_files,
+            "search_in_files": search_in_files,
+            "find_files": find_files,
+        }
+    )
 
-    registry.definitions.extend([
-        {
-            "type": "function",
-            "function": {
-                "name": "list_files",
-                "description": "List files in a directory (relative to project root).",
-                "parameters": {
-                    "type": "object",
-                    "properties": {"path": {"type": "string", "description": "Directory path, defaults to '.'"}},
-                    "required": [],
-                },
-            },
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "read_file",
-                "description": "Read a local file. Pass only `path` to read the whole file (capped at 100 KB). For large files, pass start_line+end_line (1-indexed, inclusive) or offset+limit to read a specific window — the response includes the line-numbered slice plus the file's total line_count so you can ask for the next window.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "path": {"type": "string", "description": "File path"},
-                        "start_line": {"type": "integer", "description": "1-indexed first line to return (inclusive). Optional."},
-                        "end_line": {"type": "integer", "description": "1-indexed last line to return (inclusive). Optional."},
-                        "offset": {"type": "integer", "description": "Alias: 0-indexed first line. Converted to start_line internally."},
-                        "limit": {"type": "integer", "description": "Alias: number of lines to return from start_line/offset."},
-                    },
-                    "required": ["path"],
-                },
-            },
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "read_files",
-                "description": "Read multiple files in one call. Returns concatenated contents with file headers, ideal for loading several related files at once instead of making separate read_file calls for each one. Each file is prefixed with a === path === separator. Output is capped at 200 KB total; files beyond the cap are listed by name only. Use max_lines_per_file to limit lines per file (default 200).",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "paths": {
-                            "type": "array",
-                            "items": {"type": "string"},
-                            "description": "List of file paths (relative to project root) to read. Maximum 50 files.",
+    registry.definitions.extend(
+        [
+            {
+                "type": "function",
+                "function": {
+                    "name": "list_files",
+                    "description": "List files in a directory (relative to project root).",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "path": {
+                                "type": "string",
+                                "description": "Directory path, defaults to '.'",
+                            }
                         },
-                        "max_lines_per_file": {
-                            "type": "integer",
-                            "description": "Maximum lines to return per file (default 200). Set to null for full content (subject to 100 KB per-file cap).",
+                        "required": [],
+                    },
+                },
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "read_file",
+                    "description": "Read a local file. Pass only `path` to read the whole file (capped at 100 KB). For large files, pass start_line+end_line (1-indexed, inclusive) or offset+limit to read a specific window — the response includes the line-numbered slice plus the file's total line_count so you can ask for the next window.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "path": {"type": "string", "description": "File path"},
+                            "start_line": {
+                                "type": "integer",
+                                "description": "1-indexed first line to return (inclusive). Optional.",
+                            },
+                            "end_line": {
+                                "type": "integer",
+                                "description": "1-indexed last line to return (inclusive). Optional.",
+                            },
+                            "offset": {
+                                "type": "integer",
+                                "description": "Alias: 0-indexed first line. Converted to start_line internally.",
+                            },
+                            "limit": {
+                                "type": "integer",
+                                "description": "Alias: number of lines to return from start_line/offset.",
+                            },
                         },
+                        "required": ["path"],
                     },
-                    "required": ["paths"],
                 },
             },
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "list_files_recursive",
-                "description": "Recursively list the directory tree (up to max_depth levels). Better than list_files for exploring project structure.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "path": {"type": "string", "description": "Root directory (default '.')"},
-                        "max_depth": {"type": "integer", "description": "Maximum depth to recurse (default 3)"},
+            {
+                "type": "function",
+                "function": {
+                    "name": "read_files",
+                    "description": "Read multiple files in one call. Returns concatenated contents with file headers, ideal for loading several related files at once instead of making separate read_file calls for each one. Each file is prefixed with a === path === separator. Output is capped at 200 KB total; files beyond the cap are listed by name only. Use max_lines_per_file to limit lines per file (default 200).",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "paths": {
+                                "type": "array",
+                                "items": {"type": "string"},
+                                "description": "List of file paths (relative to project root) to read. Maximum 50 files.",
+                            },
+                            "max_lines_per_file": {
+                                "type": "integer",
+                                "description": "Maximum lines to return per file (default 200). Set to null for full content (subject to 100 KB per-file cap).",
+                            },
+                        },
+                        "required": ["paths"],
                     },
-                    "required": [],
                 },
             },
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "search_in_files",
-                "description": "Grep-like search: recursively find lines matching a regex pattern across all files in a directory and its subdirectories. Use this to locate where a symbol, function, or string is defined or used.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "pattern": {"type": "string", "description": "Regular expression to search for"},
-                        "path": {"type": "string", "description": "Directory to search in (default '.')"},
-                        "file_glob": {"type": "string", "description": "Filename glob filter, e.g. '*.dart' or '*.py' (default '*')"},
+            {
+                "type": "function",
+                "function": {
+                    "name": "list_files_recursive",
+                    "description": "Recursively list the directory tree (up to max_depth levels). Better than list_files for exploring project structure.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "path": {
+                                "type": "string",
+                                "description": "Root directory (default '.')",
+                            },
+                            "max_depth": {
+                                "type": "integer",
+                                "description": "Maximum depth to recurse (default 3)",
+                            },
+                        },
+                        "required": [],
                     },
-                    "required": ["pattern"],
                 },
             },
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "find_files",
-                "description": "Recursively find files or directories whose name matches a glob pattern, e.g. '*.dart', 'main.*', 'settings*'.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "pattern": {"type": "string", "description": "Glob pattern for filename, e.g. '*.dart'"},
-                        "path": {"type": "string", "description": "Directory to search in (default '.')"},
+            {
+                "type": "function",
+                "function": {
+                    "name": "search_in_files",
+                    "description": "Grep-like search: recursively find lines matching a regex pattern across all files in a directory and its subdirectories. Use this to locate where a symbol, function, or string is defined or used.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "pattern": {
+                                "type": "string",
+                                "description": "Regular expression to search for",
+                            },
+                            "path": {
+                                "type": "string",
+                                "description": "Directory to search in (default '.')",
+                            },
+                            "file_glob": {
+                                "type": "string",
+                                "description": "Filename glob filter, e.g. '*.dart' or '*.py' (default '*')",
+                            },
+                        },
+                        "required": ["pattern"],
                     },
-                    "required": ["pattern"],
                 },
             },
-        },
-    ])
+            {
+                "type": "function",
+                "function": {
+                    "name": "find_files",
+                    "description": "Recursively find files or directories whose name matches a glob pattern, e.g. '*.dart', 'main.*', 'settings*'.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "pattern": {
+                                "type": "string",
+                                "description": "Glob pattern for filename, e.g. '*.dart'",
+                            },
+                            "path": {
+                                "type": "string",
+                                "description": "Directory to search in (default '.')",
+                            },
+                        },
+                        "required": ["pattern"],
+                    },
+                },
+            },
+        ]
+    )

@@ -16,6 +16,7 @@ and waits for each before launching the next. Responsibilities:
 The runner is intentionally narrow: it does not know about the Leader
 or the workflow loop. Phase 6 wires recovery on top of it.
 """
+
 from __future__ import annotations
 
 import logging
@@ -74,16 +75,18 @@ def build_worker_env(
     ``TeamPaths`` the host uses.
     """
     env = dict(os.environ)
-    env.update({
-        "TEAM_BOARD_PATH": str(paths.board),
-        "TEAM_ARTIFACT_DIR": str(paths.artifacts_dir),
-        "TEAM_GROUP": group,
-        "TEAM_OWNER_MODEL": owner_model,
-        "TEAM_DEPS": ",".join(deps),
-        "TEAM_BASE_PATH": str(base_path),
-        "TEAM_SESSION_ID": paths.session_id,
-        "PYTHONDONTWRITEBYTECODE": "1",
-    })
+    env.update(
+        {
+            "TEAM_BOARD_PATH": str(paths.board),
+            "TEAM_ARTIFACT_DIR": str(paths.artifacts_dir),
+            "TEAM_GROUP": group,
+            "TEAM_OWNER_MODEL": owner_model,
+            "TEAM_DEPS": ",".join(deps),
+            "TEAM_BASE_PATH": str(base_path),
+            "TEAM_SESSION_ID": paths.session_id,
+            "PYTHONDONTWRITEBYTECODE": "1",
+        }
+    )
     if extra:
         env.update(extra)
     return env
@@ -133,7 +136,7 @@ def _stamp_interrupted(board_path: Path, group: str, reason: str) -> None:
 # progress.
 # ----------------------------------------------------------------------
 def _tee_pipe(
-    pipe,                 # subprocess pipe (text mode)
+    pipe,  # subprocess pipe (text mode)
     log_path: Path,
     prefix: str,
     host_stream: TextIO,
@@ -147,8 +150,11 @@ def _tee_pipe(
             for raw in pipe:
                 if not raw:
                     continue
-                line = raw.decode("utf-8", errors="replace") \
-                    if isinstance(raw, bytes) else str(raw)
+                line = (
+                    raw.decode("utf-8", errors="replace")
+                    if isinstance(raw, bytes)
+                    else str(raw)
+                )
                 # Always persist the raw line.
                 try:
                     log_f.write(line)
@@ -200,24 +206,34 @@ def run_worker(
     """
     paths.ensure_dirs()
     argv = build_worker_argv(
-        group, python=python,
-        worker_entry=worker_entry, extra_args=extra_args,
+        group,
+        python=python,
+        worker_entry=worker_entry,
+        extra_args=extra_args,
     )
     env = build_worker_env(
-        paths=paths, group=group, owner_model=owner_model,
-        deps=deps, base_path=base_path, extra=extra_env,
+        paths=paths,
+        group=group,
+        owner_model=owner_model,
+        deps=deps,
+        base_path=base_path,
+        extra=extra_env,
     )
 
     stdout_path = paths.worker_stdout(group)
     stderr_path = paths.worker_stderr(group)
     started = time.monotonic()
 
-    logger.info("Spawning worker | group=%s argv=%s timeout=%.0fs",
-                group, argv, timeout_s)
+    logger.info(
+        "Spawning worker | group=%s argv=%s timeout=%.0fs", group, argv, timeout_s
+    )
     # Visible breadcrumb on the host's stderr so the Flutter log shows
     # workers starting/finishing in real time.
-    print(f"[team] starting worker '{group}' (timeout {timeout_s:.0f}s)",
-          file=sys.stderr, flush=True)
+    print(
+        f"[team] starting worker '{group}' (timeout {timeout_s:.0f}s)",
+        file=sys.stderr,
+        flush=True,
+    )
 
     notes: List[str] = []
     timed_out = False
@@ -225,12 +241,14 @@ def run_worker(
 
     try:
         proc = subprocess.Popen(
-            argv, env=env, cwd=cwd,
+            argv,
+            env=env,
+            cwd=cwd,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             stdin=subprocess.DEVNULL,
-            bufsize=1,                # line-buffered
-            text=True,                # decode pipe output
+            bufsize=1,  # line-buffered
+            text=True,  # decode pipe output
             encoding="utf-8",
             errors="replace",
         )
@@ -239,9 +257,13 @@ def run_worker(
         logger.exception("Worker spawn failed | group=%s: %s", group, e)
         _stamp_interrupted(paths.board, group, f"spawn failed: {e}")
         return WorkerResult(
-            group=group, exit_code=-1, duration_s=duration,
-            timed_out=False, final_status=Status.INTERRUPTED,
-            stamped_by_host=True, notes=[f"spawn-failed: {e}"],
+            group=group,
+            exit_code=-1,
+            duration_s=duration,
+            timed_out=False,
+            final_status=Status.INTERRUPTED,
+            stamped_by_host=True,
+            notes=[f"spawn-failed: {e}"],
         )
 
     # Drain stdout + stderr in background threads so the worker can
@@ -250,12 +272,14 @@ def run_worker(
     out_thread = threading.Thread(
         target=_tee_pipe,
         args=(proc.stdout, stdout_path, f"[worker:{group}/out]", sys.stderr),
-        daemon=True, name=f"team-tee-stdout-{group}",
+        daemon=True,
+        name=f"team-tee-stdout-{group}",
     )
     err_thread = threading.Thread(
         target=_tee_pipe,
         args=(proc.stderr, stderr_path, f"[worker:{group}/err]", sys.stderr),
-        daemon=True, name=f"team-tee-stderr-{group}",
+        daemon=True,
+        name=f"team-tee-stderr-{group}",
     )
     out_thread.start()
     err_thread.start()
@@ -283,7 +307,8 @@ def run_worker(
     print(
         f"[team] worker '{group}' exited code={exit_code} "
         f"({duration:.0f}s){' [TIMED OUT]' if timed_out else ''}",
-        file=sys.stderr, flush=True,
+        file=sys.stderr,
+        flush=True,
     )
 
     # Inspect the board to see what status the worker (or its absence)
@@ -294,8 +319,11 @@ def run_worker(
         # No board at all — this is a serious bug, but recover gracefully.
         logger.error("Board missing after worker exit | group=%s", group)
         return WorkerResult(
-            group=group, exit_code=exit_code, duration_s=duration,
-            timed_out=timed_out, final_status=Status.INTERRUPTED,
+            group=group,
+            exit_code=exit_code,
+            duration_s=duration,
+            timed_out=timed_out,
+            final_status=Status.INTERRUPTED,
             stamped_by_host=True,
             notes=notes + ["board-missing-after-exit"],
         )
@@ -321,16 +349,21 @@ def run_worker(
             try:
                 a = read_artifact(artifact_path)
                 if a.summary:
-                    short = a.summary if len(a.summary) <= 400 \
-                        else a.summary[:397] + "..."
+                    short = (
+                        a.summary if len(a.summary) <= 400 else a.summary[:397] + "..."
+                    )
                     notes.append(f"artifact-summary: {short}")
             except Exception:  # noqa: BLE001
                 pass
 
     return WorkerResult(
-        group=group, exit_code=exit_code, duration_s=duration,
-        timed_out=timed_out, final_status=current,
-        stamped_by_host=stamped_by_host, notes=notes,
+        group=group,
+        exit_code=exit_code,
+        duration_s=duration,
+        timed_out=timed_out,
+        final_status=current,
+        stamped_by_host=stamped_by_host,
+        notes=notes,
     )
 
 
@@ -342,6 +375,7 @@ class SequentialRunner:
     decisions are delegated to ``before_each`` and ``on_failure``
     hooks so this module stays decoupled from the leader.
     """
+
     paths: TeamPaths
     base_path: str
     timeout_s: float = DEFAULT_WORKER_TIMEOUT_S
@@ -391,8 +425,11 @@ class SequentialRunner:
 
             if res.final_status in (Status.FAILED, Status.INTERRUPTED):
                 if on_failure is None:
-                    logger.warning("Worker %s ended %s; aborting (no recovery hook)",
-                                   group, res.final_status.value)
+                    logger.warning(
+                        "Worker %s ended %s; aborting (no recovery hook)",
+                        group,
+                        res.final_status.value,
+                    )
                     break
                 try:
                     bf = read_board(self.paths.board)

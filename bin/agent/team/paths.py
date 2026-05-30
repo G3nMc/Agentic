@@ -14,6 +14,7 @@ Flutter chat. Per-conversation isolation prevents one chat's Team Mode
 run from clobbering another's board/artifacts when the user switches
 between chats. Deleting a chat → recursively delete that subfolder.
 """
+
 from __future__ import annotations
 
 import os
@@ -55,20 +56,23 @@ class TeamPaths:
     confines tools to). All team artefacts live under
     ``<base_path>/.agent/team/<session_id>/``.
     """
+
     base_path: Path
     session_id: str = _DEFAULT_SESSION_ID
 
     @classmethod
-    def from_base(cls, base_path: str | os.PathLike[str],
-                  session_id: str | None = None) -> "TeamPaths":
+    def from_base(
+        cls, base_path: str | os.PathLike[str], session_id: str | None = None
+    ) -> "TeamPaths":
         return cls(
             base_path=Path(base_path).resolve(),
             session_id=_sanitize_session_id(session_id),
         )
 
     @classmethod
-    def for_session(cls, base_path: str | os.PathLike[str],
-                    session_id: str) -> "TeamPaths":
+    def for_session(
+        cls, base_path: str | os.PathLike[str], session_id: str
+    ) -> "TeamPaths":
         """Explicit constructor used by team-mode entry points."""
         return cls.from_base(base_path, session_id=session_id)
 
@@ -114,8 +118,7 @@ class TeamPaths:
         self.workers_dir.mkdir(parents=True, exist_ok=True)
 
 
-def session_dir_for(base_path: str | os.PathLike[str],
-                    session_id: str) -> Path:
+def session_dir_for(base_path: str | os.PathLike[str], session_id: str) -> Path:
     """Compute the per-session directory without instantiating TeamPaths.
 
     Used by the chat-delete cleanup helper.
@@ -124,8 +127,7 @@ def session_dir_for(base_path: str | os.PathLike[str],
     return Path(base_path).resolve() / ".agent" / "team" / safe
 
 
-def delete_session(base_path: str | os.PathLike[str],
-                   session_id: str) -> bool:
+def delete_session(base_path: str | os.PathLike[str], session_id: str) -> bool:
     """Recursively remove a session's directory.
 
     Returns True if the folder existed and was removed, False otherwise.
@@ -140,5 +142,6 @@ def delete_session(base_path: str | os.PathLike[str],
     if not target.exists():
         return False
     import shutil
+
     shutil.rmtree(target, ignore_errors=True)
     return not target.exists()

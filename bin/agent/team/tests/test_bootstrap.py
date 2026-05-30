@@ -1,7 +1,11 @@
 """Bootstrap forwarding tests — auth flags must reach worker subprocesses."""
+
 import sys
+
 sys.dont_write_bytecode = True
 
+import sys
+i = sys.dont_write_bytecode = True
 import shutil
 import tempfile
 import unittest
@@ -14,6 +18,7 @@ from agent.team import bootstrap
 
 class _FakeArgs(SimpleNamespace):
     """Mimics argparse.Namespace with sensible defaults for missing fields."""
+
     def __init__(self, **kw):
         defaults = dict(
             backend="gemini",
@@ -52,8 +57,9 @@ class AuthFlagForwardingTests(unittest.TestCase):
     def _build(self, **extra) -> list:
         args = _FakeArgs(agent_config=str(self.cfg), base_path=self.tmp, **extra)
         # Stub the leader-backend factory — we only care about argv assembly.
-        with patch.object(bootstrap, "_build_leader_backend",
-                          return_value=(object(), "fake-leader")):
+        with patch.object(
+            bootstrap, "_build_leader_backend", return_value=(object(), "fake-leader")
+        ):
             session = bootstrap.build_team_session_from_args(args)
         return list(session.worker_extra_args or [])
 
@@ -73,8 +79,9 @@ class AuthFlagForwardingTests(unittest.TestCase):
         self.assertIn("GH", argv)
 
     def test_ollama_url_and_num_ctx_forwarded(self):
-        argv = self._build(ollama_base_url="https://api.ollama.ai",
-                           ollama_num_ctx=32768)
+        argv = self._build(
+            ollama_base_url="https://api.ollama.ai", ollama_num_ctx=32768
+        )
         self.assertIn("--ollama-base-url", argv)
         self.assertIn("https://api.ollama.ai", argv)
         self.assertIn("--ollama-num-ctx", argv)

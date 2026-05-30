@@ -1,4 +1,5 @@
 """Web / internet tools — fetch URLs and search the web."""
+
 from __future__ import annotations
 
 import json
@@ -26,7 +27,9 @@ def _is_text_content_type(content_type: str) -> bool:
 def _strip_html(html: str) -> str:
     """Very lightweight HTML-to-text: remove tags, collapse whitespace."""
     # Remove <script> and <style> blocks entirely.
-    text = re.sub(r"<(script|style)[^>]*>.*?</\1>", " ", html, flags=re.DOTALL | re.IGNORECASE)
+    text = re.sub(
+        r"<(script|style)[^>]*>.*?</\1>", " ", html, flags=re.DOTALL | re.IGNORECASE
+    )
     # Remove all remaining tags.
     text = re.sub(r"<[^>]+>", " ", text)
     # Decode common HTML entities.
@@ -68,20 +71,24 @@ def register(registry) -> None:
         """Fetch a URL and return its text content (up to 100 KB)."""
         try:
             if registry.security_config.sandbox_mode:
-                return json.dumps({
-                    "status": "error",
-                    "message": "web_fetch is disabled in sandbox mode.",
-                })
+                return json.dumps(
+                    {
+                        "status": "error",
+                        "message": "web_fetch is disabled in sandbox mode.",
+                    }
+                )
 
             parsed = urllib.parse.urlparse(url)
             if parsed.scheme not in ("http", "https"):
-                return json.dumps({
-                    "status": "error",
-                    "message": (
-                        f"Unsupported URL scheme: '{parsed.scheme}'. "
-                        "Only http/https allowed."
-                    ),
-                })
+                return json.dumps(
+                    {
+                        "status": "error",
+                        "message": (
+                            f"Unsupported URL scheme: '{parsed.scheme}'. "
+                            "Only http/https allowed."
+                        ),
+                    }
+                )
 
             ctx = ssl.create_default_context()
             req = urllib.request.Request(
@@ -96,14 +103,16 @@ def register(registry) -> None:
                 content_type = resp.headers.get("Content-Type", "")
 
                 if not _is_text_content_type(content_type):
-                    return json.dumps({
-                        "status": "error",
-                        "message": (
-                            f"Unsupported content type '{content_type}'. "
-                            "Only text-based responses are supported."
-                        ),
-                        "url": url,
-                    })
+                    return json.dumps(
+                        {
+                            "status": "error",
+                            "message": (
+                                f"Unsupported content type '{content_type}'. "
+                                "Only text-based responses are supported."
+                            ),
+                            "url": url,
+                        }
+                    )
 
                 raw = resp.read(102_400)  # 100 KB cap
                 truncated = len(raw) == 102_400 and bool(resp.read(1))
@@ -114,60 +123,70 @@ def register(registry) -> None:
                 if "html" in ct_lower or "xhtml" in ct_lower:
                     text = _strip_html(text)
 
-                return json.dumps({
-                    "status": "success",
-                    "url": url,
-                    "content_type": content_type,
-                    "size_bytes": len(raw),
-                    "truncated": truncated,
-                    "text": text,
-                })
+                return json.dumps(
+                    {
+                        "status": "success",
+                        "url": url,
+                        "content_type": content_type,
+                        "size_bytes": len(raw),
+                        "truncated": truncated,
+                        "text": text,
+                    }
+                )
 
         except urllib.error.HTTPError as e:
-            return json.dumps({
-                "status": "error",
-                "message": f"HTTP {e.code}: {e.reason}",
-                "url": url,
-            })
+            return json.dumps(
+                {
+                    "status": "error",
+                    "message": f"HTTP {e.code}: {e.reason}",
+                    "url": url,
+                }
+            )
         except urllib.error.URLError as e:
-            return json.dumps({
-                "status": "error",
-                "message": f"URL error: {e.reason}",
-                "url": url,
-            })
+            return json.dumps(
+                {
+                    "status": "error",
+                    "message": f"URL error: {e.reason}",
+                    "url": url,
+                }
+            )
         except Exception as e:
-            return json.dumps({
-                "status": "error",
-                "message": str(e),
-                "url": url,
-            })
+            return json.dumps(
+                {
+                    "status": "error",
+                    "message": str(e),
+                    "url": url,
+                }
+            )
 
     registry.tools["web_fetch"] = web_fetch
-    registry.definitions.append({
-        "type": "function",
-        "function": {
-            "name": "web_fetch",
-            "description": (
-                "Fetch a URL and return its text content (up to 100 KB). "
-                "Use for reading documentation pages, API references, or any "
-                "publicly accessible web resource. Only http/https URLs are allowed."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "url": {
-                        "type": "string",
-                        "description": "Full URL to fetch (must start with http:// or https://)",
+    registry.definitions.append(
+        {
+            "type": "function",
+            "function": {
+                "name": "web_fetch",
+                "description": (
+                    "Fetch a URL and return its text content (up to 100 KB). "
+                    "Use for reading documentation pages, API references, or any "
+                    "publicly accessible web resource. Only http/https URLs are allowed."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "url": {
+                            "type": "string",
+                            "description": "Full URL to fetch (must start with http:// or https://)",
+                        },
+                        "timeout": {
+                            "type": "integer",
+                            "description": "Request timeout in seconds (default 15)",
+                        },
                     },
-                    "timeout": {
-                        "type": "integer",
-                        "description": "Request timeout in seconds (default 15)",
-                    },
+                    "required": ["url"],
                 },
-                "required": ["url"],
             },
-        },
-    })
+        }
+    )
 
     # ------------------------------------------------------------------
     # web_search
@@ -176,16 +195,20 @@ def register(registry) -> None:
         """Search the web using DuckDuckGo's HTML interface and return results."""
         try:
             if registry.security_config.sandbox_mode:
-                return json.dumps({
-                    "status": "error",
-                    "message": "web_search is disabled in sandbox mode.",
-                })
+                return json.dumps(
+                    {
+                        "status": "error",
+                        "message": "web_search is disabled in sandbox mode.",
+                    }
+                )
 
             if not query or not query.strip():
-                return json.dumps({
-                    "status": "error",
-                    "message": "Query must not be empty.",
-                })
+                return json.dumps(
+                    {
+                        "status": "error",
+                        "message": "Query must not be empty.",
+                    }
+                )
 
             encoded = urllib.parse.quote_plus(query)
             search_url = f"https://html.duckduckgo.com/html/?q={encoded}"
@@ -205,63 +228,73 @@ def register(registry) -> None:
 
             results = _parse_ddg_html(html, max_results)
 
-            return json.dumps({
-                "status": "success",
-                "query": query,
-                "results": results,
-                "count": len(results),
-            })
+            return json.dumps(
+                {
+                    "status": "success",
+                    "query": query,
+                    "results": results,
+                    "count": len(results),
+                }
+            )
 
         except urllib.error.HTTPError as e:
-            return json.dumps({
-                "status": "error",
-                "message": f"HTTP {e.code}: {e.reason}",
-                "query": query,
-            })
+            return json.dumps(
+                {
+                    "status": "error",
+                    "message": f"HTTP {e.code}: {e.reason}",
+                    "query": query,
+                }
+            )
         except urllib.error.URLError as e:
-            return json.dumps({
-                "status": "error",
-                "message": f"URL error: {e.reason}",
-                "query": query,
-            })
+            return json.dumps(
+                {
+                    "status": "error",
+                    "message": f"URL error: {e.reason}",
+                    "query": query,
+                }
+            )
         except Exception as e:
-            return json.dumps({
-                "status": "error",
-                "message": str(e),
-                "query": query,
-            })
+            return json.dumps(
+                {
+                    "status": "error",
+                    "message": str(e),
+                    "query": query,
+                }
+            )
 
     registry.tools["web_search"] = web_search
-    registry.definitions.append({
-        "type": "function",
-        "function": {
-            "name": "web_search",
-            "description": (
-                "Search the web using DuckDuckGo and return a list of results "
-                "(title, snippet, URL). No API key required. Use when you need "
-                "to look up current information, documentation, or answers "
-                "that are not in the local codebase."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "query": {
-                        "type": "string",
-                        "description": "Search query string",
+    registry.definitions.append(
+        {
+            "type": "function",
+            "function": {
+                "name": "web_search",
+                "description": (
+                    "Search the web using DuckDuckGo and return a list of results "
+                    "(title, snippet, URL). No API key required. Use when you need "
+                    "to look up current information, documentation, or answers "
+                    "that are not in the local codebase."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "query": {
+                            "type": "string",
+                            "description": "Search query string",
+                        },
+                        "max_results": {
+                            "type": "integer",
+                            "description": "Maximum number of results to return (default 10, max 20)",
+                        },
+                        "timeout": {
+                            "type": "integer",
+                            "description": "Request timeout in seconds (default 15)",
+                        },
                     },
-                    "max_results": {
-                        "type": "integer",
-                        "description": "Maximum number of results to return (default 10, max 20)",
-                    },
-                    "timeout": {
-                        "type": "integer",
-                        "description": "Request timeout in seconds (default 15)",
-                    },
+                    "required": ["query"],
                 },
-                "required": ["query"],
             },
-        },
-    })
+        }
+    )
 
 
 def _parse_ddg_html(html: str, max_results: int) -> list[dict]:
@@ -272,11 +305,11 @@ def _parse_ddg_html(html: str, max_results: int) -> list[dict]:
     link_pattern = re.compile(
         r'<a[^>]*class="result__a"[^>]*href="([^"]+)"[^>]*>(.*?)</a>',
         re.DOTALL | re.IGNORECASE,
-        )
+    )
     snippet_pattern = re.compile(
         r'<a[^>]*class="result__snippet"[^>]*>(.*?)</a>',
         re.DOTALL | re.IGNORECASE,
-        )
+    )
 
     links = link_pattern.findall(html)
     snippets = snippet_pattern.findall(html)
@@ -292,10 +325,12 @@ def _parse_ddg_html(html: str, max_results: int) -> list[dict]:
         snippet = ""
         if i < len(snippets):
             snippet = re.sub(r"<[^>]+>", "", snippets[i]).strip()
-        results.append({
-            "title": title_clean,
-            "url": real_url,
-            "snippet": snippet,
-        })
+        results.append(
+            {
+                "title": title_clean,
+                "url": real_url,
+                "snippet": snippet,
+            }
+        )
 
     return results

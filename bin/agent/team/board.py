@@ -38,6 +38,7 @@ Reading rules:
     and may read any section to compact it; never reads worker
     transcripts or tool outputs.
 """
+
 from __future__ import annotations
 
 import os
@@ -61,6 +62,7 @@ SECTION_SOFT_TOKENS = 2000
 # next worker if the WHOLE board crosses these.
 BOARD_HARD_LINES = 600
 BOARD_HARD_TOKENS = 6000
+
 
 # Approximation: 1 token ≈ 4 chars. Good enough for circuit breakers;
 # nobody is billed by these counts.
@@ -148,7 +150,7 @@ class BoardSection:
         m = _SECTION_RE.match(text.lstrip())
         if m:
             group = m.group(1)
-            text = text[m.end():]
+            text = text[m.end() :]
 
         section = cls(group=group)
         lines = text.splitlines()
@@ -193,8 +195,7 @@ class BoardSection:
                     pm = re.match(r"-\s*\[(x| )\]\s*(?:\d+\.\s*)?(.*)$", s)
                     if pm:
                         section.plan.append(
-                            PlanStep(text=pm.group(2).strip(),
-                                     done=pm.group(1) == "x")
+                            PlanStep(text=pm.group(2).strip(), done=pm.group(1) == "x")
                         )
                     i += 1
                 continue
@@ -226,13 +227,14 @@ class BoardSection:
     def token_count(self) -> int:
         return _est_tokens(self.render())
 
-    def is_oversized(self,
-                     max_lines: int = SECTION_SOFT_LINES,
-                     max_tokens: int = SECTION_SOFT_TOKENS) -> bool:
+    def is_oversized(
+        self, max_lines: int = SECTION_SOFT_LINES, max_tokens: int = SECTION_SOFT_TOKENS
+    ) -> bool:
         return self.line_count() > max_lines or self.token_count() > max_tokens
 
-    def compact_log(self, keep_last: int = 5,
-                    summary_line: Optional[str] = None) -> int:
+    def compact_log(
+        self, keep_last: int = 5, summary_line: Optional[str] = None
+    ) -> int:
         """Roll older log entries into a single 1-2 line summary.
 
         Returns the number of entries that were folded into the summary.
@@ -265,7 +267,9 @@ class BoardFile:
     # ------------------------------------------------------------------
     def render(self) -> str:
         lines: List[str] = []
-        lines.append("<!-- AUTO-GENERATED — leader edits header, workers edit own section -->")
+        lines.append(
+            "<!-- AUTO-GENERATED — leader edits header, workers edit own section -->"
+        )
         lines.append("")
         lines.append("# TEAM BOARD")
         lines.append(f"session_id: {self.session_id}")
@@ -286,7 +290,13 @@ class BoardFile:
         lines.append("## Plan")
         if self.plan_lines:
             for entry in self.plan_lines:
-                lines.append(entry if entry.startswith(("-", "1", "2", "3", "4", "5", "6", "7", "8", "9")) else f"- {entry}")
+                lines.append(
+                    entry
+                    if entry.startswith(
+                        ("-", "1", "2", "3", "4", "5", "6", "7", "8", "9")
+                    )
+                    else f"- {entry}"
+                )
         else:
             lines.append("(no plan)")
         lines.append("")
@@ -326,7 +336,7 @@ class BoardFile:
         first_section = _SECTION_RE.search(text)
         if first_section:
             header_text = text[: first_section.start()]
-            sections_text = text[first_section.start():]
+            sections_text = text[first_section.start() :]
         else:
             header_text = text
             sections_text = ""
@@ -362,8 +372,11 @@ class BoardFile:
                 continue
 
             if in_status:
-                if stripped.startswith("|") and "---" not in stripped \
-                        and not stripped.lower().startswith("| #"):
+                if (
+                    stripped.startswith("|")
+                    and "---" not in stripped
+                    and not stripped.lower().startswith("| #")
+                ):
                     cells = [c.strip() for c in stripped.strip("|").split("|")]
                     if len(cells) >= 6:
                         try:
@@ -411,10 +424,11 @@ class BoardFile:
         section_starts = [m.start() for m in _SECTION_RE.finditer(sections_text)]
         section_starts.append(len(sections_text))
         for j in range(len(section_starts) - 1):
-            chunk = sections_text[section_starts[j]:section_starts[j + 1]]
+            chunk = sections_text[section_starts[j] : section_starts[j + 1]]
             # Strip trailing divider lines from the chunk
             chunk_lines = [
-                ln for ln in chunk.splitlines()
+                ln
+                for ln in chunk.splitlines()
                 if ln.strip("─\t ").strip()  # drop pure-divider lines
             ]
             chunk = "\n".join(chunk_lines)
@@ -455,24 +469,30 @@ class BoardFile:
                 row.last_step = section.last_completed_step
         self.touch()
 
-    def add_group(self, group: str, owner_model: str,
-                  plan: List[str],
-                  artifact_relpath: str = "—") -> None:
+    def add_group(
+        self, group: str, owner_model: str, plan: List[str], artifact_relpath: str = "—"
+    ) -> None:
         """Append a new group: new status row + empty section."""
         if self.find_row(group) is not None:
             return
-        self.status_rows.append(StatusRow(
-            group=group, owner_model=owner_model,
-            status=Status.PENDING, artifact=artifact_relpath,
-        ))
+        self.status_rows.append(
+            StatusRow(
+                group=group,
+                owner_model=owner_model,
+                status=Status.PENDING,
+                artifact=artifact_relpath,
+            )
+        )
         self.sections[group] = BoardSection(
-            group=group, status=Status.PENDING,
+            group=group,
+            status=Status.PENDING,
             plan=[PlanStep(text=t, done=False) for t in plan],
         )
         self.touch()
 
-    def set_status(self, group: str, status: Status,
-                   last_step: Optional[str] = None) -> None:
+    def set_status(
+        self, group: str, status: Status, last_step: Optional[str] = None
+    ) -> None:
         row = self.find_row(group)
         if row is not None:
             row.status = status
@@ -485,9 +505,16 @@ class BoardFile:
                 section.last_completed_step = last_step
             if status == Status.RUNNING and not section.started_at:
                 section.started_at = _utcnow_iso()
-            if status in (Status.DONE_CLEAN, Status.DONE_WITH_WARNINGS,
-                          Status.FAILED, Status.INTERRUPTED) \
-                    and not section.finished_at:
+            if (
+                status
+                in (
+                    Status.DONE_CLEAN,
+                    Status.DONE_WITH_WARNINGS,
+                    Status.FAILED,
+                    Status.INTERRUPTED,
+                )
+                and not section.finished_at
+            ):
                 section.finished_at = _utcnow_iso()
         self.touch()
 
@@ -500,9 +527,9 @@ class BoardFile:
     def token_count(self) -> int:
         return _est_tokens(self.render())
 
-    def is_oversized(self,
-                     max_lines: int = BOARD_HARD_LINES,
-                     max_tokens: int = BOARD_HARD_TOKENS) -> bool:
+    def is_oversized(
+        self, max_lines: int = BOARD_HARD_LINES, max_tokens: int = BOARD_HARD_TOKENS
+    ) -> bool:
         return self.line_count() > max_lines or self.token_count() > max_tokens
 
 
@@ -552,7 +579,7 @@ def slice_section(text: str, group: str) -> Optional[str]:
         if m.group(1) != group:
             continue
         end = starts[i + 1].start() if i + 1 < len(starts) else len(text)
-        return text[m.start():end]
+        return text[m.start() : end]
     return None
 
 
@@ -566,7 +593,7 @@ def slice_status_table(text: str) -> str:
         return ""
     start = m.start()
     # Find next '## ' header (not '##<SECTION...' which has no space)
-    after = text[m.end():]
+    after = text[m.end() :]
     nm = re.search(r"^##\s+\w", after, flags=re.MULTILINE)
     end = m.end() + nm.start() if nm else len(text)
     return text[start:end].rstrip() + "\n"

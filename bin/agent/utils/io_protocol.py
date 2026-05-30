@@ -1,4 +1,5 @@
 """Stdin/stdout framing for the interactive protocol used by the Flutter UI."""
+
 from __future__ import annotations
 
 import io

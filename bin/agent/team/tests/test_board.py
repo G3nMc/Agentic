@@ -1,4 +1,5 @@
 import sys
+
 sys.dont_write_bytecode = True
 
 import tempfile
@@ -23,10 +24,16 @@ def _sample_board() -> BoardFile:
         session_id="2026-05-01T14:32:11Z-test",
         leader_model="opus-4-7",
     )
-    bf.add_group("schema", "sonnet-4-6",
-                 plan=["enumerate", "design", "migrate", "validate", "emit"])
-    bf.add_group("repos", "sonnet-4-6",
-                 plan=["read schema.json", "design DAOs", "implement", "emit"])
+    bf.add_group(
+        "schema",
+        "sonnet-4-6",
+        plan=["enumerate", "design", "migrate", "validate", "emit"],
+    )
+    bf.add_group(
+        "repos",
+        "sonnet-4-6",
+        plan=["read schema.json", "design DAOs", "implement", "emit"],
+    )
     bf.dependencies = [("schema", []), ("repos", ["schema"])]
     bf.plan_lines = [
         "1. schema → defines DB tables",
@@ -66,9 +73,10 @@ class BoardRenderParseRoundTripTests(unittest.TestCase):
     def test_section_log_round_trip(self):
         bf = _sample_board()
         rebuilt = BoardFile.parse(bf.render())
-        self.assertEqual(rebuilt.sections["schema"].log,
-                         ["14:39 emitted artifact schema.json",
-                          "14:38 migration validated"])
+        self.assertEqual(
+            rebuilt.sections["schema"].log,
+            ["14:39 emitted artifact schema.json", "14:38 migration validated"],
+        )
 
     def test_dependencies_round_trip(self):
         bf = _sample_board()
@@ -119,8 +127,7 @@ class SectionCompactionTests(unittest.TestCase):
         self.assertEqual(s.log, ["only"])
 
     def test_oversized_detection(self):
-        s = BoardSection(group="a",
-                         log=[f"line {i}" for i in range(300)])
+        s = BoardSection(group="a", log=[f"line {i}" for i in range(300)])
         self.assertTrue(s.is_oversized())
 
 

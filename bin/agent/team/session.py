@@ -11,6 +11,7 @@ requires:
     times before any further failure forces ``skip_with_partial`` or
     ``abort``.
 """
+
 from __future__ import annotations
 
 import logging
@@ -51,6 +52,7 @@ def _utcnow_iso() -> str:
 @dataclass
 class TeamSession:
     """Drive one Team Mode session from user task → final summary."""
+
     paths: TeamPaths
     leader: LeaderAgent
     base_path: str
@@ -94,33 +96,48 @@ class TeamSession:
             order = self.leader.decompose(user_task)
         except Exception as e:  # noqa: BLE001
             logger.exception("Leader.decompose crashed: %s", e)
-            return {"status": "error",
-                    "message": f"leader reasoning failed: {e}",
-                    "summary": "", "results": []}
+            return {
+                "status": "error",
+                "message": f"leader reasoning failed: {e}",
+                "summary": "",
+                "results": [],
+            }
 
         if not order:
-            return {"status": "error",
-                    "message": "leader produced no groups",
-                    "summary": "", "results": []}
+            return {
+                "status": "error",
+                "message": "leader produced no groups",
+                "summary": "",
+                "results": [],
+            }
 
         try:
             on_disk = read_board(self.paths.board)
         except FileNotFoundError:
-            return {"status": "error",
-                    "message": "board missing after decompose",
-                    "summary": "", "results": []}
+            return {
+                "status": "error",
+                "message": "board missing after decompose",
+                "summary": "",
+                "results": [],
+            }
         if not on_disk.status_rows:
-            return {"status": "error",
-                    "message": "board is empty after decompose; refusing to start",
-                    "summary": "", "results": []}
+            return {
+                "status": "error",
+                "message": "board is empty after decompose; refusing to start",
+                "summary": "",
+                "results": [],
+            }
 
         # 2. Build the runner
         runner = SequentialRunner(
-            paths=self.paths, base_path=self.base_path,
-            timeout_s=self.timeout_s, python=self.python,
+            paths=self.paths,
+            base_path=self.base_path,
+            timeout_s=self.timeout_s,
+            python=self.python,
             worker_entry=self.worker_entry,
             extra_args=self.worker_extra_args,
-            extra_env=self.worker_extra_env, cwd=self.cwd,
+            extra_env=self.worker_extra_env,
+            cwd=self.cwd,
         )
 
         # Resolve owner_models + dependencies from the freshly-built board.
@@ -146,16 +163,22 @@ class TeamSession:
                 break
 
             # Spawn the worker
-            from .runner import run_worker  # local import keeps mock-test isolation simple
+            from .runner import (
+                run_worker,
+            )  # local import keeps mock-test isolation simple
+
             res = run_worker(
-                group=group, paths=self.paths,
+                group=group,
+                paths=self.paths,
                 owner_model=owner_models.get(group, ""),
                 deps=deps_map.get(group, []),
                 base_path=self.base_path,
-                timeout_s=self.timeout_s, python=self.python,
+                timeout_s=self.timeout_s,
+                python=self.python,
                 worker_entry=self.worker_entry,
                 extra_args=self.worker_extra_args,
-                extra_env=self.worker_extra_env, cwd=self.cwd,
+                extra_env=self.worker_extra_env,
+                cwd=self.cwd,
             )
             results.append(res)
 
@@ -164,8 +187,11 @@ class TeamSession:
 
             if not is_failure(res.final_status):
                 # Should not happen — non-clean, non-failure means RUNNING/PENDING.
-                logger.warning("Group %s ended in non-terminal state %s; aborting",
-                               group, res.final_status.value)
+                logger.warning(
+                    "Group %s ended in non-terminal state %s; aborting",
+                    group,
+                    res.final_status.value,
+                )
                 break
 
             # Failure path — consult leader, but cap retries.
@@ -173,13 +199,19 @@ class TeamSession:
             if attempts >= self.max_retries:
                 logger.warning(
                     "Retry cap reached for %s (%d/%d) — forcing skip_with_partial",
-                    group, attempts, self.max_retries,
+                    group,
+                    attempts,
+                    self.max_retries,
                 )
                 # Bypass the leader: directly record skip_with_partial.
-                self.leader.tools.execute("decide_recovery", {
-                    "failed_group": group, "decision": "skip_with_partial",
-                    "reason": f"retry cap {self.max_retries} reached",
-                })
+                self.leader.tools.execute(
+                    "decide_recovery",
+                    {
+                        "failed_group": group,
+                        "decision": "skip_with_partial",
+                        "reason": f"retry cap {self.max_retries} reached",
+                    },
+                )
                 continue
 
             decision = self.leader.review_after(res)
@@ -193,8 +225,12 @@ class TeamSession:
             last = decisions[-1] if decisions else None
             if last is not None and last.group == group and last.decision == "retry":
                 self._retry_counts[group] += 1
-                logger.info("Re-queuing %s (retry %d/%d)",
-                            group, self._retry_counts[group], self.max_retries)
+                logger.info(
+                    "Re-queuing %s (retry %d/%d)",
+                    group,
+                    self._retry_counts[group],
+                    self.max_retries,
+                )
                 pending.insert(0, group)
             # 'skip_with_partial' or unknown → just continue with the next group
 
@@ -222,6 +258,5 @@ class TeamSession:
         clean = sum(1 for r in results if is_clean(r.final_status))
         failed = sum(1 for r in results if is_failure(r.final_status))
         return (
-            f"Team Mode session: {clean}/{len(results)} groups clean, "
-            f"{failed} failed."
+            f"Team Mode session: {clean}/{len(results)} groups clean, {failed} failed."
         )

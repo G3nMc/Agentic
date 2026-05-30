@@ -3,6 +3,7 @@
 Lives here (not in ``orchestrator.py``) so the team package owns the
 construction details and ``orchestrator.py`` stays a thin shim.
 """
+
 from __future__ import annotations
 
 import sys
@@ -48,8 +49,7 @@ def _build_leader_backend(args, *, fallback_role_cfgs):
     return backend, args.model or args.backend
 
 
-def build_team_session_from_args(args, *,
-                                 session_id: str | None = None) -> TeamSession:
+def build_team_session_from_args(args, *, session_id: str | None = None) -> TeamSession:
     """Construct a fully wired ``TeamSession`` ready to ``run(user_task)``.
 
     Reuses the worker forwarding contract: the host's argv is repackaged
@@ -68,11 +68,15 @@ def build_team_session_from_args(args, *,
     role_cfgs = load_role_configs(args.agent_config)
 
     leader_backend, leader_model_id = _build_leader_backend(
-        args, fallback_role_cfgs=role_cfgs,
+        args,
+        fallback_role_cfgs=role_cfgs,
     )
 
-    paths = TeamPaths.for_session(args.base_path, session_id) \
-        if session_id else TeamPaths.from_base(args.base_path)
+    paths = (
+        TeamPaths.for_session(args.base_path, session_id)
+        if session_id
+        else TeamPaths.from_base(args.base_path)
+    )
     paths.ensure_dirs()
     leader = LeaderAgent(backend=leader_backend, paths=paths)
 
@@ -84,8 +88,10 @@ def build_team_session_from_args(args, *,
     # before the worker can even write an artifact.
     worker_extra_args: List[str] = [
         "--multi-agent",
-        "--agent-config", str(args.agent_config),
-        "--base-path", str(args.base_path),
+        "--agent-config",
+        str(args.agent_config),
+        "--base-path",
+        str(args.base_path),
     ]
     if getattr(args, "backend", None):
         worker_extra_args += ["--backend", args.backend]
@@ -93,7 +99,8 @@ def build_team_session_from_args(args, *,
         worker_extra_args += ["--filters-config", args.filters_config]
     if getattr(args, "db_connections_config", None):
         worker_extra_args += [
-            "--db-connections-config", args.db_connections_config,
+            "--db-connections-config",
+            args.db_connections_config,
         ]
     if getattr(args, "sandbox", False):
         worker_extra_args += ["--sandbox"]
@@ -103,14 +110,14 @@ def build_team_session_from_args(args, *,
     # Provider auth + provider-specific flags. Iterate so adding a new
     # backend later is a one-line change.
     auth_flag_map = (
-        ("--hf-token",            "hf_token"),
-        ("--gemini-api-key",      "gemini_api_key"),
-        ("--groq-api-key",        "groq_api_key"),
-        ("--openrouter-api-key",  "openrouter_api_key"),
-        ("--github-api-key",      "github_api_key"),
-        ("--ollama-api-key",      "ollama_api_key"),
-        ("--ollama-base-url",     "ollama_base_url"),
-        ("--model",               "model"),
+        ("--hf-token", "hf_token"),
+        ("--gemini-api-key", "gemini_api_key"),
+        ("--groq-api-key", "groq_api_key"),
+        ("--openrouter-api-key", "openrouter_api_key"),
+        ("--github-api-key", "github_api_key"),
+        ("--ollama-api-key", "ollama_api_key"),
+        ("--ollama-base-url", "ollama_base_url"),
+        ("--model", "model"),
     )
     for flag, attr in auth_flag_map:
         val = getattr(args, attr, None)

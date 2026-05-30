@@ -3,6 +3,7 @@
 Pure functions operating on the message list so the run-loop stays
 focused on iteration logic.
 """
+
 from __future__ import annotations
 
 import sys
@@ -30,10 +31,14 @@ def ensure_system_prompt(history: List[Dict[str, Any]], system_prompt: str) -> N
         history.insert(0, {"role": "system", "content": system_prompt})
 
 
-def trim_history(history: List[Dict[str, Any]], max_turns: int,
-                 *, max_msg_chars: int = MAX_MSG_CHARS,
-                 max_msg_tokens: Optional[int] = None,
-                 content_type: str = "code") -> List[Dict[str, Any]]:
+def trim_history(
+    history: List[Dict[str, Any]],
+    max_turns: int,
+    *,
+    max_msg_chars: int = MAX_MSG_CHARS,
+    max_msg_tokens: Optional[int] = None,
+    content_type: str = "code",
+) -> List[Dict[str, Any]]:
     """
     Enforce the sliding-window history cap. Always keeps the system message.
     Non-system messages are capped at ``max_turns * 2`` (user + assistant
@@ -51,8 +56,11 @@ def trim_history(history: List[Dict[str, Any]], max_turns: int,
     if len(non_system) > max_msgs:
         dropped = len(non_system) - max_msgs
         non_system = non_system[-max_msgs:]
-        print(f"[orch] History trimmed: dropped {dropped} old messages "
-              f"(keeping last {max_turns} turns).", file=sys.stderr)
+        print(
+            f"[orch] History trimmed: dropped {dropped} old messages "
+            f"(keeping last {max_turns} turns).",
+            file=sys.stderr,
+        )
 
     # Truncate any individual message that is abnormally large.
     capped = []
@@ -61,15 +69,21 @@ def trim_history(history: List[Dict[str, Any]], max_turns: int,
         if max_msg_tokens is not None:
             msg_tokens = estimate_tokens(content, content_type=content_type)
             if msg_tokens > max_msg_tokens:
-                target_chars = chars_for_tokens(max_msg_tokens, content_type=content_type)
+                target_chars = chars_for_tokens(
+                    max_msg_tokens, content_type=content_type
+                )
                 overflow = len(content) - target_chars
-                content = (content[:target_chars]
-                           + f"\n[... {overflow} chars truncated from history ...]")
+                content = (
+                    content[:target_chars]
+                    + f"\n[... {overflow} chars truncated from history ...]"
+                )
                 msg = dict(msg, content=content)
         elif len(content) > max_msg_chars:
             overflow = len(content) - max_msg_chars
-            content = (content[:max_msg_chars]
-                       + f"\n[... {overflow} chars truncated from history ...]")
+            content = (
+                content[:max_msg_chars]
+                + f"\n[... {overflow} chars truncated from history ...]"
+            )
             msg = dict(msg, content=content)
         capped.append(msg)
 
@@ -109,8 +123,10 @@ def trim_history_by_tokens(
         if msg_tokens > max_msg_tokens:
             target_chars = chars_for_tokens(max_msg_tokens, content_type=content_type)
             overflow = len(content) - target_chars
-            content = (content[:target_chars]
-                       + f"\n[... {overflow} chars truncated from history ...]")
+            content = (
+                content[:target_chars]
+                + f"\n[... {overflow} chars truncated from history ...]"
+            )
             msg = dict(msg, content=content)
         capped.append(msg)
 
@@ -144,8 +160,9 @@ def trim_history_by_tokens(
     return system + kept
 
 
-def import_external_history(history: List[Dict[str, Any]],
-                            external: List[Dict[str, Any]]) -> None:
+def import_external_history(
+    history: List[Dict[str, Any]], external: List[Dict[str, Any]]
+) -> None:
     """Append a caller-supplied history (filtered + normalised) to ``history``."""
     for msg in external:
         if not isinstance(msg, dict):

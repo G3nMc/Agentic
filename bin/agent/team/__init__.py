@@ -11,7 +11,9 @@ Design contract is frozen in the per-module docstrings here:
     board.py     — team_board.md format + section read/write
     paths.py     — on-disk layout
 """
+
 import sys as _sys
+
 _sys.dont_write_bytecode = True
 
 from .status import (

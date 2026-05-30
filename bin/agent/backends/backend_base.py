@@ -5,9 +5,11 @@ backend-typed: it implements the same chat() contract as a concrete
 backend and is meant to wrap one. The rate-limiter primitive itself
 lives in ``agent.utils.rate_limit`` — only the wrapper depends on it.
 """
+
 from __future__ import annotations
 
 import re
+
 # import sys
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -19,11 +21,11 @@ class ModelBackend:
     """Strategy object that turns a chat history into (content, finish)."""
 
     def chat(
-            self,
-            messages: List[Dict[str, Any]],
-            max_tokens: int,
-            temperature: float,
-            tools: Optional[List[Dict[str, Any]]] = None,
+        self,
+        messages: List[Dict[str, Any]],
+        max_tokens: int,
+        temperature: float,
+        tools: Optional[List[Dict[str, Any]]] = None,
     ) -> Tuple[str, str]:
         raise NotImplementedError
 
@@ -38,6 +40,7 @@ class ModelBackend:
         summarize before sending a request.
         """
         from ..core.context_limits import lookup_context_limit
+
         return lookup_context_limit(getattr(self, "model_id", ""))
 
 
@@ -60,7 +63,6 @@ class RateLimitedBackend(ModelBackend):
     @property
     def context_limit(self) -> int:
         return self.inner.context_limit
-
 
     def chat(self, messages, max_tokens, temperature, tools=None):
         import sys
@@ -92,8 +94,7 @@ class RateLimitedBackend(ModelBackend):
                 )
 
             print(
-                f"[orch] Auto-trimmed history to fit TPM budget "
-                f"({estimated}/{limit}).",
+                f"[orch] Auto-trimmed history to fit TPM budget ({estimated}/{limit}).",
                 file=sys.stderr,
                 flush=True,
             )
@@ -126,7 +127,6 @@ class RateLimitedBackend(ModelBackend):
 
             raise
 
-
         actual = getattr(self.inner, "last_usage_tokens", None)
 
         if not isinstance(actual, int) or actual <= 0:
@@ -135,6 +135,7 @@ class RateLimitedBackend(ModelBackend):
         self.bucket.record(actual)
 
         return content, finish_reason
+
     # def chat(self, messages, max_tokens, temperature, tools=None):
     #     if self.bucket.tpm_limit <= 0:
     #         return self.inner.chat(messages, max_tokens, temperature, tools)

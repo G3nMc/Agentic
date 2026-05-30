@@ -1,5 +1,7 @@
 """End-to-end TeamSession tests using the mock worker."""
+
 import sys
+
 sys.dont_write_bytecode = True
 
 import json
@@ -16,7 +18,7 @@ from agent.team.paths import TeamPaths
 from agent.team.session import TeamSession
 from agent.team.status import Status
 
-_BIN_DIR = Path(__file__).resolve().parents[3]   # bin/
+_BIN_DIR = Path(__file__).resolve().parents[3]  # bin/
 _MOCK_ENTRY = "agent.team.tests._mock_worker"
 
 
@@ -33,7 +35,7 @@ class _ScriptedBackend:
 
 
 def _wrap(name: str, params: Dict[str, Any]) -> str:
-    return f'<tool>{json.dumps({"tool": name, "parameters": params})}</tool>'
+    return f"<tool>{json.dumps({'tool': name, 'parameters': params})}</tool>"
 
 
 def _mock_env(behavior: str) -> Dict[str, str]:
@@ -51,18 +53,31 @@ class HappyPathSessionTests(unittest.TestCase):
         self.paths.ensure_dirs()
 
     def test_two_clean_groups_finish(self):
-        leader_backend = _ScriptedBackend([
-            _wrap("create_group",
-                  {"name": "a", "owner_model": "mock", "plan_steps": ["x"]}),
-            _wrap("create_group",
-                  {"name": "b", "owner_model": "mock", "plan_steps": ["y"],
-                   "depends_on": ["a"]}),
-            "plan done",
-        ])
+        leader_backend = _ScriptedBackend(
+            [
+                _wrap(
+                    "create_group",
+                    {"name": "a", "owner_model": "mock", "plan_steps": ["x"]},
+                ),
+                _wrap(
+                    "create_group",
+                    {
+                        "name": "b",
+                        "owner_model": "mock",
+                        "plan_steps": ["y"],
+                        "depends_on": ["a"],
+                    },
+                ),
+                "plan done",
+            ]
+        )
         leader = LeaderAgent(backend=leader_backend, paths=self.paths)
         session = TeamSession(
-            paths=self.paths, leader=leader, base_path=self.tmp,
-            timeout_s=30.0, worker_entry=_MOCK_ENTRY,
+            paths=self.paths,
+            leader=leader,
+            base_path=self.tmp,
+            timeout_s=30.0,
+            worker_entry=_MOCK_ENTRY,
             worker_extra_env=_mock_env("clean"),
         )
         out = session.run("Build a thing")
@@ -85,14 +100,17 @@ class RetryAndSkipTests(unittest.TestCase):
         # Leader: plans 1 group; on every failure, asks for retry.
         # The session's MAX_RETRIES cap should eventually skip it.
         retry_calls = [
-            _wrap("decide_recovery",
-                  {"failed_group": "a", "decision": "retry", "reason": "x"})
+            _wrap(
+                "decide_recovery",
+                {"failed_group": "a", "decision": "retry", "reason": "x"},
+            )
         ]
         leader_backend = _ScriptedBackend(
             [
-                _wrap("create_group",
-                      {"name": "a", "owner_model": "mock",
-                       "plan_steps": ["x"]}),
+                _wrap(
+                    "create_group",
+                    {"name": "a", "owner_model": "mock", "plan_steps": ["x"]},
+                ),
                 "plan done",
                 # review_after rounds — leader keeps asking for retry
                 *retry_calls * 5,
@@ -100,8 +118,11 @@ class RetryAndSkipTests(unittest.TestCase):
         )
         leader = LeaderAgent(backend=leader_backend, paths=self.paths)
         session = TeamSession(
-            paths=self.paths, leader=leader, base_path=self.tmp,
-            timeout_s=30.0, worker_entry=_MOCK_ENTRY,
+            paths=self.paths,
+            leader=leader,
+            base_path=self.tmp,
+            timeout_s=30.0,
+            worker_entry=_MOCK_ENTRY,
             worker_extra_env=_mock_env("fail"),
             max_retries=2,
         )
@@ -132,28 +153,36 @@ class PreFlightAbortTests(unittest.TestCase):
         # Seed the board with stale content from a "prior session".
         from agent.team.board import BoardFile, write_board
         from agent.team.status import Status
+
         stale = BoardFile(session_id="OLD", leader_model="OLD")
         stale.add_group("legacy", "old-model", plan=["leftover step"])
         stale.set_status("legacy", Status.DONE_CLEAN, last_step="1/1")
         write_board(self.paths.board, stale)
 
         # Leader produces ONE clean group for the new session.
-        leader_backend = _ScriptedBackend([
-            _wrap("create_group",
-                  {"name": "fresh", "owner_model": "mock",
-                   "plan_steps": ["x"]}),
-            "plan done",
-        ])
+        leader_backend = _ScriptedBackend(
+            [
+                _wrap(
+                    "create_group",
+                    {"name": "fresh", "owner_model": "mock", "plan_steps": ["x"]},
+                ),
+                "plan done",
+            ]
+        )
         leader = LeaderAgent(backend=leader_backend, paths=self.paths)
         session = TeamSession(
-            paths=self.paths, leader=leader, base_path=self.tmp,
-            timeout_s=30.0, worker_entry=_MOCK_ENTRY,
+            paths=self.paths,
+            leader=leader,
+            base_path=self.tmp,
+            timeout_s=30.0,
+            worker_entry=_MOCK_ENTRY,
             worker_extra_env=_mock_env("clean"),
         )
         out = session.run("a fresh task")
         self.assertEqual(out["status"], "ok")
 
         from agent.team.board import read_board
+
         bf = read_board(self.paths.board)
         # The stale group must be gone; only the new group remains.
         groups = [r.group for r in bf.status_rows]
@@ -166,8 +195,11 @@ class PreFlightAbortTests(unittest.TestCase):
         leader_backend = _ScriptedBackend(["plan done"])
         leader = LeaderAgent(backend=leader_backend, paths=self.paths)
         session = TeamSession(
-            paths=self.paths, leader=leader, base_path=self.tmp,
-            timeout_s=30.0, worker_entry=_MOCK_ENTRY,
+            paths=self.paths,
+            leader=leader,
+            base_path=self.tmp,
+            timeout_s=30.0,
+            worker_entry=_MOCK_ENTRY,
             worker_extra_env=_mock_env("clean"),
         )
         out = session.run("vague task")
@@ -179,12 +211,17 @@ class PreFlightAbortTests(unittest.TestCase):
     def test_leader_decompose_crash_aborts_cleanly(self):
         class _BoomBackend:
             model_id = "fake"
+
             def chat(self, *, messages, max_tokens, temperature, tools):
                 raise RuntimeError("provider down")
+
         leader = LeaderAgent(backend=_BoomBackend(), paths=self.paths)
         session = TeamSession(
-            paths=self.paths, leader=leader, base_path=self.tmp,
-            timeout_s=30.0, worker_entry=_MOCK_ENTRY,
+            paths=self.paths,
+            leader=leader,
+            base_path=self.tmp,
+            timeout_s=30.0,
+            worker_entry=_MOCK_ENTRY,
             worker_extra_env=_mock_env("clean"),
         )
         out = session.run("any task")
@@ -205,21 +242,28 @@ class SessionIsolationTests(unittest.TestCase):
         # group in each, verify they each have their own board + artifact
         # and don't see each other's content.
         from agent.team.paths import TeamPaths
+
         guid_a = "69790e60-06fa-4c14-9729-39f7ba49c5e2"
         guid_b = "c0ffee00-1234-5678-90ab-cdef00ba5e11"
         for guid in (guid_a, guid_b):
             paths = TeamPaths.for_session(self.tmp, guid)
             paths.ensure_dirs()
-            backend = _ScriptedBackend([
-                _wrap("create_group",
-                      {"name": guid[:6], "owner_model": "mock",
-                       "plan_steps": ["x"]}),
-                "plan done",
-            ])
+            backend = _ScriptedBackend(
+                [
+                    _wrap(
+                        "create_group",
+                        {"name": guid[:6], "owner_model": "mock", "plan_steps": ["x"]},
+                    ),
+                    "plan done",
+                ]
+            )
             leader = LeaderAgent(backend=backend, paths=paths)
             session = TeamSession(
-                paths=paths, leader=leader, base_path=self.tmp,
-                timeout_s=30.0, worker_entry=_MOCK_ENTRY,
+                paths=paths,
+                leader=leader,
+                base_path=self.tmp,
+                timeout_s=30.0,
+                worker_entry=_MOCK_ENTRY,
                 worker_extra_env=_mock_env("clean"),
             )
             out = session.run(f"task for {guid}")
@@ -227,6 +271,7 @@ class SessionIsolationTests(unittest.TestCase):
 
         # Both folders exist and contain only their own group.
         from agent.team.board import read_board
+
         for guid in (guid_a, guid_b):
             paths = TeamPaths.for_session(self.tmp, guid)
             self.assertTrue(paths.board.exists())
@@ -236,6 +281,7 @@ class SessionIsolationTests(unittest.TestCase):
 
         # And: deleting one session leaves the other intact.
         from agent.team.paths import delete_session
+
         self.assertTrue(delete_session(self.tmp, guid_a))
         self.assertFalse(TeamPaths.for_session(self.tmp, guid_a).board.exists())
         self.assertTrue(TeamPaths.for_session(self.tmp, guid_b).board.exists())
@@ -249,18 +295,26 @@ class CrashRecoveryTests(unittest.TestCase):
         self.paths.ensure_dirs()
 
     def test_crash_results_in_interrupted_then_leader_decides_abort(self):
-        leader_backend = _ScriptedBackend([
-            _wrap("create_group",
-                  {"name": "a", "owner_model": "mock",
-                   "plan_steps": ["x"]}),
-            "plan done",
-            _wrap("decide_recovery",
-                  {"failed_group": "a", "decision": "abort", "reason": "fatal"}),
-        ])
+        leader_backend = _ScriptedBackend(
+            [
+                _wrap(
+                    "create_group",
+                    {"name": "a", "owner_model": "mock", "plan_steps": ["x"]},
+                ),
+                "plan done",
+                _wrap(
+                    "decide_recovery",
+                    {"failed_group": "a", "decision": "abort", "reason": "fatal"},
+                ),
+            ]
+        )
         leader = LeaderAgent(backend=leader_backend, paths=self.paths)
         session = TeamSession(
-            paths=self.paths, leader=leader, base_path=self.tmp,
-            timeout_s=30.0, worker_entry=_MOCK_ENTRY,
+            paths=self.paths,
+            leader=leader,
+            base_path=self.tmp,
+            timeout_s=30.0,
+            worker_entry=_MOCK_ENTRY,
             worker_extra_env=_mock_env("crash"),
         )
         out = session.run("task")

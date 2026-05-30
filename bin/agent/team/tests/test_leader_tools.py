@@ -1,4 +1,5 @@
 import sys
+
 sys.dont_write_bytecode = True
 
 import shutil
@@ -32,8 +33,13 @@ class LeaderToolBasicsTests(unittest.TestCase):
 
     def test_seven_tools_defined(self):
         expected = {
-            "create_group", "assign_dependency", "check_previous",
-            "decide_recovery", "mark_done", "compact_board", "finalize",
+            "create_group",
+            "assign_dependency",
+            "check_previous",
+            "decide_recovery",
+            "mark_done",
+            "compact_board",
+            "finalize",
         }
         self.assertEqual(LEADER_TOOL_NAMES, expected)
 
@@ -42,64 +48,113 @@ class LeaderToolBasicsTests(unittest.TestCase):
         self.assertEqual(result["status"], "error")
 
     def test_create_group_happy_path(self):
-        result = self.tools.execute("create_group", {
-            "name": "schema", "owner_model": "sonnet-4-6",
-            "plan_steps": ["enumerate", "design"],
-        })
+        result = self.tools.execute(
+            "create_group",
+            {
+                "name": "schema",
+                "owner_model": "sonnet-4-6",
+                "plan_steps": ["enumerate", "design"],
+            },
+        )
         self.assertEqual(result["status"], "success")
         bf = read_board(self.paths.board)
         self.assertIsNotNone(bf.find_row("schema"))
         self.assertEqual(bf.sections["schema"].plan[0].text, "enumerate")
 
     def test_create_group_rejects_unknown_dep(self):
-        result = self.tools.execute("create_group", {
-            "name": "g1", "owner_model": "m", "plan_steps": ["x"],
-            "depends_on": ["does_not_exist"],
-        })
+        result = self.tools.execute(
+            "create_group",
+            {
+                "name": "g1",
+                "owner_model": "m",
+                "plan_steps": ["x"],
+                "depends_on": ["does_not_exist"],
+            },
+        )
         self.assertEqual(result["status"], "error")
 
     def test_create_group_duplicate_rejected(self):
-        self.tools.execute("create_group", {
-            "name": "g", "owner_model": "m", "plan_steps": ["x"],
-        })
-        result = self.tools.execute("create_group", {
-            "name": "g", "owner_model": "m", "plan_steps": ["y"],
-        })
+        self.tools.execute(
+            "create_group",
+            {
+                "name": "g",
+                "owner_model": "m",
+                "plan_steps": ["x"],
+            },
+        )
+        result = self.tools.execute(
+            "create_group",
+            {
+                "name": "g",
+                "owner_model": "m",
+                "plan_steps": ["y"],
+            },
+        )
         self.assertEqual(result["status"], "error")
 
     def test_create_group_validates_required_fields(self):
         self.assertEqual(self.tools.execute("create_group", {})["status"], "error")
-        self.assertEqual(self.tools.execute(
-            "create_group",
-            {"name": "g", "owner_model": "", "plan_steps": ["x"]},
-        )["status"], "error")
-        self.assertEqual(self.tools.execute(
-            "create_group",
-            {"name": "g", "owner_model": "m", "plan_steps": []},
-        )["status"], "error")
+        self.assertEqual(
+            self.tools.execute(
+                "create_group",
+                {"name": "g", "owner_model": "", "plan_steps": ["x"]},
+            )["status"],
+            "error",
+        )
+        self.assertEqual(
+            self.tools.execute(
+                "create_group",
+                {"name": "g", "owner_model": "m", "plan_steps": []},
+            )["status"],
+            "error",
+        )
 
     def test_assign_dependency(self):
-        self.tools.execute("create_group", {
-            "name": "a", "owner_model": "m", "plan_steps": ["x"],
-        })
-        self.tools.execute("create_group", {
-            "name": "b", "owner_model": "m", "plan_steps": ["x"],
-        })
-        result = self.tools.execute("assign_dependency", {
-            "group": "b", "depends_on": ["a"],
-        })
+        self.tools.execute(
+            "create_group",
+            {
+                "name": "a",
+                "owner_model": "m",
+                "plan_steps": ["x"],
+            },
+        )
+        self.tools.execute(
+            "create_group",
+            {
+                "name": "b",
+                "owner_model": "m",
+                "plan_steps": ["x"],
+            },
+        )
+        result = self.tools.execute(
+            "assign_dependency",
+            {
+                "group": "b",
+                "depends_on": ["a"],
+            },
+        )
         self.assertEqual(result["status"], "success")
         bf = read_board(self.paths.board)
         self.assertEqual(dict(bf.dependencies)["b"], ["a"])
 
     def test_check_previous_returns_status(self):
-        self.tools.execute("create_group", {
-            "name": "a", "owner_model": "m", "plan_steps": ["x"],
-        })
-        self.tools.execute("create_group", {
-            "name": "b", "owner_model": "m", "plan_steps": ["x"],
-            "depends_on": ["a"],
-        })
+        self.tools.execute(
+            "create_group",
+            {
+                "name": "a",
+                "owner_model": "m",
+                "plan_steps": ["x"],
+            },
+        )
+        self.tools.execute(
+            "create_group",
+            {
+                "name": "b",
+                "owner_model": "m",
+                "plan_steps": ["x"],
+                "depends_on": ["a"],
+            },
+        )
         # Mark a as DONE_CLEAN
         bf = read_board(self.paths.board)
         bf.set_status("a", Status.DONE_CLEAN, last_step="1/1")
@@ -119,9 +174,14 @@ class RecoveryDecisionTests(unittest.TestCase):
         self.paths = TeamPaths.from_base(self.tmp)
         _seed(self.paths)
         self.tools = LeaderTools(self.paths)
-        self.tools.execute("create_group", {
-            "name": "g", "owner_model": "m", "plan_steps": ["x", "y"],
-        })
+        self.tools.execute(
+            "create_group",
+            {
+                "name": "g",
+                "owner_model": "m",
+                "plan_steps": ["x", "y"],
+            },
+        )
 
     def _set_failed(self):
         bf = read_board(self.paths.board)
@@ -131,9 +191,14 @@ class RecoveryDecisionTests(unittest.TestCase):
 
     def test_decide_retry_resets_to_pending(self):
         self._set_failed()
-        result = self.tools.execute("decide_recovery", {
-            "failed_group": "g", "decision": "retry", "reason": "transient",
-        })
+        result = self.tools.execute(
+            "decide_recovery",
+            {
+                "failed_group": "g",
+                "decision": "retry",
+                "reason": "transient",
+            },
+        )
         self.assertEqual(result["status"], "success")
         bf = read_board(self.paths.board)
         self.assertEqual(bf.find_row("g").status, Status.PENDING)
@@ -143,41 +208,71 @@ class RecoveryDecisionTests(unittest.TestCase):
 
     def test_decide_skip_keeps_status(self):
         self._set_failed()
-        result = self.tools.execute("decide_recovery", {
-            "failed_group": "g", "decision": "skip_with_partial",
-            "reason": "non-blocking",
-        })
+        result = self.tools.execute(
+            "decide_recovery",
+            {
+                "failed_group": "g",
+                "decision": "skip_with_partial",
+                "reason": "non-blocking",
+            },
+        )
         self.assertEqual(result["status"], "success")
         bf = read_board(self.paths.board)
         self.assertEqual(bf.find_row("g").status, Status.FAILED)
-        self.assertTrue(any("skipped after failure" in ln for ln in bf.sections["g"].log))
+        self.assertTrue(
+            any("skipped after failure" in ln for ln in bf.sections["g"].log)
+        )
 
     def test_decide_abort_leaves_board(self):
         self._set_failed()
-        result = self.tools.execute("decide_recovery", {
-            "failed_group": "g", "decision": "abort", "reason": "blocker",
-        })
+        result = self.tools.execute(
+            "decide_recovery",
+            {
+                "failed_group": "g",
+                "decision": "abort",
+                "reason": "blocker",
+            },
+        )
         self.assertEqual(result["status"], "success")
         bf = read_board(self.paths.board)
         self.assertEqual(bf.find_row("g").status, Status.FAILED)
 
     def test_decide_rejects_invalid_decision(self):
         self._set_failed()
-        self.assertEqual(self.tools.execute("decide_recovery", {
-            "failed_group": "g", "decision": "magic",
-        })["status"], "error")
+        self.assertEqual(
+            self.tools.execute(
+                "decide_recovery",
+                {
+                    "failed_group": "g",
+                    "decision": "magic",
+                },
+            )["status"],
+            "error",
+        )
 
     def test_decide_rejects_non_failed_group(self):
         # Group is still PENDING — recovery shouldn't apply
-        self.assertEqual(self.tools.execute("decide_recovery", {
-            "failed_group": "g", "decision": "retry",
-        })["status"], "error")
+        self.assertEqual(
+            self.tools.execute(
+                "decide_recovery",
+                {
+                    "failed_group": "g",
+                    "decision": "retry",
+                },
+            )["status"],
+            "error",
+        )
 
     def test_recovery_log_persisted(self):
         self._set_failed()
-        self.tools.execute("decide_recovery", {
-            "failed_group": "g", "decision": "retry", "reason": "x",
-        })
+        self.tools.execute(
+            "decide_recovery",
+            {
+                "failed_group": "g",
+                "decision": "retry",
+                "reason": "x",
+            },
+        )
         log = self.paths.recovery_log
         self.assertTrue(log.exists())
         self.assertIn("retry", log.read_text(encoding="utf-8"))
@@ -192,17 +287,27 @@ class MarkDoneAndCompactTests(unittest.TestCase):
         self.tools = LeaderTools(self.paths)
 
     def test_mark_done_lists_pending(self):
-        self.tools.execute("create_group", {
-            "name": "a", "owner_model": "m", "plan_steps": ["x"],
-        })
+        self.tools.execute(
+            "create_group",
+            {
+                "name": "a",
+                "owner_model": "m",
+                "plan_steps": ["x"],
+            },
+        )
         result = self.tools.execute("mark_done", {})
         self.assertFalse(result["ok"])
         self.assertEqual(result["pending"], ["a"])
 
     def test_mark_done_ok_when_all_terminal(self):
-        self.tools.execute("create_group", {
-            "name": "a", "owner_model": "m", "plan_steps": ["x"],
-        })
+        self.tools.execute(
+            "create_group",
+            {
+                "name": "a",
+                "owner_model": "m",
+                "plan_steps": ["x"],
+            },
+        )
         bf = read_board(self.paths.board)
         bf.set_status("a", Status.DONE_CLEAN)
         write_board(self.paths.board, bf)
@@ -210,9 +315,14 @@ class MarkDoneAndCompactTests(unittest.TestCase):
         self.assertTrue(result["ok"])
 
     def test_compact_board_collapses_clean_sections(self):
-        self.tools.execute("create_group", {
-            "name": "a", "owner_model": "m", "plan_steps": ["x", "y", "z"],
-        })
+        self.tools.execute(
+            "create_group",
+            {
+                "name": "a",
+                "owner_model": "m",
+                "plan_steps": ["x", "y", "z"],
+            },
+        )
         bf = read_board(self.paths.board)
         bf.set_status("a", Status.DONE_CLEAN, last_step="3/3")
         bf.sections["a"].log = [f"line {i}" for i in range(40)]

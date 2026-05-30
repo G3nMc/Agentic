@@ -21,6 +21,7 @@ the agents, so the existing parser in
 ``loop/tool_dispatch.parse_all_tag_tool_calls`` picks up its calls
 without modification.
 """
+
 from __future__ import annotations
 
 import json
@@ -60,6 +61,7 @@ class LeaderAgent(Agent):
     The leader does NOT inherit the global tool registry. It builds its
     own messages and dispatches tool calls directly to :class:`LeaderTools`.
     """
+
     name = "leader"
 
     def __init__(
@@ -124,13 +126,15 @@ class LeaderAgent(Agent):
             if not calls:
                 # Nudge: leader emitted prose. Demand a tool call or final.
                 history.append({"role": "assistant", "content": text})
-                history.append({
-                    "role": "user",
-                    "content": (
-                        "Reply with exactly ONE tool call, OR a single "
-                        "sentence saying 'plan done' if no more groups."
-                    ),
-                })
+                history.append(
+                    {
+                        "role": "user",
+                        "content": (
+                            "Reply with exactly ONE tool call, OR a single "
+                            "sentence saying 'plan done' if no more groups."
+                        ),
+                    }
+                )
                 continue
 
             for name, params in calls:
@@ -143,7 +147,8 @@ class LeaderAgent(Agent):
                 # partial plan than to hammer the same broken call.
                 sig = json.dumps(
                     {"tool": name, "params": params or {}},
-                    sort_keys=True, ensure_ascii=False,
+                    sort_keys=True,
+                    ensure_ascii=False,
                 )
                 if result.get("status") == "error":
                     if sig == last_failed_sig:
@@ -157,25 +162,33 @@ class LeaderAgent(Agent):
                             "(%s) — aborting decompose",
                             name,
                         )
-                        history.append({
-                            "role": "user",
-                            "content": (
-                                "You repeated the same failing call. "
-                                "Stop. If no more groups can be created, "
-                                "say 'plan done'."
-                            ),
-                        })
+                        history.append(
+                            {
+                                "role": "user",
+                                "content": (
+                                    "You repeated the same failing call. "
+                                    "Stop. If no more groups can be created, "
+                                    "say 'plan done'."
+                                ),
+                            }
+                        )
                         return [g for g in order if g]
                 else:
                     last_failed_sig = None
                     consecutive_failures = 0
 
-                history.append({"role": "assistant", "content":
-                    f'<tool>{json.dumps({"tool": name, "parameters": params}, ensure_ascii=False)}</tool>'})
-                history.append({
-                    "role": "user",
-                    "content": json.dumps(result, ensure_ascii=False),
-                })
+                history.append(
+                    {
+                        "role": "assistant",
+                        "content": f"<tool>{json.dumps({'tool': name, 'parameters': params}, ensure_ascii=False)}</tool>",
+                    }
+                )
+                history.append(
+                    {
+                        "role": "user",
+                        "content": json.dumps(result, ensure_ascii=False),
+                    }
+                )
                 if name == "finalize":
                     return [g for g in order if g]
 
@@ -227,13 +240,21 @@ class LeaderAgent(Agent):
             calls = self._extract_calls(text)
             if not calls:
                 history.append({"role": "assistant", "content": text})
-                history.append({"role": "user",
-                                "content": "Reply with a decide_recovery tool call."})
+                history.append(
+                    {
+                        "role": "user",
+                        "content": "Reply with a decide_recovery tool call.",
+                    }
+                )
                 continue
             for name, params in calls:
                 if name != "decide_recovery":
-                    history.append({"role": "user",
-                                    "content": "Only decide_recovery is allowed here."})
+                    history.append(
+                        {
+                            "role": "user",
+                            "content": "Only decide_recovery is allowed here.",
+                        }
+                    )
                     continue
                 result = self.tools.execute(name, params or {})
                 if result.get("status") == "success":
@@ -243,8 +264,9 @@ class LeaderAgent(Agent):
                     return "continue"
                 # invalid — let the leader retry
                 history.append({"role": "assistant", "content": text})
-                history.append({"role": "user",
-                                "content": json.dumps(result, ensure_ascii=False)})
+                history.append(
+                    {"role": "user", "content": json.dumps(result, ensure_ascii=False)}
+                )
         # Out of turns: default to abort (safest)
         return "abort"
 
@@ -262,6 +284,7 @@ class LeaderAgent(Agent):
         from .artifact import read_artifact
         from .board import read_board, BOARD_HARD_LINES, BOARD_HARD_TOKENS
         from .status import is_failure
+
         try:
             bf = read_board(self.paths.board)
             if bf.is_oversized(BOARD_HARD_LINES, BOARD_HARD_TOKENS):
@@ -295,8 +318,10 @@ class LeaderAgent(Agent):
                     except Exception:  # noqa: BLE001
                         pass
                 if files_count > 0:
-                    suffix = f" ({files_count} file" \
-                             f"{'s' if files_count != 1 else ''} modified)"
+                    suffix = (
+                        f" ({files_count} file"
+                        f"{'s' if files_count != 1 else ''} modified)"
+                    )
                 else:
                     suffix = " (0 files modified)"
                 row_lines.append(f"  - {r.group}: {r.status.value}{suffix}")
@@ -310,7 +335,8 @@ class LeaderAgent(Agent):
                     if not ap.exists():
                         failure_lines.append(
                             f"  - {r.group}: {r.status.value} "
-                            f"(no artifact — worker died very early)")
+                            f"(no artifact — worker died very early)"
+                        )
                         continue
                     try:
                         a = read_artifact(ap)
@@ -320,13 +346,13 @@ class LeaderAgent(Agent):
                         failure_lines.append(f"  - {r.group}: {s}")
                     except Exception as e:  # noqa: BLE001
                         failure_lines.append(
-                            f"  - {r.group}: artifact unreadable ({e})")
+                            f"  - {r.group}: artifact unreadable ({e})"
+                        )
                 elif r.status.value == "DONE_WITH_WARNINGS" and ap.exists():
                     try:
                         a = read_artifact(ap)
                         if a.warnings:
-                            warning_lines.append(
-                                f"  - {r.group}: {a.warnings[0]}")
+                            warning_lines.append(f"  - {r.group}: {a.warnings[0]}")
                     except Exception:  # noqa: BLE001
                         pass
         except FileNotFoundError:
@@ -355,8 +381,9 @@ class LeaderAgent(Agent):
     # ------------------------------------------------------------------
     # Internals
     # ------------------------------------------------------------------
-    def _chat_once(self, history: List[Dict[str, Any]],
-                   user_prompt: Optional[str]) -> str:
+    def _chat_once(
+        self, history: List[Dict[str, Any]], user_prompt: Optional[str]
+    ) -> str:
         messages: List[Dict[str, Any]] = [
             {"role": "system", "content": self.system_prompt}
         ]
@@ -371,8 +398,7 @@ class LeaderAgent(Agent):
             tools=LEADER_TOOL_DEFINITIONS,
         )
         cleaned = _td.clean_history_text(text or "")
-        print(f"[leader←{self.model_id}] {cleaned[:300]}",
-              file=sys.stderr, flush=True)
+        print(f"[leader←{self.model_id}] {cleaned[:300]}", file=sys.stderr, flush=True)
         return cleaned
 
     def _extract_calls(self, text: str) -> List[Tuple[str, Dict[str, Any]]]:
@@ -382,6 +408,6 @@ class LeaderAgent(Agent):
         if not text:
             return False
         lower = text.strip().lower()
-        return ("plan done" in lower
-                or lower.endswith("done.")
-                or "no more groups" in lower)
+        return (
+            "plan done" in lower or lower.endswith("done.") or "no more groups" in lower
+        )

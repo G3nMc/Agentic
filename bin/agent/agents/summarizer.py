@@ -15,6 +15,7 @@ Design notes:
     :class:`Agent` so the standard ``_build_messages`` / ``_chat``
     helpers and stderr logging come for free.
 """
+
 from __future__ import annotations
 
 from typing import Optional
@@ -44,10 +45,14 @@ class SummarizerAgent(Agent):
 
     name = "summarizer"
 
-    def __init__(self, backend, *,
-                 system_prompt: Optional[str] = None,
-                 temperature: float = 0.2,
-                 max_tokens: int = 1024):
+    def __init__(
+        self,
+        backend,
+        *,
+        system_prompt: Optional[str] = None,
+        temperature: float = 0.2,
+        max_tokens: int = 1024,
+    ):
         super().__init__(
             backend,
             system_prompt or _SUMMARIZER_SYSTEM_PROMPT,

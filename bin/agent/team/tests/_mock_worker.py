@@ -10,6 +10,7 @@ Behavior is controlled by the ``MOCK_BEHAVIOR`` env var:
 Reads the same env contract a real worker uses: TEAM_BOARD_PATH,
 TEAM_GROUP, TEAM_ARTIFACT_DIR, TEAM_OWNER_MODEL, TEAM_DEPS.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -23,13 +24,13 @@ sys.dont_write_bytecode = True
 # Make sure the agent package on disk is importable when this runs as a
 # subprocess. PYTHONPATH is normally set to bin/ by the test harness.
 _THIS = Path(__file__).resolve()
-_BIN = _THIS.parents[3]   # bin/
+_BIN = _THIS.parents[3]  # bin/
 if str(_BIN) not in sys.path:
     sys.path.insert(0, str(_BIN))
 
-from agent.team.artifact import Artifact, write_artifact   # noqa: E402
-from agent.team.board import read_board, write_board       # noqa: E402
-from agent.team.status import Status                       # noqa: E402
+from agent.team.artifact import Artifact, write_artifact  # noqa: E402
+from agent.team.board import read_board, write_board  # noqa: E402
+from agent.team.status import Status  # noqa: E402
 
 
 def _stamp(board_path: Path, group: str, status: Status, log_line: str) -> None:
@@ -69,24 +70,35 @@ def main() -> int:
 
     if behavior == "fail":
         _stamp(board_path, group, Status.FAILED, "mock failure")
-        artifact = Artifact(group=group, producer_model=owner_model,
-                            status=Status.FAILED, summary="mock failure")
+        artifact = Artifact(
+            group=group,
+            producer_model=owner_model,
+            status=Status.FAILED,
+            summary="mock failure",
+        )
         write_artifact(artifact_dir / f"{group}.json", artifact)
         return 1
 
     if behavior == "warnings":
         _stamp(board_path, group, Status.DONE_WITH_WARNINGS, "mock with warnings")
-        artifact = Artifact(group=group, producer_model=owner_model,
-                            status=Status.DONE_WITH_WARNINGS,
-                            summary="mock ok with warnings",
-                            warnings=["stub warning"])
+        artifact = Artifact(
+            group=group,
+            producer_model=owner_model,
+            status=Status.DONE_WITH_WARNINGS,
+            summary="mock ok with warnings",
+            warnings=["stub warning"],
+        )
         write_artifact(artifact_dir / f"{group}.json", artifact)
         return 0
 
     # default: clean
     _stamp(board_path, group, Status.DONE_CLEAN, "mock clean")
-    artifact = Artifact(group=group, producer_model=owner_model,
-                        status=Status.DONE_CLEAN, summary="mock ok")
+    artifact = Artifact(
+        group=group,
+        producer_model=owner_model,
+        status=Status.DONE_CLEAN,
+        summary="mock ok",
+    )
     write_artifact(artifact_dir / f"{group}.json", artifact)
     return 0
 

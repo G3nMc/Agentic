@@ -102,7 +102,8 @@ class ToolIntentDetector:
     # action+marker fallback but don't override tool-talk.
     # ------------------------------------------------------------------
     _STRONG_FILE_MARKER_PATTERNS: Tuple[Pattern, ...] = tuple(
-        re.compile(p) for p in (
+        re.compile(p)
+        for p in (
             r"\.(?:dart|py|js|ts|tsx|jsx|json|yaml|yml|md|txt|csv|xml|"
             r"toml|ini|cfg|sh|ps1|sql|html|css|scss|rs|go|java|kt|swift)\b",
             r"\b(?:lib|src|bin|test|tests|assets|config|scripts|app|"
@@ -112,7 +113,8 @@ class ToolIntentDetector:
     )
 
     _WEAK_FILE_MARKER_PATTERNS: Tuple[Pattern, ...] = tuple(
-        re.compile(p) for p in (
+        re.compile(p)
+        for p in (
             r"\bfiles?\b",
             r"\bfolders?\b",
             r"\bdirector(y|ies)\b",
@@ -126,41 +128,110 @@ class ToolIntentDetector:
     # Action verbs (word-boundary, with common conjugations)
     # ------------------------------------------------------------------
     _ACTION_VERB_PATTERNS: Tuple[Pattern, ...] = tuple(
-        re.compile(rf"\b{v}\b") for v in (
-            "fix", "fixes", "fixed",
-            "edit", "edits", "edited",
-            "modify", "modifies", "modified",
-            "change", "changes", "changed",
-            "update", "updates", "updated",
-            "refactor", "refactors", "refactored",
-            "rename", "renames", "renamed",
-            "create", "creates", "created",
-            "delete", "deletes", "deleted",
-            "remove", "removes", "removed",
-            "add", "adds", "added",
-            "implement", "implements", "implemented",
-            "write", "writes", "wrote", "written",
-            "run", "runs", "ran",
-            "build", "builds", "built",
-            "compile", "compiles", "compiled",
-            "test", "tests", "tested",
-            "install", "installs", "installed",
-            "deploy", "deploys", "deployed",
-            "execute", "executes", "executed",
-            "read", "reads",
-            "open", "opens", "opened",
-            "show", "shows", "showed",
-            "list", "lists", "listed",
-            "find", "finds", "found",
-            "search", "searches", "searched",
-            "save", "saves", "saved",
-            "download", "downloads", "downloaded",
-            "upload", "uploads", "uploaded",
-            "export", "exports", "exported",
-            "import", "imports", "imported",
-            "copy", "copies", "copied",
-            "move", "moves", "moved",
-            "clone", "clones", "cloned",
+        re.compile(rf"\b{v}\b")
+        for v in (
+            "fix",
+            "fixes",
+            "fixed",
+            "edit",
+            "edits",
+            "edited",
+            "modify",
+            "modifies",
+            "modified",
+            "change",
+            "changes",
+            "changed",
+            "update",
+            "updates",
+            "updated",
+            "refactor",
+            "refactors",
+            "refactored",
+            "rename",
+            "renames",
+            "renamed",
+            "create",
+            "creates",
+            "created",
+            "delete",
+            "deletes",
+            "deleted",
+            "remove",
+            "removes",
+            "removed",
+            "add",
+            "adds",
+            "added",
+            "implement",
+            "implements",
+            "implemented",
+            "write",
+            "writes",
+            "wrote",
+            "written",
+            "run",
+            "runs",
+            "ran",
+            "build",
+            "builds",
+            "built",
+            "compile",
+            "compiles",
+            "compiled",
+            "test",
+            "tests",
+            "tested",
+            "install",
+            "installs",
+            "installed",
+            "deploy",
+            "deploys",
+            "deployed",
+            "execute",
+            "executes",
+            "executed",
+            "read",
+            "reads",
+            "open",
+            "opens",
+            "opened",
+            "show",
+            "shows",
+            "showed",
+            "list",
+            "lists",
+            "listed",
+            "find",
+            "finds",
+            "found",
+            "search",
+            "searches",
+            "searched",
+            "save",
+            "saves",
+            "saved",
+            "download",
+            "downloads",
+            "downloaded",
+            "upload",
+            "uploads",
+            "uploaded",
+            "export",
+            "exports",
+            "exported",
+            "import",
+            "imports",
+            "imported",
+            "copy",
+            "copies",
+            "copied",
+            "move",
+            "moves",
+            "moved",
+            "clone",
+            "clones",
+            "cloned",
         )
     )
 
@@ -168,15 +239,33 @@ class ToolIntentDetector:
     # Git markers (word-boundary)
     # ------------------------------------------------------------------
     _GIT_MARKER_PATTERNS: Tuple[Pattern, ...] = tuple(
-        re.compile(rf"\b{g}\b") for g in (
-            "git", "commit", "commits", "branch", "branches",
-            "merge", "merges", "merged",
-            "push", "pushes", "pushed",
-            "pull", "pulls", "pulled",
-            "diff", "diffs",
-            "rebase", "stash", "checkout", "checkouts",
-            "fetch", "fetches", "fetched",
-            "reset", "blame",
+        re.compile(rf"\b{g}\b")
+        for g in (
+            "git",
+            "commit",
+            "commits",
+            "branch",
+            "branches",
+            "merge",
+            "merges",
+            "merged",
+            "push",
+            "pushes",
+            "pushed",
+            "pull",
+            "pulls",
+            "pulled",
+            "diff",
+            "diffs",
+            "rebase",
+            "stash",
+            "checkout",
+            "checkouts",
+            "fetch",
+            "fetches",
+            "fetched",
+            "reset",
+            "blame",
         )
     )
 
@@ -223,20 +312,34 @@ class ToolIntentDetector:
     # Problem-report patterns — work + UI feature → tool mode
     # ------------------------------------------------------------------
     _PROBLEM_REPORT_PATTERNS: Tuple[Pattern, ...] = (
-        re.compile(r"\b(doesn'?t|does\s+not|isn'?t|is\s+not|won'?t|will\s+not|can'?t|cannot)\s+work"),
+        re.compile(
+            r"\b(doesn'?t|does\s+not|isn'?t|is\s+not|won'?t|will\s+not|can'?t|cannot)\s+work"
+        ),
         re.compile(r"\bnot\s+work(ing)?\b"),
         re.compile(r"\b(is|are|seems?|looks?|gets?)\s+broken\b"),
         re.compile(r"\bbroken\b"),
-        re.compile(r"\b(there'?s|there\s+is|there\s+are)\s+(a\s+|an\s+|some\s+)?(bug|issue|problem|error|glitch)s?\b"),
-        re.compile(r"\b(fix|debug|investigate|diagnose)\s+(the|this|a|an)?\s*(bug|issue|problem|error|crash|glitch)\b"),
+        re.compile(
+            r"\b(there'?s|there\s+is|there\s+are)\s+(a\s+|an\s+|some\s+)?(bug|issue|problem|error|glitch)s?\b"
+        ),
+        re.compile(
+            r"\b(fix|debug|investigate|diagnose)\s+(the|this|a|an)?\s*(bug|issue|problem|error|crash|glitch)\b"
+        ),
         re.compile(r"\bcrash(es|ing|ed)?\b"),
         re.compile(r"\bfails?\s+(to|with|when)\b"),
         re.compile(r"\bfailing\b"),
-        re.compile(r"\bnot\s+(display(ing|ed)?|show(ing|n)?|render(ing|ed)?|load(ing|ed)?|appear(ing|ed)?|respond(ing|ed)?)\b"),
+        re.compile(
+            r"\bnot\s+(display(ing|ed)?|show(ing|n)?|render(ing|ed)?|load(ing|ed)?|appear(ing|ed)?|respond(ing|ed)?)\b"
+        ),
         re.compile(r"\bsomething\s+(is\s+|seems\s+|looks\s+)?wrong\b"),
-        re.compile(r"\b(wrong|unexpected|incorrect)\s+(behavior|behaviour|output|result|value|state)\b"),
-        re.compile(r"\bdoesn'?t\s+(work|render|load|show|display|respond|behave)\s+(as|like)"),
-        re.compile(r"\b(throws?|throwing|raises?|raising)\s+(an?\s+)?(error|exception)\b"),
+        re.compile(
+            r"\b(wrong|unexpected|incorrect)\s+(behavior|behaviour|output|result|value|state)\b"
+        ),
+        re.compile(
+            r"\bdoesn'?t\s+(work|render|load|show|display|respond|behave)\s+(as|like)"
+        ),
+        re.compile(
+            r"\b(throws?|throwing|raises?|raising)\s+(an?\s+)?(error|exception)\b"
+        ),
         re.compile(r"\bstuck\b"),
         re.compile(r"\bhang(s|ing|ed)?\b"),
         re.compile(r"\bfreezes?\b"),
@@ -281,9 +384,7 @@ class ToolIntentDetector:
         strong_markers_present = any(
             p.search(t) for p in cls._STRONG_FILE_MARKER_PATTERNS
         )
-        weak_markers_present = any(
-            p.search(t) for p in cls._WEAK_FILE_MARKER_PATTERNS
-        )
+        weak_markers_present = any(p.search(t) for p in cls._WEAK_FILE_MARKER_PATTERNS)
         file_markers_present = strong_markers_present or weak_markers_present
 
         # 2. Tool-talk negatives — chat *unless* a strong file marker
@@ -299,23 +400,15 @@ class ToolIntentDetector:
             return True
 
         # 4. Problem reports + UI/feature word → tools.
-        problem_present = any(
-            p.search(t) for p in cls._PROBLEM_REPORT_PATTERNS
-        )
+        problem_present = any(p.search(t) for p in cls._PROBLEM_REPORT_PATTERNS)
         if problem_present:
-            ui_present = any(
-                p.search(t) for p in cls._UI_FEATURE_PATTERNS
-            )
+            ui_present = any(p.search(t) for p in cls._UI_FEATURE_PATTERNS)
             if ui_present or file_markers_present:
                 return True
 
         # 5. Fallback: action verb + file marker, or git term + either.
-        action_verbs_present = any(
-            p.search(t) for p in cls._ACTION_VERB_PATTERNS
-        )
-        git_markers_present = any(
-            p.search(t) for p in cls._GIT_MARKER_PATTERNS
-        )
+        action_verbs_present = any(p.search(t) for p in cls._ACTION_VERB_PATTERNS)
+        git_markers_present = any(p.search(t) for p in cls._GIT_MARKER_PATTERNS)
 
         if git_markers_present and (action_verbs_present or file_markers_present):
             return True

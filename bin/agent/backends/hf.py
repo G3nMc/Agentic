@@ -1,4 +1,5 @@
 """Hugging Face Inference API / router backend."""
+
 from __future__ import annotations
 
 import sys
@@ -19,6 +20,7 @@ class HFBackend(ModelBackend):
         if not model_id:
             raise RuntimeError("HF backend requires --model.")
         from huggingface_hub import InferenceClient  # noqa: PLC0415
+
         self.hf_token = hf_token
         self.model_id = model_id
         self._client = InferenceClient(model=model_id, token=hf_token)

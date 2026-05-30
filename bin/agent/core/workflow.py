@@ -1,4 +1,5 @@
 """Workflow dispatcher — replaces the single-agent run-loop in multi-agent mode."""
+
 from __future__ import annotations
 
 import concurrent.futures
@@ -20,14 +21,27 @@ from ..tools.registry import ToolRegistry
 from ..utils.token_estimator import chars_for_tokens, estimate_messages_tokens
 
 _WRITE_TOOLS = frozenset({"write_file", "append_file", "patch_file"})
-_DISCOVERY_TOOLS = frozenset({"list_files_recursive", "list_files", "search_in_files", "find_files"})
-_ACTION_TOOLS = frozenset({"read_file", "write_file", "patch_file", "append_file", "delete_file", "move_file", "create_directory"})
+_DISCOVERY_TOOLS = frozenset(
+    {"list_files_recursive", "list_files", "search_in_files", "find_files"}
+)
+_ACTION_TOOLS = frozenset(
+    {
+        "read_file",
+        "write_file",
+        "patch_file",
+        "append_file",
+        "delete_file",
+        "move_file",
+        "create_directory",
+    }
+)
 _DART_VALIDATORS = frozenset({"flutter_analyze"})
 _PY_VALIDATORS = frozenset({"python_check", "python_lint", "python_test"})
 
 
 class _PatternCache:
     """Compiled regex patterns (cached at class load)."""
+
     FOLLOWUP = re.compile(
         r"^\s*(?:"
         r"ok(?:ay)?(?:\s+(?:proceed|go|do\s+it|continue|good))?"
@@ -48,11 +62,33 @@ class _PatternCache:
     )
 
     _PLAN_PHRASES = (
-        "i will", "i'll", "i am going to", "next i will", "let me", "plan:", "steps:",
-        "approach:", "first, i need to", "first i need to", "the strategy is", "we should",
-        "my approach", "here's what i'm going to do", "here is what i am going to do",
-        "here's the plan", "here is the plan", "what i'll do", "what i will do", "i need to",
-        "i'm going to", "i'm gonna", "step 1", "phase 1", "to start,", "to begin,", "first,",
+        "i will",
+        "i'll",
+        "i am going to",
+        "next i will",
+        "let me",
+        "plan:",
+        "steps:",
+        "approach:",
+        "first, i need to",
+        "first i need to",
+        "the strategy is",
+        "we should",
+        "my approach",
+        "here's what i'm going to do",
+        "here is what i am going to do",
+        "here's the plan",
+        "here is the plan",
+        "what i'll do",
+        "what i will do",
+        "i need to",
+        "i'm going to",
+        "i'm gonna",
+        "step 1",
+        "phase 1",
+        "to start,",
+        "to begin,",
+        "first,",
     )
 
     PLAN = re.compile("|".join(re.escape(p) for p in _PLAN_PHRASES), re.IGNORECASE)
@@ -62,7 +98,9 @@ class _PatternCache:
         r"you\s+(?:need|have)\s+to|please|kindly|remember\s+to|don'?t\s+forget\s+to|"
         r"(?:i\s+(?:suggest|recommend|advise))(?:\s+(?:that\s+)?you)?)"
     )
-    _PUNT_VERB = r"\b(?:ran|run|execut|invok|us|do|did|trigger|launch|fir|kick\s+off)\w*"
+    _PUNT_VERB = (
+        r"\b(?:ran|run|execut|invok|us|do|did|trigger|launch|fir|kick\s+off)\w*"
+    )
     _DART_TOOL = r"`?\bflutter[\s`_\-]*analyze\b`?"
     _PY_TOOL = r"`?\bpython[\s`_\-]*(?:check|lint|test)\b`?"
 
@@ -98,6 +136,7 @@ class _PatternCache:
 @dataclass
 class _EditSession:
     """Tracks file edits and validation state across a workflow turn."""
+
     dart_edited: bool = False
     dart_validated: bool = False
     py_edited: bool = False
@@ -108,6 +147,7 @@ class _EditSession:
 @dataclass
 class _LoopMetrics:
     """Tracks progress and failure patterns in the reasoning loop."""
+
     consecutive_failures: int = 0
     consecutive_discovery_count: int = 0
     no_progress_count: int = 0
@@ -123,6 +163,7 @@ class _LoopMetrics:
 
 class _LoopDefaults:
     """Loop iteration limits and timeouts."""
+
     MAX_NO_PROGRESS = 6
     MAX_CONSECUTIVE_DISCOVERY = 4
     MAX_IDENTICAL_REASONER_OUTPUTS = 3
@@ -139,15 +180,15 @@ class Workflow:
     """Multi-agent dispatcher. Drop-in replacement for Orchestrator.run()."""
 
     def __init__(
-            self,
-            agents: Dict[str, Any],
-            tool_registry: ToolRegistry,
-            *,
-            max_iterations: int = 40,
-            max_history_turns: Optional[int] = None,
-            max_identical_failures: int = 10,
-            iteration_timeout: Optional[float] = None,
-            turn_timeout: Optional[float] = None,
+        self,
+        agents: Dict[str, Any],
+        tool_registry: ToolRegistry,
+        *,
+        max_iterations: int = 40,
+        max_history_turns: Optional[int] = None,
+        max_identical_failures: int = 10,
+        iteration_timeout: Optional[float] = None,
+        turn_timeout: Optional[float] = None,
     ):
         self.agents = agents
         self.tool_registry = tool_registry
@@ -165,7 +206,9 @@ class Workflow:
 
         if max_history_turns is None:
             reasoner = agents.get("reasoner")
-            ctx_tokens = int(getattr(getattr(reasoner, "backend", None), "context_limit", 0) or 0)
+            ctx_tokens = int(
+                getattr(getattr(reasoner, "backend", None), "context_limit", 0) or 0
+            )
             max_history_turns = max(30, ctx_tokens // 2_000) if ctx_tokens > 0 else 8
 
         self.max_history_turns = max_history_turns
@@ -183,7 +226,9 @@ class Workflow:
 
         self.logger.info(
             "Workflow initialized | max_iterations=%s max_history_turns=%s max_identical_failures=%s agents=%s",
-            self.max_iterations, self.max_history_turns, self.max_identical_failures,
+            self.max_iterations,
+            self.max_history_turns,
+            self.max_identical_failures,
             sorted(self.agents.keys()),
         )
 
@@ -213,50 +258,79 @@ class Workflow:
         if self.conversation_history:
             self._shaped_this_session = True
 
-        self.logger.info("History import complete | before=%s after=%s shaped=%s",
-                         before, len(self.conversation_history), self._shaped_this_session)
+        self.logger.info(
+            "History import complete | before=%s after=%s shaped=%s",
+            before,
+            len(self.conversation_history),
+            self._shaped_this_session,
+        )
 
     def _trim_history(self) -> None:
         reasoner = self.agents.get("reasoner")
-        ctx_tokens = int(getattr(getattr(reasoner, "backend", None), "context_limit", 0) or 0)
+        ctx_tokens = int(
+            getattr(getattr(reasoner, "backend", None), "context_limit", 0) or 0
+        )
 
         if ctx_tokens > 0:
             from ..loop import history as _history
+
             token_budget = int(ctx_tokens * 0.85)
             per_msg_tokens = max(2_500, ctx_tokens // 5)
             before = len(self.conversation_history)
             self.conversation_history = _history.trim_history_by_tokens(
-                self.conversation_history, token_budget=token_budget,
-                content_type="code", max_msg_tokens=per_msg_tokens,
+                self.conversation_history,
+                token_budget=token_budget,
+                content_type="code",
+                max_msg_tokens=per_msg_tokens,
             )
             after = len(self.conversation_history)
             if after < before:
-                self.logger.info("History trimmed by tokens | before=%s after=%s budget=%s",
-                                 before, after, token_budget)
+                self.logger.info(
+                    "History trimmed by tokens | before=%s after=%s budget=%s",
+                    before,
+                    after,
+                    token_budget,
+                )
             return
 
         keep = self.max_history_turns * 2
-        non_system_indexes = [idx for idx, msg in enumerate(self.conversation_history)
-                              if msg.get("role") != "system"]
+        non_system_indexes = [
+            idx
+            for idx, msg in enumerate(self.conversation_history)
+            if msg.get("role") != "system"
+        ]
 
         if len(non_system_indexes) <= keep:
             return
 
         keep_non_system = set(non_system_indexes[-keep:])
         before = len(self.conversation_history)
-        self.conversation_history = [msg for idx, msg in enumerate(self.conversation_history)
-                                     if msg.get("role") == "system" or idx in keep_non_system]
-        self.logger.info("History trimmed | before=%s after=%s kept_non_system=%s",
-                         before, len(self.conversation_history), keep)
+        self.conversation_history = [
+            msg
+            for idx, msg in enumerate(self.conversation_history)
+            if msg.get("role") == "system" or idx in keep_non_system
+        ]
+        self.logger.info(
+            "History trimmed | before=%s after=%s kept_non_system=%s",
+            before,
+            len(self.conversation_history),
+            keep,
+        )
 
     def run(self, user_input: str) -> Dict[str, Any]:
         self.logger.info("Run started | input=%r", user_input)
         self._trim_history()
 
-        state = WorkflowState(workflow_id=str(uuid.uuid4()), user_input=user_input,
-                              history=list(self.conversation_history))
-        self.logger.debug("State created | workflow_id=%s history_messages=%s",
-                          state.workflow_id, len(state.history))
+        state = WorkflowState(
+            workflow_id=str(uuid.uuid4()),
+            user_input=user_input,
+            history=list(self.conversation_history),
+        )
+        self.logger.debug(
+            "State created | workflow_id=%s history_messages=%s",
+            state.workflow_id,
+            len(state.history),
+        )
 
         self._route_and_shape(state, user_input)
 
@@ -275,8 +349,11 @@ class Workflow:
                     self._extend_iteration_limit(iteration, metrics)
 
                 iter_start = time.monotonic()
-                self.logger.debug("Loop iteration start | iteration=%s history=%s",
-                                  iteration, len(state.history))
+                self.logger.debug(
+                    "Loop iteration start | iteration=%s history=%s",
+                    iteration,
+                    len(state.history),
+                )
 
                 state.tool_calls = []
                 state.final_answer = None
@@ -287,9 +364,12 @@ class Workflow:
                     self.agents["reasoner"].run(state)
                     reasoner_dt = time.monotonic() - reasoner_start
                     if reasoner_dt >= 30.0:
-                        print(f"[orch] iter {iteration}: reasoner took {reasoner_dt:.1f}s "
-                              f"(cumulative turn {time.monotonic() - turn_start:.0f}s)",
-                              file=sys.stderr, flush=True)
+                        print(
+                            f"[orch] iter {iteration}: reasoner took {reasoner_dt:.1f}s "
+                            f"(cumulative turn {time.monotonic() - turn_start:.0f}s)",
+                            file=sys.stderr,
+                            flush=True,
+                        )
                 except Exception as e:
                     self.logger.exception("Reasoner failed: %s", e)
                     state.final_answer = f"ERROR: Reasoner failed: {e}"
@@ -298,37 +378,56 @@ class Workflow:
                 if self._check_iteration_timeout(iteration, iter_start, turn_start):
                     break
 
-                if self._evaluate_reasoner_output(state, iteration, metrics, edits, turn_start):
+                if self._evaluate_reasoner_output(
+                    state, iteration, metrics, edits, turn_start
+                ):
                     break
 
         finally:
             total_dt = time.monotonic() - turn_start
-            print(f"[orch] turn complete in {total_dt:.0f}s (iterations used: {iteration + 1}/{self.max_iterations})",
-                  file=sys.stderr, flush=True)
+            print(
+                f"[orch] turn complete in {total_dt:.0f}s (iterations used: {iteration + 1}/{self.max_iterations})",
+                file=sys.stderr,
+                flush=True,
+            )
 
-        if state.final_answer and _td.parse_all_tag_tool_calls(state.final_answer, self.tool_registry.definitions):
-            self.logger.warning("Final answer contains raw tool calls; attempting synthesis")
+        if state.final_answer and _td.parse_all_tag_tool_calls(
+            state.final_answer, self.tool_registry.definitions
+        ):
+            self.logger.warning(
+                "Final answer contains raw tool calls; attempting synthesis"
+            )
             synth = self._attempt_max_iter_synthesis(state)
             if synth:
                 state.final_answer = synth
             else:
-                state.final_answer = self._build_max_iter_recap(state, metrics.turn_success_count)
+                state.final_answer = self._build_max_iter_recap(
+                    state, metrics.turn_success_count
+                )
 
-        self.logger.info("Run completed | route=%s final_answer=%r history_messages=%s",
-                         state.route, state.final_answer, len(state.history))
+        self.logger.info(
+            "Run completed | route=%s final_answer=%r history_messages=%s",
+            state.route,
+            state.final_answer,
+            len(state.history),
+        )
         return self.finalize(state, user_input)
 
     def _route_and_shape(self, state: WorkflowState, user_input: str) -> None:
         """Execute routing and shaping with parallel execution when possible."""
         router = self.agents.get("router")
         shaper = self.agents.get("shaper")
-        needs_reshape = (not self._shaped_this_session or _is_short_followup(user_input)) \
-                        and state.route != ROUTE_TRIVIAL
+        needs_reshape = (
+            not self._shaped_this_session or _is_short_followup(user_input)
+        ) and state.route != ROUTE_TRIVIAL
         can_parallel = router is not None and shaper is not None and needs_reshape
 
         if can_parallel:
-            self.logger.info("Running router and shaper in parallel | first_turn=%s short_followup=%s",
-                             not self._shaped_this_session, _is_short_followup(user_input))
+            self.logger.info(
+                "Running router and shaper in parallel | first_turn=%s short_followup=%s",
+                not self._shaped_this_session,
+                _is_short_followup(user_input),
+            )
             self._run_router_and_shaper_parallel(state, router, shaper)
         else:
             self._run_router_and_shaper_sequential(state, router, shaper, needs_reshape)
@@ -336,12 +435,17 @@ class Workflow:
         if state.route == ROUTE_TRIVIAL:
             self._run_trivial_path(state)
 
-    def _run_router_and_shaper_parallel(self, state: WorkflowState, router: Any, shaper: Any) -> None:
+    def _run_router_and_shaper_parallel(
+        self, state: WorkflowState, router: Any, shaper: Any
+    ) -> None:
         """Execute router and shaper concurrently."""
 
         def run_router():
             try:
-                self.logger.debug("Routing with router=%s", getattr(router, "model_id", type(router).__name__))
+                self.logger.debug(
+                    "Routing with router=%s",
+                    getattr(router, "model_id", type(router).__name__),
+                )
                 router.run(state)
                 return {"route": state.route, "error": None}
             except Exception as e:
@@ -350,26 +454,35 @@ class Workflow:
 
         def run_shaper():
             try:
-                self.logger.debug("Shaping with shaper=%s", getattr(shaper, "model_id", type(shaper).__name__))
+                self.logger.debug(
+                    "Shaping with shaper=%s",
+                    getattr(shaper, "model_id", type(shaper).__name__),
+                )
                 shaper.run(state)
                 return {"shaped": True, "error": None}
             except Exception as e:
                 self.logger.exception("Shaper failed: %s", e)
                 return {"shaped": False, "error": e}
 
-        with concurrent.futures.ThreadPoolExecutor(max_workers=2, thread_name_prefix="AgentWorkflow") as ex:
+        with concurrent.futures.ThreadPoolExecutor(
+            max_workers=2, thread_name_prefix="AgentWorkflow"
+        ) as ex:
             router_future = ex.submit(run_router)
             shaper_future = ex.submit(run_shaper)
 
             try:
-                router_result = router_future.result(timeout=_LoopDefaults.PARALLEL_TIMEOUT)
+                router_result = router_future.result(
+                    timeout=_LoopDefaults.PARALLEL_TIMEOUT
+                )
             except concurrent.futures.TimeoutError:
                 self.logger.error("Router operation timed out")
                 router_result = {"route": ROUTE_REASONING, "error": "Router timeout"}
 
             if state.route != ROUTE_TRIVIAL:
                 try:
-                    shaper_result = shaper_future.result(timeout=_LoopDefaults.PARALLEL_TIMEOUT)
+                    shaper_result = shaper_future.result(
+                        timeout=_LoopDefaults.PARALLEL_TIMEOUT
+                    )
                 except concurrent.futures.TimeoutError:
                     self.logger.error("Shaper operation timed out")
                     shaper_result = {"shaped": False, "error": "Shaper timeout"}
@@ -383,14 +496,21 @@ class Workflow:
         if shaper_result.get("error"):
             state.shaped_prompt = state.user_input
         else:
-            self.logger.debug("Shaper complete | shaped_prompt_present=%s",
-                              bool(getattr(state, "shaped_prompt", None)))
+            self.logger.debug(
+                "Shaper complete | shaped_prompt_present=%s",
+                bool(getattr(state, "shaped_prompt", None)),
+            )
 
-    def _run_router_and_shaper_sequential(self, state: WorkflowState, router: Any, shaper: Any, needs_reshape: bool) -> None:
+    def _run_router_and_shaper_sequential(
+        self, state: WorkflowState, router: Any, shaper: Any, needs_reshape: bool
+    ) -> None:
         """Execute router and shaper sequentially."""
         if router is not None:
             try:
-                self.logger.debug("Routing with router=%s", getattr(router, "model_id", type(router).__name__))
+                self.logger.debug(
+                    "Routing with router=%s",
+                    getattr(router, "model_id", type(router).__name__),
+                )
                 router.run(state)
                 self.logger.info("Router decided route=%s", state.route)
             except Exception as e:
@@ -402,11 +522,16 @@ class Workflow:
 
         if state.route != ROUTE_TRIVIAL and shaper is not None and needs_reshape:
             try:
-                self.logger.info("Running shaper | first_turn=%s short_followup=%s",
-                                 not self._shaped_this_session, _is_short_followup(state.user_input))
+                self.logger.info(
+                    "Running shaper | first_turn=%s short_followup=%s",
+                    not self._shaped_this_session,
+                    _is_short_followup(state.user_input),
+                )
                 shaper.run(state)
-                self.logger.debug("Shaper complete | shaped_prompt_present=%s",
-                                  bool(getattr(state, "shaped_prompt", None)))
+                self.logger.debug(
+                    "Shaper complete | shaped_prompt_present=%s",
+                    bool(getattr(state, "shaped_prompt", None)),
+                )
             except Exception as e:
                 self.logger.exception("Shaper failed; using raw input: %s", e)
                 state.shaped_prompt = state.user_input
@@ -421,7 +546,9 @@ class Workflow:
         try:
             if hasattr(executor, "run_no_tools"):
                 self.logger.debug("Calling executor.run_no_tools()")
-                with concurrent.futures.ThreadPoolExecutor(max_workers=1, thread_name_prefix="TrivialPath") as ex:
+                with concurrent.futures.ThreadPoolExecutor(
+                    max_workers=1, thread_name_prefix="TrivialPath"
+                ) as ex:
                     future = ex.submit(executor.run_no_tools, state)
                     try:
                         future.result(timeout=_LoopDefaults.TRIVIAL_TIMEOUT)
@@ -437,64 +564,108 @@ class Workflow:
 
         candidate = str(state.final_answer or "")
         cleaned = _td.clean_history_text(candidate)
-        parsed_calls = _td.parse_all_tag_tool_calls(cleaned, self.tool_registry.definitions)
+        parsed_calls = _td.parse_all_tag_tool_calls(
+            cleaned, self.tool_registry.definitions
+        )
         is_malformed, _ = _td.looks_like_malformed_tool_call(cleaned)
         tool_like = parsed_calls or is_malformed
         plan_like = _looks_like_plan(cleaned)
 
         if tool_like or plan_like:
             reason = "tool-like" if tool_like else "plan-like"
-            self.logger.warning("Trivial route emitted %s output; escalating to reasoning", reason)
-            state.add_trace("workflow", output=f"route-corrected: trivial→reasoning ({reason})",
-                            detail=(cleaned[:400] + ("..." if len(cleaned) > 400 else "")))
+            self.logger.warning(
+                "Trivial route emitted %s output; escalating to reasoning", reason
+            )
+            state.add_trace(
+                "workflow",
+                output=f"route-corrected: trivial→reasoning ({reason})",
+                detail=(cleaned[:400] + ("..." if len(cleaned) > 400 else "")),
+            )
             state.route = ROUTE_REASONING
             state.final_answer = None
 
     def _should_extend_iterations(self, iteration: int, metrics: _LoopMetrics) -> bool:
-        return (iteration >= self.max_iterations - 2 and metrics.extension_count < _LoopDefaults.MAX_EXTENSIONS
-                and metrics.turn_success_count >= 3)
+        return (
+            iteration >= self.max_iterations - 2
+            and metrics.extension_count < _LoopDefaults.MAX_EXTENSIONS
+            and metrics.turn_success_count >= 3
+        )
 
     def _extend_iteration_limit(self, iteration: int, metrics: _LoopMetrics) -> None:
         extension = _LoopDefaults.EXTENSION_SIZE
         old_limit = self.max_iterations
         self.max_iterations += extension
         metrics.extension_count += 1
-        self.logger.info("Progress detected (successful_tools=%s). Extending max_iterations %s -> %s "
-                         "(extension #%s/%s)", metrics.turn_success_count, old_limit, self.max_iterations,
-                         metrics.extension_count, _LoopDefaults.MAX_EXTENSIONS)
+        self.logger.info(
+            "Progress detected (successful_tools=%s). Extending max_iterations %s -> %s "
+            "(extension #%s/%s)",
+            metrics.turn_success_count,
+            old_limit,
+            self.max_iterations,
+            metrics.extension_count,
+            _LoopDefaults.MAX_EXTENSIONS,
+        )
 
-    def _check_iteration_timeout(self, iteration: int, iter_start: float, turn_start: float) -> bool:
+    def _check_iteration_timeout(
+        self, iteration: int, iter_start: float, turn_start: float
+    ) -> bool:
         iter_elapsed = time.monotonic() - iter_start
         if iter_elapsed > self.iteration_timeout:
-            self.logger.error("Iteration timeout | iteration=%s elapsed=%.1fs limit=%.1fs",
-                              iteration, iter_elapsed, self.iteration_timeout)
+            self.logger.error(
+                "Iteration timeout | iteration=%s elapsed=%.1fs limit=%.1fs",
+                iteration,
+                iter_elapsed,
+                self.iteration_timeout,
+            )
             # Set final answer in state (will break loop)
             return False
 
         turn_elapsed = time.monotonic() - turn_start
         if turn_elapsed > self.turn_timeout:
-            self.logger.error("Turn timeout | iteration=%s elapsed=%.1fs limit=%.1fs",
-                              iteration, turn_elapsed, self.turn_timeout)
+            self.logger.error(
+                "Turn timeout | iteration=%s elapsed=%.1fs limit=%.1fs",
+                iteration,
+                turn_elapsed,
+                self.turn_timeout,
+            )
             return False
 
         return False
 
-    def _evaluate_reasoner_output(self, state: WorkflowState, iteration: int, metrics: _LoopMetrics,
-                                  edits: _EditSession, turn_start: float) -> bool:
+    def _evaluate_reasoner_output(
+        self,
+        state: WorkflowState,
+        iteration: int,
+        metrics: _LoopMetrics,
+        edits: _EditSession,
+        turn_start: float,
+    ) -> bool:
         """Process reasoner output: handle empty, plan, or tool calls. Returns True if should break."""
         if not state.tool_calls and not state.final_answer:
             metrics.empty_retries += 1
-            self.logger.warning("Empty reasoner response | retry=%s", metrics.empty_retries)
+            self.logger.warning(
+                "Empty reasoner response | retry=%s", metrics.empty_retries
+            )
             if metrics.empty_retries >= 3:
                 state.final_answer = "ERROR: Empty responses from model"
                 return True
-            state.history.append({"role": "user", "content": "Your reply was empty. Respond with:\n1) Tool call OR\n2) Final answer"})
+            state.history.append(
+                {
+                    "role": "user",
+                    "content": "Your reply was empty. Respond with:\n1) Tool call OR\n2) Final answer",
+                }
+            )
             return False
 
         if state.final_answer and _looks_like_plan(state.final_answer):
             self.logger.warning("Plan-like final answer rejected")
             state.final_answer = None
-            state.history.append({"role": "user", "content": "Plans are not allowed. Respond with:\n1) Tool call OR\n2) Final answer"})
+            state.history.append(
+                {
+                    "role": "user",
+                    "content": "Plans are not allowed. Respond with:\n1) Tool call OR\n2) Final answer",
+                }
+            )
             return False
 
         if state.tool_calls:
@@ -510,8 +681,14 @@ class Workflow:
 
         return False
 
-    def _handle_tool_calls(self, state: WorkflowState, iteration: int, metrics: _LoopMetrics,
-                           edits: _EditSession, turn_start: float) -> bool:
+    def _handle_tool_calls(
+        self,
+        state: WorkflowState,
+        iteration: int,
+        metrics: _LoopMetrics,
+        edits: _EditSession,
+        turn_start: float,
+    ) -> bool:
         """Execute tool batch. Returns True if should break loop."""
         executor = self.agents.get("executor")
         if executor is None:
@@ -532,15 +709,25 @@ class Workflow:
 
         if pending_sig == metrics.last_success_sig:
             self.logger.warning("Successful-repeat blocked")
-            state.history.append({"role": "user", "content": (
-                "You just ran that exact tool call successfully in the previous step. "
-                "Do NOT issue the same call again.")})
+            state.history.append(
+                {
+                    "role": "user",
+                    "content": (
+                        "You just ran that exact tool call successfully in the previous step. "
+                        "Do NOT issue the same call again."
+                    ),
+                }
+            )
             state.tool_calls = []
             return False
 
         if metrics.consecutive_failures >= self.max_identical_failures:
-            last_error = self.extract_last_error((getattr(state, "tool_results", []) or [])[before_results:])
-            self.logger.error("Repeated failing tool calls detected | error=%s", last_error)
+            last_error = self.extract_last_error(
+                (getattr(state, "tool_results", []) or [])[before_results:]
+            )
+            self.logger.error(
+                "Repeated failing tool calls detected | error=%s", last_error
+            )
             state.tool_calls = []
             state.final_answer = f"ERROR: Repeated failing tool calls. Last error: {last_error or 'unknown'}"
             return True
@@ -560,11 +747,21 @@ class Workflow:
             metrics.last_failed_sig = pending_sig
             error_text = self.extract_last_error(after_results)
             last_call = pending_calls[-1] if pending_calls else {}
-            self.logger.warning("Tool batch failed | tool=%s error=%s", last_call.get("tool"), error_text)
-            state.history.append({"role": "user", "content": (
-                f"Tool `{last_call.get('tool')}` failed.\nError: {error_text or 'unknown'}\n"
-                "Do not repeat the same call. Fix the parameters or choose a different tool.\n"
-                "Reply with exactly ONE tool call.")})
+            self.logger.warning(
+                "Tool batch failed | tool=%s error=%s",
+                last_call.get("tool"),
+                error_text,
+            )
+            state.history.append(
+                {
+                    "role": "user",
+                    "content": (
+                        f"Tool `{last_call.get('tool')}` failed.\nError: {error_text or 'unknown'}\n"
+                        "Do not repeat the same call. Fix the parameters or choose a different tool.\n"
+                        "Reply with exactly ONE tool call."
+                    ),
+                }
+            )
             state.tool_calls = []
             return False
 
@@ -579,7 +776,9 @@ class Workflow:
 
         return False
 
-    def _track_tool_work(self, calls: List[Dict[str, Any]], metrics: _LoopMetrics, edits: _EditSession) -> None:
+    def _track_tool_work(
+        self, calls: List[Dict[str, Any]], metrics: _LoopMetrics, edits: _EditSession
+    ) -> None:
         """Record file edits and tool categories."""
         for c in calls:
             tool = c.get("tool", "")
@@ -599,11 +798,16 @@ class Workflow:
 
         if all_discovery and not any_action:
             metrics.consecutive_discovery_count += 1
-            self.logger.debug("Discovery-only iteration | count=%s", metrics.consecutive_discovery_count)
+            self.logger.debug(
+                "Discovery-only iteration | count=%s",
+                metrics.consecutive_discovery_count,
+            )
         else:
             metrics.consecutive_discovery_count = 0
 
-    def _check_path_reread(self, calls: List[Dict[str, Any]], state: WorkflowState, metrics: _LoopMetrics) -> None:
+    def _check_path_reread(
+        self, calls: List[Dict[str, Any]], state: WorkflowState, metrics: _LoopMetrics
+    ) -> None:
         """Guard against re-reading the same file repeatedly."""
         for c in calls:
             if c.get("tool") != "read_file":
@@ -612,7 +816,10 @@ class Workflow:
             if not fpath:
                 continue
             params = c.get("parameters") or {}
-            is_ranged = any(params.get(k) is not None for k in ("start_line", "end_line", "offset", "limit"))
+            is_ranged = any(
+                params.get(k) is not None
+                for k in ("start_line", "end_line", "offset", "limit")
+            )
             if is_ranged:
                 continue
 
@@ -620,41 +827,79 @@ class Workflow:
             count = metrics.path_read_counts[fpath]
 
             if count == _LoopDefaults.PATH_REREAD_WARN:
-                self.logger.warning("Path reread warning | path=%s reads=%s", fpath, count)
-                state.history.append({"role": "user", "content": (
-                    f"WARNING: You have now read \"{fpath}\" {count} times in full. "
-                    f"Use read_file(..., start_line=N, end_line=M) for specific lines only.")})
+                self.logger.warning(
+                    "Path reread warning | path=%s reads=%s", fpath, count
+                )
+                state.history.append(
+                    {
+                        "role": "user",
+                        "content": (
+                            f'WARNING: You have now read "{fpath}" {count} times in full. '
+                            f"Use read_file(..., start_line=N, end_line=M) for specific lines only."
+                        ),
+                    }
+                )
             elif count >= _LoopDefaults.PATH_REREAD_LIMIT:
-                self.logger.error("Path reread limit hit | path=%s reads=%s", fpath, count)
+                self.logger.error(
+                    "Path reread limit hit | path=%s reads=%s", fpath, count
+                )
                 metrics.no_progress_count += 1
 
     def _should_validate_edits(self, state: WorkflowState, edits: _EditSession) -> bool:
         """Check if validation gate should block final answer."""
         answer_text = str(state.final_answer)
         excuses = bool(_PatternCache.EXCUSE.search(answer_text))
-        needs_dart = (edits.dart_edited and not edits.dart_validated) or _is_punted_dart(answer_text) \
-                     or (excuses and edits.dart_edited and not edits.dart_validated)
-        needs_py = (edits.py_edited and not edits.py_validated) or _is_punted_py(answer_text) \
-                   or (excuses and edits.py_edited and not edits.py_validated)
+        needs_dart = (
+            (edits.dart_edited and not edits.dart_validated)
+            or _is_punted_dart(answer_text)
+            or (excuses and edits.dart_edited and not edits.dart_validated)
+        )
+        needs_py = (
+            (edits.py_edited and not edits.py_validated)
+            or _is_punted_py(answer_text)
+            or (excuses and edits.py_edited and not edits.py_validated)
+        )
 
-        if (needs_dart or needs_py) and edits.validation_nudges < _LoopDefaults.MAX_VALIDATION_NUDGES:
+        if (
+            needs_dart or needs_py
+        ) and edits.validation_nudges < _LoopDefaults.MAX_VALIDATION_NUDGES:
             edits.validation_nudges += 1
-            missing = (["flutter_analyze"] if needs_dart else []) + (["python_check"] if needs_py else [])
-            already_validated = (needs_dart and edits.dart_validated) or (needs_py and edits.py_validated)
+            missing = (["flutter_analyze"] if needs_dart else []) + (
+                ["python_check"] if needs_py else []
+            )
+            already_validated = (needs_dart and edits.dart_validated) or (
+                needs_py and edits.py_validated
+            )
 
-            self.logger.warning("Post-edit validation gate triggered | missing=%s nudge=%s/%s",
-                                missing, edits.validation_nudges, _LoopDefaults.MAX_VALIDATION_NUDGES)
+            self.logger.warning(
+                "Post-edit validation gate triggered | missing=%s nudge=%s/%s",
+                missing,
+                edits.validation_nudges,
+                _LoopDefaults.MAX_VALIDATION_NUDGES,
+            )
             state.final_answer = None
 
             if already_validated:
-                state.history.append({"role": "user", "content": (
-                    "Your final answer contains a forbidden phrase asking the user to run the validator. "
-                    f"The validator ({', '.join(missing)}) was already called. Rewrite without validator mention.")})
+                state.history.append(
+                    {
+                        "role": "user",
+                        "content": (
+                            "Your final answer contains a forbidden phrase asking the user to run the validator. "
+                            f"The validator ({', '.join(missing)}) was already called. Rewrite without validator mention."
+                        ),
+                    }
+                )
             else:
-                state.history.append({"role": "user", "content": (
-                    "You modified source files but did not validate them. "
-                    f"Your IMMEDIATE next response MUST be exactly ONE tool call to: {', '.join(missing)}. "
-                    "No prose. Just the tool call.")})
+                state.history.append(
+                    {
+                        "role": "user",
+                        "content": (
+                            "You modified source files but did not validate them. "
+                            f"Your IMMEDIATE next response MUST be exactly ONE tool call to: {', '.join(missing)}. "
+                            "No prose. Just the tool call."
+                        ),
+                    }
+                )
             return True
 
         return False
@@ -671,26 +916,41 @@ class Workflow:
         summarizer_callable = self._build_summarizer()
 
         try:
-            result = compact_if_needed(state, context_limit=context_limit, max_tokens=max_tokens,
-                                       system_prompt_chars=system_prompt_chars, summarizer=summarizer_callable)
+            result = compact_if_needed(
+                state,
+                context_limit=context_limit,
+                max_tokens=max_tokens,
+                system_prompt_chars=system_prompt_chars,
+                summarizer=summarizer_callable,
+            )
         except Exception as e:
             self.logger.warning("Compactor crashed; proceeding uncompacted: %s", e)
             return
 
         if result is not None:
-            state.add_trace("compactor", output=(
-                f"compacted {result['before_tokens']}->{result['after_tokens']} tokens "
-                f"(target {result['target_tokens']}, limit {result['context_limit']})"),
-                            detail="\n".join(result.get("actions") or []))
+            state.add_trace(
+                "compactor",
+                output=(
+                    f"compacted {result['before_tokens']}->{result['after_tokens']} tokens "
+                    f"(target {result['target_tokens']}, limit {result['context_limit']})"
+                ),
+                detail="\n".join(result.get("actions") or []),
+            )
 
-            if (not self._small_ctx_warned and context_limit < 8192
-                    and result["after_tokens"] > result["target_tokens"]):
+            if (
+                not self._small_ctx_warned
+                and context_limit < 8192
+                and result["after_tokens"] > result["target_tokens"]
+            ):
                 self._small_ctx_warned = True
                 model_id = getattr(reasoner, "model_id", "(unknown)")
-                print(f"[orch] WARNING: reasoner '{model_id}' context_limit={context_limit} is small. "
-                      f"Prompt exceeds target ({result['after_tokens']} > {result['target_tokens']}). "
-                      f"Model may return empty responses. Raise --ollama-num-ctx or pick a larger model.",
-                      file=sys.stderr, flush=True)
+                print(
+                    f"[orch] WARNING: reasoner '{model_id}' context_limit={context_limit} is small. "
+                    f"Prompt exceeds target ({result['after_tokens']} > {result['target_tokens']}). "
+                    f"Model may return empty responses. Raise --ollama-num-ctx or pick a larger model.",
+                    file=sys.stderr,
+                    flush=True,
+                )
 
     def _build_summarizer(self) -> Optional[Callable]:
         """Return a (text) -> summary callable, or None."""
@@ -708,15 +968,24 @@ class Workflow:
             "You are a context-compaction agent. Read the conversation excerpt and produce "
             "a dense, faithful summary. Rules: Keep file paths, identifiers, error messages verbatim. "
             "Keep standing requests and decisions. Drop greetings and filler. Replace file contents "
-            "with one-line notes. Plain text only. Stay under 1500 chars.")
+            "with one-line notes. Plain text only. Stay under 1500 chars."
+        )
 
         def _summarize(text: str) -> str:
             messages = [
                 {"role": "system", "content": system_prompt},
-                {"role": "user", "content": f"Summarize this conversation excerpt:\n\n--- BEGIN ---\n{text}\n--- END ---"},
+                {
+                    "role": "user",
+                    "content": f"Summarize this conversation excerpt:\n\n--- BEGIN ---\n{text}\n--- END ---",
+                },
             ]
             try:
-                out, _ = backend.chat(messages=messages, max_tokens=max_tokens, temperature=temperature, tools=None)
+                out, _ = backend.chat(
+                    messages=messages,
+                    max_tokens=max_tokens,
+                    temperature=temperature,
+                    tools=None,
+                )
                 return (out or "").strip()
             except Exception as e:
                 self.logger.warning("Summarizer failed: %s", e)
@@ -735,27 +1004,41 @@ class Workflow:
         except Exception:
             user_block = state.shaped_prompt or state.user_input or ""
 
-        messages = [{"role": "system", "content": getattr(reasoner, "system_prompt", "")}]
+        messages = [
+            {"role": "system", "content": getattr(reasoner, "system_prompt", "")}
+        ]
         for m in state.history or []:
             if m.get("role") in ("user", "assistant", "system"):
-                messages.append({"role": m.get("role"), "content": m.get("content", "")})
+                messages.append(
+                    {"role": m.get("role"), "content": m.get("content", "")}
+                )
         messages.append({"role": "user", "content": user_block})
-        messages.append({"role": "user", "content": (
-            "[FINAL SYNTHESIS] You have hit the iteration budget. No more tool calls will execute. "
-            "Using ONLY gathered results, write the final answer. Rules: Summarize what was done. "
-            "If incomplete, state exactly what was finished and what remains. No tool tags. No 'I will'.")})
+        messages.append(
+            {
+                "role": "user",
+                "content": (
+                    "[FINAL SYNTHESIS] You have hit the iteration budget. No more tool calls will execute. "
+                    "Using ONLY gathered results, write the final answer. Rules: Summarize what was done. "
+                    "If incomplete, state exactly what was finished and what remains. No tool tags. No 'I will'."
+                ),
+            }
+        )
 
         try:
-            text, _ = reasoner.backend.chat(messages=messages,
-                                            max_tokens=int(getattr(reasoner, "max_tokens", 2048)),
-                                            temperature=float(getattr(reasoner, "temperature", 0.2)),
-                                            tools=None)
+            text, _ = reasoner.backend.chat(
+                messages=messages,
+                max_tokens=int(getattr(reasoner, "max_tokens", 2048)),
+                temperature=float(getattr(reasoner, "temperature", 0.2)),
+                tools=None,
+            )
         except Exception as e:
             self.logger.warning("Max-iter synthesis failed: %s", e)
             return None
 
         cleaned = _td.clean_final_answer(text or "").strip()
-        if not cleaned or _td.parse_all_tag_tool_calls(cleaned, self.tool_registry.definitions):
+        if not cleaned or _td.parse_all_tag_tool_calls(
+            cleaned, self.tool_registry.definitions
+        ):
             return None
         is_malformed, _ = _td.looks_like_malformed_tool_call(cleaned)
         if is_malformed:
@@ -764,11 +1047,16 @@ class Workflow:
         self.logger.info("Max-iter synthesis succeeded (%d chars)", len(cleaned))
         return cleaned
 
-    def _build_max_iter_recap(self, state: WorkflowState, turn_success_count: int) -> str:
+    def _build_max_iter_recap(
+        self, state: WorkflowState, turn_success_count: int
+    ) -> str:
         """Stitch a recap from tool_results when synthesis fails."""
         results = getattr(state, "tool_results", None) or []
-        lines = [f"**Iteration budget exhausted ({self.max_iterations} iterations).** "
-                 f"Completed {turn_success_count} tool batch(es). Recap:", ""]
+        lines = [
+            f"**Iteration budget exhausted ({self.max_iterations} iterations).** "
+            f"Completed {turn_success_count} tool batch(es). Recap:",
+            "",
+        ]
         recent = results[-8:] if len(results) > 8 else results
         for r in recent:
             tool = r.get("tool", "?")
@@ -780,7 +1068,12 @@ class Workflow:
             if len(params_str) > 200:
                 params_str = params_str[:200] + "…"
             raw = r.get("result", "")
-            status = "error" if isinstance(raw, dict) and str(raw.get("status", "")).lower() == "error" else "success"
+            status = (
+                "error"
+                if isinstance(raw, dict)
+                and str(raw.get("status", "")).lower() == "error"
+                else "success"
+            )
             lines.append(f"  - {tool}({params_str}) -> {status}")
         if len(results) > len(recent):
             lines.append(f"  ... (+{len(results) - len(recent)} earlier calls)")
@@ -791,8 +1084,12 @@ class Workflow:
         """Finalize turn, update history, and return payload."""
         answer = state.final_answer or "ERROR: Empty model response"
 
-        if answer and _td.parse_all_tag_tool_calls(answer, self.tool_registry.definitions):
-            self.logger.warning("Final answer still contains raw tool calls; synthesizing")
+        if answer and _td.parse_all_tag_tool_calls(
+            answer, self.tool_registry.definitions
+        ):
+            self.logger.warning(
+                "Final answer still contains raw tool calls; synthesizing"
+            )
             answer = "I've completed the requested task. Please check the results."
 
         self.conversation_history.append({"role": "user", "content": user_input})
@@ -802,13 +1099,19 @@ class Workflow:
         tool_results = getattr(state, "tool_results", None) or []
         tool_summary = self._summarize_tool_calls(tool_results)
         if tool_summary:
-            self.conversation_history.append({"role": "system", "content": tool_summary})
+            self.conversation_history.append(
+                {"role": "system", "content": tool_summary}
+            )
 
         reasoner = self.agents.get("reasoner")
-        ctx_tokens = int(getattr(getattr(reasoner, "backend", None), "context_limit", 0) or 0)
+        ctx_tokens = int(
+            getattr(getattr(reasoner, "backend", None), "context_limit", 0) or 0
+        )
         if ctx_tokens > 0:
             token_budget = int(ctx_tokens * 0.85)
-            used_tokens = estimate_messages_tokens(self.conversation_history, content_type="code", per_message_overhead=10)
+            used_tokens = estimate_messages_tokens(
+                self.conversation_history, content_type="code", per_message_overhead=10
+            )
             free_tokens = max(0, token_budget - used_tokens)
             alloc_tokens = int(free_tokens * 0.60)
             ctx_chars = chars_for_tokens(ctx_tokens, "code")
@@ -818,7 +1121,11 @@ class Workflow:
             bundle_budget = 8_000
             per_body_chars = 8_000
 
-        bodies = self._preserve_tool_bodies(tool_results, max_total_chars=bundle_budget, max_per_body_chars=per_body_chars)
+        bodies = self._preserve_tool_bodies(
+            tool_results,
+            max_total_chars=bundle_budget,
+            max_per_body_chars=per_body_chars,
+        )
         if bodies:
             self.conversation_history.append({"role": "system", "content": bodies})
 
@@ -828,14 +1135,18 @@ class Workflow:
             status = "success"
             if isinstance(raw, dict):
                 status = str(raw.get("status", "?"))
-            elif isinstance(raw, str) and ('"status":"error"' in raw.lower() or '"status": "error"' in raw.lower()):
+            elif isinstance(raw, str) and (
+                '"status":"error"' in raw.lower() or '"status": "error"' in raw.lower()
+            ):
                 status = "error"
             params = r.get("parameters") or {}
-            tool_calls_compact.append({
-                "tool": r.get("tool", "?"),
-                "path": str(params.get("path") or params.get("destination") or ""),
-                "status": status,
-            })
+            tool_calls_compact.append(
+                {
+                    "tool": r.get("tool", "?"),
+                    "path": str(params.get("path") or params.get("destination") or ""),
+                    "status": status,
+                }
+            )
 
         return {
             "response": answer,
@@ -859,14 +1170,32 @@ class Workflow:
             if len(params_str) > 160:
                 params_str = params_str[:160] + "…"
             raw = r.get("result", "")
-            status = "error" if isinstance(raw, dict) and str(raw.get("status", "")).lower() == "error" else "success"
+            status = (
+                "error"
+                if isinstance(raw, dict)
+                and str(raw.get("status", "")).lower() == "error"
+                else "success"
+            )
             lines.append(f"  - {tool}({params_str}) -> {status}")
-        return "[Prior turn tool history — do NOT repeat identical calls]\n" + "\n".join(lines)
+        return (
+            "[Prior turn tool history — do NOT repeat identical calls]\n"
+            + "\n".join(lines)
+        )
 
     _BODY_PRESERVE_TOOLS_PATH = frozenset({"read_file"})
     _BODY_PRESERVE_TOOLS_PATTERN = frozenset({"search_in_files"})
-    _BODY_PRESERVE_TOOLS_LATEST = frozenset({"flutter_analyze", "python_check", "python_lint", "python_test",
-                                             "run_command", "git_status", "git_diff", "git_log"})
+    _BODY_PRESERVE_TOOLS_LATEST = frozenset(
+        {
+            "flutter_analyze",
+            "python_check",
+            "python_lint",
+            "python_test",
+            "run_command",
+            "git_status",
+            "git_diff",
+            "git_log",
+        }
+    )
 
     @staticmethod
     def _payload_text(raw: Any) -> Optional[str]:
@@ -893,8 +1222,13 @@ class Workflow:
                 return "\n".join(str(v) for v in value[:200])
         return None
 
-    def _preserve_tool_bodies(self, results: List[Dict[str, Any]], *, max_total_chars: int,
-                              max_per_body_chars: int = 8_000) -> Optional[str]:
+    def _preserve_tool_bodies(
+        self,
+        results: List[Dict[str, Any]],
+        *,
+        max_total_chars: int,
+        max_per_body_chars: int = 8_000,
+    ) -> Optional[str]:
         if not results or max_total_chars <= 0:
             return None
 
@@ -918,7 +1252,11 @@ class Workflow:
             elif tool in self._BODY_PRESERVE_TOOLS_LATEST:
                 latest_by_tool[tool] = entry
 
-        bundles = list(latest_by_path.values()) + list(latest_by_pattern.values()) + list(latest_by_tool.values())
+        bundles = (
+            list(latest_by_path.values())
+            + list(latest_by_pattern.values())
+            + list(latest_by_tool.values())
+        )
         if not bundles:
             return None
 
@@ -928,7 +1266,9 @@ class Workflow:
             if len(body) > max_per_body_chars:
                 half = max_per_body_chars // 2
                 trunc = len(body) - max_per_body_chars
-                body = f"{body[:half]}\n[... {trunc} chars truncated ...]\n{body[-half:]}"
+                body = (
+                    f"{body[:half]}\n[... {trunc} chars truncated ...]\n{body[-half:]}"
+                )
             try:
                 params_str = json.dumps(entry["params"], ensure_ascii=False)
             except Exception:
@@ -939,7 +1279,7 @@ class Workflow:
             if len(section) > budget:
                 if budget < 200:
                     break
-                section = section[:budget - 50] + "\n[... truncated to fit ...]"
+                section = section[: budget - 50] + "\n[... truncated to fit ...]"
                 sections.append(section)
                 break
             sections.append(section)
@@ -948,8 +1288,10 @@ class Workflow:
         if not sections:
             return None
 
-        return ("[Tool result bodies preserved from this turn — do NOT re-issue identical calls]\n\n"
-                + "\n\n".join(sections))
+        return (
+            "[Tool result bodies preserved from this turn — do NOT re-issue identical calls]\n\n"
+            + "\n\n".join(sections)
+        )
 
     @staticmethod
     def _any_local_backend(agents: Dict[str, Any]) -> bool:
@@ -964,8 +1306,11 @@ class Workflow:
     @staticmethod
     def calls_signature(calls: List[Dict[str, Any]]) -> str:
         try:
-            return json.dumps([{"t": c.get("tool"), "p": c.get("parameters") or {}} for c in calls],
-                              sort_keys=True, ensure_ascii=False)
+            return json.dumps(
+                [{"t": c.get("tool"), "p": c.get("parameters") or {}} for c in calls],
+                sort_keys=True,
+                ensure_ascii=False,
+            )
         except Exception:
             return repr(calls)
 
@@ -998,7 +1343,10 @@ class Workflow:
             if isinstance(raw, str):
                 try:
                     obj = json.loads(raw)
-                    if isinstance(obj, dict) and str(obj.get("status", "")).lower() == "error":
+                    if (
+                        isinstance(obj, dict)
+                        and str(obj.get("status", "")).lower() == "error"
+                    ):
                         return str(obj.get("message") or obj.get("error") or raw)
                 except Exception:
                     pass
@@ -1011,13 +1359,26 @@ def _is_short_followup(text: str) -> bool:
         return False
     if _PatternCache.AFFIRMATION.match(text):
         lower_text = text.lower()
-        action_words = ("proceed", "continue", "go", "do it", "next", "step", "follow", "execute", "run", "implement")
+        action_words = (
+            "proceed",
+            "continue",
+            "go",
+            "do it",
+            "next",
+            "step",
+            "follow",
+            "execute",
+            "run",
+            "implement",
+        )
         if not any(word in lower_text for word in action_words):
             return True
     if _PatternCache.FOLLOWUP.match(text):
         return True
     stripped = text.strip()
-    return len(stripped) <= 25 and not any(m in stripped.lower() for m in (".dart", ".py", "lib/", "bin/", "git "))
+    return len(stripped) <= 25 and not any(
+        m in stripped.lower() for m in (".dart", ".py", "lib/", "bin/", "git ")
+    )
 
 
 def _looks_like_plan(text: str) -> bool:
@@ -1025,11 +1386,15 @@ def _looks_like_plan(text: str) -> bool:
 
 
 def _is_punted_dart(text: str) -> bool:
-    return bool(_PatternCache.PUNTED_DART_LEAD.search(text)) or bool(_PatternCache.PUNTED_DART_BARE.search(text))
+    return bool(_PatternCache.PUNTED_DART_LEAD.search(text)) or bool(
+        _PatternCache.PUNTED_DART_BARE.search(text)
+    )
 
 
 def _is_punted_py(text: str) -> bool:
-    return bool(_PatternCache.PUNTED_PY_LEAD.search(text)) or bool(_PatternCache.PUNTED_PY_BARE.search(text))
+    return bool(_PatternCache.PUNTED_PY_LEAD.search(text)) or bool(
+        _PatternCache.PUNTED_PY_BARE.search(text)
+    )
 
 
 def _path_from_call(call: Dict[str, Any]) -> str:
@@ -1038,20 +1403,38 @@ def _path_from_call(call: Dict[str, Any]) -> str:
     return "" if not path or path == "..." else path
 
 
-def build_workflow_from_args(args, *, security_config: SecurityConfig, base_path: str = ".",
-                             path_filter: Optional[Any] = None, db_connections: Optional[Dict[str, Dict[str, str]]] = None) -> Workflow:
+def build_workflow_from_args(
+    args,
+    *,
+    security_config: SecurityConfig,
+    base_path: str = ".",
+    path_filter: Optional[Any] = None,
+    db_connections: Optional[Dict[str, Dict[str, str]]] = None,
+) -> Workflow:
     """Build Workflow from args."""
-    tool_registry = ToolRegistry(base_path=base_path, security_config=security_config,
-                                 path_filter=path_filter, db_connections=db_connections)
+    tool_registry = ToolRegistry(
+        base_path=base_path,
+        security_config=security_config,
+        path_filter=path_filter,
+        db_connections=db_connections,
+    )
 
     # Load per-project agent context (.agent.md / context.md) when present.
     from .project_context import load_project_context
+
     project_context = load_project_context(base_path)
 
     secrets = SecretsResolver(args)
-    agents = build_agents(args.agent_config, secrets, tool_definitions=tool_registry.definitions,
-                          tools_catalog_text=tool_registry.get_system_prompt(project_context=project_context))
+    agents = build_agents(
+        args.agent_config,
+        secrets,
+        tool_definitions=tool_registry.definitions,
+        tools_catalog_text=tool_registry.get_system_prompt(
+            project_context=project_context
+        ),
+    )
     return Workflow(agents, tool_registry)
+
 
 # """Workflow dispatcher — replaces the single-agent run-loop in multi-agent mode.
 #

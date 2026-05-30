@@ -10,6 +10,7 @@ Sandbox policy:
   - python_format : rewrites files             → blocked in sandbox
   - python_test   : executes user code         → blocked in sandbox
 """
+
 from __future__ import annotations
 
 import json
@@ -34,8 +35,11 @@ def register(registry) -> None:
         """Compile Python source to detect syntax errors without writing files."""
         try:
             target = registry.resolve_path(path)
-            rel_root = (str(target.relative_to(registry.base_path))
-                        if target != registry.base_path else ".")
+            rel_root = (
+                str(target.relative_to(registry.base_path))
+                if target != registry.base_path
+                else "."
+            )
 
             files: list[Path] = []
             if target.is_file():
@@ -44,10 +48,12 @@ def register(registry) -> None:
             elif target.is_dir():
                 files = sorted(p for p in target.rglob("*.py") if p.is_file())
             else:
-                return json.dumps({
-                    "status": "error",
-                    "message": f"Path does not exist: {path}",
-                })
+                return json.dumps(
+                    {
+                        "status": "error",
+                        "message": f"Path does not exist: {path}",
+                    }
+                )
 
             checked = 0
             errors: list[dict] = []
@@ -64,34 +70,40 @@ def register(registry) -> None:
                     source = fp.read_text(encoding="utf-8", errors="replace")
                     compile(source, rel, "exec")
                 except SyntaxError as e:
-                    errors.append({
-                        "path": rel,
-                        "line": e.lineno or 0,
-                        "column": e.offset or 0,
-                        "message": str(e.msg or "Syntax error"),
-                        "text": (e.text or "").strip(),
-                    })
+                    errors.append(
+                        {
+                            "path": rel,
+                            "line": e.lineno or 0,
+                            "column": e.offset or 0,
+                            "message": str(e.msg or "Syntax error"),
+                            "text": (e.text or "").strip(),
+                        }
+                    )
                 except Exception as e:
-                    errors.append({
-                        "path": rel,
-                        "line": 0,
-                        "column": 0,
-                        "message": str(e),
-                        "text": "",
-                    })
+                    errors.append(
+                        {
+                            "path": rel,
+                            "line": 0,
+                            "column": 0,
+                            "message": str(e),
+                            "text": "",
+                        }
+                    )
 
                 if len(errors) >= 200:
                     truncated = True
                     break
 
-            return json.dumps({
-                "status": "success" if not errors else "error",
-                "path": rel_root,
-                "checked_files": checked,
-                "error_count": len(errors),
-                "truncated": truncated,
-                "errors": errors,
-            })
+            return json.dumps(
+                {
+                    "status": "success" if not errors else "error",
+                    "path": rel_root,
+                    "checked_files": checked,
+                    "error_count": len(errors),
+                    "truncated": truncated,
+                    "errors": errors,
+                }
+            )
         except Exception as e:
             return json.dumps({"status": "error", "message": str(e)})
 
@@ -104,12 +116,17 @@ def register(registry) -> None:
         """
         try:
             target = registry.resolve_path(path)
-            rel = (str(target.relative_to(registry.base_path))
-                   if target != registry.base_path else ".")
+            rel = (
+                str(target.relative_to(registry.base_path))
+                if target != registry.base_path
+                else "."
+            )
             result = subprocess.run(
                 ["ruff", "check", rel],
-                capture_output=True, text=True,
-                timeout=timeout, cwd=str(registry.base_path),
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+                cwd=str(registry.base_path),
             )
             output = (result.stdout or "") + (result.stderr or "")
             # Ruff prints either "All checks passed!" or one line per
@@ -121,23 +138,30 @@ def register(registry) -> None:
             # Ruff's last summary line ("Found N errors") is also useful;
             # let it ride along in `output`.
             output, truncated = _truncate(output)
-            return json.dumps({
-                "status": "success" if result.returncode == 0 else "error",
-                "path": rel,
-                "returncode": result.returncode,
-                "issues": issues,
-                "truncated": truncated,
-                "output": output if output.strip() else "(no lint output)",
-            })
+            return json.dumps(
+                {
+                    "status": "success" if result.returncode == 0 else "error",
+                    "path": rel,
+                    "returncode": result.returncode,
+                    "issues": issues,
+                    "truncated": truncated,
+                    "output": output if output.strip() else "(no lint output)",
+                }
+            )
         except FileNotFoundError:
-            return json.dumps({
-                "status": "error",
-                "message": ("ruff not found on PATH. Install with "
-                            "`pip install ruff` (or `pipx install ruff`)."),
-            })
+            return json.dumps(
+                {
+                    "status": "error",
+                    "message": (
+                        "ruff not found on PATH. Install with "
+                        "`pip install ruff` (or `pipx install ruff`)."
+                    ),
+                }
+            )
         except subprocess.TimeoutExpired:
-            return json.dumps({"status": "error",
-                               "message": f"ruff check timed out ({timeout}s)"})
+            return json.dumps(
+                {"status": "error", "message": f"ruff check timed out ({timeout}s)"}
+            )
         except Exception as e:
             return json.dumps({"status": "error", "message": str(e)})
 
@@ -150,15 +174,24 @@ def register(registry) -> None:
         """
         try:
             if registry.security_config.sandbox_mode:
-                return json.dumps({"status": "error",
-                                   "message": "python_format is disabled in sandbox mode."})
+                return json.dumps(
+                    {
+                        "status": "error",
+                        "message": "python_format is disabled in sandbox mode.",
+                    }
+                )
             target = registry.resolve_path(path)
-            rel = (str(target.relative_to(registry.base_path))
-                   if target != registry.base_path else ".")
+            rel = (
+                str(target.relative_to(registry.base_path))
+                if target != registry.base_path
+                else "."
+            )
             result = subprocess.run(
                 ["ruff", "format", rel],
-                capture_output=True, text=True,
-                timeout=timeout, cwd=str(registry.base_path),
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+                cwd=str(registry.base_path),
             )
             output = (result.stdout or "") + (result.stderr or "")
             # Ruff's summary line: "5 files reformatted, 12 files left unchanged".
@@ -167,23 +200,30 @@ def register(registry) -> None:
             if m:
                 reformatted = int(m.group(1))
             output, truncated = _truncate(output)
-            return json.dumps({
-                "status": "success" if result.returncode == 0 else "error",
-                "path": rel,
-                "returncode": result.returncode,
-                "reformatted": reformatted,
-                "truncated": truncated,
-                "output": output if output.strip() else "(no format output)",
-            })
+            return json.dumps(
+                {
+                    "status": "success" if result.returncode == 0 else "error",
+                    "path": rel,
+                    "returncode": result.returncode,
+                    "reformatted": reformatted,
+                    "truncated": truncated,
+                    "output": output if output.strip() else "(no format output)",
+                }
+            )
         except FileNotFoundError:
-            return json.dumps({
-                "status": "error",
-                "message": ("ruff not found on PATH. Install with "
-                            "`pip install ruff` (or `pipx install ruff`)."),
-            })
+            return json.dumps(
+                {
+                    "status": "error",
+                    "message": (
+                        "ruff not found on PATH. Install with "
+                        "`pip install ruff` (or `pipx install ruff`)."
+                    ),
+                }
+            )
         except subprocess.TimeoutExpired:
-            return json.dumps({"status": "error",
-                               "message": f"ruff format timed out ({timeout}s)"})
+            return json.dumps(
+                {"status": "error", "message": f"ruff format timed out ({timeout}s)"}
+            )
         except Exception as e:
             return json.dumps({"status": "error", "message": str(e)})
 
@@ -196,11 +236,18 @@ def register(registry) -> None:
         """
         try:
             if registry.security_config.sandbox_mode:
-                return json.dumps({"status": "error",
-                                   "message": "python_test is disabled in sandbox mode."})
+                return json.dumps(
+                    {
+                        "status": "error",
+                        "message": "python_test is disabled in sandbox mode.",
+                    }
+                )
             target = registry.resolve_path(path)
-            rel = (str(target.relative_to(registry.base_path))
-                   if target != registry.base_path else ".")
+            rel = (
+                str(target.relative_to(registry.base_path))
+                if target != registry.base_path
+                else "."
+            )
             # `-q` keeps the output compact; `--no-header` drops the
             # pytest banner that wastes tokens on every call.
             cmd = ["pytest", "-q", "--no-header", rel]
@@ -208,8 +255,10 @@ def register(registry) -> None:
                 cmd = ["pytest", "-q", "--no-header"]
             result = subprocess.run(
                 cmd,
-                capture_output=True, text=True,
-                timeout=timeout, cwd=str(registry.base_path),
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+                cwd=str(registry.base_path),
             )
             output = (result.stdout or "") + (result.stderr or "")
             # Pytest summary line examples:
@@ -217,152 +266,168 @@ def register(registry) -> None:
             #   "1 failed, 4 passed in 0.51s"
             #   "no tests ran in 0.10s"
             passed = failed = errors = skipped = 0
-            for kw, var in (("passed", "passed"), ("failed", "failed"),
-                            ("error", "errors"), ("skipped", "skipped")):
+            for kw, var in (
+                ("passed", "passed"),
+                ("failed", "failed"),
+                ("error", "errors"),
+                ("skipped", "skipped"),
+            ):
                 m = re.search(rf"(\d+)\s+{kw}", output)
                 if m:
                     locals()[var]  # silence linter; we set via dict below
+
             # Re-extract directly into named ints (locals() trick above
             # doesn't write back in CPython).
             def _count(kw: str) -> int:
                 m = re.search(rf"(\d+)\s+{kw}", output)
                 return int(m.group(1)) if m else 0
+
             passed = _count("passed")
             failed = _count("failed")
             errors = _count("error")
             skipped = _count("skipped")
             output, truncated = _truncate(output)
-            return json.dumps({
-                "status": "success" if result.returncode == 0 else "error",
-                "path": rel,
-                "returncode": result.returncode,
-                "passed": passed,
-                "failed": failed,
-                "errors": errors,
-                "skipped": skipped,
-                "truncated": truncated,
-                "output": output if output.strip() else "(no test output)",
-            })
+            return json.dumps(
+                {
+                    "status": "success" if result.returncode == 0 else "error",
+                    "path": rel,
+                    "returncode": result.returncode,
+                    "passed": passed,
+                    "failed": failed,
+                    "errors": errors,
+                    "skipped": skipped,
+                    "truncated": truncated,
+                    "output": output if output.strip() else "(no test output)",
+                }
+            )
         except FileNotFoundError:
-            return json.dumps({
-                "status": "error",
-                "message": ("pytest not found on PATH. Install with "
-                            "`pip install pytest`."),
-            })
+            return json.dumps(
+                {
+                    "status": "error",
+                    "message": (
+                        "pytest not found on PATH. Install with `pip install pytest`."
+                    ),
+                }
+            )
         except subprocess.TimeoutExpired:
-            return json.dumps({"status": "error",
-                               "message": f"pytest timed out ({timeout}s)"})
+            return json.dumps(
+                {"status": "error", "message": f"pytest timed out ({timeout}s)"}
+            )
         except Exception as e:
             return json.dumps({"status": "error", "message": str(e)})
 
-    registry.tools.update({
-        "python_check": python_check,
-        "python_lint": python_lint,
-        "python_format": python_format,
-        "python_test": python_test,
-    })
+    registry.tools.update(
+        {
+            "python_check": python_check,
+            "python_lint": python_lint,
+            "python_format": python_format,
+            "python_test": python_test,
+        }
+    )
 
-    registry.definitions.extend([
-        {
-            "type": "function",
-            "function": {
-                "name": "python_check",
-                "description": (
-                    "Compile Python source files to detect syntax errors "
-                    "without writing artifacts. Read-only and safe in sandbox "
-                    "mode. Use after editing Python code to ensure it still parses."
-                ),
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "path": {
-                            "type": "string",
-                            "description": "Optional Python file or directory to check (default '.', the whole project)",
+    registry.definitions.extend(
+        [
+            {
+                "type": "function",
+                "function": {
+                    "name": "python_check",
+                    "description": (
+                        "Compile Python source files to detect syntax errors "
+                        "without writing artifacts. Read-only and safe in sandbox "
+                        "mode. Use after editing Python code to ensure it still parses."
+                    ),
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "path": {
+                                "type": "string",
+                                "description": "Optional Python file or directory to check (default '.', the whole project)",
+                            },
+                            "max_files": {
+                                "type": "integer",
+                                "description": "Maximum number of .py files to parse before truncating (default 2000)",
+                            },
                         },
-                        "max_files": {
-                            "type": "integer",
-                            "description": "Maximum number of .py files to parse before truncating (default 2000)",
-                        },
+                        "required": [],
                     },
-                    "required": [],
                 },
             },
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "python_lint",
-                "description": (
-                    "Run `ruff check` on a Python file or directory and "
-                    "return the lint diagnostics. Read-only — safe to call "
-                    "in sandbox mode. Use after editing Python code to "
-                    "verify there are no style/error issues."
-                ),
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "path": {
-                            "type": "string",
-                            "description": "Optional file or directory to lint (default '.', the whole project)",
+            {
+                "type": "function",
+                "function": {
+                    "name": "python_lint",
+                    "description": (
+                        "Run `ruff check` on a Python file or directory and "
+                        "return the lint diagnostics. Read-only — safe to call "
+                        "in sandbox mode. Use after editing Python code to "
+                        "verify there are no style/error issues."
+                    ),
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "path": {
+                                "type": "string",
+                                "description": "Optional file or directory to lint (default '.', the whole project)",
+                            },
+                            "timeout": {
+                                "type": "integer",
+                                "description": "Seconds before ruff is killed (default 120)",
+                            },
                         },
-                        "timeout": {
-                            "type": "integer",
-                            "description": "Seconds before ruff is killed (default 120)",
-                        },
+                        "required": [],
                     },
-                    "required": [],
                 },
             },
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "python_format",
-                "description": (
-                    "Run `ruff format` on a Python file or directory. "
-                    "Rewrites files in place — call after large edits to "
-                    "normalise quotes, indentation, and line length."
-                ),
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "path": {
-                            "type": "string",
-                            "description": "Optional file or directory to format (default '.', the whole project)",
+            {
+                "type": "function",
+                "function": {
+                    "name": "python_format",
+                    "description": (
+                        "Run `ruff format` on a Python file or directory. "
+                        "Rewrites files in place — call after large edits to "
+                        "normalise quotes, indentation, and line length."
+                    ),
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "path": {
+                                "type": "string",
+                                "description": "Optional file or directory to format (default '.', the whole project)",
+                            },
+                            "timeout": {
+                                "type": "integer",
+                                "description": "Seconds before ruff is killed (default 120)",
+                            },
                         },
-                        "timeout": {
-                            "type": "integer",
-                            "description": "Seconds before ruff is killed (default 120)",
-                        },
+                        "required": [],
                     },
-                    "required": [],
                 },
             },
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "python_test",
-                "description": (
-                    "Run pytest on a Python file or directory. Returns "
-                    "pass/fail/error/skipped counts plus the captured "
-                    "output. Use after editing Python code to verify "
-                    "behaviour. Executes user code — disabled in sandbox mode."
-                ),
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "path": {
-                            "type": "string",
-                            "description": "Optional file or directory to test (default '.', the whole project)",
+            {
+                "type": "function",
+                "function": {
+                    "name": "python_test",
+                    "description": (
+                        "Run pytest on a Python file or directory. Returns "
+                        "pass/fail/error/skipped counts plus the captured "
+                        "output. Use after editing Python code to verify "
+                        "behaviour. Executes user code — disabled in sandbox mode."
+                    ),
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "path": {
+                                "type": "string",
+                                "description": "Optional file or directory to test (default '.', the whole project)",
+                            },
+                            "timeout": {
+                                "type": "integer",
+                                "description": "Seconds before pytest is killed (default 300)",
+                            },
                         },
-                        "timeout": {
-                            "type": "integer",
-                            "description": "Seconds before pytest is killed (default 300)",
-                        },
+                        "required": [],
                     },
-                    "required": [],
                 },
             },
-        },
-    ])
+        ]
+    )

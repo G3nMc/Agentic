@@ -5,6 +5,7 @@ and then mutated in-place by each agent node (router → shaper → reasoner →
 executor). The ``trace`` list is what the Flutter UI renders as the
 "Step expansion" — one entry per agent activation.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -22,10 +23,11 @@ ALL_ROUTES = (ROUTE_TRIVIAL, ROUTE_REASONING, ROUTE_TOOL)
 @dataclass
 class TraceEntry:
     """One step in the execution trace — what the UI renders as a step tile."""
-    agent: str                       # "router" | "shaper" | "reasoner" | "executor"
-    output: str = ""                 # short human-readable summary (route label, plan title, tool result status, …)
-    detail: Optional[str] = None     # optional longer body (full plan, full tool result)
-    tokens: Optional[int] = None     # estimated/actual tokens spent on this step
+
+    agent: str  # "router" | "shaper" | "reasoner" | "executor"
+    output: str = ""  # short human-readable summary (route label, plan title, tool result status, …)
+    detail: Optional[str] = None  # optional longer body (full plan, full tool result)
+    tokens: Optional[int] = None  # estimated/actual tokens spent on this step
 
     def to_dict(self) -> Dict[str, Any]:
         d: Dict[str, Any] = {"agent": self.agent, "output": self.output}
@@ -43,6 +45,7 @@ class WorkflowState:
     Not every field is filled on every turn — e.g. ``shaped_prompt`` stays
     ``None`` when the router classifies the request as ``trivial``.
     """
+
     workflow_id: str
     user_input: str
     history: List[Dict[str, Any]] = field(default_factory=list)
@@ -63,11 +66,16 @@ class WorkflowState:
     # → trivial). The dispatcher reads this as a fall-through hint.
     short_circuit: bool = False
 
-    def add_trace(self, agent: str, output: str = "",
-                  detail: Optional[str] = None,
-                  tokens: Optional[int] = None) -> None:
-        self.trace.append(TraceEntry(agent=agent, output=output,
-                                     detail=detail, tokens=tokens))
+    def add_trace(
+        self,
+        agent: str,
+        output: str = "",
+        detail: Optional[str] = None,
+        tokens: Optional[int] = None,
+    ) -> None:
+        self.trace.append(
+            TraceEntry(agent=agent, output=output, detail=detail, tokens=tokens)
+        )
 
     def trace_to_list(self) -> List[Dict[str, Any]]:
         return [t.to_dict() for t in self.trace]

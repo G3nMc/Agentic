@@ -4,6 +4,7 @@ Uses `/api/generate` (not `/api/chat`) so the same endpoint works for
 both raw-completion and chat-formatted requests.  The `messages` list is
 converted into a single `prompt` string + optional `system` field.
 """
+
 from __future__ import annotations
 
 import json
@@ -61,6 +62,7 @@ class OllamaBackend(ModelBackend):
             return ""
         try:
             from urllib.parse import urlparse
+
             parsed = urlparse(url if "://" in url else f"http://{url}")
             return (parsed.hostname or "").lower()
         except Exception:
@@ -112,7 +114,9 @@ class OllamaBackend(ModelBackend):
                 "Ollama cloud endpoint requires an API key. Pass "
                 "--ollama-api-key or set OLLAMA_API_KEY in the environment."
             )
-        if self._is_cloud_host(self.base_url) and self.api_key.lower().startswith("ssh-"):
+        if self._is_cloud_host(self.base_url) and self.api_key.lower().startswith(
+            "ssh-"
+        ):
             raise RuntimeError(
                 "The configured Ollama API key looks like an SSH public key "
                 "(starts with 'ssh-'). Use an API key from "
@@ -145,11 +149,15 @@ class OllamaBackend(ModelBackend):
         is unreachable. Called once at startup for fast-fail feedback."""
         from ollama import ResponseError  # noqa: PLC0415
 
-        _log(f"[Ollama:health_check] checking {self.base_url} for model={self.model_id}")
+        _log(
+            f"[Ollama:health_check] checking {self.base_url} for model={self.model_id}"
+        )
         try:
             result = self._client.list()
         except ResponseError as e:
-            _log(f"[Ollama:health_check_error] ResponseError status={e.status_code} error={e.error}")
+            _log(
+                f"[Ollama:health_check_error] ResponseError status={e.status_code} error={e.error}"
+            )
             raise RuntimeError(
                 f"Ollama returned error {e.status_code} for {self.base_url}: "
                 f"{e.error}. Check your API key or server address."
@@ -164,7 +172,9 @@ class OllamaBackend(ModelBackend):
 
         is_cloud = not self._is_local_host(self.base_url)
         if is_cloud:
-            _log(f"[Ollama:health_check_ok] cloud endpoint — skipping model presence check")
+            _log(
+                f"[Ollama:health_check_ok] cloud endpoint — skipping model presence check"
+            )
             return
 
         models = getattr(result, "models", []) or []
@@ -293,15 +303,14 @@ class OllamaBackend(ModelBackend):
         effective_tools = None if self._tools_unsupported else tools
         n_tools = len(effective_tools) if effective_tools else 0
 
-        is_cloud_model = (
-            self._is_cloud_model_id(self.model_id)
-            or self._is_cloud_host(self.base_url)
+        is_cloud_model = self._is_cloud_model_id(self.model_id) or self._is_cloud_host(
+            self.base_url
         )
 
         prompt, system = self._build_prompt_and_system(messages)
 
         _log(
-            f"[Ollama:chat] model={self.model_id} msgs={len(messages)} "
+            f"[Ollama:chat] POST {self.base_url}/api/generate model={self.model_id} msgs={len(messages)} "
             f"tools={n_tools} max_tokens={max_tokens} temperature={temperature} "
             f"cloud={is_cloud_model} tools_unsupported={self._tools_unsupported}"
             + (" [sending without tools]" if self._tools_unsupported and tools else "")
@@ -377,7 +386,9 @@ class OllamaBackend(ModelBackend):
             )
 
             if native_calls:
-                _log(f"[Ollama:tool_calls] converting {len(native_calls)} native call(s) to <tool> tags")
+                _log(
+                    f"[Ollama:tool_calls] converting {len(native_calls)} native call(s) to <tool> tags"
+                )
                 tag_lines: List[str] = []
                 for tc in native_calls:
                     fn = getattr(tc, "function", tc)
@@ -388,21 +399,29 @@ class OllamaBackend(ModelBackend):
                         try:
                             args = json.loads(args)
                         except json.JSONDecodeError as exc:
-                            _log(f"[Ollama:tool_call_parse_error] args JSON decode failed: {exc} raw={args!r:.80}")
+                            _log(
+                                f"[Ollama:tool_call_parse_error] args JSON decode failed: {exc} raw={args!r:.80}"
+                            )
                             args = {}
                     if not name:
-                        _log(f"[Ollama:tool_call_skip] tool call has no name — skipping")
+                        _log(
+                            f"[Ollama:tool_call_skip] tool call has no name — skipping"
+                        )
                         continue
                     tag_lines.append(
-                        f'<tool>{json.dumps({"tool": name, "parameters": args}, ensure_ascii=False)}</tool>'
+                        f"<tool>{json.dumps({'tool': name, 'parameters': args}, ensure_ascii=False)}</tool>"
                     )
-                    _log(f"[Ollama:tool_call] {name}({json.dumps(args, ensure_ascii=False)[:200]})")
+                    _log(
+                        f"[Ollama:tool_call] {name}({json.dumps(args, ensure_ascii=False)[:200]})"
+                    )
 
                 if tag_lines:
                     return "\n".join(tag_lines), finish_reason
 
             result = "".join(parts).strip()
-            _log(f"[Ollama:done] returning content ({len(result)} chars) finish_reason={finish_reason!r}")
+            _log(
+                f"[Ollama:done] returning content ({len(result)} chars) finish_reason={finish_reason!r}"
+            )
             return result, finish_reason
 
         except ResponseError as e:
@@ -415,16 +434,12 @@ class OllamaBackend(ModelBackend):
                 f"error={err_str!r} tools_attached={bool(effective_tools)}"
             )
 
-            is_cloud = (
-                self._is_cloud_model_id(self.model_id)
-                or self._is_cloud_host(self.base_url)
+            is_cloud = self._is_cloud_model_id(self.model_id) or self._is_cloud_host(
+                self.base_url
             )
-            tools_likely_unsupported = (
-                effective_tools
-                and (
-                    (status == 400 and "does not support tools" in low)
-                    or (is_cloud and "internal server error" in low)
-                )
+            tools_likely_unsupported = effective_tools and (
+                (status == 400 and "does not support tools" in low)
+                or (is_cloud and "internal server error" in low)
             )
 
             if tools_likely_unsupported:

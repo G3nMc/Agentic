@@ -10,6 +10,7 @@ Transitions:
                        ├──► FAILED         (worker self-stamps)
                        └──► INTERRUPTED    (host stamps on crash/timeout)
 """
+
 from __future__ import annotations
 
 from enum import Enum
@@ -39,22 +40,28 @@ class Status(str, Enum):
         return cls.PENDING
 
 
-_TERMINAL = frozenset({
-    Status.DONE_CLEAN,
-    Status.DONE_WITH_WARNINGS,
-    Status.FAILED,
-    Status.INTERRUPTED,
-})
+_TERMINAL = frozenset(
+    {
+        Status.DONE_CLEAN,
+        Status.DONE_WITH_WARNINGS,
+        Status.FAILED,
+        Status.INTERRUPTED,
+    }
+)
 
-_CLEAN = frozenset({
-    Status.DONE_CLEAN,
-    Status.DONE_WITH_WARNINGS,
-})
+_CLEAN = frozenset(
+    {
+        Status.DONE_CLEAN,
+        Status.DONE_WITH_WARNINGS,
+    }
+)
 
-_FAILURE = frozenset({
-    Status.FAILED,
-    Status.INTERRUPTED,
-})
+_FAILURE = frozenset(
+    {
+        Status.FAILED,
+        Status.INTERRUPTED,
+    }
+)
 
 
 def is_terminal(s: Status) -> bool:

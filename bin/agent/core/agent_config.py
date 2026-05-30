@@ -17,6 +17,7 @@ API keys are NOT in this file — they come from the existing CLI flags / env
 vars (the same plumbing the single-agent mode uses). This avoids duplicating
 secrets storage between Flutter and Python.
 """
+
 from __future__ import annotations
 
 import json
@@ -71,9 +72,14 @@ class SecretsResolver:
     def __init__(self, args):
         self.args = args
 
-    def kwargs_for(self, backend_name: str, model_id: str,
-                   *, ollama_base_url: Optional[str] = None,
-                   ollama_num_ctx: Optional[int] = None) -> Dict[str, Any]:
+    def kwargs_for(
+        self,
+        backend_name: str,
+        model_id: str,
+        *,
+        ollama_base_url: Optional[str] = None,
+        ollama_num_ctx: Optional[int] = None,
+    ) -> Dict[str, Any]:
         a = self.args
         b = backend_name.lower().strip()
         if b == "huggingface":
@@ -89,17 +95,21 @@ class SecretsResolver:
             key = a.groq_api_key or os.environ.get("GROQ_API_KEY", "")
             return {"api_key": key, "model_id": model_id}
         if b == "gemini":
-            key = (a.gemini_api_key
-                   or os.environ.get("GOOGLE_API_KEY", "")
-                   or os.environ.get("GEMINI_API_KEY", ""))
+            key = (
+                a.gemini_api_key
+                or os.environ.get("GOOGLE_API_KEY", "")
+                or os.environ.get("GEMINI_API_KEY", "")
+            )
             return {"api_key": key, "model_id": model_id}
         if b == "openrouter":
             key = a.openrouter_api_key or os.environ.get("OPENROUTER_API_KEY", "")
             return {"api_key": key, "model_id": model_id}
         if b == "github":
-            key = (a.github_api_key
-                   or os.environ.get("GITHUB_TOKEN", "")
-                   or os.environ.get("GITHUB_API_KEY", ""))
+            key = (
+                a.github_api_key
+                or os.environ.get("GITHUB_TOKEN", "")
+                or os.environ.get("GITHUB_API_KEY", "")
+            )
             return {"api_key": key, "model_id": model_id}
         raise ValueError(f"Unknown backend in agent config: {backend_name!r}")
 
@@ -130,22 +140,28 @@ def load_role_configs(path: str | Path) -> Dict[str, RoleConfig]:
         backend = str(entry.get("backend") or "").strip().lower()
         model = str(entry.get("model") or "").strip()
         if not backend or not model:
-            print(f"[agent-config] role={role} missing backend/model; skipping.",
-                  file=sys.stderr)
+            print(
+                f"[agent-config] role={role} missing backend/model; skipping.",
+                file=sys.stderr,
+            )
             continue
         out[role] = RoleConfig(
             role=role,
             backend=backend,
             model=model,
             tpm_limit=int(entry.get("tpm_limit") or _FIELD_DEFAULTS["tpm_limit"]),
-            temperature=float(entry.get("temperature")
-                              if entry.get("temperature") is not None
-                              else _FIELD_DEFAULTS["temperature"]),
+            temperature=float(
+                entry.get("temperature")
+                if entry.get("temperature") is not None
+                else _FIELD_DEFAULTS["temperature"]
+            ),
             max_tokens=int(entry.get("max_tokens") or _FIELD_DEFAULTS["max_tokens"]),
             ollama_base_url=entry.get("ollama_base_url"),
-            ollama_num_ctx=(int(entry["ollama_num_ctx"])
-                            if entry.get("ollama_num_ctx") not in (None, "")
-                            else None),
+            ollama_num_ctx=(
+                int(entry["ollama_num_ctx"])
+                if entry.get("ollama_num_ctx") not in (None, "")
+                else None
+            ),
         )
     if not out:
         raise ValueError("agents.json contained no usable role entries.")
@@ -159,8 +175,9 @@ def _backend_cache_key(cfg: RoleConfig) -> str:
     return f"{cfg.backend}|{cfg.model}|{cfg.tpm_limit}|{cfg.ollama_base_url}|{cfg.ollama_num_ctx}"
 
 
-def build_backend_for_role(cfg: RoleConfig, secrets: SecretsResolver,
-                           cache: Dict[str, ModelBackend]) -> ModelBackend:
+def build_backend_for_role(
+    cfg: RoleConfig, secrets: SecretsResolver, cache: Dict[str, ModelBackend]
+) -> ModelBackend:
     """Return a (possibly cached) backend for one role.
 
     Two roles that pick the same backend+model+tpm share a single
@@ -173,14 +190,16 @@ def build_backend_for_role(cfg: RoleConfig, secrets: SecretsResolver,
         return cache[key]
 
     kwargs = secrets.kwargs_for(
-        cfg.backend, cfg.model,
+        cfg.backend,
+        cfg.model,
         ollama_base_url=cfg.ollama_base_url,
         ollama_num_ctx=cfg.ollama_num_ctx,
     )
     inner = build_backend(cfg.backend, **kwargs)
     if cfg.tpm_limit and cfg.tpm_limit > 0:
-        inner = RateLimitedBackend(inner, tpm_limit=cfg.tpm_limit,
-                                   label=f"{cfg.backend}:{cfg.role}")
+        inner = RateLimitedBackend(
+            inner, tpm_limit=cfg.tpm_limit, label=f"{cfg.backend}:{cfg.role}"
+        )
     cache[key] = inner
     return inner
 
@@ -188,10 +207,13 @@ def build_backend_for_role(cfg: RoleConfig, secrets: SecretsResolver,
 # ----------------------------------------------------------------------
 # Top-level: load + instantiate every agent
 # ----------------------------------------------------------------------
-def build_agents(config_path: str | Path,
-                 secrets: SecretsResolver,
-                 *, tool_definitions: Optional[List[Dict[str, Any]]] = None,
-                 tools_catalog_text: str = "") -> Dict[str, "Agent"]:
+def build_agents(
+    config_path: str | Path,
+    secrets: SecretsResolver,
+    *,
+    tool_definitions: Optional[List[Dict[str, Any]]] = None,
+    tools_catalog_text: str = "",
+) -> Dict[str, "Agent"]:
     """Read ``config_path``, build every agent, return ``{role -> Agent}``.
 
     Roles missing from the JSON are silently skipped; the dispatcher decides
@@ -199,8 +221,13 @@ def build_agents(config_path: str | Path,
     """
     # Local import: agents/__init__.py imports from this module via
     # build_backend, so we keep this lazy to avoid an import cycle.
-    from ..agents import (ExecutorAgent, ReasonerAgent, RouterAgent,
-                          ShaperAgent, SummarizerAgent)
+    from ..agents import (
+        ExecutorAgent,
+        ReasonerAgent,
+        RouterAgent,
+        ShaperAgent,
+        SummarizerAgent,
+    )
 
     cfgs = load_role_configs(config_path)
     cache: Dict[str, ModelBackend] = {}
@@ -210,13 +237,15 @@ def build_agents(config_path: str | Path,
         c = cfgs["router"]
         agents["router"] = RouterAgent(
             build_backend_for_role(c, secrets, cache),
-            temperature=c.temperature, max_tokens=c.max_tokens,
+            temperature=c.temperature,
+            max_tokens=c.max_tokens,
         )
     if "shaper" in cfgs:
         c = cfgs["shaper"]
         agents["shaper"] = ShaperAgent(
             build_backend_for_role(c, secrets, cache),
-            temperature=c.temperature, max_tokens=c.max_tokens,
+            temperature=c.temperature,
+            max_tokens=c.max_tokens,
         )
     if "reasoner" in cfgs:
         c = cfgs["reasoner"]
@@ -224,20 +253,23 @@ def build_agents(config_path: str | Path,
             build_backend_for_role(c, secrets, cache),
             tool_definitions=tool_definitions or [],
             tools_catalog_text=tools_catalog_text,
-            temperature=c.temperature, max_tokens=c.max_tokens,
+            temperature=c.temperature,
+            max_tokens=c.max_tokens,
         )
     if "executor" in cfgs:
         c = cfgs["executor"]
         agents["executor"] = ExecutorAgent(
             build_backend_for_role(c, secrets, cache),
-            temperature=c.temperature, max_tokens=c.max_tokens,
-            iteration_timeout=getattr(c, 'iteration_timeout', 30.0),
+            temperature=c.temperature,
+            max_tokens=c.max_tokens,
+            iteration_timeout=getattr(c, "iteration_timeout", 30.0),
         )
     if "summarizer" in cfgs:
         c = cfgs["summarizer"]
         agents["summarizer"] = SummarizerAgent(
             build_backend_for_role(c, secrets, cache),
-            temperature=c.temperature, max_tokens=c.max_tokens,
+            temperature=c.temperature,
+            max_tokens=c.max_tokens,
         )
 
     if "reasoner" not in agents:

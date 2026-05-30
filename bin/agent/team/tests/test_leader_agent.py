@@ -1,5 +1,7 @@
 """Test ``LeaderAgent`` against a scripted fake backend (no model calls)."""
+
 import sys
+
 sys.dont_write_bytecode = True
 
 import json
@@ -18,6 +20,7 @@ from agent.team.status import Status
 
 class _ScriptedBackend:
     """Returns canned responses in order. ``model_id`` is required by Agent."""
+
     model_id = "fake-leader"
 
     def __init__(self, responses: List[str]):
@@ -32,7 +35,7 @@ class _ScriptedBackend:
 
 
 def _wrap_tool(name: str, params: Dict[str, Any]) -> str:
-    return f'<tool>{json.dumps({"tool": name, "parameters": params})}</tool>'
+    return f"<tool>{json.dumps({'tool': name, 'parameters': params})}</tool>"
 
 
 class DecomposeTests(unittest.TestCase):
@@ -44,18 +47,28 @@ class DecomposeTests(unittest.TestCase):
         write_board(self.paths.board, BoardFile(session_id="t", leader_model="L"))
 
     def test_two_groups_with_dependency(self):
-        backend = _ScriptedBackend([
-            _wrap_tool("create_group", {
-                "name": "schema", "owner_model": "sonnet-4-6",
-                "plan_steps": ["a", "b", "c"],
-            }),
-            _wrap_tool("create_group", {
-                "name": "repos", "owner_model": "sonnet-4-6",
-                "plan_steps": ["d", "e"],
-                "depends_on": ["schema"],
-            }),
-            "plan done",
-        ])
+        backend = _ScriptedBackend(
+            [
+                _wrap_tool(
+                    "create_group",
+                    {
+                        "name": "schema",
+                        "owner_model": "sonnet-4-6",
+                        "plan_steps": ["a", "b", "c"],
+                    },
+                ),
+                _wrap_tool(
+                    "create_group",
+                    {
+                        "name": "repos",
+                        "owner_model": "sonnet-4-6",
+                        "plan_steps": ["d", "e"],
+                        "depends_on": ["schema"],
+                    },
+                ),
+                "plan done",
+            ]
+        )
         leader = LeaderAgent(backend=backend, paths=self.paths)
         order = leader.decompose("Build a notes feature")
         self.assertEqual(order, ["schema", "repos"])
@@ -65,28 +78,47 @@ class DecomposeTests(unittest.TestCase):
         self.assertEqual(dict(bf.dependencies)["repos"], ["schema"])
 
     def test_invalid_call_results_in_nudge_then_finish(self):
-        backend = _ScriptedBackend([
-            "I'll plan this work now.",  # no tool call -> nudge
-            _wrap_tool("create_group", {
-                "name": "g", "owner_model": "m", "plan_steps": ["x"],
-            }),
-            "plan done",
-        ])
+        backend = _ScriptedBackend(
+            [
+                "I'll plan this work now.",  # no tool call -> nudge
+                _wrap_tool(
+                    "create_group",
+                    {
+                        "name": "g",
+                        "owner_model": "m",
+                        "plan_steps": ["x"],
+                    },
+                ),
+                "plan done",
+            ]
+        )
         leader = LeaderAgent(backend=backend, paths=self.paths)
         order = leader.decompose("task")
         self.assertEqual(order, ["g"])
 
     def test_failed_create_group_does_not_get_added_to_order(self):
-        backend = _ScriptedBackend([
-            _wrap_tool("create_group", {
-                "name": "g", "owner_model": "m", "plan_steps": ["x"],
-                "depends_on": ["unknown"],   # rejected by tool
-            }),
-            _wrap_tool("create_group", {
-                "name": "g", "owner_model": "m", "plan_steps": ["x"],
-            }),
-            "plan done",
-        ])
+        backend = _ScriptedBackend(
+            [
+                _wrap_tool(
+                    "create_group",
+                    {
+                        "name": "g",
+                        "owner_model": "m",
+                        "plan_steps": ["x"],
+                        "depends_on": ["unknown"],  # rejected by tool
+                    },
+                ),
+                _wrap_tool(
+                    "create_group",
+                    {
+                        "name": "g",
+                        "owner_model": "m",
+                        "plan_steps": ["x"],
+                    },
+                ),
+                "plan done",
+            ]
+        )
         leader = LeaderAgent(backend=backend, paths=self.paths)
         order = leader.decompose("task")
         self.assertEqual(order, ["g"])  # only the successful one
@@ -107,35 +139,64 @@ class ReviewAfterTests(unittest.TestCase):
         backend = _ScriptedBackend([])
         leader = LeaderAgent(backend=backend, paths=self.paths)
         # Pretend the run was clean — must not consult the model.
-        res = WorkerResult(group="a", exit_code=0, duration_s=0.1,
-                           timed_out=False, final_status=Status.DONE_CLEAN)
+        res = WorkerResult(
+            group="a",
+            exit_code=0,
+            duration_s=0.1,
+            timed_out=False,
+            final_status=Status.DONE_CLEAN,
+        )
         decision = leader.review_after(res)
         self.assertEqual(decision, "continue")
         self.assertEqual(len(backend.calls), 0)
 
     def test_failure_with_retry_decision_continues(self):
-        backend = _ScriptedBackend([
-            _wrap_tool("decide_recovery", {
-                "failed_group": "a", "decision": "retry", "reason": "transient",
-            }),
-        ])
+        backend = _ScriptedBackend(
+            [
+                _wrap_tool(
+                    "decide_recovery",
+                    {
+                        "failed_group": "a",
+                        "decision": "retry",
+                        "reason": "transient",
+                    },
+                ),
+            ]
+        )
         leader = LeaderAgent(backend=backend, paths=self.paths)
-        res = WorkerResult(group="a", exit_code=1, duration_s=0.1,
-                           timed_out=False, final_status=Status.FAILED)
+        res = WorkerResult(
+            group="a",
+            exit_code=1,
+            duration_s=0.1,
+            timed_out=False,
+            final_status=Status.FAILED,
+        )
         decision = leader.review_after(res)
         self.assertEqual(decision, "continue")
         bf = read_board(self.paths.board)
         self.assertEqual(bf.find_row("a").status, Status.PENDING)
 
     def test_failure_with_abort_decision_aborts(self):
-        backend = _ScriptedBackend([
-            _wrap_tool("decide_recovery", {
-                "failed_group": "a", "decision": "abort", "reason": "fatal",
-            }),
-        ])
+        backend = _ScriptedBackend(
+            [
+                _wrap_tool(
+                    "decide_recovery",
+                    {
+                        "failed_group": "a",
+                        "decision": "abort",
+                        "reason": "fatal",
+                    },
+                ),
+            ]
+        )
         leader = LeaderAgent(backend=backend, paths=self.paths)
-        res = WorkerResult(group="a", exit_code=1, duration_s=0.1,
-                           timed_out=False, final_status=Status.FAILED)
+        res = WorkerResult(
+            group="a",
+            exit_code=1,
+            duration_s=0.1,
+            timed_out=False,
+            final_status=Status.FAILED,
+        )
         decision = leader.review_after(res)
         self.assertEqual(decision, "abort")
 
@@ -170,9 +231,14 @@ class FinalizePhaseTests(unittest.TestCase):
     def test_finalize_no_warning_when_files_were_modified(self):
         # Drop a real artifact recording a write.
         from agent.team.artifact import Artifact, write_artifact
-        a = Artifact(group="a", producer_model="m",
-                     status=Status.DONE_CLEAN, summary="ok",
-                     files_touched=[{"path": "lib/x.dart", "action": "wrote"}])
+
+        a = Artifact(
+            group="a",
+            producer_model="m",
+            status=Status.DONE_CLEAN,
+            summary="ok",
+            files_touched=[{"path": "lib/x.dart", "action": "wrote"}],
+        )
         write_artifact(self.paths.artifact_path("a"), a)
         backend = _ScriptedBackend([])
         leader = LeaderAgent(backend=backend, paths=self.paths)
@@ -187,6 +253,7 @@ class LeaderPromptTests(unittest.TestCase):
 
     def test_prompt_lists_concrete_examples(self):
         from agent.team.leader_tools import render_leader_system_prompt
+
         prompt = render_leader_system_prompt()
         # Concrete tool names appear in the GOOD examples
         self.assertIn("read_file", prompt)

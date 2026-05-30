@@ -1,4 +1,5 @@
 """Dependency-management helpers — UI-triggerable from the Flutter side."""
+
 from __future__ import annotations
 
 import subprocess
@@ -85,8 +86,8 @@ def install_dependencies(verbose: bool = True) -> bool:
 # is actually selected. Imported lazily so non-HF users don't pay the cost
 # of pulling huggingface_hub + pydantic at startup.
 InferenceClient = None  # type: ignore[assignment]
-BaseModel = object       # type: ignore[assignment]
-Field = None             # type: ignore[assignment]
+BaseModel = object  # type: ignore[assignment]
+Field = None  # type: ignore[assignment]
 
 
 def import_hf_runtime() -> None:
@@ -94,6 +95,7 @@ def import_hf_runtime() -> None:
     global InferenceClient, BaseModel, Field
     from huggingface_hub import InferenceClient as _IC
     from pydantic import BaseModel as _BM, Field as _F
+
     InferenceClient = _IC
     BaseModel = _BM
     Field = _F

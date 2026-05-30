@@ -1,4 +1,5 @@
 """OpenRouter backend — inherits from OpenAICompatBackend."""
+
 from __future__ import annotations
 
 import sys
@@ -73,10 +74,7 @@ class OpenRouterBackend(OpenAICompatBackend):
                 body_err = exc.read().decode("utf-8", errors="replace")
             except Exception:
                 pass
-            _log(
-                f"[OpenRouter:http_error] status={exc.code} "
-                f"body={body_err[:400]!r}"
-            )
+            _log(f"[OpenRouter:http_error] status={exc.code} body={body_err[:400]!r}")
             if exc.code == 429:
                 ra = exc.headers.get("Retry-After", "")
                 retry_after = float(ra) if ra.strip().isdigit() else 0.0

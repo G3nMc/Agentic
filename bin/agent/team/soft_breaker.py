@@ -9,6 +9,7 @@ already — this module is the section-side complement. Both are "soft"
 because they're triggered by the producer at write-time; the host's
 "hard" breaker (Phase 6) operates on the whole board.
 """
+
 from __future__ import annotations
 
 from typing import Optional, Tuple
@@ -51,8 +52,7 @@ def maybe_compact_section(
     if not section.is_oversized(max_lines, max_tokens):
         return False, 0
 
-    rolled = section.compact_log(keep_last=keep_last,
-                                 summary_line=summary_line)
+    rolled = section.compact_log(keep_last=keep_last, summary_line=summary_line)
     bf.touch()
     write_board(paths.board, bf)
     return True, rolled
