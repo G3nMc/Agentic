@@ -342,13 +342,13 @@ class ToolRegistry:
         """
         lines = self._base_system_prompt()
 
-        if project_context and project_context.strip():
-            lines.append("")
-            lines.append("PROJECT CONTEXT (from .agent.md)")
-            lines.append("================================")
-            for cline in project_context.strip().splitlines():
-                lines.append(cline)
-            lines.append("")
+        # if project_context and project_context.strip():
+        #     lines.append("")
+        #     lines.append("PROJECT CONTEXT (from .agent.md)")
+        #     lines.append("================================")
+        #     for cline in project_context.strip().splitlines():
+        #         lines.append(cline)
+        #     lines.append("")
 
         groups: Dict[str, List[str]] = {cat: [] for cat in self.TOOL_CATEGORIES}
         groups["Other"] = []
@@ -701,7 +701,7 @@ class ToolRegistry:
             "====================",
             "",
             "CODE QUALITY",
-            "- Preferred code architecture: CLEAN ARCHITECTURE",
+            "- Preferred code architecture. Follow the existing one",
             "- Every file you write or patch must be production-ready. No stubs, no placeholders, no TODO left unresolved unless explicitly permitted by the user.",
             "- No dead code, no commented-out blocks, no debug prints left in final output.",
             "- Logic must be correct and complete. Partial implementations are a protocol violation. Period",
