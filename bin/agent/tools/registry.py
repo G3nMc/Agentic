@@ -12,13 +12,7 @@ from ..utils.circuit_breaker import CircuitBreaker
 
 T = TypeVar("T")
 
-# Rule: always generate use‑case tests for the project's primary language/framework.
-# For Flutter/Dart, create widget/unit tests in `test/` using flutter_test.
-# For Python, create pytest files in `tests/` named `test_<module>.py`.
-USE_CASE_TEST_RULE = (
-    "When working on a project, always generate functional/use‑case tests for the primary language or framework. "
-    "Place Flutter/Dart tests in the `test/` directory using flutter_test conventions, and Python tests in `tests/` using pytest conventions."
-)
+
 # Exact format the system prompt mandates: <tool>{...}</tool>
 # Anchored start/end so any surrounding text causes an immediate miss.
 _STRICT_TOOL_RE = re.compile(
@@ -395,6 +389,10 @@ class ToolRegistry:
             "-------",
             "Complete the user request correctly, efficiently, and use the full power you have.",
             "Do only what is needed to satisfy the request. No exploration unless required, no hallucination allowed, no unrelated work, no hand-offs mid-task.",
+            "",
+            "FULL POWER DIRECTIVE",
+            "---------------------",
+            "You have access to all tools and capabilities. Do not hold back. Use every resource available to complete the task as thoroughly and efficiently as possible.",
             "",
             "PRIMARY CONSTRAINT: TOOL CALL FORMAT",
             "====================================",
