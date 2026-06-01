@@ -148,6 +148,10 @@ class Orchestrator:
         path_filter: Optional[Any] = None,
         db_connections: Optional[Dict[str, Dict[str, str]]] = None,
     ):
+        self._action_intent = None
+        self._writes_this_turn = None
+        self._action_pressure_nudges = None
+        self._pending_step_report = None
         self.backend = backend
         # When True, every request is routed as a plain chat call — the
         # tool-decision heuristic and the tool loop are bypassed. Useful
@@ -297,22 +301,33 @@ class Orchestrator:
     # ------------------------------------------------------------------
     # Tool-intent heuristic
     # ------------------------------------------------------------------
-    # Short reminder prepended to the first user turn. Many HF-router providers
-    # silently drop the `system` role (Qwen via hyperbolic is a known offender)
-    # so embedding the contract in the user message guarantees the model sees
-    # it. Kept short so small Ollama models don't waste prompt-eval time.
-    # Injected only when the request is clearly a code/file task.
-    _TOOL_REMINDER = (
+    # Agent directive prepended to the first user turn when tools are enabled.
+    # Many HF-router providers silently drop the `system` role (Qwen via
+    # hyperbolic is a known offender) so embedding the contract in the user
+    # message guarantees the model sees it. Kept short so small Ollama models
+    # don't waste prompt-eval time. Injected only when the request is clearly
+    # a code/file task.
+    _AGENT_DIRECTIVE = (
         "[You have filesystem tools available. "
-        "If this request needs file access or a command, emit ONE tool call: "
+        "If this request requires any file access, inspection, editing, execution, or verification, you MUST emit exactly ONE tool call: "
         '<tool>{"tool":"NAME","parameters":{...}}</tool>. '
-        "No explanation before or after it. Prefer dedicated tools "
-        "(read_files/search_in_files/list_files/flutter_analyze/python_check/"
-        "python_lint/python_test/git_*) and use run_command only as a fallback. "
-        "Keep the JSON valid as per initial system prompt; prefer single quotes inside shell commands. "
-        "Otherwise reply normally. "
-        "IMPORTANT: DO NOT FORGET CODE VALIDATIONS by running validators like flutter_analyze or python_check based on file type.]\n\n "
-
+        "Do not add any explanation, preamble, or follow-up text before or after the tool call. "
+        "Prefer dedicated tools first (read_files/search_in_files/list_files/flutter_analyze/python_check/"
+        "python_lint/python_test/git_*) and use run_command only as a last resort. "
+        "The tool JSON must remain strictly valid under the initial system prompt; prefer single quotes inside shell commands. "
+        "After any code change, you MUST run the appropriate validation before responding: "
+        "flutter_analyze/flutter_test for Flutter or Dart, python_check/python_lint/python_test for Python, "
+        "and the closest available validator for any other file type. "
+        "Never claim validation passed unless a validator was actually executed. "
+        "Never skip validation when a validator exists. "
+        "If the request is not file-related, reply normally.]\n"
+        "[You are a super software analyst and a super software engineer. "
+        "You have access to all tools and capabilities. Do not hold back. "
+        "Use every resource available to complete the task as thoroughly and efficiently as possible. "
+        "Do not use phrases like 'I will ...', 'I need to see ...', 'We need to ...', "
+        "'Let me proceed ...', 'Let me search...', 'Is there anything specific ...', "
+        "'Would you like me to proceed ...?', 'Would you like me to implement ...?'. "
+        "Instead, immediately perform the action or give the final answer.]\n\n"
     )
 
     # Patterns that indicate file/code intent — trigger tool-enabled mode.
@@ -369,12 +384,12 @@ class Orchestrator:
             use_tools = True
 
         if use_tools:
-            decorated = self._TOOL_REMINDER + user_input
+            decorated = self._AGENT_DIRECTIVE + user_input
         else:
             decorated = user_input
 
         if is_followup and use_tools:
-            decorated = self._TOOL_REMINDER + _FOLLOWUP_DIRECTIVE + user_input
+            decorated = self._AGENT_DIRECTIVE + _FOLLOWUP_DIRECTIVE + user_input
 
         self.conversation_history.append({"role": "user", "content": decorated})
 
@@ -412,7 +427,7 @@ class Orchestrator:
                     and self.conversation_history[-1].get("role") == "user"
                 ):
                     self.conversation_history[-1]["content"] = (
-                        self._TOOL_REMINDER + user_input
+                        self._AGENT_DIRECTIVE + user_input
                     )
                 use_tools = True
             else:
@@ -1141,11 +1156,26 @@ class Orchestrator:
                             "  1. A tool call performing the next concrete "
                             "step (a <tool>...</tool> tag), OR\n"
                             "  2. A real final answer that summarizes what "
-                            'you completed (no "would you like me to...", '
+                            'you completed (not accepted: "would you like me to...", '
                             'no "shall I...", no "let me continue...").\n'
                             "Do not announce intent without acting. Do not "
                             "split the remaining work across more user "
-                            "turns."
+                            "turns.\n\n"
+                            "The following phrases and equivalent variants "
+                            "are forbidden because they indicate deferred "
+                            "action instead of execution:\n"
+                            "  * 'I will ...'\n"
+                            "  * 'I need to see ...'\n"
+                            "  * 'We need to ...'\n"
+                            "  * 'Let me proceed ...'\n"
+                            "  * 'Let me search ...'\n"
+                            "  * 'Is there anything specific ...'\n"
+                            "  * 'Would you like me to proceed ...?'\n"
+                            "  * 'Would you like me to implement ...?'\n"
+                            "  * Any equivalent wording that asks for "
+                            "permission, announces future work, requests "
+                            "confirmation, or describes intended actions "
+                            "instead of immediately performing them."
                         ),
                     }
                 )
