@@ -307,10 +307,12 @@ class Orchestrator:
         "If this request needs file access or a command, emit ONE tool call: "
         '<tool>{"tool":"NAME","parameters":{...}}</tool>. '
         "No explanation before or after it. Prefer dedicated tools "
-        "(read_file/search_in_files/list_files/flutter_analyze/python_check/"
+        "(read_files/search_in_files/list_files/flutter_analyze/python_check/"
         "python_lint/python_test/git_*) and use run_command only as a fallback. "
-        "Keep the JSON valid; prefer single quotes inside shell commands. "
-        "Otherwise reply normally.]\n\n"
+        "Keep the JSON valid as per initial system prompt; prefer single quotes inside shell commands. "
+        "Otherwise reply normally. "
+        "IMPORTANT: DO NOT FORGET CODE VALIDATIONS by running validators like flutter_analyze or python_check based on file type.]\n\n "
+
     )
 
     # Patterns that indicate file/code intent — trigger tool-enabled mode.
