@@ -125,28 +125,362 @@ def _is_short_followup(text: str) -> bool:
     )
 
 
+# ======================================================================
+# PROMPT DIRECTIVES
+# ----------------------------------------------------------------------
+# All model-facing prompt text lives here. Static prompts are module-level
+# constants; dynamic prompts (those interpolating runtime values) are
+# `_get_*_directive(...)` helpers. The Orchestrator class itself contains
+# no prompt strings — it only references these names.
+# ======================================================================
+
+# Confirmation-reply preamble. Prepended after _AGENT_DIRECTIVE when the
+# user's message is a bare "yes / proceed / do it" against a prior plan.
 _FOLLOWUP_DIRECTIVE = (
     "[CONTEXT: This is a confirmation reply. The user is confirming the plan "
     "from your IMMEDIATELY PRECEDING assistant turn. Execute the FIRST "
     "concrete action from that plan now. Do NOT re-explain the plan. Do NOT "
     "re-research the codebase if you already have enough context. If the "
-    "plan involves editing files, START EDITING with write_file/patch_file. "
-    "If you genuinely need to read one more file first, read EXACTLY ONE, "
-    "then act.]\n\n"
+    "plan involves editing files, START EDITING with patch_file..]\n\n "
 )
+
+
+# Agent directive prepended to the first user turn when tools are enabled.
+# Many HF-router providers silently drop the `system` role (Qwen via
+# hyperbolic is a known offender) so embedding the contract in the user
+# message guarantees the model sees it. Kept short so small Ollama models
+# don't waste prompt-eval time. Injected only when the request is clearly
+# a code/file task.
+_AGENT_DIRECTIVE = (
+    "[You have filesystem tools available. "
+    "If this request requires any file access, inspection, editing, execution, or verification, you MUST emit exactly ONE tool call: "
+    '<tool>{"tool":"NAME","parameters":{...}}</tool>. '
+    "- Do not add any explanation, preamble, or follow-up text before or after the tool call. "
+    "- Prefer dedicated tools first (read_files/search_in_files/list_files/flutter_analyze/python_check/"
+    "python_lint/python_test/git_*) and use run_command only as a last resort. "
+    "- The tool JSON must remain strictly valid under the initial system prompt; prefer single quotes inside shell commands. "
+    "After any code change, you MUST run the highest-scope validator available before responding. "
+    "Validation scope priority: "
+    "1. Entire project/workspace. "
+    "2. Package/module. "
+    "3. Single file. "
+    "Always choose the highest available scope unless the user explicitly requests a narrower scope. "
+    "Workspace validation defaults: "
+    "- Flutter/Dart validation is PROJECT-SCOPED by default. "
+    "- Python validation is PROJECT-SCOPED by default. "
+    "- Treat every source file as part of an interconnected codebase. "
+    "- Assume changes may affect imports, dependencies, generated code, tests, build configuration, and runtime behavior outside the modified file. "
+    "- Never limit validation to the edited file unless the user explicitly requests file-only validation. "
+    "Flutter rules: "
+    "- Whenever any .dart file, pubspec.yaml, analysis_options.yaml, build configuration, generated source, asset configuration, or test is created, modified, analyzed, reviewed, refactored, or verified, run flutter_analyze against the project root. "
+    "- The purpose of flutter_analyze is to detect cross-file errors, type issues, dependency problems, build issues, and regressions that cannot be detected from a single file. "
+    "- Passing a specific file path to flutter_analyze is prohibited unless the user explicitly requests file-specific analysis. "
+    "- If both a modified file path and project root are available, always prefer the project root. "
+    "- After any Flutter/Dart code change, project-wide flutter_analyze is mandatory before reporting success. "
+    "- If Flutter tests exist or are affected by the change, run project-wide flutter_test after flutter_analyze. "
+    "Python rules: "
+    "- Whenever any .py file, package configuration, dependency definition, generated source, or test is created, modified, analyzed, reviewed, refactored, or verified, run python_check against the project root. "
+    "- The purpose of python_check is to detect cross-file issues, import errors, package issues, typing issues, and regressions that cannot be detected from a single file. "
+    "- Passing a file path to python_check is prohibited unless the user explicitly requests file-specific validation. "
+    "- If both a modified file path and project root are available, always prefer the project root. "
+    "- After any Python code change, project-wide python_check is mandatory before reporting success. "
+    "- If Python tests exist or are affected by the change, run project-wide python_test after python_check. "
+    "- Never claim validation passed unless the required validators were actually executed. "
+    "- Never skip validation when a validator exists. "
+    "- When running flutter_analyze, flutter_test, python_check, python_lint, or python_test, always prefer the project/workspace root and never a specific file unless explicitly requested by the user. "
+    "- If the request is not file-related, reply normally.]\n"
+    "[- You are a excellent software analyst and a excellent software engineer. "
+    "- You have access to all tools and capabilities. Do not hold back. "
+    "- Use every resource available and all your power to complete the task as thoroughly and efficiently as possible. "
+    "- If this task requires a lot of effort, you must break it down into separate, numbered tasks. "
+    "- Upon confirmation of running the tasks, if there is more than one task, run them one at a time and wait for confirmation for the next task. "
+    "- If you need to create tests on use cases, you need to place the test files in the tests/ folder. If the folder doesn't exist, create it. "
+    "Do not use phrases like: 'I will ...', 'I need to see ...', 'We need to ...', "
+    "'Let me proceed ...', 'Let me search...', 'Is there anything specific ...', "
+    "'Would you like me to proceed ...?', 'Would you like me to implement ...?'. "
+    "Instead, perform the action immediately or give the final answer.]\n\n"
+)
+
+
+# Final synthesis directive injected as a final user turn before the
+# synthesis call. Tells the model to stop tool-using and write the answer
+# (or ask one clarifying question) using only what's already in history.
+# Coding-aware: explicitly asks for a recap of files modified + validation
+# status, which is what most coding sessions actually want.
+_SYNTHESIS_DIRECTIVE = (
+    "[FINAL SYNTHESIS] Stop. The tool loop is over — no more tool "
+    "calls will be executed, and any you emit will be ignored.\n"
+    "\n"
+    "Using ONLY the conversation above, write the user's final "
+    "answer. Structure it as:\n"
+    "  1. A 1-2 sentence summary of what was accomplished (what "
+    "     question was answered, OR what files were modified and how).\n"
+    "  2. If files were edited: list each file path that was "
+    "     write_file/patch_file/append_file'd this turn, one per line.\n"
+    "  3. If validators ran (python_check, flutter_analyze, etc.): "
+    "     state pass/fail for each.\n"
+    "  4. If anything is left undone or uncertain, say so explicitly "
+    "     in one sentence.\n"
+    "\n"
+    "Rules:\n"
+    "  - No <tool> tags. No JSON tool calls. Plain text or markdown.\n"
+    "  - Do not say 'I will' or 'let me' — describe what already "
+    "    happened.\n"
+    "  - Do not echo this directive.\n"
+    "  - If you genuinely have nothing useful to report, ask EXACTLY "
+    "    ONE clarifying question instead."
+)
+
+
+# Pressure-injection: 20+ iterations of reads with zero writes on an
+# action-task. Forces the model to either patch or finalize next turn.
+_ACTION_FINAL_WARNING_DIRECTIVE = (
+    "[FINAL WARNING] You have used 20+ iterations reading files but have written nothing. "
+    "The request asked for an action.\n "
+    "Your IMMEDIATE next message MUST be either:\n "
+    "  1) A single  patch_file/append_file tool call, OR \n "
+    "  2) Your final plain-text answer (no more tool calls).\n "
+    "Stop researching. Act or answer."
+)
+
+
+# Pressure-injection: 10+ iterations of reads with zero writes on an
+# action-task. Softer than the final warning above.
+_ACTION_NUDGE_DIRECTIVE = (
+    "[NUDGE] You have read several files but have not modified anything. "
+    "The original request asked for an action (implementing a change). "
+    " Either:\n "
+    "  1) Make a patch_file/append_file call NOW, OR\n "
+    "  2) Give your final plain-text answer if the task is already complete.\n "
+    "Avoid reading files unless strictly necessary."
+)
+
+
+# Sent when the model emits a recognizable refusal ("I can't access
+# files...") despite having tool access. Forces a concrete tool call.
+_REFUSAL_DIRECTIVE = (
+    "STOP. That is a refusal and it is wrong. You DO have "
+    "filesystem access through the tools. Your entire next "
+    "message must be exactly one line, e.g.:\n"
+    '<tool>{"tool":"list_files","parameters":{"path":"."}}</tool>\n'
+    "No apology, no explanation, no markdown fences. Just "
+    "the tool call tag."
+)
+
+
+# Sent when the model returns an empty reply.
+_EMPTY_REPLY_DIRECTIVE = (
+    "Your reply was empty. Emit a single "
+    '<tool>{"tool":"...","parameters":{...}}</tool> '
+    "call or the final plain-text answer."
+)
+
+
+# Sent when the model hands work back to the user mid-task ("Would you
+# like me to proceed?", "Now I'll examine X.").
+_CLIFFHANGER_DIRECTIVE = (
+    "[AUTONOMY] Your previous reply ended with a "
+    "cliffhanger or a request for confirmation. The "
+    "user already approved the work — do NOT ask "
+    "again. Your IMMEDIATE next message must be "
+    "either:\n"
+    "  1. A tool call performing the next concrete "
+    "step (a <tool>...</tool> tag), OR\n"
+    "  2. A real final answer that summarizes what "
+    'you completed (not accepted: "would you like me to...", '
+    'no "shall I...", no "let me continue...").\n'
+    "Do not announce intent without acting. Do not "
+    "split the remaining work across more user "
+    "turns.\n\n"
+    "The following phrases and equivalent variants "
+    "are forbidden because they indicate deferred "
+    "action instead of execution:\n"
+    "  * 'I will ...'\n"
+    "  * 'I need to see ...'\n"
+    "  * 'We need to ...'\n"
+    "  * 'Let me proceed ...'\n"
+    "  * 'Let me search ...'\n"
+    "  * 'Is there anything specific ...'\n"
+    "  * 'Would you like me to proceed ...?'\n"
+    "  * 'Would you like me to implement ...?'\n"
+    "  * Any equivalent wording that asks for "
+    "permission, announces future work, requests "
+    "confirmation, or describes intended actions "
+    "instead of immediately performing them."
+)
+
+
+# Sent when a final answer follows a file-modifying call but omits the
+# mandatory STEP REPORT block.
+_STEP_REPORT_DIRECTIVE = (
+    "[STEP REPORT REQUIRED] Your previous reply was a "
+    "final answer after modifying files, but it did not "
+    "include the mandatory STEP REPORT. You MUST include "
+    "a step report in this format:\n\n"
+    "STEP REPORT\n"
+    "-----------\n"
+    "Done:\n"
+    "  - [what you completed]\n"
+    "Pending:\n"
+    "  - [what remains, or 'None']\n"
+    "Current state:\n"
+    "  [1-3 sentences describing current state]\n\n"
+    "Add this report to your final answer now. Do NOT "
+    "call any more tools."
+)
+
+
+# Fallback message returned when the model fails to emit a valid tool
+# call even after retries. Used by both the retry-exhausted and
+# consecutive-malformed-cap branches.
+_MALFORMED_GIVE_UP_MESSAGE = (
+    "The model failed to emit a valid tool call after multiple "
+    "attempts. The request may be too ambiguous or the model may "
+    "not support tool-use. Try rephrasing your request or using "
+    "a different model."
+)
+
+
+def _get_malformed_directive(malformed_error: str) -> Dict[str, str]:
+    """Corrective feedback for a malformed tool call.
+
+    Also reused for the truncated-tool-call case (caller passes a
+    short description in ``malformed_error`` like " Was CUT OFF
+    before the closing </tool> tag. ").
+    """
+    return {
+        "role": "user",
+        "content": (
+            f"Your previous reply attempted a tool call but the format was invalid. {malformed_error}\n "
+            "Reply with EXACTLY ONE valid tool call on a single line in this format:\n "
+            '<tool>{"tool":"NAME","parameters":{...}}</tool>\n '
+            "No explanation, no markdown, no backticks. Keep the JSON valid. "
+            "If a shell command contains quotes, prefer single quotes inside the command string. "
+            "--- CORRECT examples (these pass, no need to execute examples to be sure these pass) ---\n"
+            "\n"
+            '<tool>{"tool":"read_file","parameters":{"path":"src/main.py"}}</tool>\n'
+            '<tool>{"tool":"read_files","parameters":{"paths":["a.py","b.py","c.py"]}}</tool>\n'
+            '<tool>{"tool":"search_in_files","parameters":{"pattern":"error","file_glob":"*.log"}}</tool>\n'
+            '<tool>{"tool":"write_file","parameters":{"path":"out.txt","content":"hello"}}</tool>\n'
+            '<tool>{"tool":"patch_file","parameters":{"path":"src/main.py","old_content":"old","new_content":"new"}}</tool>\n'
+            '<tool>{"tool":"delete_file","parameters":{"path":"obsolete.py"}}</tool>\n'
+            '<tool>{"tool":"list_files","parameters":{"path":"lib"}}</tool>\n'
+            '<tool>{"tool":"flutter_analyze","parameters":{}}</tool>\n'
+            '<tool>{"tool":"python_check","parameters":{}}</tool>\n'
+            '<tool>{"tool":"run_command","parameters":{"command":"git status"}}</tool>\n'
+            '<tool>{"tool":"git_commit","parameters":{"message":"fix: resolve null check"}}</tool>\n'
+        ),
+    }
+
+
+def _get_schema_feedback_directive(drop_lines: List[str]) -> Dict[str, str]:
+    """Sent when the tool-call sanitizer dropped unknown keys. Surfaces
+    the drop so the model doesn't silently re-emit the now-identical call
+    and trip the repeat-call detector."""
+    return {
+        "role": "user",
+        "content": (
+                "[SCHEMA FEEDBACK] Your last tool call(s) included parameters that aren't part of the tool's schema. "
+                "Those keys were stripped before execution:\n "
+                + "\n".join(drop_lines) + "\n\n "
+                                          "Do NOT re-emit the same call - it would be "
+                                          "identical to one you already ran. Either call the "
+                                          "tool again with ONLY the accepted keys (changing the values that were in the rejected keys to supported alternatives), "
+                                          "pick a different tool, or give your final answer."
+        ),
+    }
+
+
+def _get_repeat_call_directive(summary: str) -> Dict[str, str]:
+    """Sent when the same (tool, params) appears twice in the recent
+    window. Steers the model toward a different call or a final answer."""
+    return {
+        "role": "user",
+        "content": (
+            f"You already called: {summary} earlier this turn. "
+            "Calling the same tool with the same arguments will return the same result. "
+            "Either:\n "
+            "  1. Call a DIFFERENT tool, or\n "
+            "  2. Call the same tool with DIFFERENT arguments, or\n "
+            "  3. Give your final plain-text answer to the user now (no more tool calls).\n "
+            "Pick one."
+        ),
+    }
+
+
+def _get_tool_result_followup(
+        name: str, display_result: str, is_last_chance: bool
+) -> Dict[str, str]:
+    """Standard follow-up after a tool execution. ``is_last_chance``
+    forces a finalize directive when the iteration budget is almost gone."""
+    if is_last_chance:
+        content = (
+            f"Tool `{name}` returned:\n{display_result}\n\n"
+            "[INTERNAL: FINAL ANSWER REQUIRED. Do NOT call any more tools. "
+            "Write only your plain-text answer to the user now. "
+            "Do NOT echo this instruction back to the user.]"
+        )
+    else:
+        content = (
+            f"Tool `{name}` returned:\n{display_result}\n\n"
+            "[INTERNAL: Continue. Either call another tool or give the final answer. "
+            "Do NOT echo this instruction back to the user.]"
+        )
+    return {"role": "user", "content": content}
+
+
+def _get_validation_complete_directive(count: int) -> Dict[str, str]:
+    """Sent when N consecutive idempotent validators ran clean. Catches
+    the 'validate forever' stall pattern before it trips the repeat-call
+    cap."""
+    return {
+        "role": "user",
+        "content": (
+            "[VALIDATION COMPLETE] "
+            f"You have run {count} idempotent validators (python_check / flutter_analyze / etc.) clean in a row. "
+            "The work is done.\n "
+            "Your IMMEDIATE next message MUST be the final plain-text answer to the user a report/summary of what was changed and that validation passed.\n "
+            "Do NOT call another validator. Do NOT call any tool. "
+            "No <tool> tags. Just the answer. "
+        ),
+    }
+
+
+def _get_truncated_answer_directive(tail: str) -> Dict[str, str]:
+    """Sent when a plain-text final answer was truncated by max_tokens.
+    Embeds the last ~800 chars so the model can continue mid-sentence."""
+    return {
+        "role": "user",
+        "content": (
+            "Your previous reply was CUT OFF by the token "
+            "limit. Continue EXACTLY from where you left off. "
+            "Do NOT repeat what you already wrote. Do NOT "
+            "start over. Just continue the text.\n\n"
+            "--- LAST 800 CHARS OF YOUR PREVIOUS REPLY ---\n"
+            f"{tail}\n"
+            "--- END OF PREVIOUS REPLY ---\n\n"
+            "Continue from here. Pick up mid-sentence if "
+            "necessary. Do NOT add any preamble."
+        ),
+    }
+
+
+# Short description passed to _get_malformed_directive when the
+# truncation detector sees an unclosed <tool> tag.
+_TRUNCATED_TOOL_ERROR = " Was CUT OFF before the closing </tool> tag. "
 
 
 class Orchestrator:
     def __init__(
-        self,
-        backend: ModelBackend,
-        base_path: str = ".",
-        temperature: float = 0.2,
-        max_tokens: int = 2048,
-        security_config: Optional[SecurityConfig] = None,
-        disable_tools: bool = False,
-        path_filter: Optional[Any] = None,
-        db_connections: Optional[Dict[str, Dict[str, str]]] = None,
+            self,
+            backend: ModelBackend,
+            base_path: str = ".",
+            temperature: float = 0.2,
+            max_tokens: int = 2048,
+            security_config: Optional[SecurityConfig] = None,
+            disable_tools: bool = False,
+            path_filter: Optional[Any] = None,
+            db_connections: Optional[Dict[str, Dict[str, str]]] = None,
     ):
         self._action_intent = None
         self._writes_this_turn = None
@@ -301,43 +635,6 @@ class Orchestrator:
     # ------------------------------------------------------------------
     # Tool-intent heuristic
     # ------------------------------------------------------------------
-    # Agent directive prepended to the first user turn when tools are enabled.
-    # Many HF-router providers silently drop the `system` role (Qwen via
-    # hyperbolic is a known offender) so embedding the contract in the user
-    # message guarantees the model sees it. Kept short so small Ollama models
-    # don't waste prompt-eval time. Injected only when the request is clearly
-    # a code/file task.
-    _AGENT_DIRECTIVE = (
-        "[You have filesystem tools available. "
-        "If this request requires any file access, inspection, editing, execution, or verification, you MUST emit exactly ONE tool call: "
-        '<tool>{"tool":"NAME","parameters":{...}}</tool>. '
-        "- Do not add any explanation, preamble, or follow-up text before or after the tool call. "
-        "- Prefer dedicated tools first (read_files/search_in_files/list_files/flutter_analyze/python_check/"
-        "python_lint/python_test/git_*) and use run_command only as a last resort. "
-        "- The tool JSON must remain strictly valid under the initial system prompt; prefer single quotes inside shell commands. "
-        "After any code change, you MUST run the appropriate validation before responding: "
-        "- flutter_analyze/flutter_test for Flutter or Dart, python_check/python_lint/python_test for Python, "
-        "and the closest available validator for any other file type. "
-        "- Never claim validation passed unless a validator was actually executed. "
-        "- Never skip validation when a validator exists. "
-        "- When running flutter_analyze after editing any .dart file, always run it on the entire project (no path argument). "
-        "- Never pass a specific file path to flutter_analyze unless the user explicitly requests analysis of a single file. "
-        "- This ensures cross-file errors are caught. "
-        "- If the request is not file-related, reply normally.]\n"
-        "[- You are a excellent software analyst and a excellent software engineer. "
-        "- You have access to all tools and capabilities. Do not hold back. "
-        "- Use every resource available and all your power to complete the task as thoroughly and efficiently as possible. "
-        "- If this task requires a lot of effort, you must break it down into separate, numbered tasks. "
-        "- Upon confirmation of running the tasks, if there is more than one task, run them one at a time and wait for confirmation for the next task."
-        "- If you need to create tests on use cases, you need to place the test files in the tests/ folder. If the folder doesn't exist, create it. "
-        "Do not use phrases like: 'I will ...', 'I need to see ...', 'We need to ...', "
-        "'Let me proceed ...', 'Let me search...', 'Is there anything specific ...', "
-        "'Would you like me to proceed ...?', 'Would you like me to implement ...?'. "
-        "Instead, perform the action immediately or give the final answer.]\n\n"
-    )
-
-    # Patterns that indicate file/code intent — trigger tool-enabled mode.
-
     def _should_escalate_chat_to_tools(self, user_input: str, model_reply: str) -> bool:
         """True when a chat-mode response should be retried in tool mode."""
         if ToolIntentDetector.needs_tools(user_input):
@@ -390,12 +687,12 @@ class Orchestrator:
             use_tools = True
 
         if use_tools:
-            decorated = self._AGENT_DIRECTIVE + user_input
+            decorated = _AGENT_DIRECTIVE + user_input
         else:
             decorated = user_input
 
         if is_followup and use_tools:
-            decorated = self._AGENT_DIRECTIVE + _FOLLOWUP_DIRECTIVE + user_input
+            decorated = _AGENT_DIRECTIVE + _FOLLOWUP_DIRECTIVE + user_input
 
         self.conversation_history.append({"role": "user", "content": decorated})
 
@@ -417,8 +714,8 @@ class Orchestrator:
                 # error string never leaks into model context on the next
                 # turn (some models will parrot it back).
                 if (
-                    self.conversation_history
-                    and self.conversation_history[-1].get("role") == "user"
+                        self.conversation_history
+                        and self.conversation_history[-1].get("role") == "user"
                 ):
                     self.conversation_history.pop()
                 return f"Model error: {e}"
@@ -429,11 +726,11 @@ class Orchestrator:
                     file=sys.stderr,
                 )
                 if (
-                    self.conversation_history
-                    and self.conversation_history[-1].get("role") == "user"
+                        self.conversation_history
+                        and self.conversation_history[-1].get("role") == "user"
                 ):
                     self.conversation_history[-1]["content"] = (
-                        self._AGENT_DIRECTIVE + user_input
+                            _AGENT_DIRECTIVE + user_input
                     )
                 use_tools = True
             else:
@@ -493,9 +790,9 @@ class Orchestrator:
             # without ever editing, escalate pressure rather than waiting
             # for max-iterations to expire.
             in_read_only_loop = (
-                getattr(self, "_action_intent", False)
-                and self._writes_this_turn == 0
-                and self._successful_tool_count >= 4
+                    getattr(self, "_action_intent", False)
+                    and self._writes_this_turn == 0
+                    and self._successful_tool_count >= 4
             )
             if in_read_only_loop:
                 if iteration >= 28:
@@ -506,53 +803,26 @@ class Orchestrator:
                     )
                     return self._build_recap_answer(
                         reason=f"action-task stalled at iter {iteration} "
-                        f"with zero writes despite "
-                        f"{self._successful_tool_count} successful reads"
+                               f"with zero writes despite "
+                               f"{self._successful_tool_count} successful reads"
                     )
                 if iteration >= 20 and self._action_pressure_nudges < 2:
                     self._action_pressure_nudges = 2
                     self.conversation_history.append(
-                        {
-                            "role": "user",
-                            "content": (
-                                "[FINAL WARNING] You have used 20+ iterations "
-                                "reading files but have written nothing. The "
-                                "request asked for an action.\n"
-                                "Your IMMEDIATE next message MUST be either:\n"
-                                "  1) A single write_file / patch_file / "
-                                "append_file tool call, OR\n"
-                                "  2) Your final plain-text answer (no more "
-                                "tool calls).\n"
-                                "Stop researching. Act or answer."
-                            ),
-                        }
+                        {"role": "user", "content": _ACTION_FINAL_WARNING_DIRECTIVE}
                     )
                 elif iteration >= 10 and self._action_pressure_nudges < 1:
                     self._action_pressure_nudges = 1
                     self.conversation_history.append(
-                        {
-                            "role": "user",
-                            "content": (
-                                "[NUDGE] You have read several files but "
-                                "have not modified anything. The original "
-                                "request asked for an action (implementing "
-                                "a change). Either:\n"
-                                "  1) Make a write_file / patch_file / "
-                                "append_file call NOW, or\n"
-                                "  2) Give your final plain-text answer if "
-                                "the task is already complete.\n"
-                                "Avoid more read_file/search_in_files calls "
-                                "unless strictly necessary."
-                            ),
-                        }
+                        {"role": "user", "content": _ACTION_NUDGE_DIRECTIVE}
                     )
 
             # === DYNAMIC ITERATION LIMIT ===
             # Extend budget proactively when progress is detected, not just at the end.
             # Check every 5 iterations and when approaching the limit.
             should_check_extension = (
-                iteration % 5 == 0  # Periodic check
-                or iteration >= self.max_iterations - 3  # Approaching limit
+                    iteration % 5 == 0  # Periodic check
+                    or iteration >= self.max_iterations - 3  # Approaching limit
             )
             if should_check_extension and self.max_iterations < self._max_iteration_cap:
                 # Measure progress: count successful tool calls in recent history
@@ -573,9 +843,9 @@ class Orchestrator:
                 # NOT extend — that just rewards the model for refusing
                 # to act. Pressure (below) will steer it instead.
                 read_only_loop = (
-                    getattr(self, "_action_intent", False)
-                    and self._writes_this_turn == 0
-                    and self._successful_tool_count >= 6
+                        getattr(self, "_action_intent", False)
+                        and self._writes_this_turn == 0
+                        and self._successful_tool_count >= 6
                 )
                 if read_only_loop:
                     print(
@@ -588,9 +858,9 @@ class Orchestrator:
                     # rest of the iteration so pressure-injection runs.
                 # Calculate extension multiplier based on progress rate
                 elif (
-                    success_count > 0
-                    and success_count > error_count
-                    and distinct_recent >= 3
+                        success_count > 0
+                        and success_count > error_count
+                        and distinct_recent >= 3
                 ):
                     # Good progress: extend by 5-15 based on success rate
                     extension = min(
@@ -621,9 +891,9 @@ class Orchestrator:
                     )
                 )
                 if (
-                    not read_only_loop
-                    and files_touched >= 3
-                    and self._successful_tool_count >= 5
+                        not read_only_loop
+                        and files_touched >= 3
+                        and self._successful_tool_count >= 5
                 ):
                     extension = min(20, self._max_iteration_cap - self.max_iterations)
                     old_limit = self.max_iterations
@@ -709,21 +979,7 @@ class Orchestrator:
                         f"the only accepted keys are {kept or '[none — see schema]'}"
                     )
                 self.conversation_history.append(
-                    {
-                        "role": "user",
-                        "content": (
-                            "[SCHEMA FEEDBACK] Your last tool call(s) included "
-                            "parameters that aren't part of the tool's schema. "
-                            "Those keys were stripped before execution:\n"
-                            + "\n".join(drop_lines)
-                            + "\n\nDo NOT re-emit the same call — it would be "
-                            "identical to one you already ran. Either call the "
-                            "tool again with ONLY the accepted keys (changing "
-                            "the values that were in the rejected keys to "
-                            "supported alternatives), pick a different tool, "
-                            "or give your final answer."
-                        ),
-                    }
+                    _get_schema_feedback_directive(drop_lines)
                 )
 
             if tag_calls:
@@ -769,7 +1025,7 @@ class Orchestrator:
                         )
                         return self._build_recap_answer(
                             reason=f"repeat-call cap after {repeat_warnings} "
-                            f"warnings on {[n for n, _, _ in repeat_keys]}"
+                                   f"warnings on {[n for n, _, _ in repeat_keys]}"
                         )
 
                     summary = ", ".join(
@@ -777,19 +1033,7 @@ class Orchestrator:
                         for n, p, _ in repeat_keys
                     )
                     self.conversation_history.append(
-                        {
-                            "role": "user",
-                            "content": (
-                                f"You already called: {summary} earlier this turn. "
-                                "Calling the same tool with the same arguments will "
-                                "return the same result. Either:\n"
-                                "  1. Call a DIFFERENT tool, or\n"
-                                "  2. Call the same tool with DIFFERENT arguments, or\n"
-                                "  3. Give your final plain-text answer to the user "
-                                "now (no more tool calls).\n"
-                                "Pick one."
-                            ),
-                        }
+                        _get_repeat_call_directive(summary)
                     )
                     iteration += 1
                     continue
@@ -808,8 +1052,8 @@ class Orchestrator:
 
                     # Track successful tool executions for dynamic iteration extension
                     if (
-                        '"status": "success"' in result
-                        or '"status":"success"' in result
+                            '"status": "success"' in result
+                            or '"status":"success"' in result
                     ):
                         self._successful_tool_count += 1
                         # Track modified files for complexity detection
@@ -843,28 +1087,15 @@ class Orchestrator:
                         half = max_tool_result_chars // 2
                         trunc_len = len(display_result) - max_tool_result_chars
                         display_result = (
-                            display_result[:half]
-                            + f"\n[... {trunc_len} chars truncated from middle ...]\n"
-                            + display_result[-half:]
+                                display_result[:half]
+                                + f"\n[... {trunc_len} chars truncated from middle ...]\n"
+                                + display_result[-half:]
                         )
 
                     # On the last two iterations force a final answer — no more tools.
                     is_last_chance = iteration >= self.max_iterations - 2
-                    if is_last_chance:
-                        follow_up = (
-                            f"Tool `{name}` returned:\n{display_result}\n\n"
-                            "[INTERNAL: FINAL ANSWER REQUIRED. Do NOT call any more tools. "
-                            "Write only your plain-text answer to the user now. "
-                            "Do NOT echo this instruction back to the user.]"
-                        )
-                    else:
-                        follow_up = (
-                            f"Tool `{name}` returned:\n{display_result}\n\n"
-                            "[INTERNAL: Continue. Either call another tool or give the final answer. "
-                            "Do NOT echo this instruction back to the user.]"
-                        )
                     self.conversation_history.append(
-                        {"role": "user", "content": follow_up}
+                        _get_tool_result_followup(name, display_result, is_last_chance)
                     )
 
                 # Validation-stall guard: if the model just ran the Nth+
@@ -873,9 +1104,9 @@ class Orchestrator:
                 # "I just ran python_check, let me run it once more to be
                 # sure" pattern before the repeat-call cap fires.
                 if (
-                    consecutive_validations >= _MAX_CONSECUTIVE_VALIDATIONS
-                    and self.conversation_history
-                    and self.conversation_history[-1].get("role") == "user"
+                        consecutive_validations >= _MAX_CONSECUTIVE_VALIDATIONS
+                        and self.conversation_history
+                        and self.conversation_history[-1].get("role") == "user"
                 ):
                     print(
                         f"[orch] {consecutive_validations} clean validations "
@@ -883,35 +1114,12 @@ class Orchestrator:
                         file=sys.stderr,
                     )
                     self.conversation_history[-1]["content"] = (
-                        "[VALIDATION COMPLETE] You have run "
-                        f"{consecutive_validations} idempotent validators "
-                        "(python_check / flutter_analyze / etc.) clean in a "
-                        "row. The work is done.\n"
-                        "Your IMMEDIATE next message MUST be the final "
-                        "plain-text answer to the user — a 2-3 sentence "
-                        "summary of what was changed and that validation "
-                        "passed.\n"
-                        "Do NOT call another validator. Do NOT call any "
-                        "tool. No <tool> tags. Just the answer."
+                        _get_validation_complete_directive(consecutive_validations)[
+                            "content"
+                        ]
                     )
                 iteration += 1
                 continue
-
-            # is_malformed, malformed_error = _td.looks_like_malformed_tool_call(text_clean)
-            # if is_malformed:
-            #     consecutive_malformed += 1
-            #     # Hard cap: even within the per-call retry budget, if the
-            #     # model keeps producing malformed calls back-to-back, bail
-            #     # before consuming dozens of iterations.
-            #     if consecutive_malformed >= _MAX_CONSECUTIVE_MALFORMED:
-            #         print(
-            #             f"[orch] Consecutive malformed cap reached "
-            #             f"({consecutive_malformed}); bailing.",
-            #             file=sys.stderr,
-            #         )
-            #         return self._build_recap_answer(
-            #             reason="model emitted malformed tool calls repeatedly"
-            #         )
 
             is_malformed, malformed_error = _td.looks_like_malformed_tool_call(
                 text_clean
@@ -933,19 +1141,7 @@ class Orchestrator:
                         file=sys.stderr,
                     )
                     self.conversation_history.append(
-                        {
-                            "role": "user",
-                            "content": (
-                                f"Your previous reply attempted a tool call but the "
-                                f"format was invalid. {malformed_error}\n"
-                                "Reply with EXACTLY ONE valid tool call on a single "
-                                "line in this format:\n"
-                                '<tool>{"tool":"NAME","parameters":{...}}</tool>\n'
-                                "No explanation, no markdown, no backticks. Keep the "
-                                "JSON valid. If a shell command contains quotes, "
-                                "prefer single quotes inside the command string."
-                            ),
-                        }
+                        _get_malformed_directive(malformed_error)
                     )
                     iteration += 1
                     continue
@@ -959,70 +1155,16 @@ class Orchestrator:
                     )
                     # Skip synthesis — history contains only broken calls,
                     # not useful work; synthesis would likely fail too.
-                    return (
-                        "The model failed to emit a valid tool call after multiple "
-                        "attempts. The request may be too ambiguous or the model may "
-                        "not support tool-use. Try rephrasing your request or using "
-                        "a different model."
-                    )
+                    return _MALFORMED_GIVE_UP_MESSAGE
 
                 # Retries exhausted but consecutive cap not yet reached —
-                # return the direct error (same as original terminal branch).
+                # return the direct error.
                 print(
                     f"[orch] Malformed tool call: retries exhausted. "
                     f"Error: {malformed_error}",
                     file=sys.stderr,
                 )
-
-                return (
-                    "The model failed to emit a valid tool call after multiple "
-                    "attempts. The request may be too ambiguous or the model may "
-                    "not support tool-use. Try rephrasing your request or using "
-                    "a different model."
-                )
-
-            if is_malformed and malformed_tool_retries < 3:
-                malformed_tool_retries += 1
-                print(
-                    f"[orch] Malformed tool call detected (retry {malformed_tool_retries}): {malformed_error}",
-                    file=sys.stderr,
-                )
-                print(
-                    f"[orch] Unparseable reply (first 500 chars): {text_clean[:500]!r}",
-                    file=sys.stderr,
-                )
-                self.conversation_history.append(
-                    {
-                        "role": "user",
-                        "content": (
-                            f"Your previous reply attempted a tool call but the "
-                            f"format was invalid. {malformed_error}\n"
-                            "Reply with EXACTLY ONE valid tool call on a single "
-                            "line in this format:\n"
-                            '<tool>{"tool":"NAME","parameters":{...}}</tool>\n'
-                            "No explanation, no markdown, no backticks. Keep the "
-                            "JSON valid. If a shell command contains quotes, "
-                            "prefer single quotes inside the command string."
-                        ),
-                    }
-                )
-                iteration += 1
-                continue
-
-            # If malformed but retries exhausted, do NOT treat as final answer.
-            # Return an error message instead of leaking broken tool-call syntax.
-            if is_malformed:
-                print(
-                    f"[orch] Malformed tool call: retries exhausted. "
-                    f"Error: {malformed_error}",
-                    file=sys.stderr,
-                )
-                return (
-                    "The model failed to emit a valid tool call after multiple "
-                    "attempts. The request may be too ambiguous or the model may "
-                    "not support tool-use. Try rephrasing your request or using "
-                    "a different model."
-                )
+                return _MALFORMED_GIVE_UP_MESSAGE
 
             # --- Truncation detection ---
             # The reply was cut off by max_tokens. Two shapes:
@@ -1052,21 +1194,11 @@ class Orchestrator:
                         f"(retry {truncation_retries}).",
                         file=sys.stderr,
                     )
+                    # Reuse the malformed-directive helper — a truncated
+                    # tool call is functionally a malformed one, and the
+                    # canonical example set helps the model recover.
                     self.conversation_history.append(
-                        {
-                            "role": "user",
-                            "content": (
-                                "Your previous reply was CUT OFF before the closing "
-                                "</tool> tag. Do NOT include any plan, preamble, or "
-                                "explanation. Emit ONLY the tool call on a single "
-                                "line, e.g.:\n"
-                                '<tool>{"tool":"write_file","parameters":'
-                                '{"path":"...","content":"..."}}</tool>\n'
-                                "If the content is very large, break the work into "
-                                "smaller steps: first create the file with a short "
-                                "content, then use append_file in follow-up calls."
-                            ),
-                        }
+                        _get_malformed_directive(_TRUNCATED_TOOL_ERROR)
                     )
                 else:
                     print(
@@ -1079,20 +1211,7 @@ class Orchestrator:
                     # seamlessly instead of starting over.
                     tail = text_clean[-800:] if len(text_clean) > 800 else text_clean
                     self.conversation_history.append(
-                        {
-                            "role": "user",
-                            "content": (
-                                "Your previous reply was CUT OFF by the token "
-                                "limit. Continue EXACTLY from where you left off. "
-                                "Do NOT repeat what you already wrote. Do NOT "
-                                "start over. Just continue the text.\n\n"
-                                "--- LAST 800 CHARS OF YOUR PREVIOUS REPLY ---\n"
-                                f"{tail}\n"
-                                "--- END OF PREVIOUS REPLY ---\n\n"
-                                "Continue from here. Pick up mid-sentence if "
-                                "necessary. Do NOT add any preamble."
-                            ),
-                        }
+                        _get_truncated_answer_directive(tail)
                     )
                 iteration += 1
                 continue
@@ -1105,17 +1224,7 @@ class Orchestrator:
                     file=sys.stderr,
                 )
                 self.conversation_history.append(
-                    {
-                        "role": "user",
-                        "content": (
-                            "STOP. That is a refusal and it is wrong. You DO have "
-                            "filesystem access through the tools. Your entire next "
-                            "message must be exactly one line, e.g.:\n"
-                            '<tool>{"tool":"list_files","parameters":{"path":"."}}</tool>\n'
-                            "No apology, no explanation, no markdown fences. Just "
-                            "the tool call tag."
-                        ),
-                    }
+                    {"role": "user", "content": _REFUSAL_DIRECTIVE}
                 )
                 iteration += 1
                 continue
@@ -1123,12 +1232,7 @@ class Orchestrator:
             if not text_clean and empty_retries < 1:
                 empty_retries += 1
                 self.conversation_history.append(
-                    {
-                        "role": "user",
-                        "content": "Your reply was empty. Emit a single "
-                        '<tool>{"tool":"...","parameters":{...}}</tool> '
-                        "call or the final plain-text answer.",
-                    }
+                    {"role": "user", "content": _EMPTY_REPLY_DIRECTIVE}
                 )
                 iteration += 1
                 continue
@@ -1151,39 +1255,7 @@ class Orchestrator:
                     file=sys.stderr,
                 )
                 self.conversation_history.append(
-                    {
-                        "role": "user",
-                        "content": (
-                            "[AUTONOMY] Your previous reply ended with a "
-                            "cliffhanger or a request for confirmation. The "
-                            "user already approved the work — do NOT ask "
-                            "again. Your IMMEDIATE next message must be "
-                            "either:\n"
-                            "  1. A tool call performing the next concrete "
-                            "step (a <tool>...</tool> tag), OR\n"
-                            "  2. A real final answer that summarizes what "
-                            'you completed (not accepted: "would you like me to...", '
-                            'no "shall I...", no "let me continue...").\n'
-                            "Do not announce intent without acting. Do not "
-                            "split the remaining work across more user "
-                            "turns.\n\n"
-                            "The following phrases and equivalent variants "
-                            "are forbidden because they indicate deferred "
-                            "action instead of execution:\n"
-                            "  * 'I will ...'\n"
-                            "  * 'I need to see ...'\n"
-                            "  * 'We need to ...'\n"
-                            "  * 'Let me proceed ...'\n"
-                            "  * 'Let me search ...'\n"
-                            "  * 'Is there anything specific ...'\n"
-                            "  * 'Would you like me to proceed ...?'\n"
-                            "  * 'Would you like me to implement ...?'\n"
-                            "  * Any equivalent wording that asks for "
-                            "permission, announces future work, requests "
-                            "confirmation, or describes intended actions "
-                            "instead of immediately performing them."
-                        ),
-                    }
+                    {"role": "user", "content": _CLIFFHANGER_DIRECTIVE}
                 )
                 iteration += 1
                 continue
@@ -1192,9 +1264,9 @@ class Orchestrator:
             # must include a STEP REPORT in its final answer. If missing,
             # nudge and retry.
             if (
-                self._pending_step_report
-                and step_report_retries < 2
-                and not self._looks_like_step_report(text_clean)
+                    self._pending_step_report
+                    and step_report_retries < 2
+                    and not self._looks_like_step_report(text_clean)
             ):
                 step_report_retries += 1
                 print(
@@ -1203,25 +1275,7 @@ class Orchestrator:
                     file=sys.stderr,
                 )
                 self.conversation_history.append(
-                    {
-                        "role": "user",
-                        "content": (
-                            "[STEP REPORT REQUIRED] Your previous reply was a "
-                            "final answer after modifying files, but it did not "
-                            "include the mandatory STEP REPORT. You MUST include "
-                            "a step report in this format:\n\n"
-                            "STEP REPORT\n"
-                            "-----------\n"
-                            "Done:\n"
-                            "  - [what you completed]\n"
-                            "Pending:\n"
-                            "  - [what remains, or 'None']\n"
-                            "Current state:\n"
-                            "  [1-3 sentences describing current state]\n\n"
-                            "Add this report to your final answer now. Do NOT "
-                            "call any more tools."
-                        ),
-                    }
+                    {"role": "user", "content": _STEP_REPORT_DIRECTIVE}
                 )
                 iteration += 1
                 continue
@@ -1245,7 +1299,7 @@ class Orchestrator:
 
         return self._build_recap_answer(
             reason=f"max iterations ({self.max_iterations}) reached without "
-            f"a synthesized answer"
+                   f"a synthesized answer"
         )
 
     # ------------------------------------------------------------------
@@ -1260,35 +1314,6 @@ class Orchestrator:
             return body
         return body[:idx].rstrip()
 
-    # Directive injected as a final user turn before the synthesis call.
-    # Tells the model to stop tool-using and write the answer (or ask one
-    # clarifying question) using only what's already in history. Coding-
-    # aware: explicitly asks for a recap of files modified + validation
-    # status, which is what most coding sessions actually want.
-    _SYNTHESIS_DIRECTIVE = (
-        "[FINAL SYNTHESIS] Stop. The tool loop is over — no more tool "
-        "calls will be executed, and any you emit will be ignored.\n"
-        "\n"
-        "Using ONLY the conversation above, write the user's final "
-        "answer. Structure it as:\n"
-        "  1. A 1-2 sentence summary of what was accomplished (what "
-        "     question was answered, OR what files were modified and how).\n"
-        "  2. If files were edited: list each file path that was "
-        "     write_file/patch_file/append_file'd this turn, one per line.\n"
-        "  3. If validators ran (python_check, flutter_analyze, etc.): "
-        "     state pass/fail for each.\n"
-        "  4. If anything is left undone or uncertain, say so explicitly "
-        "     in one sentence.\n"
-        "\n"
-        "Rules:\n"
-        "  - No <tool> tags. No JSON tool calls. Plain text or markdown.\n"
-        "  - Do not say 'I will' or 'let me' — describe what already "
-        "    happened.\n"
-        "  - Do not echo this directive.\n"
-        "  - If you genuinely have nothing useful to report, ask EXACTLY "
-        "    ONE clarifying question instead."
-    )
-
     def _attempt_synthesis(self) -> Optional[str]:
         """Make one last non-tool model call asking for a final answer.
 
@@ -1299,12 +1324,7 @@ class Orchestrator:
         # Defensive copy so we don't pollute the live history with the
         # synthesis directive (the next turn shouldn't see it).
         synth_history = list(self.conversation_history)
-        synth_history.append(
-            {
-                "role": "user",
-                "content": self._SYNTHESIS_DIRECTIVE,
-            }
-        )
+        synth_history.append({"role": "user", "content": _SYNTHESIS_DIRECTIVE})
 
         try:
             text, _ = self.backend.chat(
@@ -1392,7 +1412,7 @@ class Orchestrator:
     _STEP_REPORT_MARKER_RE = re.compile(
         r"^\s*[_*]*STEP\s+REPORT[_*]*\s*$",
         re.IGNORECASE | re.MULTILINE,
-    )
+        )
 
     def _looks_like_step_report(self, text: str) -> bool:
         """True when the text contains the mandatory step-report marker."""
@@ -1477,7 +1497,7 @@ class Orchestrator:
             + (f" ({reason})" if reason else "")
             + ".**",
             "",
-        ]
+            ]
 
         if not results:
             return "\n".join(prefix_lines) + (
@@ -1498,9 +1518,9 @@ class Orchestrator:
             deduped = deduped[-6:]
 
         return (
-            "\n".join(prefix_lines)
-            + "Here's a recap of what I found while investigating:\n\n"
-            + "\n\n".join(deduped)
+                "\n".join(prefix_lines)
+                + "Here's a recap of what I found while investigating:\n\n"
+                + "\n\n".join(deduped)
         )
 
     @staticmethod
