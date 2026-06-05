@@ -312,7 +312,8 @@ class OllamaBackend(ModelBackend):
         _log(
             f"[Ollama:chat] POST {self.base_url}/api/generate model={self.model_id} msgs={len(messages)} "
             f"tools={n_tools} max_tokens={max_tokens} temperature={temperature} "
-            f"cloud={is_cloud_model} tools_unsupported={self._tools_unsupported}"
+            f"cloud={is_cloud_model} tools_unsupported={self._tools_unsupported} "
+            f"prompt={prompt[:200]!r}"
             + (" [sending without tools]" if self._tools_unsupported and tools else "")
         )
 
@@ -368,13 +369,19 @@ class OllamaBackend(ModelBackend):
                 if chunk_count % 20 == 1:
                     so_far = len("".join(parts))
                     tail = "".join(parts)[-80:]
-                    _log(
-                        f"[Ollama:streaming] model={self.model_id} "
-                        f"chunks={chunk_count} chars={so_far} tail={tail!r}"
-                    )
-                else:
-                    sys.stderr.write("\n")
-                    sys.stderr.flush()
+                    if so_far > 0:
+                        _log(
+                            f"[Ollama:streaming] model={self.model_id} "
+                            f"chunks={chunk_count} chars={so_far} tail={tail!r}"
+                        )
+                    else:
+                        # Show progress dots when waiting for first content
+                        dots = "." * (chunk_count // 20)
+                        _log(
+                            f"[Ollama:streaming] model={self.model_id} "
+                            f"chunks={chunk_count} waiting{dots}"
+                        )
+                # else: no output for non-milestone chunks to avoid log spam
 
                 if getattr(chunk, "done", False):
                     finish_reason = getattr(chunk, "done_reason", "") or ""

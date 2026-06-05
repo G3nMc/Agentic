@@ -93,7 +93,7 @@ class OrchestratorManager {
   /// Rolling in-memory buffer of the most recent [_kMaxLogLines] lines.
   /// Useful for widgets that appear after the process has already emitted
   /// output (they can populate themselves from this list on first build).
-  static const int _kMaxLogLines = 200;
+  static const int _kMaxLogLines = 2000;
   final List<String> _logLines = [];
   List<String> get logLines => List.unmodifiable(_logLines);
   String? _lastNonEmptyLogLine;

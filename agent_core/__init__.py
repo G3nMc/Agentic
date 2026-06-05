@@ -1,25 +1,22 @@
-"""Agent Core - Rebuilt Multi-Agent Workflow.
+"""Agent Core - Rebuilt Multi-Agent Workflow"""
 
-A clean, production-ready workflow with:
-- Reasoner (strong model) for planning, tool calling, and final answers
-- Executor (deterministic) for tool execution
-- Summarizer (cheap model) for context management
-"""
+__version__ = "0.1.0"
 
-from .config import AgentConfig
-from .state import Message, ToolCall, ToolResult, WorkflowState, TaskStatus
-from .llm_client import LLMClient
-from .tool_registry import Tool, ToolRegistry, ToolExecutor
+from agent_core.config import AgentConfig, ModelConfig, ModelRole, load_config_from_env
+from agent_core.core.message import Message, MessageRole, ToolCall, ToolResult
+from agent_core.core.state import WorkflowState, TaskStatus
+from agent_core.loop.orchestrator import Orchestrator
 
 __all__ = [
     "AgentConfig",
+    "ModelConfig",
+    "ModelRole",
+    "load_config_from_env",
     "Message",
+    "MessageRole",
     "ToolCall",
     "ToolResult",
     "WorkflowState",
     "TaskStatus",
-    "LLMClient",
-    "Tool",
-    "ToolRegistry",
-    "ToolExecutor",
+    "Orchestrator",
 ]

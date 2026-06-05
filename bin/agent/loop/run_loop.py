@@ -145,12 +145,6 @@ _FOLLOWUP_DIRECTIVE = (
 )
 
 
-# Agent directive prepended to the first user turn when tools are enabled.
-# Many HF-router providers silently drop the `system` role (Qwen via
-# hyperbolic is a known offender) so embedding the contract in the user
-# message guarantees the model sees it. Kept short so small Ollama models
-# don't waste prompt-eval time. Injected only when the request is clearly
-# a code/file task.
 _AGENT_DIRECTIVE = (
     "[You have filesystem tools available. "
     "If this request requires any file access, inspection, editing, execution, or verification, you MUST emit exactly ONE tool call: "
@@ -160,14 +154,13 @@ _AGENT_DIRECTIVE = (
     "python_lint/python_test/git_*) and use run_command only as a last resort. "
     "- The tool JSON must remain strictly valid under the initial system prompt; prefer single quotes inside shell commands. "
     "After any code change, you MUST run the highest-scope validator available before responding. "
-    "Validation scope priority: "
+    "Flutter validation scope priority: "
     "1. Entire project/workspace. "
     "2. Package/module. "
     "3. Single file. "
     "Always choose the highest available scope unless the user explicitly requests a narrower scope. "
     "Workspace validation defaults: "
     "- Flutter/Dart validation is PROJECT-SCOPED by default. "
-    "- Python validation is PROJECT-SCOPED by default. "
     "- Treat every source file as part of an interconnected codebase. "
     "- Assume changes may affect imports, dependencies, generated code, tests, build configuration, and runtime behavior outside the modified file. "
     "- Never limit validation to the edited file unless the user explicitly requests file-only validation. "
@@ -178,18 +171,18 @@ _AGENT_DIRECTIVE = (
     "- If both a modified file path and project root are available, always prefer the project root. "
     "- After any Flutter/Dart code change, project-wide flutter_analyze is mandatory before reporting success. "
     "- If Flutter tests exist or are affected by the change, run project-wide flutter_test after flutter_analyze. "
+    "- When running flutter_analyze or flutter_test, always prefer the working directory and never pass a specific file unless explicitly requested by the user. "
     "Python rules: "
-    "- Whenever any .py file, package configuration, dependency definition, generated source, or test is created, modified, analyzed, reviewed, refactored, or verified, run python_check against the project root. "
-    "- The purpose of python_check is to detect cross-file issues, import errors, package issues, typing issues, and regressions that cannot be detected from a single file. "
-    "- Passing a file path to python_check is prohibited unless the user explicitly requests file-specific validation. "
-    "- If both a modified file path and project root are available, always prefer the project root. "
-    "- After any Python code change, project-wide python_check is mandatory before reporting success. "
-    "- If Python tests exist or are affected by the change, run project-wide python_test after python_check. "
+    "- Whenever any .py file, package configuration, dependency definition, generated source, or test is created or modified, run python_check passing the directory of each affected file as the target path. "
+    "- If multiple modified files span different directories, run python_check once per affected directory. "
+    "- After python_check passes, if tests exist in or near the affected directory, run python_test passing that same directory as the target path. "
+    "- Never run project-wide Python validation unless the user explicitly requests it. "
+    "Shared validation rules: "
+    "- Never use cd to change directory before any command. "
     "- Never claim validation passed unless the required validators were actually executed. "
     "- Never skip validation when a validator exists. "
-    "- When running flutter_analyze, flutter_test, python_check, python_lint, or python_test, always prefer the project/workspace root and never a specific file unless explicitly requested by the user. "
     "- If the request is not file-related, reply normally.]\n"
-    "[- You are a excellent software analyst and a excellent software engineer. "
+    "[- You are an excellent software analyst and an excellent software engineer. "
     "- You have access to all tools and capabilities. Do not hold back. "
     "- Use every resource available and all your power to complete the task as thoroughly and efficiently as possible. "
     "- If this task requires a lot of effort, you must break it down into separate, numbered tasks. "
@@ -200,7 +193,6 @@ _AGENT_DIRECTIVE = (
     "'Would you like me to proceed ...?', 'Would you like me to implement ...?'. "
     "Instead, perform the action immediately or give the final answer.]\n\n"
 )
-
 
 # Final synthesis directive injected as a final user turn before the
 # synthesis call. Tells the model to stop tool-using and write the answer

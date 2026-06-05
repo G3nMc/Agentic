@@ -22,7 +22,7 @@ class OrchestratorLogPanel extends StatefulWidget {
 }
 
 class _OrchestratorLogPanelState extends State<OrchestratorLogPanel> {
-  static const int _maxVisible = 200;
+  static const int _maxVisible = 2000;
   static const double _collapsedHeight = 80.0;
   static const double _expandedHeight = 220.0;
 
