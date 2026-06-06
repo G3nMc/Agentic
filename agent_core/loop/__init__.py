@@ -1,9 +1,8 @@
 """Main agent loop orchestration."""
 
-from agent_core.loop.orchestrator import Orchestrator
-from agent_core.loop.agent_loop import AgentLoop
+from agent_core.loop.orchestrator import Orchestrator, WorkflowResult
 
 __all__ = [
     "Orchestrator",
-    "AgentLoop",
+    "WorkflowResult",
 ]

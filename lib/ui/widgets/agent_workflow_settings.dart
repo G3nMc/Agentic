@@ -7,8 +7,6 @@ import '../../core/theme/app_theme.dart';
 import '../../data/repositories/agent_role_settings_repository.dart';
 import '../../data/repositories/backend_settings_repository.dart';
 import '../../data/repositories/settings_repository.dart';
-import '../../services/github_models_service.dart';
-import '../../services/groq_service.dart';
 import '../../services/ollama_service.dart';
 import '../../services/openrouter_service.dart';
 import 'team_board_viewer.dart';
@@ -39,14 +37,12 @@ class _AgentWorkflowSettingsState extends State<AgentWorkflowSettings> {
   List<WorkflowGroup> _groups = [];
   String _activeGroupId = '';
 
-  // The four core roles plus the optional 'leader' role used by Team Mode.
+  // The two core roles plus the optional 'leader' role used by Team Mode.
   // The leader's controllers/state share the same maps as the other roles
   // — only the rendering is gated on [_teamMode].
   static const _kAllRolesIncludingLeader = <String>[
-    'router',
-    'shaper',
     'reasoner',
-    'executor',
+    'summarizer',
     AgentRoleSettingsRepository.leaderRole,
   ];
 
@@ -349,18 +345,14 @@ class _AgentWorkflowSettingsState extends State<AgentWorkflowSettings> {
   Future<List<String>> _fetchLiveModels(String backend, String role) async {
     final settings = BackendSettingsRepository.instance;
     switch (backend) {
-      case 'groq':
-        final key = await settings.getGroqApiKey() ?? '';
-        if (key.isEmpty) throw 'Groq API key not set in Backend Settings.';
-        return GroqService.instance.listModels(key);
+      case 'openai':
+        return AgentRoleModelSuggestions.forBackend('openai');
+      case 'anthropic':
+        return AgentRoleModelSuggestions.forBackend('anthropic');
       case 'openrouter':
         final key = await settings.getOpenRouterApiKey() ?? '';
         if (key.isEmpty) throw 'OpenRouter API key not set.';
         return OpenRouterService.instance.listModels(key);
-      case 'github':
-        final key = await settings.getGithubApiKey() ?? '';
-        if (key.isEmpty) throw 'GitHub PAT not set.';
-        return GithubModelsService.instance.listModels(key);
       case 'ollama':
         final cfg = _agents.get(role);
         final url = (cfg.ollamaBaseUrl?.isNotEmpty ?? false)
@@ -377,9 +369,6 @@ class _AgentWorkflowSettingsState extends State<AgentWorkflowSettings> {
         return saved.isEmpty
             ? BackendSettingsRepository.defaultGeminiModels
             : saved;
-      case 'huggingface':
-        // HF has no per-token model list; use suggestions.
-        return AgentRoleModelSuggestions.forBackend('huggingface');
       default:
         return const [];
     }
@@ -445,9 +434,10 @@ class _AgentWorkflowSettingsState extends State<AgentWorkflowSettings> {
         ),
         const SizedBox(height: 4),
         const Text(
-          'Pick which model handles each role in the multi-agent pipeline. '
-          'Cheap models for routing/shaping; the strong model only for '
-          'reasoning. API keys come from the Model Settings tab. Click ↻ to '
+          'Pick which model handles each role in the agent workflow. '
+          'The Reasoner is the strong model that plans and decides; the '
+          'Summarizer is a cheaper model that compacts context when needed. '
+          'API keys come from the Model Settings tab. Click ↻ to '
           'fetch the live model list from each provider.',
           style: TextStyle(fontSize: 12.5, color: AppTheme.textMuted),
         ),
@@ -1016,14 +1006,10 @@ class _AgentWorkflowSettingsState extends State<AgentWorkflowSettings> {
 
   String _titleForRole(String role) {
     switch (role) {
-      case 'router':
-        return 'Router';
-      case 'shaper':
-        return 'Shaper';
       case 'reasoner':
         return 'Reasoner';
-      case 'executor':
-        return 'Executor';
+      case 'summarizer':
+        return 'Summarizer';
       case AgentRoleSettingsRepository.leaderRole:
         return 'Team Leader';
     }
@@ -1032,14 +1018,10 @@ class _AgentWorkflowSettingsState extends State<AgentWorkflowSettings> {
 
   String _hintForRole(String role) {
     switch (role) {
-      case 'router':
-        return '— cheapest, classifies the request';
-      case 'shaper':
-        return '— rewrites prompts (runs once per chat)';
       case 'reasoner':
         return '— strong model, plans + decides';
-      case 'executor':
-        return '— runs tools, handles trivial replies';
+      case 'summarizer':
+        return '— cheap model, compacts context';
       case AgentRoleSettingsRepository.leaderRole:
         return '— decomposes heavy tasks into worker groups';
     }
@@ -1048,14 +1030,10 @@ class _AgentWorkflowSettingsState extends State<AgentWorkflowSettings> {
 
   IconData _iconForRole(String role) {
     switch (role) {
-      case 'router':
-        return Icons.alt_route_outlined;
-      case 'shaper':
-        return Icons.auto_fix_high_outlined;
       case 'reasoner':
         return Icons.psychology_outlined;
-      case 'executor':
-        return Icons.build_outlined;
+      case 'summarizer':
+        return Icons.summarize_outlined;
       case AgentRoleSettingsRepository.leaderRole:
         return Icons.groups_2_outlined;
     }

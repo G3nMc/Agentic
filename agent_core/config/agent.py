@@ -16,6 +16,8 @@ class AgentConfig:
     summarization_threshold: float = 0.7
     tool_timeout: int = 30
     parallel_tools: bool = True
+    max_retries: int = 3
+    retry_backoff_base: float = 2.0
     project_root: str = "."
     excluded_paths: List[str] = field(default_factory=lambda: [
         ".git", "__pycache__", "*.pyc", ".venv", "venv", 

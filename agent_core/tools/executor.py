@@ -5,7 +5,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from agent_core.tools.registry import get_tool_registry
 from agent_core.tools.base import ToolResult
-from agent_core.config import AgentConfig
+from agent_core.config.agent import AgentConfig
 
 
 class ToolExecutor:

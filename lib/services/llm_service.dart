@@ -2,21 +2,19 @@ import 'dart:io';
 
 import '../data/models/message.dart';
 import '../data/repositories/backend_settings_repository.dart';
-import 'groq_service.dart';
-import 'huggingface_service.dart';
-import 'local_llm_service.dart';
-import 'ollama_generate_service.dart';
-import 'ollama_python_manager.dart';
 import 'ollama_service.dart';
-import 'openrouter_service.dart';
 import 'orchestrator_manager.dart';
 // ChatMessage.role is a MessageRole enum, not a String — imported above.
 
 enum LlmBackend {
+  @Deprecated('Use orchestrator variant instead')
   huggingFace,
+  @Deprecated('Use orchestrator variant instead')
   local,
   orchestrator,
+  @Deprecated('Use orchestrator variant instead')
   ollama,
+  @Deprecated('Use orchestrator variant instead')
   ollamaPython,
   // Same filesystem-tool orchestrator as `orchestrator`, but the model
   // runs locally via Ollama instead of on the HF router. Needs Ollama
@@ -24,6 +22,7 @@ enum LlmBackend {
   ollamaOrchestrator,
   // Groq Cloud — ultra-fast inference via Groq's LPU hardware.
   // Requires a free API key from https://console.groq.com
+  @Deprecated('Use orchestrator variant instead')
   groq,
   // Groq Cloud routed through the local orchestrator so Groq models
   // can use filesystem tools (read/write files, git, run commands).
@@ -31,6 +30,7 @@ enum LlmBackend {
   // Gemini routed through the local orchestrator for filesystem tools.
   geminiOrchestrator,
   // OpenRouter direct chat-completions backend.
+  @Deprecated('Use orchestrator variant instead')
   openRouter,
   // OpenRouter routed through the local orchestrator for filesystem tools.
   // Uses the same API key and model as the direct openRouter backend.
@@ -42,6 +42,7 @@ enum LlmBackend {
   // Supports custom ports (e.g. localhost:12345), raw prompt templating,
   // and the `think` parameter for native reasoning output.
   // No native tool support — use ollamaOrchestrator for file/code tasks.
+  @Deprecated('Use orchestrator variant instead')
   ollamaGenerate,
 }
 
@@ -100,79 +101,6 @@ class LlmService {
     String? contextSummary, // Additional context summary to include
   }) async {
     switch (backend) {
-      case LlmBackend.huggingFace:
-        return HuggingFaceService.instance.sendChat(
-          token: token,
-          modelId: modelId,
-          history: history,
-        );
-
-      case LlmBackend.local:
-        if (localServerUrl == null || localServerUrl.isEmpty) {
-          throw Exception("Local server URL not configured");
-        }
-        return LocalLlmService.instance.sendChat(
-          serverUrl: localServerUrl,
-          modelId: modelId,
-          history: history,
-        );
-
-      case LlmBackend.ollama:
-        final resolvedModel = (ollamaModelId != null && ollamaModelId.isNotEmpty)
-            ? ollamaModelId
-            : modelId;
-        if (resolvedModel.isEmpty) {
-          throw Exception(
-              "Ollama: no model selected. Pull one from Settings first.");
-        }
-        // Honour user-tuned generation params from Settings. Default values
-        // inside the repo match what the orchestrator uses so the two paths
-        // behave the same when the user leaves defaults alone.
-        final settings = BackendSettingsRepository.instance;
-        final temperature = await settings.getOllamaTemperature();
-        final numPredict = await settings.getOllamaNumPredict();
-        final numCtx = await settings.getOllamaNumCtx();
-        final apiKey = await settings.getOllamaApiKey();
-        return OllamaService.instance.sendChat(
-          modelId: resolvedModel,
-          history: history,
-          baseUrl: ollamaBaseUrl,
-          apiKey: apiKey,
-          temperature: temperature,
-          numPredict: numPredict,
-          numCtx: numCtx,
-        );
-
-      case LlmBackend.ollamaPython:
-        final resolvedModel = (ollamaModelId != null && ollamaModelId.isNotEmpty)
-            ? ollamaModelId
-            : modelId;
-        if (resolvedModel.isEmpty) {
-          throw Exception(
-              "Ollama Python bridge: no model selected. Pull one from Settings first.");
-        }
-        final bridgeUrl =
-            (ollamaPythonBridgeUrl != null && ollamaPythonBridgeUrl.isNotEmpty)
-                ? ollamaPythonBridgeUrl
-                : OllamaPythonManager.defaultBridgeUrl;
-        if (!await OllamaPythonManager.instance
-            .isBridgeReachable(bridgeUrl: bridgeUrl)) {
-          final started = await OllamaPythonManager.instance.startBridge(
-            bridgeUrl: bridgeUrl,
-          );
-          if (!started) {
-            throw Exception(
-              "Failed to start the Ollama Python bridge. Open Settings, "
-              "install the Python package, and start the bridge.",
-            );
-          }
-        }
-        return LocalLlmService.instance.sendChat(
-          serverUrl: bridgeUrl,
-          modelId: resolvedModel,
-          history: history,
-        );
-
       case LlmBackend.orchestrator:
         if (OrchestratorManager.instance.isRunning &&
             OrchestratorManager.instance.currentBackend !=
@@ -180,7 +108,6 @@ class LlmService {
           await OrchestratorManager.instance.stop();
         }
 
-        // Start orchestrator if not already running.
         if (!OrchestratorManager.instance.isRunning) {
           final started = await OrchestratorManager.instance.start(
             hfToken: token,
@@ -196,11 +123,6 @@ class LlmService {
           }
         }
 
-        // Orchestrator maintains its own conversation history across calls.
-        // Send only the latest user turn; `new_session=true` on the first
-        // message of a conversation would reset state — but since the
-        // caller decides when to stop the orchestrator, we just send the
-        // last user message here.
         final lastUser = _lastUserMessage(history);
         if (lastUser == null) {
           throw Exception("No user message to send.");
@@ -213,10 +135,6 @@ class LlmService {
         );
 
       case LlmBackend.ollamaOrchestrator:
-        // Resolve the Ollama model tag the same way the plain `ollama`
-        // backend does — prefer an explicit per-conversation ollama model,
-        // fall back to the generic modelId (which will also have been set
-        // from the Ollama dropdown in Settings).
         final resolvedOllamaModel =
             (ollamaModelId != null && ollamaModelId.isNotEmpty)
                 ? ollamaModelId
@@ -229,9 +147,6 @@ class LlmService {
           );
         }
 
-        // If the orchestrator is already running on the HF backend from a
-        // previous session, stop it before restarting on Ollama — the
-        // Python subprocess only supports one backend per lifetime.
         final settings = BackendSettingsRepository.instance;
         final ollamaApiKey = await settings.getOllamaApiKey() ?? '';
         if (OrchestratorManager.instance.isRunning) {
@@ -273,34 +188,10 @@ class LlmService {
           forceHistorySync: true,
         );
 
-      case LlmBackend.groq:
-        final settings = BackendSettingsRepository.instance;
-        final groqKey = await settings.getGroqApiKey() ?? '';
-        final savedModel = await settings.getGroqModel() ?? '';
-        // Prefer the per-conversation model (set via the chat-header model
-        // switcher). HuggingFace model IDs are tagged with a `:provider`
-        // suffix (e.g. `Qwen/...:hyperbolic`) — a stale HF id leaking into
-        // the Groq call is the only case we want to reject. Groq's own
-        // newer models use `provider/model` format (openai/gpt-oss-120b,
-        // qwen/qwen3-32b), so a `/` check would wrongly reject them.
-        final groqModel = (modelId.isNotEmpty && !modelId.contains(':'))
-            ? modelId
-            : (savedModel.isNotEmpty ? savedModel : modelId);
-        final temperature = await settings.getGroqTemperature();
-        final maxTokens = await settings.getGroqMaxTokens();
-        return GroqService.instance.sendChat(
-          apiKey: groqKey,
-          modelId: groqModel,
-          history: history,
-          temperature: temperature,
-          maxTokens: maxTokens,
-        );
-
       case LlmBackend.groqOrchestrator:
         final settings = BackendSettingsRepository.instance;
         final groqKey = await settings.getGroqApiKey() ?? '';
         final savedModel = await settings.getGroqModel() ?? '';
-        // Same preference as the plain groq case above.
         final groqModel = (modelId.isNotEmpty && !modelId.contains(':'))
             ? modelId
             : (savedModel.isNotEmpty ? savedModel : modelId);
@@ -323,10 +214,6 @@ class LlmService {
             tpmLimit: tpmLimit,
           );
 
-          // If startup failed because the `groq` Python package is missing
-          // (the script exits with code 2 and prints "Missing dependency"),
-          // auto-install dependencies and retry once — so the user doesn't
-          // have to find the "Install Dependencies" button in Settings.
           if (!started) {
             final log = OrchestratorManager.instance.stderrLog;
             final isMissingDep =
@@ -430,21 +317,6 @@ class LlmService {
           forceHistorySync: true,
         );
 
-      case LlmBackend.openRouter:
-        final settings = BackendSettingsRepository.instance;
-        final openRouterKey = await settings.getOpenRouterApiKey() ?? '';
-        final savedModel = await settings.getOpenRouterModel() ?? '';
-        final openRouterModel = resolveOpenRouterModel(modelId, savedModel);
-        final temperature = await settings.getOpenRouterTemperature();
-        final maxTokens = await settings.getOpenRouterMaxTokens();
-        return OpenRouterService.instance.sendChat(
-          apiKey: openRouterKey,
-          modelId: openRouterModel,
-          history: history,
-          temperature: temperature,
-          maxTokens: maxTokens,
-        );
-
       case LlmBackend.openRouterOrchestrator:
         final orSettings = BackendSettingsRepository.instance;
         final orKey = await orSettings.getOpenRouterApiKey() ?? '';
@@ -469,8 +341,6 @@ class LlmService {
             tpmLimit: orTpmLimit,
           );
 
-          // Auto-install deps on first run (openrouter uses stdlib only,
-          // but other orchestrator deps like pydantic may still be missing).
           if (!started) {
             final log = OrchestratorManager.instance.stderrLog;
             final isMissingDep =
@@ -538,8 +408,6 @@ class LlmService {
             disableTools: ghDisableTools,
           );
 
-          // Auto-install deps on first run (GitHub Models uses stdlib only,
-          // but other orchestrator deps like pydantic may still be missing).
           if (!started) {
             final log = OrchestratorManager.instance.stderrLog;
             final isMissingDep = log.contains('Missing dependency') ||
@@ -578,31 +446,16 @@ class LlmService {
           forceHistorySync: true,
         );
 
+      case LlmBackend.huggingFace:
+      case LlmBackend.local:
+      case LlmBackend.ollama:
+      case LlmBackend.ollamaPython:
+      case LlmBackend.groq:
+      case LlmBackend.openRouter:
       case LlmBackend.ollamaGenerate:
-        final settings = BackendSettingsRepository.instance;
-        final genBaseUrl = await settings.getGenerateBaseUrl() ?? '';
-        final genModel = await settings.getGenerateModel() ?? '';
-        final genTemp = await settings.getGenerateTemperature();
-        final genNumPredict = await settings.getGenerateNumPredict();
-        final genNumCtx = await settings.getGenerateNumCtx();
-        final genApiKey = await settings.getGenerateApiKey() ?? '';
-        final genThinking = await settings.getGenerateThinking();
-
-        final resolvedModel = genModel.isNotEmpty ? genModel : modelId;
-        if (resolvedModel.isEmpty) {
-          throw Exception(
-            'Ollama Generate: no model set. Enter a model name in Settings.',
-          );
-        }
-        return OllamaGenerateService.instance.sendChat(
-          modelId: resolvedModel,
-          history: history,
-          baseUrl: genBaseUrl.isNotEmpty ? genBaseUrl : null,
-          apiKey: genApiKey.isNotEmpty ? genApiKey : null,
-          temperature: genTemp,
-          numPredict: genNumPredict,
-          numCtx: genNumCtx,
-          enableThinking: genThinking,
+        throw UnsupportedError(
+          'Direct backend $backend is no longer supported. '
+          'Use the orchestrator variant instead (e.g. ollamaOrchestrator, groqOrchestrator).',
         );
     }
   }
@@ -656,31 +509,12 @@ class LlmService {
     String? ollamaPythonBridgeUrl,
   }) async {
     switch (backend) {
-      case LlmBackend.huggingFace:
-        // Could implement a health check for HF API
-        return token != null && token.isNotEmpty;
-
-      case LlmBackend.local:
-        if (localServerUrl == null || localServerUrl.isEmpty) return false;
-        return LocalLlmService.instance.isServerAvailable(localServerUrl);
-
       case LlmBackend.orchestrator:
-        // Orchestrator just needs a valid HF token
         return token != null && token.isNotEmpty;
-
-      case LlmBackend.ollama:
-        return OllamaService.instance.isServerReachable(baseUrl: ollamaBaseUrl);
-
-      case LlmBackend.ollamaPython:
-        return OllamaPythonManager.instance
-            .isBridgeReachable(bridgeUrl: ollamaPythonBridgeUrl);
 
       case LlmBackend.ollamaOrchestrator:
-        // Needs the Ollama daemon reachable; the orchestrator subprocess
-        // starts on demand from `sendChat`, so we don't probe it here.
         return OllamaService.instance.isServerReachable(baseUrl: ollamaBaseUrl);
 
-      case LlmBackend.groq:
       case LlmBackend.groqOrchestrator:
         final key = await BackendSettingsRepository.instance.getGroqApiKey();
         final envKey = Platform.environment['GROQ_API_KEY'] ?? '';
@@ -693,7 +527,6 @@ class LlmService {
             '';
         return (key != null && key.trim().isNotEmpty) || envKey.isNotEmpty;
 
-      case LlmBackend.openRouter:
       case LlmBackend.openRouterOrchestrator:
         final key =
             await BackendSettingsRepository.instance.getOpenRouterApiKey();
@@ -708,11 +541,14 @@ class LlmService {
             '';
         return (key != null && key.trim().isNotEmpty) || envKey.isNotEmpty;
 
+      case LlmBackend.huggingFace:
+      case LlmBackend.local:
+      case LlmBackend.ollama:
+      case LlmBackend.ollamaPython:
+      case LlmBackend.groq:
+      case LlmBackend.openRouter:
       case LlmBackend.ollamaGenerate:
-        final url = await BackendSettingsRepository.instance.getGenerateBaseUrl();
-        return OllamaGenerateService.instance.isServerReachable(
-          baseUrl: url,
-        );
+        return false;
     }
   }
 

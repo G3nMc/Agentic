@@ -21,6 +21,12 @@ class OpenAIBackend(LLMBackend):
             self._model = config.model
         except ImportError:
             raise RuntimeError("openai package not installed. Run: pip install openai")
+        except Exception as e:
+            # Catch OpenAIError (missing credentials) and other init failures
+            raise RuntimeError(
+                f"Failed to initialize OpenAI backend: {e}. "
+                "Ensure you have set the API key via --reasoner-api-key or the OPENAI_API_KEY environment variable."
+            ) from e
     
     def complete(
         self,

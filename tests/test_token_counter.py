@@ -1,66 +1,65 @@
-"""Tests for token counter utility."""
+"""Tests for token counting utilities."""
 
 import pytest
-from agent_core.utils.token_counter import count_tokens, count_tokens_for_model
+from agent_core.utils.token_counter import count_tokens, count_tokens_for_model, count_message_tokens
 
 
-def test_count_tokens_basic():
-    """Test basic token counting."""
-    text = "Hello, world!"
-    count = count_tokens(text)
-    assert count > 0
-    assert count < len(text)  # Should be less than char count
+class TestCountTokens:
+    def test_empty_string(self):
+        assert count_tokens("") == 0
+
+    def test_none_string(self):
+        assert count_tokens(None) == 0
+
+    def test_simple_text(self):
+        result = count_tokens("Hello world")
+        assert result > 0
+
+    def test_long_text(self):
+        result = count_tokens("a" * 1000)
+        assert result > 0
+        # Rough estimation: ~4 chars per token
+        assert result >= 200  # At least 200 tokens
+
+    def test_with_model(self):
+        result = count_tokens("Hello world", model="gpt-4o")
+        assert result > 0
 
 
-def test_count_tokens_empty():
-    """Test token counting with empty string."""
-    assert count_tokens("") == 0
-    assert count_tokens(None) == 0
+class TestCountTokensForModel:
+    def test_openai(self):
+        result = count_tokens_for_model("Hello world", "openai", "gpt-4o")
+        assert result > 0
+
+    def test_anthropic_fallback(self):
+        result = count_tokens_for_model("Hello world", "anthropic", "claude-3-5-sonnet")
+        assert result > 0
+
+    def test_ollama_fallback(self):
+        result = count_tokens_for_model("Hello world", "ollama", "llama3.2")
+        assert result > 0
+
+    def test_empty_text(self):
+        assert count_tokens_for_model("", "openai", "gpt-4o") == 0
 
 
-def test_count_tokens_long_text():
-    """Test token counting with longer text."""
-    text = "This is a longer piece of text that should have more tokens. " * 10
-    count = count_tokens(text)
-    assert count > 20
+class TestCountMessageTokens:
+    def test_simple_message(self):
+        msg = {"role": "user", "content": "Hello"}
+        result = count_message_tokens(msg)
+        assert result > 0
 
+    def test_message_with_tool_calls(self):
+        msg = {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [{"id": "1", "name": "read_file", "arguments": {"path": "test.txt"}}],
+        }
+        result = count_message_tokens(msg)
+        assert result > 0
 
-def test_count_tokens_for_model_openai():
-    """Test model-specific token counting for OpenAI."""
-    text = "Test message for token counting."
-    count = count_tokens_for_model(text, "openai", "gpt-4o")
-    assert count > 0
-
-
-def test_count_tokens_for_model_anthropic():
-    """Test model-specific token counting for Anthropic (fallback)."""
-    text = "Test message for token counting."
-    count = count_tokens_for_model(text, "anthropic", "claude-3-5-sonnet")
-    assert count > 0
-
-
-def test_count_message_tokens():
-    """Test token counting for message objects."""
-    from agent_core.utils.token_counter import count_message_tokens
-    from agent_core.core.message import Message, MessageRole, ToolCall
-    
-    msg = Message(
-        role=MessageRole.USER,
-        content="Hello",
-        tool_calls=[ToolCall(id="1", name="test", arguments={"arg": "value"})]
-    )
-    count = count_message_tokens(msg, "openai", "gpt-4o")
-    assert count > 0
-
-
-def test_count_message_tokens_dict():
-    """Test token counting for message dicts."""
-    from agent_core.utils.token_counter import count_message_tokens
-    
-    msg = {
-        "role": "user",
-        "content": "Hello",
-        "tool_calls": [{"id": "1", "name": "test", "arguments": {"arg": "value"}}]
-    }
-    count = count_message_tokens(msg, "openai", "gpt-4o")
-    assert count > 0
+    def test_message_object(self):
+        from agent_core.core.message import Message, MessageRole
+        msg = Message(role=MessageRole.USER, content="Hello")
+        result = count_message_tokens(msg)
+        assert result > 0

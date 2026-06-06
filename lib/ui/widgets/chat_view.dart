@@ -754,7 +754,6 @@ class _ChatViewState extends StateManager<ChatView> with WidgetsBindingObserver 
         ollamaBaseUrl: ollamaBaseUrl,
         ollamaModelId: modelId,
         ollamaPythonBridgeUrl: ollamaPythonBridgeUrl,
-        contextSummary: prepared.contextSummary,
       );
 
       if (cancelToken.isCancelled) return;

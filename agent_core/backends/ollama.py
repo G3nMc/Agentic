@@ -37,9 +37,13 @@ class OllamaBackend(LLMBackend):
         if tools:
             payload["tools"] = tools
         
+        headers = {}
+        if self.config.api_key:
+            headers["Authorization"] = f"Bearer {self.config.api_key}"
         response = requests.post(
             f"{self.base_url}/api/chat",
             json=payload,
+            headers=headers,
             timeout=120,
         )
         response.raise_for_status()

@@ -1,7 +1,7 @@
 """Base tool classes."""
 
 from abc import ABC, abstractmethod
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 
 from agent_core.core.tool_schema import ToolSchema
 from agent_core.core.message import ToolResult

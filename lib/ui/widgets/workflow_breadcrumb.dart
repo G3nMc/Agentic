@@ -271,14 +271,10 @@ class _WorkflowBreadcrumbState extends State<WorkflowBreadcrumb> {
 
   String _titleForRole(String role) {
     switch (role) {
-      case 'router':
-        return 'Router';
-      case 'shaper':
-        return 'Shaper';
       case 'reasoner':
         return 'Reasoner';
-      case 'executor':
-        return 'Executor';
+      case 'summarizer':
+        return 'Summarizer';
       case 'workflow':
         return 'Workflow';
     }

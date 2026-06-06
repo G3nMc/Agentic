@@ -10,6 +10,16 @@ from agent_core.backends.ollama import OllamaBackend
 from agent_core.backends.openrouter import OpenRouterBackend
 from agent_core.config.models import ModelConfig
 
+# Default base URLs for providers that are OpenAI-compatible
+_OPENAI_COMPATIBLE_DEFAULTS: dict[str, str] = {
+    "groq": "https://api.groq.com/openai/v1",
+    "deepseek": "https://api.deepseek.com/v1",
+    "mistral": "https://api.mistral.ai/v1",
+    "xai": "https://api.x.ai/v1",
+    "perplexity": "https://api.perplexity.ai",
+    "custom": "",  # user must supply base_url
+}
+
 
 def get_backend(config: Optional[ModelConfig]) -> Optional[LLMBackend]:
     """Get backend instance for a model config."""
@@ -28,6 +38,13 @@ def get_backend(config: Optional[ModelConfig]) -> Optional[LLMBackend]:
         return OllamaBackend(config)
     elif provider == "openrouter":
         return OpenRouterBackend(config)
+    elif provider in _OPENAI_COMPATIBLE_DEFAULTS:
+        # Ensure a base_url is set; use default if not provided
+        if not config.base_url:
+            default_url = _OPENAI_COMPATIBLE_DEFAULTS[provider]
+            if default_url:
+                config.base_url = default_url
+        return OpenAIBackend(config)
     else:
         raise ValueError(f"Unknown provider: {provider}")
 

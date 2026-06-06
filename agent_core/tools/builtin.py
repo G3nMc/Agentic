@@ -8,6 +8,7 @@ from typing import Dict, Any, List, Optional
 
 from agent_core.core.tool_schema import ToolSchema, ParameterSchema
 from agent_core.tools.base import Tool, ToolResult
+from agent_core.tools.registry import ToolRegistry
 
 
 class ReadFileTool(Tool):
@@ -553,15 +554,15 @@ class FindFilesTool(Tool):
 
 
 # Register all builtin tools
-def register_builtin_tools():
-    from agent_core.tools.registry import register_tool
-    register_tool(ReadFileTool())
-    register_tool(WriteFileTool())
-    register_tool(PatchFileTool())
-    register_tool(SearchInFilesTool())
-    register_tool(ListFilesTool())
-    register_tool(ListFilesRecursiveTool())
-    register_tool(FindFilesTool())
-    register_tool(RunCommandTool())
-    register_tool(FlutterAnalyzeTool())
-    register_tool(PythonCheckTool())
+def register_builtin_tools(registry: "ToolRegistry") -> None:
+    """Register all built-in tools into the given registry."""
+    registry.register(ReadFileTool())
+    registry.register(WriteFileTool())
+    registry.register(PatchFileTool())
+    registry.register(SearchInFilesTool())
+    registry.register(ListFilesTool())
+    registry.register(ListFilesRecursiveTool())
+    registry.register(FindFilesTool())
+    registry.register(RunCommandTool())
+    registry.register(FlutterAnalyzeTool())
+    registry.register(PythonCheckTool())

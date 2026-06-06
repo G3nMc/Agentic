@@ -1,17 +1,18 @@
 """Agent Core - Rebuilt Multi-Agent Workflow"""
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
-from agent_core.config import AgentConfig, ModelConfig, ModelRole, load_config_from_env
+from agent_core.config.agent import AgentConfig, load_config_from_env
+from agent_core.config.models import ModelConfig, ModelRole
 from agent_core.core.message import Message, MessageRole, ToolCall, ToolResult
 from agent_core.core.state import WorkflowState, TaskStatus
-from agent_core.loop.orchestrator import Orchestrator
+from agent_core.loop.orchestrator import Orchestrator, WorkflowResult
 
 __all__ = [
     "AgentConfig",
+    "load_config_from_env",
     "ModelConfig",
     "ModelRole",
-    "load_config_from_env",
     "Message",
     "MessageRole",
     "ToolCall",
@@ -19,4 +20,5 @@ __all__ = [
     "WorkflowState",
     "TaskStatus",
     "Orchestrator",
+    "WorkflowResult",
 ]

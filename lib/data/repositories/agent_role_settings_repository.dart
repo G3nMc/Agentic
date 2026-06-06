@@ -173,7 +173,7 @@ class AgentRoleSettingsRepository {
   final ValueNotifier<int> groupsChangedNotifier = ValueNotifier<int>(0);
 
   /// Roles, in the order they should appear in the Settings UI.
-  static const List<String> roles = ['router', 'shaper', 'reasoner', 'executor'];
+  static const List<String> roles = ['reasoner', 'summarizer'];
 
   /// Special role used only when Team Mode is on. Stored under the same
   /// `agent.<groupId>.leader.<field>` keys as the regular roles, but kept
@@ -202,22 +202,6 @@ class AgentRoleSettingsRepository {
   // ---------------------------------------------------------------------------
   static AgentRoleConfig defaultFor(String role) {
     switch (role) {
-      case 'router':
-        return const AgentRoleConfig(
-          role: 'router',
-          backend: 'gemini',
-          model: 'gemini-2.5-flash-lite',
-          temperature: 0.0,
-          maxTokens: 8,
-        );
-      case 'shaper':
-        return const AgentRoleConfig(
-          role: 'shaper',
-          backend: 'gemini',
-          model: 'gemini-2.5-flash',
-          temperature: 0.2,
-          maxTokens: 256,
-        );
       case 'reasoner':
         return const AgentRoleConfig(
           role: 'reasoner',
@@ -226,12 +210,12 @@ class AgentRoleSettingsRepository {
           temperature: 0.2,
           maxTokens: 4096,
         );
-      case 'executor':
+      case 'summarizer':
         return const AgentRoleConfig(
-          role: 'executor',
+          role: 'summarizer',
           backend: 'gemini',
           model: 'gemini-2.5-flash',
-          temperature: 0.4,
+          temperature: 0.2,
           maxTokens: 1024,
         );
       case leaderRole:
@@ -500,14 +484,13 @@ class AgentRoleSettingsRepository {
   }
 
   /// Backend names recognised by the Python `build_backend` factory.
-  /// Keep this list in sync with `bin/agent/backends/__init__.py`.
+  /// Keep this list in sync with `agent_core/backends/__init__.py`.
   static const List<String> supportedBackends = <String>[
+    'openai',
+    'anthropic',
     'gemini',
-    'groq',
-    'openrouter',
-    'github',
-    'huggingface',
     'ollama',
+    'openrouter',
   ];
 
   // ---------------------------------------------------------------------------
@@ -530,6 +513,28 @@ class AgentRoleSettingsRepository {
         final v = await _read('$legacy.$field');
         if (v != null) {
           await _write('$prefixed.$field', v);
+        }
+      }
+    }
+    // If summarizer has no settings, try to seed from old executor.
+    final summarizerBackend = await _read('agent.$_kDefaultGroupId.summarizer.backend');
+    if (summarizerBackend == null) {
+      final oldExecutorBackend = await _read('agent.executor.backend');
+      if (oldExecutorBackend != null) {
+        // Copy all executor fields to summarizer.
+        for (final field in const [
+          'backend',
+          'model',
+          'tpm_limit',
+          'temperature',
+          'max_tokens',
+          'ollama_base_url',
+          'ollama_num_ctx',
+        ]) {
+          final v = await _read('agent.executor.$field');
+          if (v != null) {
+            await _write('agent.$_kDefaultGroupId.summarizer.$field', v);
+          }
         }
       }
     }
@@ -646,36 +651,31 @@ class WorkflowAgents {
 class AgentRoleModelSuggestions {
   static List<String> forBackend(String backend) {
     switch (backend) {
+      case 'openai':
+        return const <String>[
+          'gpt-4o',
+          'gpt-4o-mini',
+          'gpt-4-turbo',
+        ];
+      case 'anthropic':
+        return const <String>[
+          'claude-3-5-sonnet-20241022',
+          'claude-3-5-haiku-20241022',
+          'claude-3-opus-20240229',
+        ];
       case 'gemini':
         return BackendSettingsRepository.defaultGeminiModels;
-      case 'groq':
-        return const <String>[
-          'llama-3.1-8b-instant',
-          'llama-3.3-70b-versatile',
-          'mixtral-8x7b-32768',
-        ];
       case 'openrouter':
         return const <String>[
-          'meta-llama/llama-3.1-8b-instruct',
-          'anthropic/claude-3.5-haiku',
-          'google/gemini-flash-1.5',
-        ];
-      case 'github':
-        return const <String>[
-          'gpt-4o-mini',
-          'gpt-4o',
-          'meta-llama-3.1-8b-instruct',
+          'openai/gpt-4o',
+          'anthropic/claude-3.5-sonnet',
+          'google/gemini-2.5-pro',
         ];
       case 'ollama':
         return const <String>[
           'llama3.2:1b',
           'llama3.2:3b',
           'qwen2.5-coder:7b',
-        ];
-      case 'huggingface':
-        return const <String>[
-          'meta-llama/Llama-3.1-8B-Instruct',
-          'meta-llama/Llama-3.1-70B-Instruct',
         ];
       default:
         return const <String>[];

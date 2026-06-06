@@ -5,7 +5,7 @@ from typing import List, Optional
 
 from agent_core.core.message import Message, MessageRole
 from agent_core.core.state import WorkflowState
-from agent_core.config import AgentConfig
+from agent_core.config.agent import AgentConfig
 from agent_core.utils.token_counter import count_tokens
 
 

@@ -392,15 +392,16 @@ class OrchestratorManager {
     };
   }
 
-  /// Absolute path to the bundled `bin/orchestrator.py` shipped with the app.
-  /// Resolves relative to the current working directory because Flutter desktop
-  /// is usually launched from the project root.
-  static File get orchestratorScript {
+  /// Resolve the orchestrator script path based on whether multi-agent mode is
+  /// active. Single-agent mode uses the legacy `orchestrator.py`; multi-agent
+  /// mode uses the new `orchestrator_v2.py`.
+  static File _resolveScriptPath(bool multiAgent) {
+    final scriptName = multiAgent ? 'orchestrator_v2.py' : 'orchestrator.py';
     final cwd = Directory.current.path;
     final candidates = <String>[
-      '$cwd/bin/orchestrator.py',
-      '$cwd/orchestrator.py',
-      '${Directory.current.parent.path}/bin/orchestrator.py',
+      '$cwd/bin/$scriptName',
+      '$cwd/$scriptName',
+      '${Directory.current.parent.path}/bin/$scriptName',
     ];
     for (final p in candidates) {
       final f = File(p);
@@ -417,32 +418,39 @@ class OrchestratorManager {
   /// Install Python dependencies the orchestrator needs. Runs synchronously
   /// (streams output via [onLine] if provided) and returns true on success.
   Future<bool> installDependencies({void Function(String line)? onLine}) async {
-    final script = orchestratorScript;
-    if (!script.existsSync()) {
-      onLine?.call('ERROR: orchestrator.py not found at ${script.path}');
-      return false;
+    // Install deps for both the legacy single-agent orchestrator and the
+    // new multi-agent orchestrator_v2, so the button works regardless of
+    // which mode the user later switches to.
+    final scripts = <File>[
+      _resolveScriptPath(false),
+      _resolveScriptPath(true),
+    ];
+    bool allOk = true;
+    for (final script in scripts) {
+      if (!script.existsSync()) {
+        onLine?.call('Skipping ${script.path} (not found)');
+        continue;
+      }
+      final python = await resolvePythonExecutable();
+      onLine?.call('Running: $python ${script.path} --install-deps');
+      try {
+        final proc = await Process.start(
+          python,
+          [script.path, '--install-deps'],
+          workingDirectory: script.parent.path,
+        );
+        final stdoutDone = proc.stdout.transform(utf8.decoder).transform(const LineSplitter()).listen((l) => onLine?.call(l)).asFuture<void>();
+        final stderrDone = proc.stderr.transform(utf8.decoder).transform(const LineSplitter()).listen((l) => onLine?.call(l)).asFuture<void>();
+        final exitCode = await proc.exitCode;
+        await Future.wait([stdoutDone, stderrDone]);
+        onLine?.call('Exit code: $exitCode');
+        if (exitCode != 0) allOk = false;
+      } catch (e) {
+        onLine?.call('ERROR: $e');
+        allOk = false;
+      }
     }
-
-    final python = await resolvePythonExecutable();
-    onLine?.call('Running: $python ${script.path} --install-deps');
-    try {
-      final proc = await Process.start(
-        python,
-        [script.path, '--install-deps'],
-        workingDirectory: script.parent.path,
-      );
-
-      final stdoutDone = proc.stdout.transform(utf8.decoder).transform(const LineSplitter()).listen((l) => onLine?.call(l)).asFuture<void>();
-      final stderrDone = proc.stderr.transform(utf8.decoder).transform(const LineSplitter()).listen((l) => onLine?.call(l)).asFuture<void>();
-
-      final exitCode = await proc.exitCode;
-      await Future.wait([stdoutDone, stderrDone]);
-      onLine?.call('Exit code: $exitCode');
-      return exitCode == 0;
-    } catch (e) {
-      onLine?.call('ERROR: $e');
-      return false;
-    }
+    return allOk;
   }
 
   /// Install a single Python package via `python -m pip install <package>`.
@@ -588,64 +596,14 @@ class OrchestratorManager {
       }
     }
 
-    final script = orchestratorScript;
+    final script = _resolveScriptPath(effectiveMultiAgent);
     if (!script.existsSync()) {
-      _appendLog('orchestrator.py not found at ${script.path}');
+      _appendLog('orchestrator script not found at ${script.path}');
       return false;
     }
 
-    if (backend == OrchestratorBackend.huggingface && (hfToken == null || hfToken.isEmpty)) {
-      _appendLog(
-        'HF orchestrator backend requires a token but none was provided.',
-      );
-      return false;
-    }
-    final envGroqKey = Platform.environment['GROQ_API_KEY'] ?? '';
-    if (backend == OrchestratorBackend.groq && (groqApiKey == null || groqApiKey.isEmpty) && envGroqKey.isEmpty) {
-      _appendLog(
-        'Groq orchestrator backend requires an API key but none was provided.',
-      );
-      return false;
-    }
-    final envGeminiKey = Platform.environment['GOOGLE_API_KEY'] ?? Platform.environment['GEMINI_API_KEY'] ?? '';
-    if (backend == OrchestratorBackend.gemini && (geminiApiKey == null || geminiApiKey.isEmpty) && envGeminiKey.isEmpty) {
-      _appendLog(
-        'Gemini orchestrator backend requires an API key but none was provided.',
-      );
-      return false;
-    }
-    final envOpenRouterKey = Platform.environment['OPENROUTER_API_KEY'] ?? '';
-    if (backend == OrchestratorBackend.openrouter && (openRouterApiKey == null || openRouterApiKey.isEmpty) && envOpenRouterKey.isEmpty) {
-      _appendLog(
-        'OpenRouter orchestrator backend requires an API key but none was provided.',
-      );
-      return false;
-    }
-    final envGithubKey = Platform.environment['GITHUB_TOKEN'] ?? Platform.environment['GITHUB_API_KEY'] ?? '';
-    if (backend == OrchestratorBackend.github && (githubApiKey == null || githubApiKey.isEmpty) && envGithubKey.isEmpty) {
-      _appendLog(
-        'GitHub Models orchestrator backend requires a PAT but none was provided.',
-      );
-      return false;
-    }
-    final normalizedOllamaBase = (ollamaBaseUrl ?? '').trim().toLowerCase();
-    final isDirectOllamaCloud = normalizedOllamaBase == 'https://ollama.com' ||
-        normalizedOllamaBase == 'http://ollama.com' ||
-        normalizedOllamaBase.startsWith('https://ollama.com/') ||
-        normalizedOllamaBase.startsWith('http://ollama.com/');
-    final looksLikeSshKey = (ollamaApiKey ?? '').trim().toLowerCase().startsWith('ssh-');
-    if (backend == OrchestratorBackend.ollama &&
-        isDirectOllamaCloud &&
-        looksLikeSshKey) {
-      _appendLog(
-        'Invalid Ollama API key: it looks like an SSH public key '
-        '(starts with "ssh-"). For direct https://ollama.com access, use an '
-        'API key from https://ollama.com/settings/keys. '
-        'Alternatively switch base URL to http://localhost:11434 and use '
-        '`ollama signin` local auth.',
-      );
-      return false;
-    }
+    // Backend-specific key checks are now handled by the Python side;
+    // missing keys will result in a clear error message from the orchestrator.
 
     try {
       _stderrBuffer.clear();
@@ -670,86 +628,82 @@ class OrchestratorManager {
         '--base-path',
         resolvedBasePath,
       ];
-      switch (backend) {
-        case OrchestratorBackend.huggingface:
-          args.addAll(['--backend', 'huggingface']);
-          break;
-        case OrchestratorBackend.ollama:
-          args.addAll(['--backend', 'ollama']);
-          if (ollamaBaseUrl != null && ollamaBaseUrl.isNotEmpty) {
-            args.addAll(['--ollama-base-url', ollamaBaseUrl]);
-          }
-          if (ollamaNumCtx != null) {
-            args.addAll(['--ollama-num-ctx', '$ollamaNumCtx']);
-          }
-          break;
-        case OrchestratorBackend.groq:
-          args.addAll(['--backend', 'groq']);
-          break;
-        case OrchestratorBackend.gemini:
-          args.addAll(['--backend', 'gemini']);
-          break;
-        case OrchestratorBackend.openrouter:
-          args.addAll(['--backend', 'openrouter']);
-          break;
-        case OrchestratorBackend.github:
-          args.addAll(['--backend', 'github']);
-          break;
+
+      // Build reasoner/summarizer args from multi-agent config or fallback to primary backend.
+      if (effectiveMultiAgent) {
+        final agents = await WorkflowAgents.load();
+        final reasonerCfg = agents.get('reasoner');
+        final summarizerCfg = agents.get('summarizer');
+
+        final rProvider = _toProviderString(reasonerCfg.backend);
+        final sProvider = _toProviderString(summarizerCfg.backend);
+
+        args.addAll(['--reasoner-provider', rProvider]);
+        args.addAll(['--reasoner-model', reasonerCfg.model]);
+        args.addAll(['--temperature', reasonerCfg.temperature.toString()]);
+        args.addAll(['--max-tokens', reasonerCfg.maxTokens.toString()]);
+        final rKey = _apiKeyForProvider(rProvider, groqApiKey: groqApiKey, geminiApiKey: geminiApiKey, openRouterApiKey: openRouterApiKey, githubApiKey: githubApiKey, hfToken: hfToken, ollamaApiKey: ollamaApiKey);
+        if (rKey != null && rKey.isNotEmpty) {
+          args.addAll(['--reasoner-api-key', rKey]);
+        }
+        if (rProvider == 'ollama' && ollamaBaseUrl != null && ollamaBaseUrl.isNotEmpty) {
+          args.addAll(['--reasoner-base-url', ollamaBaseUrl]);
+        }
+
+        args.addAll(['--summarizer-provider', sProvider]);
+        args.addAll(['--summarizer-model', summarizerCfg.model]);
+        final sKey = _apiKeyForProvider(sProvider, groqApiKey: groqApiKey, geminiApiKey: geminiApiKey, openRouterApiKey: openRouterApiKey, githubApiKey: githubApiKey, hfToken: hfToken, ollamaApiKey: ollamaApiKey);
+        if (sKey != null && sKey.isNotEmpty) {
+          args.addAll(['--summarizer-api-key', sKey]);
+        }
+        if (sProvider == 'ollama' && ollamaBaseUrl != null && ollamaBaseUrl.isNotEmpty) {
+          args.addAll(['--summarizer-base-url', ollamaBaseUrl]);
+        }
+
+        // Team Mode is not yet supported by agent_core; log a warning.
+        if (await AgentRoleSettingsRepository.instance.isTeamModeEnabled()) {
+          _appendLog('[manager] Team Mode is not supported by orchestrator_v2; ignoring.');
+        }
+      } else {
+        // Single-agent mode: use the legacy orchestrator.py with its own flags.
+        args.addAll(['--backend', _backendToString(backend)]);
+        if (modelId != null && modelId.isNotEmpty) {
+          args.addAll(['--model', modelId]);
+        }
+        if (temperature != null) {
+          args.addAll(['--temperature', temperature.toString()]);
+        }
+        if (maxTokens != null) {
+          args.addAll(['--max-tokens', maxTokens.toString()]);
+        }
+        // Backend-specific keys
+        switch (backend) {
+          case OrchestratorBackend.huggingface:
+            if (hfToken != null && hfToken.isNotEmpty) args.addAll(['--hf-token', hfToken]);
+            break;
+          case OrchestratorBackend.ollama:
+            if (ollamaBaseUrl != null && ollamaBaseUrl.isNotEmpty) args.addAll(['--ollama-base-url', ollamaBaseUrl]);
+            if (ollamaApiKey != null && ollamaApiKey.isNotEmpty) args.addAll(['--ollama-api-key', ollamaApiKey]);
+            if (ollamaNumCtx != null) args.addAll(['--ollama-num-ctx', ollamaNumCtx.toString()]);
+            break;
+          case OrchestratorBackend.groq:
+            if (groqApiKey != null && groqApiKey.isNotEmpty) args.addAll(['--groq-api-key', groqApiKey]);
+            break;
+          case OrchestratorBackend.gemini:
+            if (geminiApiKey != null && geminiApiKey.isNotEmpty) args.addAll(['--gemini-api-key', geminiApiKey]);
+            break;
+          case OrchestratorBackend.openrouter:
+            if (openRouterApiKey != null && openRouterApiKey.isNotEmpty) args.addAll(['--openrouter-api-key', openRouterApiKey]);
+            break;
+          case OrchestratorBackend.github:
+            if (githubApiKey != null && githubApiKey.isNotEmpty) args.addAll(['--github-api-key', githubApiKey]);
+            break;
+        }
+        if (tpmLimit != null) args.addAll(['--tpm-limit', tpmLimit.toString()]);
       }
 
-      // Pass all available keys to support multi-agent workflows where roles use different backends.
-      if (hfToken != null && hfToken.isNotEmpty) args.addAll(['--hf-token', hfToken]);
-      final finalGroqKey = groqApiKey ?? envGroqKey;
-      if (finalGroqKey.isNotEmpty) args.addAll(['--groq-api-key', finalGroqKey]);
-      final finalGeminiKey = geminiApiKey ?? envGeminiKey;
-      if (finalGeminiKey.isNotEmpty) args.addAll(['--gemini-api-key', finalGeminiKey]);
-      final finalOpenRouterKey = openRouterApiKey ?? envOpenRouterKey;
-      if (finalOpenRouterKey.isNotEmpty) args.addAll(['--openrouter-api-key', finalOpenRouterKey]);
-      final finalGithubKey = githubApiKey ?? envGithubKey;
-      if (finalGithubKey.isNotEmpty) args.addAll(['--github-api-key', finalGithubKey]);
-      if (modelId != null && modelId.isNotEmpty) {
-        args.addAll(['--model', modelId]);
-      }
-      if (temperature != null) {
-        args.addAll(['--temperature', temperature.toString()]);
-      }
-      if (maxTokens != null) {
-        args.addAll(['--max-tokens', maxTokens.toString()]);
-      }
-      if (ollamaApiKey != null && ollamaApiKey.isNotEmpty) {
-        args.addAll(['--ollama-api-key', ollamaApiKey]);
-      }
-      if (tpmLimit != null && tpmLimit > 0) {
-        args.addAll(['--tpm-limit', tpmLimit.toString()]);
-      }
       if (disableTools) {
         args.add('--disable-tools');
-      }
-
-      // Multi-agent mode: persist the per-role assignments to a JSON file
-      // (in the app's temp dir) and tell Python where to find it. The single
-      // --backend flag still travels along to provide the API keys / fallback,
-      // but the workflow itself is built from agents.json.
-      if (effectiveMultiAgent) {
-        try {
-          final tmp = await getTemporaryDirectory();
-          final cfgPath = '${tmp.path}/agentic_agents.json';
-          await AgentRoleSettingsRepository.instance
-              .writeAgentConfigJson(cfgPath);
-          args.addAll(['--multi-agent', '--agent-config', cfgPath]);
-          _appendLog('[manager] Multi-agent config written -> $cfgPath');
-
-          // Team Mode rides on top of multi-agent: each worker subprocess
-          // boots its own Workflow from the same agents.json. The host
-          // process drives the leader and the sequential worker chain.
-          if (await AgentRoleSettingsRepository.instance.isTeamModeEnabled()) {
-            args.add('--team-mode');
-            _appendLog('[manager] Team Mode enabled — workers will run sequentially.');
-          }
-        } catch (e) {
-          _appendLog('[manager] Failed to write agents.json: $e');
-          return false;
-        }
       }
 
       // User-configured filesystem filters: list of dirs/files to hide
@@ -1078,4 +1032,80 @@ class OrchestratorManager {
   }
 
   bool checkHealthy() => _isRunning && _isReady && _process != null;
+
+  // ---------------------------------------------------------------------------
+  // Helpers for building orchestrator_v2 CLI args
+  // ---------------------------------------------------------------------------
+
+  /// Map an [OrchestratorBackend] to the provider string expected by
+  /// orchestrator_v2 (e.g. "openai", "anthropic", "ollama", "gemini",
+  /// "openrouter", "github").
+  static String _backendToString(OrchestratorBackend b) {
+    switch (b) {
+      case OrchestratorBackend.huggingface:
+        return 'huggingface';
+      case OrchestratorBackend.ollama:
+        return 'ollama';
+      case OrchestratorBackend.groq:
+        return 'groq';
+      case OrchestratorBackend.gemini:
+        return 'gemini';
+      case OrchestratorBackend.openrouter:
+        return 'openrouter';
+      case OrchestratorBackend.github:
+        return 'github';
+    }
+  }
+
+  /// Map a backend identifier string (from [WorkflowAgentConfig.backend] or
+  /// [_backendToString]) to the canonical provider name used by
+  /// orchestrator_v2's `--reasoner-provider` / `--summarizer-provider` flags.
+  static String _toProviderString(String backend) {
+    switch (backend) {
+      case 'huggingface':
+        return 'openai'; // HF router uses OpenAI-compatible endpoint
+      case 'ollama':
+        return 'ollama';
+      case 'groq':
+        return 'groq';
+      case 'gemini':
+        return 'gemini';
+      case 'openrouter':
+        return 'openrouter';
+      case 'github':
+        return 'github';
+      default:
+        return backend; // pass through unknown values
+    }
+  }
+
+  /// Return the API key for a given provider string, drawing from the
+  /// appropriate parameter.
+  static String? _apiKeyForProvider(
+    String provider, {
+    String? groqApiKey,
+    String? geminiApiKey,
+    String? openRouterApiKey,
+    String? githubApiKey,
+    String? hfToken,
+    String? ollamaApiKey,
+  }) {
+    switch (provider) {
+      case 'groq':
+        return groqApiKey;
+      case 'gemini':
+        return geminiApiKey;
+      case 'openrouter':
+        return openRouterApiKey;
+      case 'github':
+        return githubApiKey;
+      case 'openai':
+      case 'huggingface':
+        return hfToken;
+      case 'ollama':
+        return ollamaApiKey;
+      default:
+        return null;
+    }
+  }
 }
