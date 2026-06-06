@@ -146,7 +146,11 @@ def _load_path_filter(filters_config_path: str, base_path: str):
             file=sys.stderr,
         )
         return None
-    from agent.path_filter import PathFilter
+    try:
+        from agent.path_filter import PathFilter
+    except ImportError as e:
+        print(f"[orch_v2] Cannot import path_filter: {e}", file=sys.stderr)
+        return None
     return PathFilter.from_config(base_path, cfg)
 
 
@@ -278,8 +282,11 @@ def _create_orchestrator(args):
 
 def _run_interactive_loop(args) -> None:
     """Interactive loop using the new agent_core Orchestrator."""
-    print("__READY__")
-    sys.stdout.flush()
+    # Ensure stdout is line-buffered so the Flutter side sees __READY__ immediately.
+    if hasattr(sys.stdout, 'reconfigure'):
+        sys.stdout.reconfigure(line_buffering=True)
+    print("__READY__", flush=True)
+    print("[orch_v2] Ready for requests.", file=sys.stderr, flush=True)
 
     orchestrator = None
     try:
@@ -472,18 +479,26 @@ def main():
         _install_dependencies()
         sys.exit(0)
 
-    # Load optional filters and DB connections (for future use)
-    path_filter = _load_path_filter(args.filters_config, args.base_path)
-    if path_filter is not None:
-        active = path_filter.summary_for_prompt(top=3) or "(none)"
-        print(f"[orch_v2] Filesystem filter active:\n{active}", file=sys.stderr)
+    print("[orch_v2] Starting...", file=sys.stderr, flush=True)
 
-    db_connections = _load_db_connections(args.db_connections_config)
-    if db_connections:
-        print(
-            f"[orch_v2] Database connections loaded: {sorted(db_connections.keys())}",
-            file=sys.stderr,
-        )
+    # Load optional filters and DB connections (for future use)
+    try:
+        path_filter = _load_path_filter(args.filters_config, args.base_path)
+        if path_filter is not None:
+            active = path_filter.summary_for_prompt(top=3) or "(none)"
+            print(f"[orch_v2] Filesystem filter active:\n{active}", file=sys.stderr, flush=True)
+    except Exception as e:
+        print(f"[orch_v2] Failed to load path filter: {e}", file=sys.stderr, flush=True)
+
+    try:
+        db_connections = _load_db_connections(args.db_connections_config)
+        if db_connections:
+            print(
+                f"[orch_v2] Database connections loaded: {sorted(db_connections.keys())}",
+                file=sys.stderr, flush=True,
+            )
+    except Exception as e:
+        print(f"[orch_v2] Failed to load DB connections: {e}", file=sys.stderr, flush=True)
 
     if args.interactive:
         _run_interactive_loop(args)
@@ -492,4 +507,10 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception as e:
+        import traceback
+        traceback.print_exc(file=sys.stderr)
+        sys.stderr.flush()
+        sys.exit(1)
