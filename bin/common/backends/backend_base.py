@@ -39,7 +39,7 @@ class ModelBackend:
         tables. Used by the workflow compactor to decide when to
         summarize before sending a request.
         """
-        from ..core.context_limits import lookup_context_limit
+        from bin.agent.core   .context_limits import lookup_context_limit
 
         return lookup_context_limit(getattr(self, "model_id", ""))
 
