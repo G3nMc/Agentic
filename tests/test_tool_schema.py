@@ -1,7 +1,7 @@
-"""Tests for ToolSchema and ParameterSchema."""
+﻿"""Tests for ToolSchema and ParameterSchema."""
 
 import pytest
-from agent_core.core.tool_schema import ToolSchema, ParameterSchema
+from multi_mode.core.tool_schema import ToolSchema, ParameterSchema
 
 
 class TestParameterSchema:

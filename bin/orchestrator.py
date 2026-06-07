@@ -57,7 +57,6 @@ from typing import Any, Dict, List
 from agent.backends import RateLimitedBackend, build_backend
 from agent.backends.gemini import GeminiBackend
 from agent.backends.ollama import OllamaBackend
-from agent.core.workflow import build_workflow_from_args
 from agent.loop import Orchestrator
 from agent.path_filter import PathFilter
 from agent.policy import SecurityConfig
@@ -90,30 +89,6 @@ def _normalise_external_history(raw: Any) -> List[Dict[str, str]]:
             continue
         history.append({"role": role, "content": content})
     return history
-
-
-def _prompt_with_visible_history(prompt: str, history: List[Dict[str, str]]) -> str:
-    """Prefix stateless Team Mode prompts with the visible chat history."""
-    if not history:
-        return prompt
-    lines = [
-        "Use the following visible chat history as authoritative context for "
-        "the latest user request. It is ordered oldest to newest.",
-        "--- CHAT HISTORY ---",
-    ]
-    for msg in history:
-        role = msg["role"]
-        content = msg["content"]
-        lines.append(f"[{role}] {content}")
-    lines.extend(
-        [
-            "--- END CHAT HISTORY ---",
-            "",
-            "Latest user request:",
-            prompt,
-        ]
-    )
-    return "\n".join(lines)
 
 
 def main():
@@ -278,36 +253,6 @@ def main():
         ),
     )
     parser.add_argument(
-        "--multi-agent",
-        action="store_true",
-        help=(
-            "Enable the multi-agent workflow (router/shaper/reasoner/executor). "
-            "Requires --agent-config pointing at a JSON file mapping each role "
-            "to a backend+model. Falls back to the single-agent loop when off."
-        ),
-    )
-    parser.add_argument(
-        "--agent-config",
-        default="",
-        metavar="PATH",
-        help=(
-            "Path to the JSON file describing per-role backend/model assignments "
-            "(written by the Flutter Settings UI). Required when --multi-agent "
-            "is set."
-        ),
-    )
-    parser.add_argument(
-        "--team-mode",
-        action="store_true",
-        help=(
-            "Enable Team Mode: a team-leader model decomposes heavy tasks "
-            "into worker groups that run sequentially in fresh subprocesses. "
-            "Each worker has its own context window and writes a handoff "
-            "artifact for the next group. Requires --agent-config; the "
-            "optional 'leader' role in agents.json picks the leader's model."
-        ),
-    )
-    parser.add_argument(
         "--filters-config",
         default="",
         metavar="PATH",
@@ -378,65 +323,6 @@ def main():
             f"[orch] Database connections loaded: {sorted(db_connections.keys())}",
             file=sys.stderr,
         )
-
-    # ------------------------------------------------------------------
-    # Team Mode path: decompose heavy tasks into worker subprocesses.
-    # Always wins over plain --multi-agent when both are set, because it
-    # USES the multi-agent pipeline internally (each worker runs a
-    # Workflow). Requires --agent-config.
-    # ------------------------------------------------------------------
-    if getattr(args, "team_mode", False):
-        if not args.agent_config:
-            print("[orch] --team-mode requires --agent-config <path>.", file=sys.stderr)
-            sys.exit(2)
-        try:
-            from agent.team.bootstrap import build_team_session_from_args
-
-            session = build_team_session_from_args(args)
-        except Exception as e:  # noqa: BLE001
-            print(f"[orch] Failed to build Team Mode session: {e}", file=sys.stderr)
-            sys.exit(2)
-        print(
-            "[orch] Team Mode ready. Heavy tasks will be decomposed by the leader.",
-            file=sys.stderr,
-        )
-        if args.interactive:
-            _run_interactive_team(session, args)
-        else:
-            _run_oneshot_team(session)
-        return
-
-    # ------------------------------------------------------------------
-    # Multi-agent path: read agents.json, build Workflow, drive the loop.
-    # The single-agent path below stays untouched as a fallback.
-    # ------------------------------------------------------------------
-    if args.multi_agent:
-        if not args.agent_config:
-            print(
-                "[orch] --multi-agent requires --agent-config <path>.", file=sys.stderr
-            )
-            sys.exit(2)
-        try:
-            workflow = build_workflow_from_args(
-                args,
-                security_config=security_config,
-                base_path=args.base_path,
-                path_filter=path_filter,
-                db_connections=db_connections,
-            )
-        except Exception as e:  # noqa: BLE001
-            print(f"[orch] Failed to build multi-agent workflow: {e}", file=sys.stderr)
-            sys.exit(2)
-        print(
-            f"[orch] Multi-agent workflow ready. "
-            f"Roles configured: {sorted(workflow.agents.keys())}",
-            file=sys.stderr,
-        )
-        if args.interactive:
-            _run_interactive_workflow(workflow)
-        else:
-            _run_oneshot_workflow(workflow)
-        return
 
     # Backend-specific dependency checks keep the startup error focused on
     # the backend the user actually selected.
@@ -728,125 +614,6 @@ def _run_oneshot(orchestrator: Orchestrator) -> None:
     if prompt:
         response = orchestrator.run(prompt)
         print(response)
-        print(RESPONSE_SENTINEL)
-
-
-# ---------------------------------------------------------------------------
-# Multi-agent flavours of the interactive / one-shot loops.
-# Same protocol, but the response payload also carries a ``trace`` array.
-# ---------------------------------------------------------------------------
-def _run_interactive_workflow(workflow) -> None:
-    print("__READY__")
-    sys.stdout.flush()
-    try:
-        while True:
-            req = read_interactive_request(sys.stdin)
-            if req is None:
-                break
-            history = _normalise_external_history(req.get("history"))
-            if req.get("new_session") or history:
-                workflow.reset()
-                if history:
-                    workflow.import_history(history)
-            prompt = (req.get("prompt") or "").strip()
-            if not prompt:
-                print(RESPONSE_SENTINEL)
-                sys.stdout.flush()
-                continue
-            try:
-                payload = workflow.run(prompt)
-            except Exception as e:  # noqa: BLE001
-                payload = {"response": f"Error: {e}", "trace": []}
-            print(json.dumps(payload))
-            print(RESPONSE_SENTINEL)
-            sys.stdout.flush()
-    except KeyboardInterrupt:
-        print("[orch] Shutdown requested.", file=sys.stderr)
-
-
-def _run_oneshot_workflow(workflow) -> None:
-    prompt = sys.stdin.read().strip()
-    if prompt:
-        payload = workflow.run(prompt)
-        print(json.dumps(payload))
-        print(RESPONSE_SENTINEL)
-
-
-# ---------------------------------------------------------------------------
-# Team Mode loops.
-# Each prompt starts a fresh decomposition. Multi-turn inside a single
-# Team Mode session is intentionally NOT supported in this version —
-# heavy tasks are launched, run to completion, and the result is
-# delivered as one summary block.
-# ---------------------------------------------------------------------------
-def _run_interactive_team(session, args) -> None:
-    print("__READY__")
-    sys.stdout.flush()
-    try:
-        while True:
-            req = read_interactive_request(sys.stdin)
-            if req is None:
-                break
-            history = _normalise_external_history(req.get("history"))
-            prompt = (req.get("prompt") or "").strip()
-            # Per-conversation isolation: each chat has its own team
-            # subfolder so switching chats doesn't clobber state. The
-            # Flutter side passes the conversation guid as
-            # ``conversation_id`` (preferred) or ``session_key`` (legacy).
-            # Older clients that send neither fall back to ``_default``.
-            conv_id = (
-                (req.get("conversation_id") or "").strip()
-                or (req.get("session_key") or "").strip()
-                or None
-            )
-            if not prompt:
-                print(RESPONSE_SENTINEL)
-                sys.stdout.flush()
-                continue
-            try:
-                prompt_with_context = _prompt_with_visible_history(
-                    prompt,
-                    history,
-                )
-                # Each prompt = one team session.
-                from agent.team.bootstrap import build_team_session_from_args
-
-                fresh_session = build_team_session_from_args(
-                    args,
-                    session_id=conv_id,
-                )
-                result = fresh_session.run(prompt_with_context)
-                payload = {
-                    "response": result.get("summary", ""),
-                    "trace": [],
-                    "team": {
-                        "results": result.get("results", []),
-                        "status": result.get("status", "ok"),
-                        "session_id": conv_id or "_default",
-                    },
-                }
-            except Exception as e:  # noqa: BLE001
-                payload = {"response": f"Error: {e}", "trace": []}
-            print(json.dumps(payload))
-            print(RESPONSE_SENTINEL)
-            sys.stdout.flush()
-    except KeyboardInterrupt:
-        print("[orch] Shutdown requested.", file=sys.stderr)
-
-
-def _run_oneshot_team(session) -> None:
-    prompt = sys.stdin.read().strip()
-    if prompt:
-        result = session.run(prompt)
-        payload = {
-            "response": result.get("summary", ""),
-            "team": {
-                "results": result.get("results", []),
-                "status": result.get("status", "ok"),
-                "session_id": session.paths.session_id,
-            },
-        }
-        print(json.dumps(payload))
         print(RESPONSE_SENTINEL)
 
 

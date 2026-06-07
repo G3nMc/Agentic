@@ -1,10 +1,10 @@
-"""Tests for context builder."""
+﻿"""Tests for context builder."""
 
 import pytest
-from agent_core.core.context import ContextBuilder, SummarizationTrigger
-from agent_core.core.state import WorkflowState
-from agent_core.core.message import Message, MessageRole
-from agent_core.config import AgentConfig
+from multi_mode.core.context import ContextBuilder, SummarizationTrigger
+from multi_mode.core.state import WorkflowState
+from multi_mode.core.message import Message, MessageRole
+from multi_mode.config import AgentConfig
 
 
 def test_context_builder_basic():

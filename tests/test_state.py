@@ -1,9 +1,9 @@
-"""Tests for WorkflowState and TaskStatus."""
+﻿"""Tests for WorkflowState and TaskStatus."""
 
 import pytest
-from agent_core.core.state import WorkflowState, TaskStatus, TraceEntry
-from agent_core.core.message import Message, MessageRole, ToolCall, ToolResult
-from agent_core.config.agent import AgentConfig
+from multi_mode.core.state import WorkflowState, TaskStatus, TraceEntry
+from multi_mode.core.message import Message, MessageRole, ToolCall, ToolResult
+from multi_mode.config.agent import AgentConfig
 
 
 class TestTaskStatus:

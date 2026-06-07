@@ -1,7 +1,7 @@
-"""Tests for token counting utilities."""
+﻿"""Tests for token counting utilities."""
 
 import pytest
-from agent_core.utils.token_counter import count_tokens, count_tokens_for_model, count_message_tokens
+from multi_mode.utils.token_counter import count_tokens, count_tokens_for_model, count_message_tokens
 
 
 class TestCountTokens:
@@ -59,7 +59,7 @@ class TestCountMessageTokens:
         assert result > 0
 
     def test_message_object(self):
-        from agent_core.core.message import Message, MessageRole
+        from multi_mode.core.message import Message, MessageRole
         msg = Message(role=MessageRole.USER, content="Hello")
         result = count_message_tokens(msg)
         assert result > 0

@@ -1,4 +1,4 @@
- 
+﻿ 
 
 # Development Plan: Rebuilt Multi-Agent Workflow
 
@@ -9,22 +9,22 @@ Based on the analysis, here's a complete plan to build a **correct, production-r
 ## Target Architecture
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                    SINGLE WORKFLOW LOOP                         │
-├─────────────────────────────────────────────────────────────────┤
-│  REASONER (strong model)                                        │
-│    • Planning + Tool Calling + Final Answer                     │
-│    • Deterministic context building (no Shaper LLM)             │
-│    • Receives: user task + project context + history            │
-│                                                                 │
-│  EXECUTOR (deterministic, no LLM)                               │
-│    • Executes tool calls, validates results                     │
-│    • Returns structured results or errors                       │
-│                                                                 │
-│  SUMMARIZER (cheap model, triggered by context threshold)       │
-│    • Compacts history when token budget exceeded                │
-│    • Runs asynchronously, doesn't block main loop               │
-└─────────────────────────────────────────────────────────────────┘
+â”Œâ”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”
+â”‚                    SINGLE WORKFLOW LOOP                         â”‚
+â”œâ”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”¤
+â”‚  REASONER (strong model)                                        â”‚
+â”‚    â€¢ Planning + Tool Calling + Final Answer                     â”‚
+â”‚    â€¢ Deterministic context building (no Shaper LLM)             â”‚
+â”‚    â€¢ Receives: user task + project context + history            â”‚
+â”‚                                                                 â”‚
+â”‚  EXECUTOR (deterministic, no LLM)                               â”‚
+â”‚    â€¢ Executes tool calls, validates results                     â”‚
+â”‚    â€¢ Returns structured results or errors                       â”‚
+â”‚                                                                 â”‚
+â”‚  SUMMARIZER (cheap model, triggered by context threshold)       â”‚
+â”‚    â€¢ Compacts history when token budget exceeded                â”‚
+â”‚    â€¢ Runs asynchronously, doesn't block main loop               â”‚
+â””â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”˜
 ```
 
 **Models**: 3 total (Reasoner=strong, Summarizer=cheap, Executor=none)
@@ -34,7 +34,7 @@ Based on the analysis, here's a complete plan to build a **correct, production-r
 ## Phase 1: Foundation (Core Infrastructure)
 
 ### Step 1.1: Project Structure & Configuration
-- Create new package: `agent_core/` (clean, no legacy code)
+- Create new package: `multi_mode/` (clean, no legacy code)
 - Config system: `AgentConfig` with model assignments, token budgets, tool registry
 - Environment-based model selection (no hardcoded model names)
 
@@ -70,7 +70,7 @@ Based on the analysis, here's a complete plan to build a **correct, production-r
   - **Full history** (under token budget)
   - **Sliding window** (recent N messages + system prompt)
   - **Summarized** (when Summarizer has run)
-- No LLM call — pure Python logic
+- No LLM call â€” pure Python logic
 
 ### Step 2.2: Reasoner Agent
 - `Reasoner.run(state, config) -> ReasonerOutput`
@@ -82,8 +82,8 @@ Based on the analysis, here's a complete plan to build a **correct, production-r
 - Handles feedback loops internally: sees tool results, decides next action
 
 ### Step 2.3: Structured Output Parsing
-- If provider supports function calling → use native
-- Else → robust JSON extraction with schema validation
+- If provider supports function calling â†’ use native
+- Else â†’ robust JSON extraction with schema validation
 - Retry logic for malformed output (max 2 retries with correction prompt)
 
 ---
@@ -146,9 +146,9 @@ def run(task: str, config: AgentConfig) -> Result:
 - OR max iterations reached (graceful degradation)
 
 ### Step 4.3: Error Handling & Recovery
-- Tool failures → returned to Reasoner as `ToolResult(error=...)`
+- Tool failures â†’ returned to Reasoner as `ToolResult(error=...)`
 - Reasoner decides: retry, alternative tool, or escalate
-- LLM failures → retry with backoff, fallback model
+- LLM failures â†’ retry with backoff, fallback model
 
 ---
 
@@ -176,19 +176,19 @@ def run(task: str, config: AgentConfig) -> Result:
 
 ```
 Phase 1 (Foundation)
-  1.1 → 1.2 → 1.3 → 1.4
-       ↓
+  1.1 â†’ 1.2 â†’ 1.3 â†’ 1.4
+       â†“
 Phase 2 (Reasoner)
-  2.1 → 2.2 → 2.3
-       ↓
+  2.1 â†’ 2.2 â†’ 2.3
+       â†“
 Phase 3 (Summarizer)
-  3.1 → 3.2
-       ↓
+  3.1 â†’ 3.2
+       â†“
 Phase 4 (Orchestration)
-  4.1 → 4.2 → 4.3
-       ↓
+  4.1 â†’ 4.2 â†’ 4.3
+       â†“
 Phase 5 (Integration)
-  5.1 → 5.2 → 5.3
+  5.1 â†’ 5.2 â†’ 5.3
 ```
 
 ---
@@ -208,12 +208,12 @@ Phase 5 (Integration)
 
 ## Key Principles (Non-Negotiable)
 
-1. **No LLM call for context building** — deterministic only
-2. **Native function calling** — regex parsing is a bug, not a feature
-3. **Explicit feedback loops** — Reasoner sees every tool result
-4. **Structured state** — no implicit "role completion" tracking
-5. **Async summarization** — never blocks the main loop
-6. **Test-first** — each step validated before next
+1. **No LLM call for context building** â€” deterministic only
+2. **Native function calling** â€” regex parsing is a bug, not a feature
+3. **Explicit feedback loops** â€” Reasoner sees every tool result
+4. **Structured state** â€” no implicit "role completion" tracking
+5. **Async summarization** â€” never blocks the main loop
+6. **Test-first** â€” each step validated before next
 
 ---
 

@@ -1,9 +1,9 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 """
-Orchestrator v2 — entry point for the new agent_core workflow.
+Orchestrator v2 â€” entry point for the new multi_mode workflow.
 ==============================================================
 
-Uses the agent_core package (single-loop Reasoner + Summarizer)
+Uses the multi_mode package (single-loop Reasoner + Summarizer)
 instead of the old multi-agent pipeline.
 
 Protocol (when run with --interactive, used by the Flutter UI):
@@ -29,12 +29,12 @@ import sys
 # Disable .pyc generation
 sys.dont_write_bytecode = True
 
-# Ensure ``import agent_core`` works
+# Ensure ``import multi_mode`` works
 import os
 
 _THIS_DIR = os.path.dirname(os.path.abspath(__file__))
 _PROJECT_ROOT = os.path.dirname(_THIS_DIR)
-# Add both bin/ (for old agent package) and project root (for agent_core)
+# Add both bin/ (for old agent package) and project root (for multi_mode)
 if _THIS_DIR not in sys.path:
     sys.path.insert(0, _THIS_DIR)
 if _PROJECT_ROOT not in sys.path:
@@ -43,7 +43,7 @@ if _PROJECT_ROOT not in sys.path:
 import argparse
 import json
 import subprocess
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
 # Reuse the old I/O protocol utilities for compatibility
 from agent.utils.io_protocol import (
@@ -54,12 +54,12 @@ from agent.utils.io_protocol import (
 
 configure_stdio_utf8()
 
-# agent_core imports are deferred to avoid crashing before --install-deps can run.
+# multi_mode imports are deferred to avoid crashing before --install-deps can run.
 # They are imported inside _create_orchestrator().
 
 
 def _install_dependencies() -> None:
-    """Install required Python packages for agent_core backends."""
+    """Install required Python packages for multi_mode backends."""
     packages = [
         "openai",
         "anthropic",
@@ -77,8 +77,8 @@ def _install_dependencies() -> None:
                 stdout=sys.stderr,
                 stderr=sys.stderr,
             )
-        except subprocess.CalledProcessError as e:
-            print(f"[deps] Failed to install {pkg}: {e}", file=sys.stderr)
+        except subprocess.CalledProcessError as ex:
+            print(f"[deps] Failed to install {pkg}: {ex}", file=sys.stderr)
             sys.exit(1)
     print("[deps] All dependencies installed.", file=sys.stderr)
 
@@ -134,9 +134,9 @@ def _load_path_filter(filters_config_path: str, base_path: str):
     except FileNotFoundError:
         print(f"[orch_v2] --filters-config '{path}' not found; ignoring.", file=sys.stderr)
         return None
-    except (json.JSONDecodeError, OSError) as e:
+    except (json.JSONDecodeError, OSError) as ex:
         print(
-            f"[orch_v2] --filters-config could not be read ({e}); ignoring.",
+            f"[orch_v2] --filters-config could not be read ({ex}); ignoring.",
             file=sys.stderr,
         )
         return None
@@ -148,8 +148,8 @@ def _load_path_filter(filters_config_path: str, base_path: str):
         return None
     try:
         from agent.path_filter import PathFilter
-    except ImportError as e:
-        print(f"[orch_v2] Cannot import path_filter: {e}", file=sys.stderr)
+    except ImportError as ex:
+        print(f"[orch_v2] Cannot import path_filter: {ex}", file=sys.stderr)
         return None
     return PathFilter.from_config(base_path, cfg)
 
@@ -168,9 +168,9 @@ def _load_db_connections(config_path: str):
             file=sys.stderr,
         )
         return {}
-    except (json.JSONDecodeError, OSError) as e:
+    except (json.JSONDecodeError, OSError) as ex:
         print(
-            f"[orch_v2] --db-connections-config could not be read ({e}); ignoring.",
+            f"[orch_v2] --db-connections-config could not be read ({ex}); ignoring.",
             file=sys.stderr,
         )
         return {}
@@ -195,8 +195,8 @@ def _load_db_connections(config_path: str):
 
 def build_config_from_args(args):
     """Build AgentConfig from CLI arguments."""
-    from agent_core.config.agent import AgentConfig
-    from agent_core.config.models import ModelConfig, ModelRole
+    from multi_mode.config.agent import AgentConfig
+    from multi_mode.config.models import ModelConfig, ModelRole
 
     config = AgentConfig(enable_summarization=False)
 
@@ -255,10 +255,8 @@ def build_config_from_args(args):
 def _create_orchestrator(args):
     """Create an Orchestrator instance from CLI args."""
     # Lazy imports to avoid crashing before --install-deps can run.
-    from agent_core.config.agent import AgentConfig
-    from agent_core.config.models import ModelConfig, ModelRole
-    from agent_core.loop.orchestrator import Orchestrator, WorkflowResult
-    from agent_core.tools.registry import ToolRegistry
+    from multi_mode.loop.orchestrator import Orchestrator
+    from multi_mode.tools.registry import ToolRegistry
 
     config = build_config_from_args(args)
 
@@ -275,13 +273,13 @@ def _create_orchestrator(args):
     # Disable all tools if requested
     if args.disable_tools:
         orchestrator.tool_registry = ToolRegistry()  # empty registry
-        print("[orch_v2] Tools disabled — running in plain-chat mode.", file=sys.stderr)
+        print("[orch_v2] Tools disabled â€” running in plain-chat mode.", file=sys.stderr)
 
     return orchestrator
 
 
 def _run_interactive_loop(args) -> None:
-    """Interactive loop using the new agent_core Orchestrator."""
+    """Interactive loop using the new multi_mode Orchestrator."""
     # Ensure stdout is line-buffered so the Flutter side sees __READY__ immediately.
     if hasattr(sys.stdout, 'reconfigure'):
         sys.stdout.reconfigure(line_buffering=True)
@@ -316,8 +314,8 @@ def _run_interactive_loop(args) -> None:
                     response = result.final_answer or "Task completed."
                 else:
                     response = result.error or "Task failed."
-            except Exception as e:
-                response = f"Error: {e}"
+            except Exception as ex:
+                response = f"Error: {ex}"
 
             # Serialize as a single JSON string so embedded newlines survive.
             print(json.dumps({"response": response}))
@@ -342,7 +340,7 @@ def _run_oneshot(args) -> None:
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Orchestrator v2 — agent_core-based workflow",
+        description="Orchestrator v2 â€” multi_mode-based workflow",
     )
 
     # Reasoner model
@@ -487,8 +485,8 @@ def main():
         if path_filter is not None:
             active = path_filter.summary_for_prompt(top=3) or "(none)"
             print(f"[orch_v2] Filesystem filter active:\n{active}", file=sys.stderr, flush=True)
-    except Exception as e:
-        print(f"[orch_v2] Failed to load path filter: {e}", file=sys.stderr, flush=True)
+    except Exception as ex:
+        print(f"[orch_v2] Failed to load path filter: {ex}", file=sys.stderr, flush=True)
 
     try:
         db_connections = _load_db_connections(args.db_connections_config)
@@ -497,8 +495,8 @@ def main():
                 f"[orch_v2] Database connections loaded: {sorted(db_connections.keys())}",
                 file=sys.stderr, flush=True,
             )
-    except Exception as e:
-        print(f"[orch_v2] Failed to load DB connections: {e}", file=sys.stderr, flush=True)
+    except Exception as ex:
+        print(f"[orch_v2] Failed to load DB connections: {ex}", file=sys.stderr, flush=True)
 
     if args.interactive:
         _run_interactive_loop(args)

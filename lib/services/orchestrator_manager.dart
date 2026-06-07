@@ -1,4 +1,4 @@
-import 'dart:async';
+﻿import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
@@ -61,12 +61,12 @@ class OrchestratorManager {
   OrchestratorBackend _currentBackend = OrchestratorBackend.huggingface;
   final StringBuffer _stderrBuffer = StringBuffer();
 
-  // ── Live log stream ────────────────────────────────────────────────────────
+  // â”€â”€ Live log stream â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   // A broadcast StreamController so multiple widgets can subscribe
   // simultaneously without causing "already subscribed" errors.
   final StreamController<String> _logController = StreamController<String>.broadcast();
 
-  // ── Multi-agent execution-trace stream ─────────────────────────────────────
+  // â”€â”€ Multi-agent execution-trace stream â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   // Each entry is one agent activation. Only fires when the orchestrator was
   // launched with `multiAgent: true` and Python actually returned a `trace`
   // array in its response payload. Single-agent mode leaves this idle.
@@ -76,7 +76,7 @@ class OrchestratorManager {
   List<Map<String, Object?>> _lastTrace = const [];
   List<Map<String, Object?>> get lastTrace => List.unmodifiable(_lastTrace);
 
-  // ── Human-friendly status stream ───────────────────────────────────────
+  // â”€â”€ Human-friendly status stream â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   // Each event is a short label like "Reading file..." or "Analyzing Dart
   // code..." that the typing indicator displays instead of "Working...".
   final StreamController<String> _statusController = StreamController<String>.broadcast();
@@ -133,7 +133,7 @@ class OrchestratorManager {
   ///
   /// Creates the `logs/` directory on first write. When a previous chat is
   /// reloaded the file already exists, so new lines naturally append after
-  /// the previous session's output — no explicit prepend step needed.
+  /// the previous session's output â€” no explicit prepend step needed.
   void _writeToLogFile(String line) {
     final base = _basePath;
     final key = _sessionKey;
@@ -155,7 +155,7 @@ class OrchestratorManager {
   /// in-memory buffer and live stream so the log panel shows previous-session
   /// output immediately when a chat is reloaded.
   ///
-  /// Safe to call before the orchestrator subprocess is running — only needs
+  /// Safe to call before the orchestrator subprocess is running â€” only needs
   /// [_basePath] to be set (which happens during [start]).
   void loadLogFromDisk(String sessionKey) {
     final base = _basePath;
@@ -190,31 +190,31 @@ class OrchestratorManager {
   /// Returns null when the line doesn't carry a meaningful activity signal
   /// (e.g. pure heartbeat, token-budget trimming, circuit-breaker chatter).
   /// The returned string should be short enough to fit next to the three
-  /// animated dots — aim for ≤ 40 characters.
+  /// animated dots â€” aim for â‰¤ 40 characters.
   static String? _deriveStatus(String line) {
     final l = line.toLowerCase();
 
-    // ── Tool calls ────────────────────────────────────────────────────
+    // â”€â”€ Tool calls â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     if (l.contains('[orch] -> tool ')) {
       final tool = _extractAfter(line, '[orch] -> tool ');
       if (tool == null) return null;
       return _labelForTool(tool);
     }
 
-    // ── Model reply arrived ───────────────────────────────────────────
+    // â”€â”€ Model reply arrived â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     if (l.contains('[orch] model reply')) return 'Thinking...';
 
-    // ── Request dispatched ────────────────────────────────────────────
+    // â”€â”€ Request dispatched â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     if (l.contains('[orch] request (tool-enabled)')) return 'Planning...';
     if (l.contains('[orch] request (chat)')) return 'Reasoning...';
 
-    // ── Multi-agent role transitions ──────────────────────────────────
+    // â”€â”€ Multi-agent role transitions â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     if (l.contains('[agent:router')) return 'Routing task...';
     if (l.contains('[agent:shaper')) return 'Shaping plan...';
     if (l.contains('[agent:reasoner')) return 'Reasoning...';
     if (l.contains('[agent:executor')) return 'Executing tools...';
 
-    // ── Retry / recovery signals ──────────────────────────────────────
+    // â”€â”€ Retry / recovery signals â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     if (l.contains('retrying in tool mode')) return 'Switching to tools...';
     if (l.contains('malformed tool call detected')) return 'Correcting format...';
     if (l.contains('truncated tool call detected')) return 'Continuing tool call...';
@@ -222,31 +222,31 @@ class OrchestratorManager {
     if (l.contains('refusal detected')) return 'Overcoming refusal...';
     if (l.contains('cliffhanger reply detected')) return 'Pushing to act...';
 
-    // ── Validation runs ───────────────────────────────────────────────
+    // â”€â”€ Validation runs â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     if (l.contains('flutter_analyze')) return 'Analyzing Dart code...';
     if (l.contains('python_check')) return 'Checking Python syntax...';
     if (l.contains('python_lint')) return 'Linting Python...';
     if (l.contains('python_test')) return 'Running tests...';
 
-    // ── Synthesis / recap ─────────────────────────────────────────────
+    // â”€â”€ Synthesis / recap â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     if (l.contains('synthesis succeeded')) return 'Summarizing...';
     if (l.contains('synthesis call failed')) return 'Summarizing...';
     if (l.contains('max iterations reached')) return 'Wrapping up...';
     if (l.contains('repeat-call cap reached')) return 'Wrapping up...';
 
-    // ── Progress / extension ──────────────────────────────────────────
+    // â”€â”€ Progress / extension â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     if (l.contains('progress detected')) return 'Making progress...';
     if (l.contains('complex multi-file')) return 'Working on multiple files...';
 
-    // ── Nudge / pressure ──────────────────────────────────────────────
+    // â”€â”€ Nudge / pressure â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     if (l.contains('[nudge]')) return 'Nudging to act...';
     if (l.contains('[final warning]')) return 'Final push to act...';
 
-    // ── History trimming (noise — don't show) ─────────────────────────
+    // â”€â”€ History trimming (noise â€” don't show) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     if (l.contains('history trimmed')) return null;
     if (l.contains('history over token budget')) return null;
 
-    // ── Rate-limit / circuit-breaker (noise) ──────────────────────────
+    // â”€â”€ Rate-limit / circuit-breaker (noise) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     if (l.contains('tpm limit')) return null;
     if (l.contains('transient error')) return null;
     if (l.contains('circuit breaker')) return null;
@@ -351,7 +351,7 @@ class OrchestratorManager {
   String get stderrLog => _stderrBuffer.toString();
 
   /// Platform-appropriate Python executable used as a fallback when the
-  /// user has not configured an explicit interpreter in Settings → Developer.
+  /// user has not configured an explicit interpreter in Settings â†’ Developer.
   static String get defaultPythonExecutable =>
       Platform.isWindows ? 'python' : 'python3';
 
@@ -368,7 +368,7 @@ class OrchestratorManager {
 
   /// Builds the environment map handed to the orchestrator subprocess.
   /// Always sets `PYTHONDONTWRITEBYTECODE=1` so the bundled Python sources
-  /// don't leave `__pycache__` directories scattered through the install —
+  /// don't leave `__pycache__` directories scattered through the install â€”
   /// has to be in the env (not just sys.dont_write_bytecode) because the
   /// flag must be active before Python parses the entry script itself.
   /// Prepends `<flutterSdkPath>/bin` to `PATH` when the user has configured
@@ -660,7 +660,7 @@ class OrchestratorManager {
           args.addAll(['--summarizer-base-url', ollamaBaseUrl]);
         }
 
-        // Team Mode is not yet supported by agent_core; log a warning.
+        // Team Mode is not yet supported by multi_mode; log a warning.
         if (await AgentRoleSettingsRepository.instance.isTeamModeEnabled()) {
           _appendLog('[manager] Team Mode is not supported by orchestrator_v2; ignoring.');
         }
@@ -718,7 +718,7 @@ class OrchestratorManager {
             .toFiltersJson(resolvedBasePath);
         await File(filtersPath).writeAsString(filtersJson, flush: true);
         // Only attach the flag when the user has at least one rule
-        // configured — empty config means "no filters" and Python's
+        // configured â€” empty config means "no filters" and Python's
         // default already covers that, no need for an extra arg.
         final hasAnyRule = !filtersJson.contains('"exclude_dirs":[]') ||
             !filtersJson.contains('"include_dirs":[]') ||
@@ -732,7 +732,7 @@ class OrchestratorManager {
         _appendLog('[manager] Failed to write filters config: $e (continuing without filters)');
       }
 
-      // User-configured database connections (Settings → Developer →
+      // User-configured database connections (Settings â†’ Developer â†’
       // Database Connections). The Flutter UI persists these in the
       // app's SQLite settings table; we serialise the current snapshot
       // to a temp file and hand the path to Python so the db_query tool
@@ -765,13 +765,13 @@ class OrchestratorManager {
 
       _stderrSub = _process!.stderr.transform(utf8.decoder).transform(const LineSplitter()).listen((line) {
         _appendLog(line);
-        // stderr activity (e.g. `[orch] Model reply (iter 0) …`) counts as
-        // a heartbeat — the subprocess is alive and making progress.
+        // stderr activity (e.g. `[orch] Model reply (iter 0) â€¦`) counts as
+        // a heartbeat â€” the subprocess is alive and making progress.
         _bumpInactivityTimer();
       });
 
       // Wait for the `__READY__` handshake. If the Python side is missing
-      // dependencies it will exit with code 2 — we detect that via
+      // dependencies it will exit with code 2 â€” we detect that via
       // _onProcessExited and complete the ready future with an error.
       // Multi-agent startup is heavier (loads + validates each role's
       // backend before signalling ready), so give it a longer budget.
@@ -850,7 +850,7 @@ class OrchestratorManager {
       if (seedHistory.isNotEmpty) 'history': seedHistory,
       if (sessionKey != null && sessionKey.isNotEmpty) 'session_key': sessionKey,
       // Sent explicitly so Team Mode can isolate per-chat board/artifacts.
-      // Same value as session_key — kept as a separate field so the
+      // Same value as session_key â€” kept as a separate field so the
       // Python side has a stable contract independent of the legacy
       // session_key plumbing.
       if (sessionKey != null && sessionKey.isNotEmpty) 'conversation_id': sessionKey,
@@ -910,7 +910,7 @@ class OrchestratorManager {
   void _onStdoutLine(String line) {
     // Handshake: Python prints `__READY__` once at startup. A second one
     // means the subprocess respawned (crash + restart, or stop+start while
-    // a request was in flight) — never legitimate request payload, so drop
+    // a request was in flight) â€” never legitimate request payload, so drop
     // it unconditionally rather than letting it leak into _activeLines.
     if (line.trim() == '__READY__') {
       if (!_isReady) _readyCompleter?.complete();
@@ -919,7 +919,7 @@ class OrchestratorManager {
 
     if (_activeCompleter == null) return; // Stray line; ignore.
 
-    // Any stdout line during an active request is progress → reset watchdog.
+    // Any stdout line during an active request is progress â†’ reset watchdog.
     _bumpInactivityTimer();
 
     if (line.trim() == '__RESPONSE_END__') {
@@ -940,7 +940,7 @@ class OrchestratorManager {
   /// present.
   ///
   /// Strategy: scan from the end for the last line that parses as a JSON
-  /// object containing a `"response"` key. That envelope is authoritative —
+  /// object containing a `"response"` key. That envelope is authoritative â€”
   /// anything before it is treated as noise and discarded. Falls back to the
   /// joined text only if no such envelope exists.
   String _extractResponseFromBuffer() {
@@ -969,7 +969,7 @@ class OrchestratorManager {
         }
         return obj['response'] as String;
       } catch (_) {
-        // Not parseable — keep scanning earlier lines.
+        // Not parseable â€” keep scanning earlier lines.
       }
     }
 

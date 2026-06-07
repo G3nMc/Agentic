@@ -1,12 +1,12 @@
-"""Tests for reasoner (mocked backend)."""
+﻿"""Tests for reasoner (mocked backend)."""
 
 import pytest
 from unittest.mock import Mock, patch
-from agent_core.agents.reasoner import Reasoner
-from agent_core.core.message import Message, MessageRole
-from agent_core.core.loop import ReasonerOutput
-from agent_core.backends.base import CompletionResponse
-from agent_core.config import AgentConfig, ModelConfig, ModelRole
+from multi_mode.agents.reasoner import Reasoner
+from multi_mode.core.message import Message, MessageRole
+from multi_mode.core.loop import ReasonerOutput
+from multi_mode.backends.base import CompletionResponse
+from multi_mode.config import AgentConfig, ModelConfig, ModelRole
 
 
 def test_reasoner_initialization():
@@ -18,7 +18,7 @@ def test_reasoner_initialization():
         model="gpt-4o",
     )
     
-    with patch("agent_core.agents.reasoner.get_backend") as mock_get_backend:
+    with patch("multi_mode.agents.reasoner.get_backend") as mock_get_backend:
         mock_backend = Mock()
         mock_backend.get_tool_format.return_value = "openai"
         mock_get_backend.return_value = mock_backend
@@ -36,7 +36,7 @@ def test_reasoner_parse_tool_calls():
         model="gpt-4o",
     )
     
-    with patch("agent_core.agents.reasoner.get_backend") as mock_get_backend:
+    with patch("multi_mode.agents.reasoner.get_backend") as mock_get_backend:
         mock_backend = Mock()
         mock_backend.get_tool_format.return_value = "openai"
         mock_get_backend.return_value = mock_backend
@@ -70,7 +70,7 @@ def test_reasoner_parse_final_answer():
         model="gpt-4o",
     )
     
-    with patch("agent_core.agents.reasoner.get_backend") as mock_get_backend:
+    with patch("multi_mode.agents.reasoner.get_backend") as mock_get_backend:
         mock_backend = Mock()
         mock_backend.get_tool_format.return_value = "openai"
         mock_get_backend.return_value = mock_backend
@@ -98,7 +98,7 @@ def test_reasoner_parse_empty():
         model="gpt-4o",
     )
     
-    with patch("agent_core.agents.reasoner.get_backend") as mock_get_backend:
+    with patch("multi_mode.agents.reasoner.get_backend") as mock_get_backend:
         mock_backend = Mock()
         mock_backend.get_tool_format.return_value = "openai"
         mock_get_backend.return_value = mock_backend

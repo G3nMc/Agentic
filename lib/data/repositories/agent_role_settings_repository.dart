@@ -1,4 +1,4 @@
-import 'dart:convert';
+﻿import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter/foundation.dart';
@@ -13,7 +13,7 @@ class AgentRoleConfig {
   /// Identifier used in `agents.json` (must match `bin/agent/core/agent_config.py`).
   final String role;
 
-  /// Backend identifier — same string the orchestrator's `--backend` flag uses.
+  /// Backend identifier â€” same string the orchestrator's `--backend` flag uses.
   /// One of: `gemini`, `groq`, `openrouter`, `github`, `huggingface`, `ollama`.
   final String backend;
 
@@ -86,7 +86,7 @@ class AgentRoleConfig {
   }
 }
 
-/// Lightweight descriptor of a workflow group — id + user-given title.
+/// Lightweight descriptor of a workflow group â€” id + user-given title.
 /// The actual per-role configs live under `agent.<groupId>.<role>.<field>`
 /// keys in the `backend_settings` table.
 class WorkflowGroupInfo {
@@ -142,7 +142,7 @@ class WorkflowGroup {
 
 /// Persists per-role agent assignments alongside the existing backend
 /// settings. Keys live in the same `backend_settings` table as the
-/// single-agent settings — no new schema needed. Values are stored as plain
+/// single-agent settings â€” no new schema needed. Values are stored as plain
 /// strings so the existing read/write helpers translate cleanly.
 ///
 /// Naming convention: `agent.<groupId>.<role>.<field>`. The group registry
@@ -156,7 +156,7 @@ class AgentRoleSettingsRepository {
 
   /// Reactive view of the master switch. Widgets that need to repaint when
   /// the user flips multi-agent mode on/off can wrap a `ValueListenableBuilder`
-  /// around this — the repo updates it from `setEnabled` and from the first
+  /// around this â€” the repo updates it from `setEnabled` and from the first
   /// `isEnabled()` call that loads from disk.
   final ValueNotifier<bool> enabledNotifier = ValueNotifier<bool>(false);
 
@@ -164,7 +164,7 @@ class AgentRoleSettingsRepository {
   /// adds `--team-mode` to its CLI argv on launch.
   final ValueNotifier<bool> teamModeNotifier = ValueNotifier<bool>(false);
 
-  /// Notifies when the active group changes — UI rebuilds bind to this.
+  /// Notifies when the active group changes â€” UI rebuilds bind to this.
   final ValueNotifier<String?> activeGroupNotifier = ValueNotifier<String?>(null);
 
   /// Notifies when any group is mutated (rename / add / remove / reset).
@@ -197,7 +197,7 @@ class AgentRoleSettingsRepository {
   static const String _kDefaultGroupTitle = 'Default';
 
   // ---------------------------------------------------------------------------
-  // Defaults — chosen so a user with only a Gemini key gets a working setup.
+  // Defaults â€” chosen so a user with only a Gemini key gets a working setup.
   // The Reasoner picks the strongest tier; the rest tier down.
   // ---------------------------------------------------------------------------
   static AgentRoleConfig defaultFor(String role) {
@@ -219,7 +219,7 @@ class AgentRoleSettingsRepository {
           maxTokens: 1024,
         );
       case leaderRole:
-        // The team leader is light coordination — a fast model is fine.
+        // The team leader is light coordination â€” a fast model is fine.
         // Users wanting smarter decomposition can pick a stronger one.
         return const AgentRoleConfig(
           role: leaderRole,
@@ -428,7 +428,7 @@ class AgentRoleSettingsRepository {
       await _write('$p.ollama_num_ctx', cfg.ollamaNumCtx!.toString());
     }
     // Notify any UI that mirrors role configs (e.g. WorkflowBreadcrumb) so it
-    // reloads — without this the breadcrumb keeps showing the model that was
+    // reloads â€” without this the breadcrumb keeps showing the model that was
     // assigned at app start until restart.
     groupsChangedNotifier.value++;
   }
@@ -461,7 +461,7 @@ class AgentRoleSettingsRepository {
   }
 
   // ---------------------------------------------------------------------------
-  // agents.json writer — called by orchestrator_manager just before launch.
+  // agents.json writer â€” called by orchestrator_manager just before launch.
   // Always writes the active group's configs.
   // ---------------------------------------------------------------------------
   Future<File> writeAgentConfigJson(String path) async {
@@ -484,7 +484,7 @@ class AgentRoleSettingsRepository {
   }
 
   /// Backend names recognised by the Python `build_backend` factory.
-  /// Keep this list in sync with `agent_core/backends/__init__.py`.
+  /// Keep this list in sync with `bin/multi_mode/backends/__init__.py`.
   static const List<String> supportedBackends = <String>[
     'openai',
     'anthropic',
@@ -494,7 +494,7 @@ class AgentRoleSettingsRepository {
   ];
 
   // ---------------------------------------------------------------------------
-  // Migration — copy any legacy `agent.<role>.<field>` keys (no group segment)
+  // Migration â€” copy any legacy `agent.<role>.<field>` keys (no group segment)
   // into the Default group's namespace, then register the Default group.
   // ---------------------------------------------------------------------------
   Future<void> _migrateLegacyToDefaultGroup() async {
@@ -557,7 +557,7 @@ class AgentRoleSettingsRepository {
   }
 
   // ---------------------------------------------------------------------------
-  // Private helpers — same shape as BackendSettingsRepository's _read/_write so
+  // Private helpers â€” same shape as BackendSettingsRepository's _read/_write so
   // we don't fork the persistence convention.
   // ---------------------------------------------------------------------------
   Future<String?> _read(String key) async {
@@ -632,7 +632,7 @@ class WorkflowAgents {
     }
   }
 
-  /// Persist a single role only — used by the Settings UI when one card edits.
+  /// Persist a single role only â€” used by the Settings UI when one card edits.
   Future<void> saveRole(String role) async {
     final cfg = byRole[role];
     if (cfg == null) return;
@@ -646,7 +646,7 @@ class WorkflowAgents {
 
 /// Suggested model lists per backend. Used by the Settings UI to populate the
 /// per-role dropdowns without forcing the user to type the model name. The
-/// list is *suggested*, not exhaustive — the user can always override via the
+/// list is *suggested*, not exhaustive â€” the user can always override via the
 /// existing per-backend "models" lists already configured elsewhere.
 class AgentRoleModelSuggestions {
   static List<String> forBackend(String backend) {

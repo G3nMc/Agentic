@@ -1,9 +1,9 @@
-"""Tests for tool registry."""
+﻿"""Tests for tool registry."""
 
 import pytest
-from agent_core.tools.registry import ToolRegistry
-from agent_core.tools.base import Tool, ToolResult
-from agent_core.core.tool_schema import ToolSchema, ParameterSchema
+from multi_mode.tools.registry import ToolRegistry
+from multi_mode.tools.base import Tool, ToolResult
+from multi_mode.core.tool_schema import ToolSchema, ParameterSchema
 
 
 class DummyTool(Tool):

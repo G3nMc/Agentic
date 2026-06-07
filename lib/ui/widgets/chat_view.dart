@@ -718,7 +718,8 @@ class _ChatViewState extends StateManager<ChatView> with WidgetsBindingObserver 
 
     final history = List<ChatMessage>.unmodifiable(_messages);
 
-    if (_isOrchestratorBackend(backend)) {
+    final multiAgentActive = AgentRoleSettingsRepository.instance.enabledNotifier.value;
+    if (_isOrchestratorBackend(backend) || multiAgentActive) {
       await _startOrchestratorForActiveBackend(silent: true);
     }
 
@@ -1162,12 +1163,14 @@ class _ChatViewState extends StateManager<ChatView> with WidgetsBindingObserver 
     // OrchestratorLogPanel lose its stream subscription on every repaint.
     final backend = _activeBackend;
     final showServerPanel = backend == LlmBackend.local;
+    final multiAgentActive = AgentRoleSettingsRepository.instance.enabledNotifier.value;
     final showOrchestratorLog = backend == LlmBackend.orchestrator ||
         backend == LlmBackend.ollamaOrchestrator ||
         backend == LlmBackend.groqOrchestrator ||
         backend == LlmBackend.geminiOrchestrator ||
         backend == LlmBackend.openRouterOrchestrator ||
-        backend == LlmBackend.githubOrchestrator;
+        backend == LlmBackend.githubOrchestrator ||
+        (multiAgentActive && OrchestratorManager.instance.isRunning);
 
     return Column(
       children: [
@@ -1701,7 +1704,31 @@ class _ChatViewState extends StateManager<ChatView> with WidgetsBindingObserver 
         setState(() => _activeBackend = backend);
       }
 
-      if (!_isOrchestratorBackend(backend)) return false;
+      final multiAgentEnabled = AgentRoleSettingsRepository.instance.enabledNotifier.value;
+      if (!_isOrchestratorBackend(backend) && !multiAgentEnabled) return false;
+
+      // Multi-agent mode: start orchestrator with multi-agent flag, ignoring
+      // the conversation's backend/model selection (agent config drives models).
+      if (multiAgentEnabled) {
+        if (OrchestratorManager.instance.isRunning) {
+          await OrchestratorManager.instance.stop();
+        }
+        if (mounted && !_logVisible) {
+          setState(() => _logVisible = true);
+        }
+        final started = await OrchestratorManager.instance.start(multiAgent: true);
+        if (mounted) {
+          if (!silent) {
+            if (started) {
+              NotificationHelper.showSuccess(context, 'Multi-agent orchestrator active');
+            } else {
+              NotificationHelper.showError(context, 'Failed to start multi-agent orchestrator');
+            }
+          }
+          setState(() {});
+        }
+        return started;
+      }
 
       final desiredBackend = _desiredOrchestratorBackend(backend);
       final convModelId = _conversation?.modelId?.trim() ?? '';

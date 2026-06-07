@@ -154,6 +154,58 @@ def _fix_missing_dot(entry: str) -> str:
     return entry
 
 
+def _is_ancestor_of_any_include(
+        dir_path: Path,
+    includes: list,
+) -> bool:
+    """True when dir_path is a parent of any include target.
+
+    Two cases are handled:
+
+      1. Absolute-path includes (e.g. ``C:\\proj\\sub\\target``):
+         dir_path is an ancestor when the include path starts with
+         ``<dir_path><sep>``.
+
+      2. Multi-segment relative includes (e.g.
+         ``installer/Output/resources``): dir_path is an ancestor
+         when its normalised path ends with one of the include's
+         leading segments (e.g. ``installer`` or
+         ``installer/Output``). Bare-name single-segment and
+         ``*.ext`` patterns are skipped — those could match
+         anywhere, so an ancestor check is meaningless; the score
+         logic handles them directly.
+    """
+    try:
+        d_norm = _normalize_abs(str(dir_path.resolve()))
+    except (OSError, RuntimeError):
+        d_norm = _normalize_abs(str(dir_path))
+    for raw in includes:
+        entry = (raw or "").strip()
+        if not entry:
+            continue
+        if _is_absolute(entry):
+            target = _normalize_abs(entry)
+            if target.startswith(d_norm + os.sep):
+                return True
+            continue
+        # Skip ``*.ext`` file globs — they don't denote a path.
+        if _is_ext_glob(entry):
+            continue
+        segs = entry.replace("\\", "/").strip("/").split("/")
+        if len(segs) <= 1:
+            # Bare name; could match anywhere, so the score check
+            # already covers it.
+            continue
+        normalized_segs = [(s.lower() if os.name == "nt" else s) for s in segs]
+        # Test each proper prefix (excluding the full path itself,
+        # which would be a direct match — handled by _score).
+        for i in range(1, len(normalized_segs)):
+            prefix = os.sep.join(normalized_segs[:i])
+            if d_norm.endswith(os.sep + prefix) or d_norm == prefix:
+                return True
+    return False
+
+
 @dataclass
 class PathFilter:
     """User-configurable allow/deny filter with inclusion-wins semantics."""
@@ -167,7 +219,7 @@ class PathFilter:
     @classmethod
     def from_config(
         cls,
-        base_path: Path,
+        base_path: str,
         config: Optional[dict],
     ) -> "PathFilter":
         """Build a filter from a JSON-like config dict (or None).
@@ -240,7 +292,7 @@ class PathFilter:
             if kind == "dir":
                 if allow_base_entry and p == self.base_path:
                     return True
-                if self._is_ancestor_of_any_include(p, includes):
+                if _is_ancestor_of_any_include(p, includes):
                     return True
             inc_score = self._score(p, includes, kind)
             # Files in whitelist mode also need a baseline-dir guard:
@@ -272,60 +324,8 @@ class PathFilter:
         # would otherwise hide installer/Out/ and the walk never
         # reaches res. Files don't need this — there's no "walk into a
         # file" scenario.
-        if kind == "dir" and self._is_ancestor_of_any_include(p, includes):
+        if kind == "dir" and _is_ancestor_of_any_include(p, includes):
             return True
-        return False
-
-    def _is_ancestor_of_any_include(
-        self,
-        dir_path: Path,
-        includes: list,
-    ) -> bool:
-        """True when dir_path is a parent of any include target.
-
-        Two cases are handled:
-
-          1. Absolute-path includes (e.g. ``C:\\proj\\sub\\target``):
-             dir_path is an ancestor when the include path starts with
-             ``<dir_path><sep>``.
-
-          2. Multi-segment relative includes (e.g.
-             ``installer/Output/resources``): dir_path is an ancestor
-             when its normalised path ends with one of the include's
-             leading segments (e.g. ``installer`` or
-             ``installer/Output``). Bare-name single-segment and
-             ``*.ext`` patterns are skipped — those could match
-             anywhere, so an ancestor check is meaningless; the score
-             logic handles them directly.
-        """
-        try:
-            d_norm = _normalize_abs(str(dir_path.resolve()))
-        except (OSError, RuntimeError):
-            d_norm = _normalize_abs(str(dir_path))
-        for raw in includes:
-            entry = (raw or "").strip()
-            if not entry:
-                continue
-            if _is_absolute(entry):
-                target = _normalize_abs(entry)
-                if target.startswith(d_norm + os.sep):
-                    return True
-                continue
-            # Skip ``*.ext`` file globs — they don't denote a path.
-            if _is_ext_glob(entry):
-                continue
-            segs = entry.replace("\\", "/").strip("/").split("/")
-            if len(segs) <= 1:
-                # Bare name; could match anywhere, so the score check
-                # already covers it.
-                continue
-            normalized_segs = [(s.lower() if os.name == "nt" else s) for s in segs]
-            # Test each proper prefix (excluding the full path itself,
-            # which would be a direct match — handled by _score).
-            for i in range(1, len(normalized_segs)):
-                prefix = os.sep.join(normalized_segs[:i])
-                if d_norm.endswith(os.sep + prefix) or d_norm == prefix:
-                    return True
         return False
 
     @staticmethod

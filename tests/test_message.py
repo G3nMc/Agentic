@@ -1,7 +1,7 @@
-"""Tests for Message, ToolCall, ToolResult types."""
+﻿"""Tests for Message, ToolCall, ToolResult types."""
 
 import pytest
-from agent_core.core.message import Message, MessageRole, ToolCall, ToolResult
+from multi_mode.core.message import Message, MessageRole, ToolCall, ToolResult
 
 
 class TestMessageRole:
