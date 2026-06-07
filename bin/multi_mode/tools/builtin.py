@@ -1,4 +1,4 @@
-﻿"""Built-in tools for filesystem, search, and execution."""
+"""Built-in tools for filesystem, search, and execution."""
 
 import os
 import json

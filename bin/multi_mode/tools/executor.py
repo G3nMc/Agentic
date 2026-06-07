@@ -1,4 +1,4 @@
-﻿"""Tool executor for running tool calls."""
+"""Tool executor for running tool calls."""
 
 from typing import List, Dict, Any
 from concurrent.futures import ThreadPoolExecutor, as_completed

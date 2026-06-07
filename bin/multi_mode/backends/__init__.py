@@ -1,4 +1,4 @@
-﻿"""LLM Backend abstractions and implementations."""
+"""LLM Backend abstractions and implementations."""
 
 from multi_mode.backends.base import LLMBackend
 from multi_mode.backends.openai import OpenAIBackend

@@ -505,6 +505,7 @@ def main():
 
 
 if __name__ == "__main__":
+    # noinspection PyBroadException
     try:
         main()
     except Exception as e:

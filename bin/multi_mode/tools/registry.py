@@ -1,4 +1,4 @@
-﻿"""Tool registry for managing available tools."""
+"""Tool registry for managing available tools."""
 
 from typing import Any, Dict, List, Optional
 

@@ -1,4 +1,4 @@
-﻿"""Anthropic API backend with native tool calling."""
+"""Anthropic API backend with native tool calling."""
 
 from typing import List, Dict, Any, Optional
 

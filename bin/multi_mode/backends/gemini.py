@@ -1,4 +1,4 @@
-﻿"""Google Gemini API backend with native function calling."""
+"""Google Gemini API backend with native function calling."""
 
 from typing import List, Dict, Any, Optional
 import json

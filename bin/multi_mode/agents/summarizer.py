@@ -1,4 +1,4 @@
-﻿"""Summarizer agent - compresses conversation history."""
+"""Summarizer agent - compresses conversation history."""
 
 from __future__ import annotations
 

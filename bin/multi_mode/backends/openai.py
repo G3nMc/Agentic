@@ -1,4 +1,4 @@
-﻿"""OpenAI API backend with native function calling."""
+"""OpenAI API backend with native function calling."""
 
 from typing import List, Dict, Any, Optional
 import json

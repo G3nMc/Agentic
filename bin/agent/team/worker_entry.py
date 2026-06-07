@@ -446,7 +446,7 @@ def main() -> int:
             sandbox_mode=args.sandbox,
             max_file_size_bytes=int(args.max_file_size_mb * 1024 * 1024),
             enable_audit_log=bool(args.audit_log),
-            audit_log_path=args.audit_log or "orchestrator_audit.log",
+            audit_log_path=args.audit_log or "logs/orchestrator_audit.log",
         )
         if not args.agent_config:
             raise RuntimeError("--agent-config is required for team workers")

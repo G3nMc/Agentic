@@ -1,4 +1,4 @@
-﻿"""Agent Core - Multi-Agent Workflow"""
+"""Agent Core - Multi-Agent Workflow"""
 
 __version__ = "0.3.0"
 

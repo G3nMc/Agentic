@@ -1,4 +1,4 @@
-﻿"""CLI entry point for Agent Core."""
+"""CLI entry point for Agent Core."""
 
 import sys
 import argparse

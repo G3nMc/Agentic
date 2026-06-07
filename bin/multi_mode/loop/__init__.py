@@ -1,4 +1,4 @@
-﻿"""Main agent loop orchestration."""
+"""Main agent loop orchestration."""
 
 from multi_mode.loop.orchestrator import Orchestrator, WorkflowResult
 from .run_loop import Orchestrator as SingleAgentOrchestrator

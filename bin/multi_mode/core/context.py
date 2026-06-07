@@ -1,4 +1,4 @@
-﻿"""Deterministic context building (no LLM calls)."""
+"""Deterministic context building (no LLM calls)."""
 
 from dataclasses import dataclass
 from typing import List, Optional

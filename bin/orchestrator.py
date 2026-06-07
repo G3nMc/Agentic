@@ -224,7 +224,7 @@ def main():
     )
     parser.add_argument(
         "--audit-log",
-        default="orchestrator_audit.log",
+        default="logs/orchestrator_audit.log",
         metavar="PATH",
         help=(
             "Path to the audit log file. Every tool call is appended with a "
@@ -292,7 +292,7 @@ def main():
         sandbox_mode=args.sandbox,
         max_file_size_bytes=int(args.max_file_size_mb * 1024 * 1024),
         enable_audit_log=bool(audit_log_path),
-        audit_log_path=audit_log_path or "orchestrator_audit.log",
+        audit_log_path=audit_log_path or "logs/orchestrator_audit.log",
     )
     if args.sandbox:
         print(

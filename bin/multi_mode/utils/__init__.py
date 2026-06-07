@@ -1,4 +1,4 @@
-﻿"""Utility functions."""
+"""Utility functions."""
 
 from multi_mode.utils.token_counter import count_tokens, count_tokens_for_model
 

@@ -1,4 +1,4 @@
-﻿"""Main orchestrator - the single workflow loop."""
+"""Main orchestrator - the single workflow loop."""
 
 from __future__ import annotations
 

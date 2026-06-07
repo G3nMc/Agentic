@@ -1,4 +1,4 @@
-﻿"""Base LLM Backend interface."""
+"""Base LLM Backend interface."""
 
 from abc import ABC, abstractmethod
 from typing import List, Dict, Any, Optional

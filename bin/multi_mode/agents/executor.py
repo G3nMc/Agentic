@@ -1,4 +1,4 @@
-﻿"""Executor agent - deterministic tool execution."""
+"""Executor agent - deterministic tool execution."""
 
 from __future__ import annotations
 

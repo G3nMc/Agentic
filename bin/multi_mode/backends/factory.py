@@ -1,4 +1,4 @@
-﻿"""Backend factory for creating LLM backends from config."""
+"""Backend factory for creating LLM backends from config."""
 
 from typing import Optional
 

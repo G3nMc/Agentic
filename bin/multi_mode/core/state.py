@@ -1,4 +1,4 @@
-﻿"""Workflow state management."""
+"""Workflow state management."""
 
 from dataclasses import dataclass, field
 from typing import List, Dict, Any, Optional

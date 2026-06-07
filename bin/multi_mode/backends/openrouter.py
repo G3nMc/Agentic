@@ -1,4 +1,4 @@
-﻿"""OpenRouter API backend (OpenAI-compatible)."""
+"""OpenRouter API backend (OpenAI-compatible)."""
 
 from typing import List, Dict, Any, Optional
 

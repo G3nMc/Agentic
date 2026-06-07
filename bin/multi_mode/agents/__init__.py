@@ -1,4 +1,4 @@
-﻿"""Agent implementations - both single-loop and multi-agent."""
+"""Agent implementations - both single-loop and multi-agent."""
 
 # New-style agents (single loop)
 from multi_mode.agents.reasoner import Reasoner, ReasonerOutput

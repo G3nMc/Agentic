@@ -1,4 +1,4 @@
-﻿"""Tool system: registry, executor, and built-in tools."""
+"""Tool system: registry, executor, and built-in tools."""
 
 from multi_mode.tools.base import Tool, ToolResult
 from multi_mode.tools.registry import ToolRegistry, get_tool_registry, register_tool

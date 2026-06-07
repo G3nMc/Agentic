@@ -1,4 +1,4 @@
-﻿"""Reasoner agent - the brain of the workflow."""
+"""Reasoner agent - the brain of the workflow."""
 
 from __future__ import annotations
 

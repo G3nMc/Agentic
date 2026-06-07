@@ -1,4 +1,4 @@
-﻿"""Core types and utilities."""
+"""Core types and utilities."""
 
 from multi_mode.core.message import Message, MessageRole, ToolCall, ToolResult
 from multi_mode.core.state import WorkflowState, TaskStatus

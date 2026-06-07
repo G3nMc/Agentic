@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import sys
 from typing import Any, Dict, Optional
 
@@ -40,6 +41,9 @@ def setup_audit_logger(config: SecurityConfig) -> Optional[logging.Logger]:
     logger = logging.getLogger(logger_name)
     if not logger.handlers:
         try:
+            log_dir = os.path.dirname(config.audit_log_path)
+            if log_dir:
+                os.makedirs(log_dir, exist_ok=True)
             handler = logging.FileHandler(config.audit_log_path, encoding="utf-8")
             handler.setFormatter(
                 logging.Formatter(

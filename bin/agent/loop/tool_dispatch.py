@@ -12,6 +12,7 @@ import re
 import sys
 from typing import Any, Dict, List, Optional, Tuple
 
+
 # ---------------------------------------------------------------------------
 # Output-cleaning regexes
 # ---------------------------------------------------------------------------
@@ -237,7 +238,7 @@ def json_variants(raw: str):
     """Yield progressively cleaned forms of a candidate JSON fragment."""
     yield raw
     yield re.sub(r",(\s*[}\]])", r"\1", raw)
-    yield (raw.replace("“", '"').replace("”", '"').replace("‘", "'").replace("’", "'"))
+    yield raw.replace("“", '"').replace("”", '"').replace("‘", "'").replace("’", "'")
 
 
 def extract_json_objects(text: str) -> List[str]:
@@ -569,7 +570,7 @@ def _infer_tool_name_from_params(params: Dict[str, Any], tool_defs) -> Optional[
         if required and not required.issubset(param_keys):
             continue
 
-        if overlap < 2 and len(prop_keys) > 2 and not required:
+        if overlap < 2 < len(prop_keys) and not required:
             continue
 
         score = overlap * 10 + (5 if param_keys.issubset(prop_keys) else 0)
@@ -1098,7 +1099,7 @@ def parse_python_call_args(func_name: str, args_str: str, tool_defs) -> dict:
 
     try:
         tree = ast.parse("_f(" + args_str + ")", mode="eval")
-        call = tree.body
+        call: ast.expr = tree.body
 
         for i, arg in enumerate(call.args):
             key = param_names[i] if i < len(param_names) else f"arg{i}"

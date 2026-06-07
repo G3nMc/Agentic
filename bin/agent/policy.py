@@ -30,7 +30,7 @@
 #     sandbox_mode: bool = False
 #     max_file_size_bytes: int = 0          # 0 = no limit
 #     enable_audit_log: bool = True
-#     audit_log_path: str = "orchestrator_audit.log"
+#     audit_log_path: str = "logs/orchestrator_audit.log"
 #     command_blocklist: tuple = dataclasses.field(default_factory=tuple)
 
 
@@ -57,6 +57,6 @@ class SecurityConfig:
     sandbox_mode: bool = False
     max_file_size_bytes: int = 0  # 0 = no limit
     enable_audit_log: bool = True
-    audit_log_path: str = "orchestrator_audit.log"
+    audit_log_path: str = "logs/orchestrator_audit.log"
     command_blocklist: Set[str] = dataclasses.field(default_factory=set)
     allowed_file_extensions: Optional[Set[str]] = None

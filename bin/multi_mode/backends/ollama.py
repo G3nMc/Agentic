@@ -1,4 +1,4 @@
-﻿"""Ollama local LLM backend with function calling support."""
+"""Ollama local LLM backend with function calling support."""
 
 from typing import List, Dict, Any, Optional
 import json
