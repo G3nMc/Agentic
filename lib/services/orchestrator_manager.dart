@@ -439,8 +439,8 @@ class OrchestratorManager {
           [script.path, '--install-deps'],
           workingDirectory: script.parent.path,
         );
-        final stdoutDone = proc.stdout.transform(utf8.decoder).transform(const LineSplitter()).listen((l) => onLine?.call(l)).asFuture<void>();
-        final stderrDone = proc.stderr.transform(utf8.decoder).transform(const LineSplitter()).listen((l) => onLine?.call(l)).asFuture<void>();
+        final stdoutDone = proc.stdout.transform(const Utf8Decoder(allowMalformed: true)).transform(const LineSplitter()).listen((l) => onLine?.call(l)).asFuture<void>();
+        final stderrDone = proc.stderr.transform(const Utf8Decoder(allowMalformed: true)).transform(const LineSplitter()).listen((l) => onLine?.call(l)).asFuture<void>();
         final exitCode = await proc.exitCode;
         await Future.wait([stdoutDone, stderrDone]);
         onLine?.call('Exit code: $exitCode');
@@ -466,8 +466,8 @@ class OrchestratorManager {
         ['-m', 'pip', 'install', '--user', packageName],
       );
 
-      final stdoutDone = proc.stdout.transform(utf8.decoder).transform(const LineSplitter()).listen((l) => onLine?.call(l)).asFuture<void>();
-      final stderrDone = proc.stderr.transform(utf8.decoder).transform(const LineSplitter()).listen((l) => onLine?.call(l)).asFuture<void>();
+      final stdoutDone = proc.stdout.transform(const Utf8Decoder(allowMalformed: true)).transform(const LineSplitter()).listen((l) => onLine?.call(l)).asFuture<void>();
+      final stderrDone = proc.stderr.transform(const Utf8Decoder(allowMalformed: true)).transform(const LineSplitter()).listen((l) => onLine?.call(l)).asFuture<void>();
 
       final exitCode = await proc.exitCode;
       await Future.wait([stdoutDone, stderrDone]);
@@ -761,9 +761,9 @@ class OrchestratorManager {
         environment: env,
       );
 
-      _stdoutSub = _process!.stdout.transform(utf8.decoder).transform(const LineSplitter()).listen(_onStdoutLine, onError: _onStreamError, onDone: _onProcessExited);
+      _stdoutSub = _process!.stdout.transform(const Utf8Decoder(allowMalformed: true)).transform(const LineSplitter()).listen(_onStdoutLine, onError: _onStreamError, onDone: _onProcessExited);
 
-      _stderrSub = _process!.stderr.transform(utf8.decoder).transform(const LineSplitter()).listen((line) {
+      _stderrSub = _process!.stderr.transform(const Utf8Decoder(allowMalformed: true)).transform(const LineSplitter()).listen((line) {
         _appendLog(line);
         // stderr activity (e.g. `[orch] Model reply (iter 0) â€¦`) counts as
         // a heartbeat â€” the subprocess is alive and making progress.

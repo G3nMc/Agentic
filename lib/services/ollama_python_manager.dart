@@ -116,11 +116,11 @@ class OllamaPythonManager {
       );
 
       final stdoutSub = process.stdout
-          .transform(utf8.decoder)
+          .transform(const Utf8Decoder(allowMalformed: true))
           .transform(const LineSplitter())
           .listen(onLine ?? (_) {});
       final stderrSub = process.stderr
-          .transform(utf8.decoder)
+          .transform(const Utf8Decoder(allowMalformed: true))
           .transform(const LineSplitter())
           .listen(onLine ?? (_) {});
 
@@ -210,14 +210,14 @@ class OllamaPythonManager {
       }
 
       _stdoutSub = _process!.stdout
-          .transform(utf8.decoder)
+          .transform(const Utf8Decoder(allowMalformed: true))
           .transform(const LineSplitter())
           .listen((line) {
         _log.writeln(line);
         onLine?.call(line);
       });
       _stderrSub = _process!.stderr
-          .transform(utf8.decoder)
+          .transform(const Utf8Decoder(allowMalformed: true))
           .transform(const LineSplitter())
           .listen((line) {
         _log.writeln(line);

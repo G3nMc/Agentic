@@ -16,9 +16,9 @@ from ..config.agent_config import build_agents, SecretsResolver
 from .compactor import compact_if_needed
 from .multi_agent_state import ROUTE_REASONING, ROUTE_TRIVIAL, WorkflowState
 from ..loop import tool_dispatch as _td
-from ..policy import SecurityConfig
+from bin.common.policy import SecurityConfig
 from ..tools.registry import ToolRegistry
-from ..utils.token_estimator import chars_for_tokens, estimate_messages_tokens
+from bin.common.utils.token_estimator import chars_for_tokens, estimate_messages_tokens
 
 _WRITE_TOOLS = frozenset({"write_file", "append_file", "patch_file"})
 _DISCOVERY_TOOLS = frozenset(
@@ -272,7 +272,7 @@ class Workflow:
         )
 
         if ctx_tokens > 0:
-            from ..loop import history as _history
+            from bin.common.loop import history as _history
 
             token_budget = int(ctx_tokens * 0.85)
             per_msg_tokens = max(2_500, ctx_tokens // 5)
@@ -1475,9 +1475,9 @@ def build_workflow_from_args(
 # from .compactor import compact_if_needed
 # from .state import ROUTE_REASONING, ROUTE_TRIVIAL, WorkflowState
 # from ..loop import tool_dispatch as _td
-# from ..policy import SecurityConfig
+# from bin.common.policy import SecurityConfig
 # from ..tools.registry import ToolRegistry
-# from ..utils.token_estimator import chars_for_tokens, estimate_messages_tokens
+# from bin.common.utils.token_estimator import chars_for_tokens, estimate_messages_tokens
 #
 #
 # _WRITE_TOOLS = frozenset({"write_file", "append_file", "patch_file"})
@@ -1812,7 +1812,7 @@ def build_workflow_from_args(
 #         ctx_tokens = int(getattr(getattr(reasoner, "backend", None),
 #                                  "context_limit", 0) or 0)
 #         if ctx_tokens > 0:
-#             from ..loop import history as _history
+#             from bin.common.loop import history as _history
 #             token_budget = int(ctx_tokens * 0.85)
 #             per_msg_tokens = max(2_500, ctx_tokens // 5)
 #             before = len(self.conversation_history)

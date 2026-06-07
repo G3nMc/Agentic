@@ -7,7 +7,7 @@ import sys
 from abc import ABC, abstractmethod
 from typing import Any, Dict, List, Optional
 
-from ..backends.backend_base import ModelBackend
+from bin.common.backends.backend_base import ModelBackend
 from ..core.multi_agent_state import WorkflowState
 
 # Cap on how much of each prompt/response is mirrored to stderr. Agents can

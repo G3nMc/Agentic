@@ -9,8 +9,8 @@ from multi_mode.backends.openrouter import OpenRouterBackend
 from multi_mode.backends.factory import get_backend, get_backend_for_config
 
 # Also expose the old-style backends and factory
-from .backend_base import ModelBackend, RateLimitedBackend
-from .openai_compat import OpenAICompatBackend, RateLimitError, ToolsNotSupportedError
+from bin.common.backends.backend_base import ModelBackend, RateLimitedBackend
+from bin.common.backends.openai_compat import OpenAICompatBackend, RateLimitError, ToolsNotSupportedError
 
 __all__ = [
     "LLMBackend",
@@ -35,7 +35,7 @@ def build_backend(name: str, **kwargs) -> ModelBackend:
     needs Ollama doesn't have to install groq/google-genai."""
     name = name.lower().strip()
     if name == "huggingface":
-        from .hf import HFBackend
+        from bin.common.backends.hf import HFBackend
 
         return HFBackend(**kwargs)
     if name == "ollama":
@@ -43,7 +43,7 @@ def build_backend(name: str, **kwargs) -> ModelBackend:
 
         return OllamaBackend(**kwargs)
     if name == "groq":
-        from .groq import GroqBackend
+        from bin.common.backends.groq import GroqBackend
 
         return GroqBackend(**kwargs)
     if name == "gemini":
@@ -55,7 +55,7 @@ def build_backend(name: str, **kwargs) -> ModelBackend:
 
         return OpenRouterBackend(**kwargs)
     if name == "github":
-        from .github_models import GitHubModelsBackend
+        from bin.common.backends.github_models import GitHubModelsBackend
 
         return GitHubModelsBackend(**kwargs)
     raise ValueError(f"Unknown backend: {name!r}")

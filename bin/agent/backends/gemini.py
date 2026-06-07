@@ -9,8 +9,8 @@ import sys
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
-from .backend_base import ModelBackend
-from ..utils.text import sanitize_for_agent
+from bin.common.backends.backend_base import ModelBackend
+from bin.common.utils.text import sanitize_for_agent
 
 
 def _log(msg: str) -> None:

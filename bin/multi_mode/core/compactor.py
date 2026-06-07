@@ -36,7 +36,7 @@ import sys
 from collections import Counter
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
-from ..utils.token_estimator import (
+from bin.common.utils.token_estimator import (
     estimate_messages_tokens,
     estimate_tokens,
     estimate_tokens_from_chars,

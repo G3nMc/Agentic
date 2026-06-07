@@ -28,7 +28,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from ..backends import RateLimitedBackend, build_backend
-from ..backends.backend_base import ModelBackend
+from bin.common.backends.backend_base import ModelBackend
 
 
 # Roles in the order the dispatcher evaluates them.

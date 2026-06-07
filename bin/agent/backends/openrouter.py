@@ -5,7 +5,7 @@ from __future__ import annotations
 import sys
 from typing import Any, Dict, List, Optional, Tuple
 
-from .openai_compat import OpenAICompatBackend, RateLimitError, ToolsNotSupportedError
+from bin.common.backends.openai_compat import OpenAICompatBackend, RateLimitError, ToolsNotSupportedError
 
 
 def _log(msg: str) -> None:
