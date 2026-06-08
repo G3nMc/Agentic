@@ -2,12 +2,13 @@
 
 from typing import Optional
 
-from base import LLMBackend
-from bin.multi_mode import ModelConfig
-from bin.multi_mode.backends.anthropic import AnthropicBackend
-from bin.multi_mode.backends.openai import OpenAIBackend
-from gemini import GeminiBackend
-from openrouter import OpenRouterBackend
+from .base import LLMBackend
+from ..config.models import ModelConfig
+from .anthropic import AnthropicBackend
+from .openai import OpenAIBackend
+from .gemini import GeminiBackend
+from .ollama import OllamaBackend
+from .openrouter import OpenRouterBackend
 
 # Default base URLs for providers that are OpenAI-compatible
 _OPENAI_COMPATIBLE_DEFAULTS: dict[str, str] = {

@@ -4,7 +4,7 @@ import sys
 import argparse
 import os
 
-from bin.multi_mode import load_config_from_env, ModelRole, Orchestrator
+from .. import load_config_from_env, ModelRole, Orchestrator
 
 
 def main():

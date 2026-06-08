@@ -22,8 +22,8 @@ from bin.common.backends.http_client import (
     ServerError,
     stream_sse,
 )
-from  base import CompletionResponse, LLMBackend
-from bin.multi_mode import ModelConfig
+from .base import CompletionResponse, LLMBackend
+from ..config.models import ModelConfig
 
 
 def _log(msg: str) -> None:

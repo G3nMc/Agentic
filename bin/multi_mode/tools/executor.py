@@ -3,8 +3,9 @@
 from typing import List, Dict, Any
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-from bin.multi_mode import AgentConfig, ToolResult
-from bin.multi_mode.tools.registry import get_tool_registry
+from ..config.agent import AgentConfig
+from ..core.message import ToolResult
+from .registry import get_tool_registry
 
 
 class ToolExecutor:

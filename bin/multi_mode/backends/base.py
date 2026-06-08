@@ -4,7 +4,7 @@ from abc import ABC, abstractmethod
 from typing import List, Dict, Any, Optional
 from dataclasses import dataclass
 
-from bin.multi_mode import ModelConfig
+from ..config.models import ModelConfig
 
 
 @dataclass

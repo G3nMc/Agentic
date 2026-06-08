@@ -4,8 +4,9 @@ from __future__ import annotations
 
 from typing import List, Optional
 
-from bin.multi_mode import AgentConfig, Message
-from bin.multi_mode.backends import LLMBackend
+from ..config.agent import AgentConfig
+from ..core.message import Message
+from ..backends.base import LLMBackend
 
 
 class Summarizer:

@@ -8,14 +8,17 @@ import threading
 from dataclasses import dataclass, field
 from typing import Optional, List, Dict, Any
 
-from bin.multi_mode import WorkflowState, AgentConfig, ModelRole, Message, MessageRole, TaskStatus
-from bin.multi_mode.agents import Reasoner, Executor, Summarizer
-from bin.multi_mode.backends import get_backend_for_config, LLMBackend
-from bin.multi_mode.core import ContextBuilder, SummarizationTrigger
-from bin.multi_mode.tools.builtin import register_builtin_tools
-from bin.multi_mode.tools.executor import ToolExecutor
-from bin.multi_mode.tools.registry import ToolRegistry
-from bin.multi_mode.utils.token_counter import count_tokens
+from ..core.state import WorkflowState, TaskStatus
+from ..config.agent import AgentConfig
+from ..config.models import ModelRole
+from ..core.message import Message, MessageRole
+from ..agents import Reasoner, Executor, Summarizer
+from ..backends import get_backend_for_config, LLMBackend
+from ..core import ContextBuilder, SummarizationTrigger
+from ..tools.builtin import register_builtin_tools
+from ..tools.executor import ToolExecutor
+from ..tools.registry import ToolRegistry
+from ..utils.token_counter import count_tokens
 
 
 @dataclass

@@ -2,8 +2,8 @@
 
 from typing import Any, Dict, List, Optional
 
-from bin.multi_mode.core import ToolSchema
-from bin.multi_mode.tools.base import Tool
+from ..core.tool_schema import ToolSchema
+from .base import Tool
 
 
 class ToolRegistry:

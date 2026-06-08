@@ -10,14 +10,14 @@ import sys
 import time
 from typing import Any, Dict, List, Optional
 
-from base import CompletionResponse, LLMBackend
+from .base import CompletionResponse, LLMBackend
 from bin.common.backends.http_client import (
     HttpError,
     RateLimitError,
     ServerError,
     stream_ndjson,
 )
-from bin.multi_mode import ModelConfig
+from ..config.models import ModelConfig
 
 
 def _log(msg: str) -> None:

@@ -3,8 +3,10 @@
 from dataclasses import dataclass
 from typing import List, Optional
 
-from bin.multi_mode import Message, AgentConfig, WorkflowState, MessageRole
-from bin.multi_mode.utils.token_counter import count_tokens
+from .message import Message, MessageRole
+from ..config.agent import AgentConfig
+from .state import WorkflowState
+from ..utils.token_counter import count_tokens
 
 
 @dataclass

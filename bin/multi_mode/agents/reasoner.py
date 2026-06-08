@@ -6,11 +6,13 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
-from bin.multi_mode import ToolCall, AgentConfig, WorkflowState, MessageRole, Message, TaskStatus, ModelRole, ModelConfig
-from bin.multi_mode.backends import LLMBackend
-from bin.multi_mode.backends.base import CompletionResponse
-from bin.multi_mode.core.context import ContextBuilder
-from bin.multi_mode.tools.registry import ToolRegistry
+from ..core.message import ToolCall, Message, MessageRole
+from ..config.agent import AgentConfig
+from ..config.models import ModelRole, ModelConfig
+from ..core.state import WorkflowState, TaskStatus
+from ..backends.base import LLMBackend, CompletionResponse
+from ..core.context import ContextBuilder
+from ..tools.registry import ToolRegistry
 
 
 @dataclass
@@ -88,8 +90,11 @@ def _parse_response(response: CompletionResponse) -> ReasonerOutput:
         try:
             data = json.loads(content)
             if isinstance(data, dict):
+                # Plan: either wrapped in "plan" key or direct with "goal" and "steps"
                 if "plan" in data:
                     return ReasonerOutput(plan=data["plan"], reasoning=content)
+                if "goal" in data and "steps" in data:
+                    return ReasonerOutput(plan=data, reasoning=content)
                 if "final_answer" in data:
                     return ReasonerOutput(final_answer=data["final_answer"], reasoning=content)
                 if "tool_calls" in data:

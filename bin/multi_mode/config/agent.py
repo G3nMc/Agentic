@@ -4,7 +4,7 @@ import os
 from dataclasses import dataclass, field
 from typing import Dict, List
 
-from models import ModelConfig, ModelRole, DEFAULT_REASONER, DEFAULT_SUMMARIZER
+from .models import ModelConfig, ModelRole, DEFAULT_REASONER, DEFAULT_SUMMARIZER
 
 
 @dataclass

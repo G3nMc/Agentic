@@ -8,11 +8,11 @@ single-agent orchestrator). Tool implementations are registered via
 :func:`multi_mode.tools.builtin.register_builtin_tools`.
 """
 
-from bin.multi_mode import ToolResult
-from bin.multi_mode.tools.base import Tool
-from bin.multi_mode.tools.builtin import register_builtin_tools
-from bin.multi_mode.tools.executor import ToolExecutor
-from bin.multi_mode.tools.registry import ToolRegistry, get_tool_registry, register_tool
+from ..core.message import ToolResult
+from .base import Tool
+from .builtin import register_builtin_tools
+from .executor import ToolExecutor
+from .registry import ToolRegistry, get_tool_registry, register_tool
 
 __all__ = [
     "Tool",

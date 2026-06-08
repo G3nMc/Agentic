@@ -6,8 +6,8 @@ this is a thin subclass that just sets the base URL. No SDK.
 
 from __future__ import annotations
 
-from bin.multi_mode import ModelConfig
-from bin.multi_mode.backends.openai import OpenAIBackend
+from ..config.models import ModelConfig
+from .openai import OpenAIBackend
 
 
 class OpenRouterBackend(OpenAIBackend):

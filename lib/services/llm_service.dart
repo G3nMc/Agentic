@@ -149,6 +149,7 @@ class LlmService {
 
         final settings = BackendSettingsRepository.instance;
         final ollamaApiKey = await settings.getOllamaApiKey() ?? '';
+        final temperature = await settings.getOllamaTemperature();
         if (OrchestratorManager.instance.isRunning) {
           final currentBackend = OrchestratorManager.instance.currentBackend;
           if (currentBackend != OrchestratorBackend.ollama) {
@@ -161,6 +162,7 @@ class LlmService {
             backend: OrchestratorBackend.ollama,
             ollamaBaseUrl: ollamaBaseUrl,
             ollamaApiKey: ollamaApiKey,
+            temperature: temperature,
           );
           if (!started) {
             final stderr = OrchestratorManager.instance.stderrLog;

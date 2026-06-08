@@ -2,8 +2,8 @@
 from abc import ABC, abstractmethod
 from typing import Dict, Any, Optional
 
-from bin.multi_mode import ToolResult
-from bin.multi_mode.core import ToolSchema
+from ..core.message import ToolResult
+from ..core.tool_schema import ToolSchema
 
 
 class Tool(ABC):

@@ -5,4 +5,4 @@ __all__ = [
     "WorkflowResult"
 ]
 
-from bin.multi_mode import Orchestrator, WorkflowResult
+from .orchestrator import Orchestrator, WorkflowResult

@@ -5,7 +5,7 @@ from datetime import datetime
 from enum import Enum
 from typing import List, Dict, Any, Optional
 
-from bin.multi_mode import Message, ToolCall, ToolResult, MessageRole
+from .message import Message, ToolCall, ToolResult, MessageRole
 
 
 class TaskStatus(Enum):

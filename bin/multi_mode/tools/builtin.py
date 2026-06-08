@@ -5,10 +5,10 @@ import subprocess
 from pathlib import Path
 from typing import Dict, Any, List
 
-from bin.multi_mode import ToolResult
-from bin.multi_mode.core import ToolSchema, ParameterSchema
-from bin.multi_mode.tools.base import Tool
-from bin.multi_mode.tools.registry import ToolRegistry
+from ..core.message import ToolResult
+from ..core.tool_schema import ToolSchema, ParameterSchema
+from .base import Tool
+from .registry import ToolRegistry
 
 
 class ReadFileTool(Tool):

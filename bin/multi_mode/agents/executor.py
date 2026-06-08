@@ -4,8 +4,9 @@ from __future__ import annotations
 
 from typing import List
 
-from bin.multi_mode import WorkflowState, ToolCall, Message, MessageRole
-from bin.multi_mode.tools.executor import ToolExecutor
+from ..core.state import WorkflowState
+from ..core.message import ToolCall, Message, MessageRole
+from ..tools.executor import ToolExecutor
 
 
 class Executor:
