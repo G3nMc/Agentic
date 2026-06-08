@@ -459,7 +459,7 @@ class Orchestrator:
             self,
             backend: ModelBackend,
             base_path: str = ".",
-            temperature: float = 0.2,
+            temperature: float = 0.1,
             max_tokens: int = 2048,
             security_config: Optional[SecurityConfig] = None,
             disable_tools: bool = False,
