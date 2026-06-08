@@ -147,7 +147,7 @@ def main():
     parser.add_argument(
         "--temperature",
         type=float,
-        default=0.2,
+        default=0.1,
         help="Sampling temperature. Lower = more deterministic tool calls "
         "(0.2 is the sweet spot for small models); raise to ~0.7 for "
         "more natural free-form answers.",
