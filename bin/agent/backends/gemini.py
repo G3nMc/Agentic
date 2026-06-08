@@ -149,7 +149,9 @@ class GeminiBackend(ModelBackend):
             return []
         return [types_mod.Tool(function_declarations=declarations)]
 
-    def chat(self, messages, max_tokens, temperature, tools=None):
+    def chat(self, messages, max_tokens, temperature, tools=None, stop=None):
+        # [stop-sequence-fix] ``stop`` is mapped to Gemini's
+        # ``stop_sequences`` so generation halts at "</tool>".
         messages = sanitize_for_agent(messages)
         tools = sanitize_for_agent(tools)
 
@@ -173,6 +175,8 @@ class GeminiBackend(ModelBackend):
             config_kwargs["automatic_function_calling"] = (
                 self._types.AutomaticFunctionCallingConfig(disable=True)
             )
+        if stop:
+            config_kwargs["stop_sequences"] = list(stop)
 
         _log(f"[Gemini:request] sending generate_content to model={self.model_id}")
 

@@ -931,6 +931,16 @@ class Orchestrator:
             except Exception as e:
                 return f"Model error: {e}"
 
+            # [stop-sequence-fix] If we requested generation to stop at
+            # ``</tool>`` (see _call_model), some APIs strip the stop
+            # token from the reply -- leaving an unclosed ``<tool>{...``
+            # that the parser would treat as malformed. Detect that here
+            # and re-append ``</tool>`` so the parser sees a complete
+            # tag. To roll back this behavior, search for
+            # ``[stop-sequence-fix]`` across the codebase.
+            if text and _td.looks_like_unclosed_tool(text):
+                text = text + "</tool>"
+
             preview = (text or "").replace("\n", " ")[:800]
             print(
                 f"[orch] Model reply (iter {iteration}, finish={finish_reason}, "
@@ -1605,11 +1615,28 @@ class Orchestrator:
                 )
                 time.sleep(wait_s)
             try:
+                # [stop-sequence-fix] Pass ``</tool>`` as a stop
+                # sequence so the model cannot generate past the first
+                # tool call. Some models (deepseek-v4-pro on Ollama
+                # cloud, etc.) hallucinate an entire fake transcript of
+                # ``User: Tool returned: ... Assistant: ...`` turns
+                # after the real tool tag if not stopped; the
+                # orchestrator then dispatches the hallucinated calls
+                # and loops forever. With the stop sequence the model
+                # emits one call, we execute it, the next iteration
+                # gives the model real tool results, and it can either
+                # call another tool or produce a final answer (plain
+                # text, no ``<tool>`` -> existing final-answer path
+                # triggers). The reply truncation (missing closing
+                # ``</tool>``) is repaired in the caller above.
+                #
+                # ROLLBACK: drop the ``stop=`` kwarg from this call.
                 result = self.backend.chat(
                     messages=self.conversation_history,
                     max_tokens=self.max_tokens,
                     temperature=self.temperature,
                     tools=self.tool_registry.definitions,
+                    stop=["</tool>"],
                 )
                 # Successful call: reset the circuit breaker failure count.
                 self._model_circuit_breaker.record_success()
@@ -1618,7 +1645,7 @@ class Orchestrator:
                 last_exc = e
                 if not self._is_retryable_error(e):
                     # Auth errors, malformed input, Ollama connection refused,
-                    # etc. Don't retry — but still count as a failure.
+                    # etc. Do not retry -- but still count as a failure.
                     self._model_circuit_breaker.record_failure()
                     raise
                 # else: fall through to next backoff

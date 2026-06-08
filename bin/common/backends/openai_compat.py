@@ -84,6 +84,7 @@ class OpenAICompatBackend(ModelBackend):
         max_tokens: int,
         temperature: float,
         tools: Optional[List[Dict[str, Any]]] = None,
+        stop: Optional[List[str]] = None,
     ) -> Tuple[str, str]:
         messages = sanitize_for_agent(messages)
         tools = sanitize_for_agent(tools)
@@ -96,7 +97,7 @@ class OpenAICompatBackend(ModelBackend):
             f"msgs={len(messages)} tools={n_tools} "
             f"max_tokens={max_tokens} temperature={temperature}"
             + (
-                " [tools_unsupported=True — sending without tools]"
+                " [tools_unsupported=True -- sending without tools]"
                 if self._tools_unsupported and tools
                 else ""
             )
@@ -110,6 +111,13 @@ class OpenAICompatBackend(ModelBackend):
         }
         if effective_tools:
             payload["tools"] = effective_tools
+        # [stop-sequence-fix] OpenAI-compatible APIs accept a top-level
+        # ``stop`` array of up to 4 strings. We pass the orchestrator's
+        # stop sequences (typically ["</tool>"]) so models that ignore
+        # ``tools_unsupported`` instructions can't generate past the
+        # first tool call. If you need to roll back, remove this block.
+        if stop:
+            payload["stop"] = list(stop)[:4]
 
         attempt = 0
         while True:

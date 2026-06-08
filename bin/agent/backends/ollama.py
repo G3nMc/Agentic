@@ -298,8 +298,9 @@ class OllamaBackend(ModelBackend):
         max_tokens: int,
         temperature: float,
         tools: Optional[List[Dict[str, Any]]] = None,
+        stop: Optional[List[str]] = None,
     ) -> tuple[str, str]:
-        return self._chat_impl(messages, max_tokens, temperature, tools)
+        return self._chat_impl(messages, max_tokens, temperature, tools, stop=stop)
 
     def _chat_impl(
         self,
@@ -307,6 +308,7 @@ class OllamaBackend(ModelBackend):
         max_tokens: int,
         temperature: float,
         tools: Optional[List[Dict[str, Any]]] = None,
+        stop: Optional[List[str]] = None,
     ) -> tuple[str, str]:
         from ollama import ResponseError  # noqa: PLC0415
 
@@ -341,6 +343,14 @@ class OllamaBackend(ModelBackend):
                 "num_predict": max_tokens,
                 "num_ctx": self.num_ctx,
             }
+        # [stop-sequence-fix] Forward the orchestrator's stop sequences
+        # (typically ["</tool>"]) so the model can't generate past the
+        # first tool call and hallucinate a fake transcript of fake
+        # User:/Assistant: turns. Ollama's ``options.stop`` is a list of
+        # exact strings; if the user passed an empty list we skip it so
+        # the API doesn't reject the request.
+        if stop:
+            generate_options["stop"] = list(stop)
 
         generate_kwargs: Dict[str, Any] = dict(
             model=self.model_id,
@@ -470,14 +480,7 @@ class OllamaBackend(ModelBackend):
                 )
                 _log(
                     f"[Ollama:tools_unsupported] model={self.model_id} reason={reason} "
-                    f"— disabling native tools, retrying with text protocol"
+                    f"-- disabling native tools, retrying with text protocol"
                 )
                 self._tools_unsupported = True
                 return self._chat_impl(messages, max_tokens, temperature, tools=tools)
-
-            hint = self._build_hint_for(err_str)
-            raise RuntimeError(f"Ollama error {status}: {err_str}{hint}") from e
-
-        except Exception as e:
-            _log(f"[Ollama:error] model={self.model_id} {type(e).__name__}: {e}")
-            raise RuntimeError(f"Ollama error: {e}") from e

@@ -1170,7 +1170,7 @@ class _ChatViewState extends StateManager<ChatView> with WidgetsBindingObserver 
         backend == LlmBackend.geminiOrchestrator ||
         backend == LlmBackend.openRouterOrchestrator ||
         backend == LlmBackend.githubOrchestrator ||
-        (multiAgentActive && OrchestratorManager.instance.isRunning);
+        multiAgentActive; // Always show log panel when multi-agent mode is enabled, regardless of orchestrator running state
 
     return Column(
       children: [
@@ -1835,6 +1835,9 @@ class _ChatViewState extends StateManager<ChatView> with WidgetsBindingObserver 
 
       // Already running on the desired backend -> nothing to do.
       if (OrchestratorManager.instance.isRunning && OrchestratorManager.instance.currentBackend == desiredBackend) {
+        if (mounted && !_logVisible) {
+          setState(() => _logVisible = true);
+        }
         return true;
       }
 

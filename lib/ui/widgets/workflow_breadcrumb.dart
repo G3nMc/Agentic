@@ -183,7 +183,7 @@ class _WorkflowBreadcrumbState extends State<WorkflowBreadcrumb> {
   /// Replaces both the old `_onLogLine` and `_onTrace` reset timers.
   void _bumpIdleResetTimer() {
     _highlightResetTimer?.cancel();
-    _highlightResetTimer = Timer(const Duration(seconds: 5), () {
+    _highlightResetTimer = Timer(const Duration(seconds: 10), () {
       if (!mounted) return;
       if (_pendingRoles.isNotEmpty) return;
       setState(() => _activeRole = null);

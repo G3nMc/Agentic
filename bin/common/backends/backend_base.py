@@ -26,7 +26,15 @@ class ModelBackend:
         max_tokens: int,
         temperature: float,
         tools: Optional[List[Dict[str, Any]]] = None,
+        stop: Optional[List[str]] = None,
     ) -> Tuple[str, str]:
+        # NOTE: ``stop`` is the set of strings the model should stop on
+        # (the underlying API will not generate past any of them). The
+        # orchestrator uses this to terminate generation right after the
+        # first ``</tool>`` so models that hallucinate fake transcripts
+        # in the rest of the reply cannot emit them. If you need to roll
+        # back this behavior, search for ``[stop-sequence-fix]`` across
+        # the codebase.
         raise NotImplementedError
 
     @property
@@ -64,7 +72,10 @@ class RateLimitedBackend(ModelBackend):
     def context_limit(self) -> int:
         return self.inner.context_limit
 
-    def chat(self, messages, max_tokens, temperature, tools=None):
+    def chat(self, messages, max_tokens, temperature, tools=None, stop=None):
+        # [stop-sequence-fix] ``stop`` is forwarded verbatim to the inner
+        # backend so callers (e.g. run_loop._call_model) can request
+        # generation to stop at ``</tool>`` and similar markers.
         import sys
 
         # 🔥 CRITICAL FIX: sanitize BEFORE ANY logic (agent-safe, removes emoji)
@@ -72,7 +83,7 @@ class RateLimitedBackend(ModelBackend):
         tools = sanitize_for_agent(tools)
 
         if self.bucket.tpm_limit <= 0:
-            return self.inner.chat(messages, max_tokens, temperature, tools)
+            return self.inner.chat(messages, max_tokens, temperature, tools, stop=stop)
 
         # 🔥 CRITICAL FIX: safe estimation
         estimated = estimate_tokens(sanitize_for_agent(messages), max_tokens)
@@ -107,6 +118,7 @@ class RateLimitedBackend(ModelBackend):
                 max_tokens,
                 temperature,
                 tools,
+                stop=stop,
             )
 
             # Note: Output content is NOT sanitized here to preserve markdown

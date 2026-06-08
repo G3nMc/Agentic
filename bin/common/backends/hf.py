@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sys
+from typing import Any, Dict
 
 from .backend_base import ModelBackend
 
@@ -26,17 +27,22 @@ class HFBackend(ModelBackend):
         self._client = InferenceClient(model=model_id, token=hf_token)
         _log(f"[HF:init] model={model_id} InferenceClient created")
 
-    def chat(self, messages, max_tokens, temperature, tools=None):
+    def chat(self, messages, max_tokens, temperature, tools=None, stop=None):
+        # [stop-sequence-fix] Forward orchestrator stop sequences to the
+        # HF chat_completion endpoint so generation halts at "</tool>".
         _log(
             f"[HF:chat] model={self.model_id} msgs={len(messages)} "
             f"max_tokens={max_tokens} temperature={temperature}"
         )
+        kwargs: Dict[str, Any] = dict(
+            messages=messages,
+            max_tokens=max_tokens,
+            temperature=temperature,
+        )
+        if stop:
+            kwargs["stop"] = list(stop)
         try:
-            resp = self._client.chat_completion(
-                messages=messages,
-                max_tokens=max_tokens,
-                temperature=temperature,
-            )
+            resp = self._client.chat_completion(**kwargs)
         except Exception as exc:
             _log(f"[HF:error] model={self.model_id} {type(exc).__name__}: {exc}")
             raise RuntimeError(f"HF error: {exc}") from exc
