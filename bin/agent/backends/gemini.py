@@ -1,4 +1,21 @@
-"""Google Gemini backend via the official google-genai SDK."""
+"""Google Gemini backend (single-agent mode) via the official google-genai SDK.
+
+NOTE on coexistence with :mod:`multi_mode.backends.gemini`:
+The two ``gemini.py`` files implement distinct APIs that cannot be
+merged without breaking one of the orchestrators:
+
+  - This file targets the new ``google-genai`` SDK and the
+    :class:`common.backends.backend_base.ModelBackend` interface
+    (``complete()`` returns a tuple); used by ``orchestrator.py``.
+  - :mod:`multi_mode.backends.gemini` targets the older
+    ``google.generativeai`` library and the
+    :class:`multi_mode.backends.base.LLMBackend` interface
+    (``complete()`` returns a ``CompletionResponse``); used by
+    ``orchestrator_multi.py``.
+
+Unifying them requires first unifying the two base classes — out
+of scope for this consolidation pass.
+"""
 
 from __future__ import annotations
 

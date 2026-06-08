@@ -1,4 +1,13 @@
-"""OpenRouter backend — inherits from OpenAICompatBackend."""
+"""OpenRouter backend (single-agent mode) — inherits from
+:class:`common.backends.openai_compat.OpenAICompatBackend`
+(urllib-based, no openai SDK dependency).
+
+See :mod:`multi_mode.backends.openrouter` for the multi_mode
+counterpart, which inherits from
+:class:`multi_mode.backends.openai.OpenAIBackend` (uses the
+``openai`` SDK). The two are kept separate until the two backend
+base classes are unified.
+"""
 
 from __future__ import annotations
 

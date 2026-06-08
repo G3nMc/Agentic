@@ -1,28 +1,20 @@
-"""I/O protocol utilities for the orchestrator."""
+"""Re-export shim: real implementation now lives in :mod:`common.utils.io_protocol`.
 
-import sys
-import json
+Kept for backwards-compatibility with callers that import
+``agent.utils.io_protocol``. New code should import directly from
+``common.utils.io_protocol``.
+"""
 
-RESPONSE_SENTINEL = "__RESPONSE_END__"
+from __future__ import annotations
 
+import sys as _sys
 
-def configure_stdio_utf8():
-    """Reconfigure stdin/stdout to use UTF-8 encoding."""
-    if hasattr(sys.stdin, 'reconfigure'):
-        sys.stdin.reconfigure(encoding='utf-8')
-    if hasattr(sys.stdout, 'reconfigure'):
-        sys.stdout.reconfigure(encoding='utf-8')
+_sys.dont_write_bytecode = True
 
+from common.utils.io_protocol import (  # noqa: F401
+    RESPONSE_SENTINEL,
+    configure_stdio_utf8,
+    read_interactive_request,
+)
 
-def read_interactive_request(stream):
-    """Read one JSON object per line from stream. Returns dict or None on EOF."""
-    line = stream.readline()
-    if not line:
-        return None
-    line = line.strip()
-    if not line:
-        return None
-    try:
-        return json.loads(line)
-    except json.JSONDecodeError:
-        return None
+__all__ = ["RESPONSE_SENTINEL", "configure_stdio_utf8", "read_interactive_request"]

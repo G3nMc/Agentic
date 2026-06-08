@@ -1,4 +1,13 @@
-"""Ollama local LLM backend with function calling support."""
+"""Ollama backend (multi_mode) with function calling support, talking to
+``/api/chat`` via the ``requests`` library.
+
+See :mod:`agent.backends.ollama` for the single-agent-mode
+counterpart. The two are kept separate because they target
+different endpoints (``/api/chat`` here vs ``/api/generate`` there),
+different HTTP libraries (``requests`` vs ``ollama``), and
+different base classes (:class:`LLMBackend` here vs
+:class:`common.backends.backend_base.ModelBackend` there).
+"""
 
 from typing import List, Dict, Any, Optional
 import json

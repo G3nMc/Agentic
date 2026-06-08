@@ -1,0 +1,181 @@
+#!/usr/bin/env python3
+"""Shared helpers for the two CLI orchestrators.
+
+Both ``orchestrator.py`` (single-agent) and ``orchestrator_multi.py``
+(multi-agent) expose the same JSON-line stdin/stdout protocol to the
+Flutter UI and share several pieces of plumbing:
+
+  - Normalising caller-supplied chat history into a safe shape.
+  - Prefixing a stateless prompt with that history.
+  - Loading the optional filesystem-filter JSON config.
+  - Loading the optional db-connections JSON config.
+
+These helpers live here so the two entry points stay slim and stay in
+sync. They are intentionally module-level functions (no class) to keep
+the public surface of the two orchestrator scripts unchanged.
+
+Nothing in this module touches argparse, the orchestrator classes, or
+the interactive loop itself — those bits remain in the two scripts
+because their shape genuinely differs between modes.
+"""
+
+from __future__ import annotations
+
+import json
+import sys
+from typing import Any, Dict, List, Optional
+
+
+def _normalise_external_history(raw: Any) -> List[Dict[str, str]]:
+    """Return caller-supplied visible chat turns in a safe role/content shape.
+
+    Drops anything that isn't a dict with a recognised role
+    (``user``/``assistant``/``system``) and a non-empty content. The
+    Flutter UI passes the user-visible chat log this way so the
+    orchestrator can prime the model with prior context after a
+    ``new_session`` reset.
+    """
+    if not isinstance(raw, list):
+        return []
+    history: List[Dict[str, str]] = []
+    for msg in raw:
+        if not isinstance(msg, dict):
+            continue
+        role = str(msg.get("role") or "").strip().lower()
+        content = str(msg.get("content") or "")
+        if role not in ("user", "assistant", "system") or not content.strip():
+            continue
+        history.append({"role": role, "content": content})
+    return history
+
+
+def _prompt_with_visible_history(prompt: str, history: List[Dict[str, str]]) -> str:
+    """Prefix a stateless prompt with the visible chat history.
+
+    Used by stateless workflows (e.g. Team Mode in multi_mode) where the
+    orchestrator does not carry conversational state across calls.
+    Returns ``prompt`` unchanged when history is empty.
+    """
+    if not history:
+        return prompt
+    lines = [
+        "Use the following visible chat history as authoritative context for "
+        "the latest user request. It is ordered oldest to newest.",
+        "--- CHAT HISTORY ---",
+    ]
+    for msg in history:
+        lines.append(f"[{msg['role']}] {msg['content']}")
+    lines.extend(
+        [
+            "--- END CHAT HISTORY ---",
+            "",
+            "Latest user request:",
+            prompt,
+        ]
+    )
+    return "\n".join(lines)
+
+
+def _load_path_filter(
+    filters_config_path: str,
+    base_path: str,
+    log_prefix: str = "orch",
+):
+    """Read the optional filters JSON file and build a :class:`PathFilter`.
+
+    Returns ``None`` when the path is empty/missing or unreadable; the
+    ToolRegistry treats ``None`` as "filter off" (only the hardcoded
+    baseline of ``.git``, ``__pycache__``, etc. applies). Failures are
+    logged to stderr with ``log_prefix`` so each orchestrator stays
+    identifiable in shared log streams.
+    """
+    path = (filters_config_path or "").strip()
+    if not path:
+        return None
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            cfg = json.load(f)
+    except FileNotFoundError:
+        print(
+            f"[{log_prefix}] --filters-config '{path}' not found; ignoring.",
+            file=sys.stderr,
+        )
+        return None
+    except (json.JSONDecodeError, OSError) as ex:
+        print(
+            f"[{log_prefix}] --filters-config could not be read ({ex}); ignoring.",
+            file=sys.stderr,
+        )
+        return None
+    if not isinstance(cfg, dict):
+        print(
+            f"[{log_prefix}] --filters-config did not contain an object; ignoring.",
+            file=sys.stderr,
+        )
+        return None
+    try:
+        from common.path_filter import PathFilter
+    except ImportError as ex:
+        print(f"[{log_prefix}] Cannot import path_filter: {ex}", file=sys.stderr)
+        return None
+    return PathFilter.from_config(base_path, cfg)
+
+
+def _load_db_connections(
+    config_path: str,
+    log_prefix: str = "orch",
+) -> Dict[str, Dict[str, str]]:
+    """Read the optional db-connections JSON file and return a dict.
+
+    The Flutter Settings UI writes a list of ``{"key", "value", "type"}``
+    entries; this helper converts it into the dict shape the
+    ``db_query`` tool expects (keyed by connection name). Returns an
+    empty dict for any failure so the orchestrator still starts — the
+    ``db_query`` tool will just report "no connections available" until
+    the user fixes the file.
+    """
+    path = (config_path or "").strip()
+    if not path:
+        return {}
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            raw = json.load(f)
+    except FileNotFoundError:
+        print(
+            f"[{log_prefix}] --db-connections-config '{path}' not found; ignoring.",
+            file=sys.stderr,
+        )
+        return {}
+    except (json.JSONDecodeError, OSError) as ex:
+        print(
+            f"[{log_prefix}] --db-connections-config could not be read ({ex}); "
+            "ignoring.",
+            file=sys.stderr,
+        )
+        return {}
+    if not isinstance(raw, list):
+        print(
+            f"[{log_prefix}] --db-connections-config did not contain a list; "
+            "ignoring.",
+            file=sys.stderr,
+        )
+        return {}
+    connections: Dict[str, Dict[str, str]] = {}
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        key = item.get("key")
+        value = item.get("value", "")
+        conn_type = item.get("type", "sqlite")
+        if not isinstance(key, str) or not key:
+            continue
+        connections[key] = {"value": value, "type": conn_type}
+    return connections
+
+
+__all__ = [
+    "_normalise_external_history",
+    "_prompt_with_visible_history",
+    "_load_path_filter",
+    "_load_db_connections",
+]

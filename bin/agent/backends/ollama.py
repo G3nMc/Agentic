@@ -1,8 +1,21 @@
-"""Local / cloud Ollama backend via the official `ollama` Python library.
+"""Local / cloud Ollama backend (single-agent mode) via the official
+`ollama` Python library.
 
 Uses `/api/generate` (not `/api/chat`) so the same endpoint works for
 both raw-completion and chat-formatted requests.  The `messages` list is
 converted into a single `prompt` string + optional `system` field.
+
+NOTE on coexistence with :mod:`multi_mode.backends.ollama`:
+The two ``ollama.py`` files implement distinct APIs that cannot be
+merged without breaking one of the orchestrators:
+
+  - This file uses the ``ollama`` library and ``/api/generate`` and
+    targets :class:`common.backends.backend_base.ModelBackend`
+    (used by ``orchestrator.py``).
+  - :mod:`multi_mode.backends.ollama` uses ``requests`` and
+    ``/api/chat`` and targets
+    :class:`multi_mode.backends.base.LLMBackend` (used by
+    ``orchestrator_multi.py``).
 """
 
 from __future__ import annotations

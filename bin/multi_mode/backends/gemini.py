@@ -1,4 +1,12 @@
-"""Google Gemini API backend with native function calling."""
+"""Google Gemini backend (multi_mode) with native function calling.
+
+See :mod:`agent.backends.gemini` for the single-agent-mode
+counterpart. The two are kept separate because they target
+different SDKs (``google.generativeai`` here vs ``google-genai``
+there) and different base classes (:class:`LLMBackend` here vs
+:class:`common.backends.backend_base.ModelBackend` there).
+Merging requires first unifying the two backend base classes.
+"""
 
 from typing import List, Dict, Any, Optional
 import json

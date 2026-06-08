@@ -1,4 +1,10 @@
-"""OpenRouter API backend (OpenAI-compatible)."""
+"""OpenRouter backend (multi_mode), OpenAI-compatible — inherits from
+:class:`multi_mode.backends.openai.OpenAIBackend` (openai SDK).
+
+See :mod:`agent.backends.openrouter` for the single-agent
+counterpart (urllib-based ``OpenAICompatBackend``). Merge
+requires unifying the two backend base classes.
+"""
 
 from typing import List, Dict, Any, Optional
 

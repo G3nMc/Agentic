@@ -1,6 +1,6 @@
 ﻿#!/usr/bin/env python3
 """
-Orchestrator v2 â€” entry point for the new multi_mode workflow.
+Multi-agent Orchestrator — entry point for the new multi_mode workflow.
 ==============================================================
 
 Uses the multi_mode package (single-loop Reasoner + Summarizer)
@@ -18,8 +18,8 @@ Other modes:
   (no flag)        Read one prompt from stdin (raw text), answer once, exit.
 
 Usage:
-  python orchestrator_v2.py --reasoner-provider openai --reasoner-model gpt-4o --interactive
-  python orchestrator_v2.py --reasoner-provider ollama --reasoner-model llama3:8b
+  python orchestrator_multi.py --reasoner-provider openai --reasoner-model gpt-4o --interactive
+  python orchestrator_multi.py --reasoner-provider ollama --reasoner-model llama3:8b
 """
 
 from __future__ import annotations
@@ -45,12 +45,33 @@ import json
 import subprocess
 from typing import Any, Dict, List
 
-# Reuse the old I/O protocol utilities for compatibility
-from agent.utils.io_protocol import (
+# Reuse the shared I/O protocol utilities (the agent.utils.io_protocol
+# shim re-exports the same symbols for backwards compatibility).
+from common.utils.io_protocol import (
     RESPONSE_SENTINEL,
     configure_stdio_utf8,
     read_interactive_request,
 )
+# Shared helpers between the two CLI orchestrators. We import the base
+# functions and re-bind them through thin wrappers below to preserve the
+# historical "[orch_multi]" log prefix without changing call sites.
+from orchestrator_base import (
+    _normalise_external_history,
+    _prompt_with_visible_history,
+    _load_path_filter as _base_load_path_filter,
+    _load_db_connections as _base_load_db_connections,
+)
+
+
+def _load_path_filter(filters_config_path: str, base_path: str):
+    """Multi-mode wrapper preserving the historical ``[orch_multi]`` log prefix."""
+    return _base_load_path_filter(filters_config_path, base_path, log_prefix="orch_multi")
+
+
+def _load_db_connections(config_path: str):
+    """Multi-mode wrapper preserving the historical ``[orch_multi]`` log prefix."""
+    return _base_load_db_connections(config_path, log_prefix="orch_multi")
+
 
 configure_stdio_utf8()
 
@@ -83,114 +104,11 @@ def _install_dependencies() -> None:
     print("[deps] All dependencies installed.", file=sys.stderr)
 
 
-def _normalise_external_history(raw: Any) -> List[Dict[str, str]]:
-    """Return caller-supplied visible chat turns in a safe role/content shape."""
-    if not isinstance(raw, list):
-        return []
-    history: List[Dict[str, str]] = []
-    for msg in raw:
-        if not isinstance(msg, dict):
-            continue
-        role = str(msg.get("role") or "").strip().lower()
-        content = str(msg.get("content") or "")
-        if role not in ("user", "assistant", "system") or not content.strip():
-            continue
-        history.append({"role": role, "content": content})
-    return history
-
-
-def _prompt_with_visible_history(prompt: str, history: List[Dict[str, str]]) -> str:
-    """Prefix stateless Team Mode prompts with the visible chat history."""
-    if not history:
-        return prompt
-    lines = [
-        "Use the following visible chat history as authoritative context for "
-        "the latest user request. It is ordered oldest to newest.",
-        "--- CHAT HISTORY ---",
-    ]
-    for msg in history:
-        role = msg["role"]
-        content = msg["content"]
-        lines.append(f"[{role}] {content}")
-    lines.extend(
-        [
-            "--- END CHAT HISTORY ---",
-            "",
-            "Latest user request:",
-            prompt,
-        ]
-    )
-    return "\n".join(lines)
-
-
-def _load_path_filter(filters_config_path: str, base_path: str):
-    """Read the optional filters JSON file and build a PathFilter."""
-    path = (filters_config_path or "").strip()
-    if not path:
-        return None
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            cfg = json.load(f)
-    except FileNotFoundError:
-        print(f"[orch_v2] --filters-config '{path}' not found; ignoring.", file=sys.stderr)
-        return None
-    except (json.JSONDecodeError, OSError) as ex:
-        print(
-            f"[orch_v2] --filters-config could not be read ({ex}); ignoring.",
-            file=sys.stderr,
-        )
-        return None
-    if not isinstance(cfg, dict):
-        print(
-            f"[orch_v2] --filters-config did not contain an object; ignoring.",
-            file=sys.stderr,
-        )
-        return None
-    try:
-        from agent.path_filter import PathFilter
-    except ImportError as ex:
-        print(f"[orch_v2] Cannot import path_filter: {ex}", file=sys.stderr)
-        return None
-    return PathFilter.from_config(base_path, cfg)
-
-
-def _load_db_connections(config_path: str):
-    """Read the optional db-connections JSON file and return a dict."""
-    path = (config_path or "").strip()
-    if not path:
-        return {}
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            raw = json.load(f)
-    except FileNotFoundError:
-        print(
-            f"[orch_v2] --db-connections-config '{path}' not found; ignoring.",
-            file=sys.stderr,
-        )
-        return {}
-    except (json.JSONDecodeError, OSError) as ex:
-        print(
-            f"[orch_v2] --db-connections-config could not be read ({ex}); ignoring.",
-            file=sys.stderr,
-        )
-        return {}
-    if not isinstance(raw, list):
-        print(
-            "[orch_v2] --db-connections-config did not contain a list; ignoring.",
-            file=sys.stderr,
-        )
-        return {}
-    connections = {}
-    for item in raw:
-        if not isinstance(item, dict):
-            continue
-        key = item.get("key")
-        value = item.get("value", "")
-        conn_type = item.get("type", "sqlite")
-        if not isinstance(key, str) or not key:
-            continue
-        connections[key] = {"value": value, "type": conn_type}
-    return connections
+# `_normalise_external_history`, `_prompt_with_visible_history`,
+# `_load_path_filter` and `_load_db_connections` are imported from
+# :mod:`orchestrator_base` at the top of this file. The two ``_load_*``
+# names are bound to multi-mode-specific wrappers that pass
+# ``log_prefix="orch_multi"``; call sites below stay unchanged.
 
 
 def build_config_from_args(args):
@@ -268,12 +186,12 @@ def _create_orchestrator(args):
         dangerous = {"write_file", "append_file", "delete_file", "run_command", "patch_file", "move_file"}
         for name in dangerous:
             orchestrator.tool_registry.unregister(name)
-        print("[orch_v2] SANDBOX MODE: write/delete/run_command are disabled.", file=sys.stderr)
+        print("[orch_multi] SANDBOX MODE: write/delete/run_command are disabled.", file=sys.stderr)
 
     # Disable all tools if requested
     if args.disable_tools:
         orchestrator.tool_registry = ToolRegistry()  # empty registry
-        print("[orch_v2] Tools disabled â€” running in plain-chat mode.", file=sys.stderr)
+        print("[orch_multi] Tools disabled — running in plain-chat mode.", file=sys.stderr)
 
     return orchestrator
 
@@ -284,7 +202,7 @@ def _run_interactive_loop(args) -> None:
     if hasattr(sys.stdout, 'reconfigure'):
         sys.stdout.reconfigure(line_buffering=True)
     print("__READY__", flush=True)
-    print("[orch_v2] Ready for requests.", file=sys.stderr, flush=True)
+    print("[orch_multi] Ready for requests.", file=sys.stderr, flush=True)
 
     orchestrator = None
     try:
@@ -322,7 +240,7 @@ def _run_interactive_loop(args) -> None:
             print(RESPONSE_SENTINEL)
             sys.stdout.flush()
     except KeyboardInterrupt:
-        print("[orch_v2] Shutdown requested.", file=sys.stderr)
+        print("[orch_multi] Shutdown requested.", file=sys.stderr)
 
 
 def _run_oneshot(args) -> None:
@@ -340,7 +258,7 @@ def _run_oneshot(args) -> None:
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Orchestrator v2 â€” multi_mode-based workflow",
+        description="Multi-agent Orchestrator — multi_mode-based workflow",
     )
 
     # Reasoner model
@@ -477,26 +395,26 @@ def main():
         _install_dependencies()
         sys.exit(0)
 
-    print("[orch_v2] Starting...", file=sys.stderr, flush=True)
+    print("[orch_multi] Starting...", file=sys.stderr, flush=True)
 
     # Load optional filters and DB connections (for future use)
     try:
         path_filter = _load_path_filter(args.filters_config, args.base_path)
         if path_filter is not None:
             active = path_filter.summary_for_prompt(top=3) or "(none)"
-            print(f"[orch_v2] Filesystem filter active:\n{active}", file=sys.stderr, flush=True)
+            print(f"[orch_multi] Filesystem filter active:\n{active}", file=sys.stderr, flush=True)
     except Exception as ex:
-        print(f"[orch_v2] Failed to load path filter: {ex}", file=sys.stderr, flush=True)
+        print(f"[orch_multi] Failed to load path filter: {ex}", file=sys.stderr, flush=True)
 
     try:
         db_connections = _load_db_connections(args.db_connections_config)
         if db_connections:
             print(
-                f"[orch_v2] Database connections loaded: {sorted(db_connections.keys())}",
+                f"[orch_multi] Database connections loaded: {sorted(db_connections.keys())}",
                 file=sys.stderr, flush=True,
             )
     except Exception as ex:
-        print(f"[orch_v2] Failed to load DB connections: {ex}", file=sys.stderr, flush=True)
+        print(f"[orch_multi] Failed to load DB connections: {ex}", file=sys.stderr, flush=True)
 
     if args.interactive:
         _run_interactive_loop(args)

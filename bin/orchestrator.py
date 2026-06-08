@@ -44,11 +44,17 @@ sys.dont_write_bytecode = True
 
 # Ensure ``import agent`` works whether the script is launched as
 # ``python bin/orchestrator.py`` or ``python -m bin.orchestrator``.
+# Also expose the project root (parent of bin/) so transitive imports
+# of the form ``bin.common.*`` resolve — these are used by sibling
+# packages and are kept for backwards compatibility.
 import os
 
 _THIS_DIR = os.path.dirname(os.path.abspath(__file__))
+_PROJECT_ROOT = os.path.dirname(_THIS_DIR)
 if _THIS_DIR not in sys.path:
     sys.path.insert(0, _THIS_DIR)
+if _PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, _PROJECT_ROOT)
 
 import argparse
 import json
@@ -59,36 +65,28 @@ from agent.backends.gemini import GeminiBackend
 from agent.backends.ollama import OllamaBackend
 from agent.loop import Orchestrator
 from agent.path_filter import PathFilter
-from agent.policy import SecurityConfig
-from agent.utils.bootstrap import (
+from common.policy import SecurityConfig
+from common.utils.bootstrap import (
     BACKEND_REQUIRED_MODULES,
     check_dependencies,
     import_hf_runtime,
     install_dependencies,
 )
-from agent.utils.io_protocol import (
+from common.utils.io_protocol import (
     RESPONSE_SENTINEL,
     configure_stdio_utf8,
     read_interactive_request,
 )
+# Shared helpers between the two CLI orchestrators. The default log
+# prefix in orchestrator_base is "orch", which matches the existing
+# stderr output of this script — no wrapping needed.
+from orchestrator_base import (
+    _normalise_external_history,
+    _load_path_filter,
+    _load_db_connections,
+)
 
 configure_stdio_utf8()
-
-
-def _normalise_external_history(raw: Any) -> List[Dict[str, str]]:
-    """Return caller-supplied visible chat turns in a safe role/content shape."""
-    if not isinstance(raw, list):
-        return []
-    history: List[Dict[str, str]] = []
-    for msg in raw:
-        if not isinstance(msg, dict):
-            continue
-        role = str(msg.get("role") or "").strip().lower()
-        content = str(msg.get("content") or "")
-        if role not in ("user", "assistant", "system") or not content.strip():
-            continue
-        history.append({"role": role, "content": content})
-    return history
 
 
 def main():
@@ -368,82 +366,10 @@ def main():
         _run_oneshot(orchestrator)
 
 
-def _load_path_filter(filters_config_path: str, base_path: str):
-    """Read the optional filters JSON file and build a PathFilter.
-
-    Returns None when the path is empty/missing or unreadable; the
-    ToolRegistry treats None as "filter off" (only the hardcoded baseline
-    of `.git`, `__pycache__`, etc. applies). Logs failures to stderr so
-    the user can spot a typo without the orchestrator refusing to start.
-    """
-    path = (filters_config_path or "").strip()
-    if not path:
-        return None
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            cfg = json.load(f)
-    except FileNotFoundError:
-        print(f"[orch] --filters-config '{path}' not found; ignoring.", file=sys.stderr)
-        return None
-    except (json.JSONDecodeError, OSError) as e:
-        print(
-            f"[orch] --filters-config could not be read ({e}); ignoring.",
-            file=sys.stderr,
-        )
-        return None
-    if not isinstance(cfg, dict):
-        print(
-            f"[orch] --filters-config did not contain an object; ignoring.",
-            file=sys.stderr,
-        )
-        return None
-    return PathFilter.from_config(base_path, cfg)
-
-
-def _load_db_connections(config_path: str):
-    """Read the optional db-connections JSON file and return a dict.
-
-    The Flutter Settings UI writes a list of {"key", "value", "type"} entries;
-    we convert it into the dict shape the db_query tool expects (keyed by
-    connection name). Returns an empty dict for any failure so the
-    orchestrator still starts — db_query will just report "no connections
-    available" until the user fixes the file.
-    """
-    path = (config_path or "").strip()
-    if not path:
-        return {}
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            raw = json.load(f)
-    except FileNotFoundError:
-        print(
-            f"[orch] --db-connections-config '{path}' not found; ignoring.",
-            file=sys.stderr,
-        )
-        return {}
-    except (json.JSONDecodeError, OSError) as e:
-        print(
-            f"[orch] --db-connections-config could not be read ({e}); ignoring.",
-            file=sys.stderr,
-        )
-        return {}
-    if not isinstance(raw, list):
-        print(
-            "[orch] --db-connections-config did not contain a list; ignoring.",
-            file=sys.stderr,
-        )
-        return {}
-    connections = {}
-    for item in raw:
-        if not isinstance(item, dict):
-            continue
-        key = item.get("key")
-        value = item.get("value", "")
-        conn_type = item.get("type", "sqlite")
-        if not isinstance(key, str) or not key:
-            continue
-        connections[key] = {"value": value, "type": conn_type}
-    return connections
+# `_load_path_filter` and `_load_db_connections` now live in
+# :mod:`orchestrator_base` and are imported at the top of this file.
+# The base versions accept an optional ``log_prefix`` arg defaulting to
+# ``"orch"`` — which is exactly the prefix this script used historically.
 
 
 def _build_backend_for_args(args):
