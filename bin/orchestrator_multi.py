@@ -43,7 +43,7 @@ if _PROJECT_ROOT not in sys.path:
 import argparse
 import json
 import subprocess
-
+from typing import Any, Dict, List
 
 # Reuse the shared I/O protocol utilities (the agent.utils.io_protocol
 # shim re-exports the same symbols for backwards compatibility).
@@ -80,14 +80,14 @@ configure_stdio_utf8()
 
 
 def _install_dependencies() -> None:
-    """Install required Python packages for multi_mode backends."""
+    """Install the single HTTP dependency every backend needs.
+
+    After the SDK-free refactor (see :mod:`common.backends.http_client`)
+    every model backend talks to its provider via plain REST through
+    ``requests``. No provider SDK is required anymore.
+    """
     packages = [
-        "openai",
-        "anthropic",
-        "google-genai",
-        "groq",
         "requests",
-        "tiktoken",
     ]
     python_exe = sys.executable
     for pkg in packages:

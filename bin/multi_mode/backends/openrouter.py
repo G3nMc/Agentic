@@ -1,26 +1,22 @@
-"""OpenRouter backend (multi_mode), OpenAI-compatible — inherits from
-:class:`multi_mode.backends.openai.OpenAIBackend` (openai SDK).
+"""OpenRouter backend for multi_mode -- pure REST.
 
-See :mod:`agent.backends.openrouter` for the single-agent
-counterpart (urllib-based ``OpenAICompatBackend``). Merge
-requires unifying the two backend base classes.
+OpenRouter exposes an OpenAI-compatible chat/completions endpoint, so
+this is a thin subclass that just sets the base URL. No SDK.
 """
 
-from typing import List, Dict, Any, Optional
+from __future__ import annotations
 
 from multi_mode.backends.openai import OpenAIBackend
 from multi_mode.config.models import ModelConfig
 
 
 class OpenRouterBackend(OpenAIBackend):
-    """OpenRouter API backend (OpenAI-compatible)."""
-    
+    """OpenRouter OpenAI-compatible chat/completions."""
+
+    DEFAULT_BASE_URL = "https://openrouter.ai/api/v1"
+
     def __init__(self, config: ModelConfig):
-        # OpenRouter uses OpenAI-compatible API
+        # If the user didn't override base_url, point to OpenRouter.
+        if not config.base_url:
+            config.base_url = self.DEFAULT_BASE_URL
         super().__init__(config)
-        self.client.base_url = config.base_url or "https://openrouter.ai/api/v1"
-        # Add OpenRouter specific headers
-        self.client.default_headers = {
-            "HTTP-Referer": "https://github.com/agent-core",
-            "X-Title": "Agent Core",
-        }

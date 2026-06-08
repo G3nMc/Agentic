@@ -1,171 +1,167 @@
-"""Google Gemini backend (multi_mode) with native function calling.
+"""Google Gemini backend for multi_mode -- pure REST.
 
-See :mod:`agent.backends.gemini` for the single-agent-mode
-counterpart. The two are kept separate because they target
-different SDKs (``google.generativeai`` here vs ``google-genai``
-there) and different base classes (:class:`LLMBackend` here vs
-:class:`common.backends.backend_base.ModelBackend` there).
-Merging requires first unifying the two backend base classes.
+Same wire format as :mod:`agent.backends.gemini` (single-agent mode):
+SSE stream of ``streamGenerateContent``. No SDK import.
 """
 
-from typing import List, Dict, Any, Optional
-import json
+from __future__ import annotations
 
-from multi_mode.backends.base import LLMBackend, CompletionResponse
+import sys
+import time
+from typing import Any, Dict, List, Optional, Tuple
+
+from bin.common.backends.http_client import (
+    HttpError,
+    RateLimitError,
+    ServerError,
+    stream_sse,
+)
+from multi_mode.backends.base import CompletionResponse, LLMBackend
 from multi_mode.config.models import ModelConfig
 
 
+def _log(msg: str) -> None:
+    print(msg, file=sys.stderr, flush=True)
+
+
 class GeminiBackend(LLMBackend):
-    """Google Gemini API backend with native function calling support."""
-    
+    """Google AI Studio / Gemini Cloud over plain REST."""
+
+    DEFAULT_BASE_URL = "https://generativelanguage.googleapis.com/v1beta"
+
     def __init__(self, config: ModelConfig):
         super().__init__(config)
-        try:
-            import google.generativeai as genai
-            genai.configure(api_key=config.api_key)
-            self.model = genai.GenerativeModel(config.model)
-            self._model = config.model
-        except ImportError:
-            raise RuntimeError("google-generativeai package not installed. Run: pip install google-generativeai")
-    
+        if not config.api_key:
+            raise RuntimeError("GeminiBackend requires config.api_key.")
+        if not config.model:
+            raise RuntimeError("GeminiBackend requires config.model.")
+        self._base_url = (config.base_url or self.DEFAULT_BASE_URL).rstrip("/")
+        _log(
+            f"[Gemini:init] model={config.model} base_url={self._base_url} "
+            f"role={getattr(config, 'role', '?')}"
+        )
+
+    @staticmethod
+    def _to_contents(
+        messages: List[Dict[str, Any]],
+    ) -> Tuple[str, List[Dict[str, Any]]]:
+        system_parts: List[str] = []
+        contents: List[Dict[str, Any]] = []
+        for msg in messages or []:
+            if not isinstance(msg, dict):
+                continue
+            role = (msg.get("role") or "").lower()
+            content = msg.get("content") or ""
+            if not isinstance(content, str):
+                content = str(content)
+            if not content.strip():
+                continue
+            if role == "system":
+                system_parts.append(content)
+                continue
+            gemini_role = "model" if role == "assistant" else "user"
+            contents.append({"role": gemini_role, "parts": [{"text": content}]})
+        return "\n\n".join(system_parts), contents
+
     def complete(
         self,
         messages: List[Dict[str, Any]],
         tools: Optional[List[Dict[str, Any]]] = None,
-        **kwargs
+        **kwargs,
     ) -> CompletionResponse:
-        """Complete using Gemini API with native function calling."""
-        # Convert messages to Gemini format
-        gemini_messages = []
-        system_instruction = None
-        
-        for msg in messages:
-            role = msg.get("role")
-            content = msg.get("content", "")
-            
-            if role == "system":
-                system_instruction = content
-            elif role == "tool":
-                # Tool result
-                tool_call_id = msg.get("tool_call_id")
-                is_error = msg.get("metadata", {}).get("error", False)
-                gemini_messages.append({
-                    "role": "user",
-                    "parts": [
-                        {
-                            "function_response": {
-                                "name": msg.get("metadata", {}).get("tool_name", "unknown"),
-                                "response": {
-                                    "content": content,
-                                    "error": is_error,
-                                },
-                                "id": tool_call_id,
-                            }
-                        }
-                    ],
-                })
-            elif role == "assistant" and msg.get("tool_calls"):
-                # Assistant with function calls
-                function_calls = []
-                for tc in msg["tool_calls"]:
-                    function_calls.append({
-                        "name": tc.get("name", ""),
-                        "args": tc.get("arguments", {}),
-                        "id": tc.get("id", ""),
-                    })
-                gemini_messages.append({
-                    "role": "model",
-                    "parts": [{"function_call": fc} for fc in function_calls],
-                })
-            else:
-                # Regular message
-                gemini_role = "user" if role == "user" else "model"
-                gemini_messages.append({
-                    "role": gemini_role,
-                    "parts": [content],
-                })
-        
-        # Prepare generation config
-        generation_config = {
+        # [native-tools-removed]
+        _ = tools
+
+        system_instruction, contents = self._to_contents(messages)
+
+        generation_config: Dict[str, Any] = {
             "temperature": kwargs.get("temperature", self.config.temperature),
-            "max_output_tokens": kwargs.get("max_tokens", self.config.max_tokens),
+            "maxOutputTokens": kwargs.get("max_tokens", self.config.max_tokens),
         }
-        
-        # Prepare tools
-        gemini_tools = None
-        if tools:
-            gemini_tools = []
-            for tool in tools:
-                fn = tool.get("function", {})
-                gemini_tools.append({
-                    "function_declarations": [{
-                        "name": fn.get("name"),
-                        "description": fn.get("description", ""),
-                        "parameters": fn.get("parameters", {}),
-                    }]
-                })
-        
-        # Generate content
+        stop = kwargs.get("stop")
+        if stop:
+            generation_config["stopSequences"] = list(stop)
+
+        payload: Dict[str, Any] = {
+            "contents": contents,
+            "generationConfig": generation_config,
+        }
         if system_instruction:
-            response = self.model.generate_content(
-                gemini_messages,
-                generation_config=generation_config,
-                tools=gemini_tools,
-                system_instruction=system_instruction,
-            )
-        else:
-            response = self.model.generate_content(
-                gemini_messages,
-                generation_config=generation_config,
-                tools=gemini_tools,
-            )
-        
-        content = None
-        tool_calls = []
-        
-        if response.candidates:
-            candidate = response.candidates[0]
-            if candidate.content and candidate.content.parts:
-                for part in candidate.content.parts:
-                    if hasattr(part, 'text') and part.text:
-                        content = part.text
-                    elif hasattr(part, 'function_call') and part.function_call:
-                        fc = part.function_call
-                        tool_calls.append({
-                            "id": getattr(fc, 'id', ''),
-                            "name": fc.name,
-                            "arguments": dict(fc.args) if fc.args else {},
-                        })
-        
-        # Get usage metadata
-        usage = {}
-        if hasattr(response, 'usage_metadata') and response.usage_metadata:
-            usage = {
-                "prompt_tokens": response.usage_metadata.prompt_token_count,
-                "completion_tokens": response.usage_metadata.candidates_token_count,
-                "total_tokens": response.usage_metadata.total_token_count,
-            }
-        
-        finish_reason = "stop"
-        if response.candidates and response.candidates[0].finish_reason:
-            finish_reason = str(response.candidates[0].finish_reason)
-        
-        return CompletionResponse(
-            content=content,
-            tool_calls=tool_calls,
-            finish_reason=finish_reason,
-            usage=usage,
+            payload["systemInstruction"] = {"parts": [{"text": system_instruction}]}
+
+        url = (
+            f"{self._base_url}/models/{self.config.model}:streamGenerateContent"
+            f"?alt=sse&key={self.config.api_key}"
         )
-    
-    def count_tokens(self, text: str) -> int:
-        """Count tokens using Gemini's token counter."""
+
+        _log(
+            f"[Gemini:complete] model={self.config.model} msgs={len(contents)} "
+            f"system={bool(system_instruction)} "
+            f"max_tokens={generation_config['maxOutputTokens']} "
+            f"stop={generation_config.get('stopSequences')}"
+        )
+
+        parts: List[str] = []
+        finish_reason = "stop"
+        chunk_count = 0
+        last_heartbeat = time.time()
+        usage_tokens = 0
+
         try:
-            return self.model.count_tokens(text).total_tokens
-        except Exception:
-            return len(text) // 4
-    
+            for chunk in stream_sse(url, payload, label="Gemini"):
+                chunk_count += 1
+                candidates = chunk.get("candidates") or []
+                if candidates:
+                    cand0 = candidates[0] or {}
+                    content_obj = cand0.get("content") or {}
+                    for part in content_obj.get("parts") or []:
+                        text_piece = part.get("text")
+                        if text_piece:
+                            parts.append(text_piece)
+                    fr = cand0.get("finishReason")
+                    if fr:
+                        finish_reason = {
+                            "STOP": "stop",
+                            "MAX_TOKENS": "length",
+                            "SAFETY": "content_filter",
+                            "RECITATION": "content_filter",
+                            "OTHER": "stop",
+                        }.get(fr, str(fr).lower())
+                usage = chunk.get("usageMetadata") or {}
+                if usage:
+                    usage_tokens = int(
+                        usage.get("promptTokenCount", 0)
+                        + usage.get("candidatesTokenCount", 0)
+                    )
+                now = time.time()
+                if now - last_heartbeat >= 5.0:
+                    _log(
+                        f"[Gemini:streaming] model={self.config.model} "
+                        f"chunks={chunk_count} chars={sum(len(p) for p in parts)}"
+                    )
+                    last_heartbeat = now
+        except RateLimitError as e:
+            raise RuntimeError(f"Gemini rate limit: {e}") from e
+        except (ServerError, HttpError) as e:
+            raise RuntimeError(f"Gemini HTTP error: {e}") from e
+
+        content = "".join(parts).strip()
+        _log(
+            f"[Gemini:done] model={self.config.model} content_len={len(content)} "
+            f"finish_reason={finish_reason!r} chunks={chunk_count} usage={usage_tokens}"
+        )
+        return CompletionResponse(
+            content=content if content else None,
+            tool_calls=[],
+            finish_reason=finish_reason,
+            usage={"total_tokens": usage_tokens} if usage_tokens else {},
+        )
+
+    def count_tokens(self, text: str) -> int:
+        return max(1, len(text) // 4)
+
     def supports_native_tools(self) -> bool:
-        return True
-    
+        return False
+
     def get_tool_format(self) -> str:
         return "gemini"
