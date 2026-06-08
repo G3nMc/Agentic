@@ -70,8 +70,7 @@ class OrchestratorManager {
   // Each entry is one agent activation. Only fires when the orchestrator was
   // launched with `multiAgent: true` and Python actually returned a `trace`
   // array in its response payload. Single-agent mode leaves this idle.
-  final StreamController<List<Map<String, Object?>>> _traceController =
-      StreamController<List<Map<String, Object?>>>.broadcast();
+  final StreamController<List<Map<String, Object?>>> _traceController = StreamController<List<Map<String, Object?>>>.broadcast();
   Stream<List<Map<String, Object?>>> get traceStream => _traceController.stream;
   List<Map<String, Object?>> _lastTrace = const [];
   List<Map<String, Object?>> get lastTrace => List.unmodifiable(_lastTrace);
@@ -352,8 +351,7 @@ class OrchestratorManager {
 
   /// Platform-appropriate Python executable used as a fallback when the
   /// user has not configured an explicit interpreter in Settings â†’ Developer.
-  static String get defaultPythonExecutable =>
-      Platform.isWindows ? 'python' : 'python3';
+  static String get defaultPythonExecutable => Platform.isWindows ? 'python' : 'python3';
 
   /// Resolves the Python interpreter to launch the orchestrator with.
   /// Honours the user-configured override in SettingsRepository, otherwise
@@ -379,8 +377,7 @@ class OrchestratorManager {
       ...Platform.environment,
       'PYTHONDONTWRITEBYTECODE': '1',
     };
-    final flutterSdk =
-        (await SettingsRepository.instance.getFlutterSdkPath())?.trim();
+    final flutterSdk = (await SettingsRepository.instance.getFlutterSdkPath())?.trim();
     if (flutterSdk == null || flutterSdk.isEmpty) return base;
     final flutterBin = '$flutterSdk${Platform.pathSeparator}bin';
     final currentPath = base['PATH'] ?? '';
@@ -396,7 +393,7 @@ class OrchestratorManager {
   /// active. Single-agent mode uses the legacy `orchestrator.py`; multi-agent
   /// mode uses the new `orchestrator_v2.py`.
   static File _resolveScriptPath(bool multiAgent) {
-    final scriptName = multiAgent ? 'orchestrator_v2.py' : 'orchestrator.py';
+    final scriptName = multiAgent ? 'orchestrator_multi.py' : 'orchestrator.py';
     final cwd = Directory.current.path;
     final candidates = <String>[
       '$cwd/bin/$scriptName',
@@ -555,8 +552,7 @@ class OrchestratorManager {
     // Workflow Agents settings panel. This way every existing start-button
     // wiring flips into multi-agent mode automatically once the user enables
     // it, without each caller having to thread the flag through.
-    final effectiveMultiAgent =
-        multiAgent ?? await AgentRoleSettingsRepository.instance.isEnabled();
+    final effectiveMultiAgent = multiAgent ?? await AgentRoleSettingsRepository.instance.isEnabled();
     final backendSettings = BackendSettingsRepository.instance;
 
     // Ollama cloud requires a Bearer key when talking directly to ollama.com.
@@ -642,7 +638,8 @@ class OrchestratorManager {
         args.addAll(['--reasoner-model', reasonerCfg.model]);
         args.addAll(['--temperature', reasonerCfg.temperature.toString()]);
         args.addAll(['--max-tokens', reasonerCfg.maxTokens.toString()]);
-        final rKey = _apiKeyForProvider(rProvider, groqApiKey: groqApiKey, geminiApiKey: geminiApiKey, openRouterApiKey: openRouterApiKey, githubApiKey: githubApiKey, hfToken: hfToken, ollamaApiKey: ollamaApiKey);
+        final rKey = _apiKeyForProvider(rProvider,
+            groqApiKey: groqApiKey, geminiApiKey: geminiApiKey, openRouterApiKey: openRouterApiKey, githubApiKey: githubApiKey, hfToken: hfToken, ollamaApiKey: ollamaApiKey);
         if (rKey != null && rKey.isNotEmpty) {
           args.addAll(['--reasoner-api-key', rKey]);
         }
@@ -652,7 +649,8 @@ class OrchestratorManager {
 
         args.addAll(['--summarizer-provider', sProvider]);
         args.addAll(['--summarizer-model', summarizerCfg.model]);
-        final sKey = _apiKeyForProvider(sProvider, groqApiKey: groqApiKey, geminiApiKey: geminiApiKey, openRouterApiKey: openRouterApiKey, githubApiKey: githubApiKey, hfToken: hfToken, ollamaApiKey: ollamaApiKey);
+        final sKey = _apiKeyForProvider(sProvider,
+            groqApiKey: groqApiKey, geminiApiKey: geminiApiKey, openRouterApiKey: openRouterApiKey, githubApiKey: githubApiKey, hfToken: hfToken, ollamaApiKey: ollamaApiKey);
         if (sKey != null && sKey.isNotEmpty) {
           args.addAll(['--summarizer-api-key', sKey]);
         }
@@ -714,16 +712,13 @@ class OrchestratorManager {
       try {
         final tmp = await getTemporaryDirectory();
         final filtersPath = '${tmp.path}/agentic_filters.json';
-        final filtersJson = await DevFiltersRepository.instance
-            .toFiltersJson(resolvedBasePath);
+        final filtersJson = await DevFiltersRepository.instance.toFiltersJson(resolvedBasePath);
         await File(filtersPath).writeAsString(filtersJson, flush: true);
         // Only attach the flag when the user has at least one rule
         // configured â€” empty config means "no filters" and Python's
         // default already covers that, no need for an extra arg.
-        final hasAnyRule = !filtersJson.contains('"exclude_dirs":[]') ||
-            !filtersJson.contains('"include_dirs":[]') ||
-            !filtersJson.contains('"exclude_files":[]') ||
-            !filtersJson.contains('"include_files":[]');
+        final hasAnyRule =
+            !filtersJson.contains('"exclude_dirs":[]') || !filtersJson.contains('"include_dirs":[]') || !filtersJson.contains('"exclude_files":[]') || !filtersJson.contains('"include_files":[]');
         if (hasAnyRule) {
           args.addAll(['--filters-config', filtersPath]);
           _appendLog('[manager] Filesystem filters written -> $filtersPath');
@@ -775,9 +770,7 @@ class OrchestratorManager {
       // _onProcessExited and complete the ready future with an error.
       // Multi-agent startup is heavier (loads + validates each role's
       // backend before signalling ready), so give it a longer budget.
-      final readyTimeout = effectiveMultiAgent
-          ? const Duration(seconds: 90)
-          : const Duration(seconds: 30);
+      final readyTimeout = effectiveMultiAgent ? const Duration(seconds: 90) : const Duration(seconds: 30);
       await _readyCompleter!.future.timeout(readyTimeout);
 
       _isRunning = true;
@@ -832,9 +825,7 @@ class OrchestratorManager {
       return 'Error: Orchestrator not ready yet.';
     }
 
-    final shouldResetSession = forceHistorySync ||
-        newSession ||
-        (sessionKey != null && sessionKey != _sessionKey);
+    final shouldResetSession = forceHistorySync || newSession || (sessionKey != null && sessionKey != _sessionKey);
     if (shouldResetSession) {
       _sessionKey = sessionKey;
     }
@@ -944,9 +935,7 @@ class OrchestratorManager {
   /// anything before it is treated as noise and discarded. Falls back to the
   /// joined text only if no such envelope exists.
   String _extractResponseFromBuffer() {
-    final cleaned = _activeLines
-        .where((l) => l.trim() != '__READY__')
-        .toList();
+    final cleaned = _activeLines.where((l) => l.trim() != '__READY__').toList();
 
     for (var i = cleaned.length - 1; i >= 0; i--) {
       final line = cleaned[i].trim();
