@@ -4,9 +4,8 @@ from __future__ import annotations
 
 from typing import List
 
-from multi_mode.core.message import ToolCall, ToolResult
-from multi_mode.core.state import WorkflowState
-from multi_mode.tools.executor import ToolExecutor
+from bin.multi_mode import WorkflowState, ToolCall, Message, MessageRole
+from bin.multi_mode.tools.executor import ToolExecutor
 
 
 class Executor:
@@ -36,7 +35,7 @@ class Executor:
         for result in results:
             state.add_tool_result(result)
             # Also add as a message for the conversation history
-            from multi_mode.core.message import Message, MessageRole
+
             msg = Message(
                 role=MessageRole.TOOL,
                 content=result.content if result.is_success() else f"Error: {result.error}",

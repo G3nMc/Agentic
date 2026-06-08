@@ -16,8 +16,9 @@ from bin.common.backends.http_client import (
     ServerError,
     stream_sse,
 )
-from multi_mode.backends.base import CompletionResponse, LLMBackend
-from multi_mode.config.models import ModelConfig
+from bin.multi_mode import ModelConfig
+from bin.multi_mode.backends import LLMBackend
+from bin.multi_mode.backends.base import CompletionResponse
 
 
 def _log(msg: str) -> None:
@@ -43,7 +44,7 @@ class GeminiBackend(LLMBackend):
 
     @staticmethod
     def _to_contents(
-        messages: List[Dict[str, Any]],
+            messages: List[Dict[str, Any]],
     ) -> Tuple[str, List[Dict[str, Any]]]:
         system_parts: List[str] = []
         contents: List[Dict[str, Any]] = []
@@ -64,10 +65,10 @@ class GeminiBackend(LLMBackend):
         return "\n\n".join(system_parts), contents
 
     def complete(
-        self,
-        messages: List[Dict[str, Any]],
-        tools: Optional[List[Dict[str, Any]]] = None,
-        **kwargs,
+            self,
+            messages: List[Dict[str, Any]],
+            tools: Optional[List[Dict[str, Any]]] = None,
+            **kwargs,
     ) -> CompletionResponse:
         # [native-tools-removed]
         _ = tools

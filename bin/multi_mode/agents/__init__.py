@@ -10,9 +10,9 @@ removed; multi_mode now uses a single-loop architecture coordinated by
 ``multi_mode.loop.orchestrator.Orchestrator``.
 """
 
-from multi_mode.agents.reasoner import Reasoner, ReasonerOutput
-from multi_mode.agents.executor import Executor
-from multi_mode.agents.summarizer import Summarizer
+from executor import Executor
+from reasoner import Reasoner, ReasonerOutput
+from summarizer import Summarizer
 
 __all__ = [
     "Reasoner",

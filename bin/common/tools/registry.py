@@ -5,13 +5,12 @@ import re
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Literal, Optional, Tuple, TypeVar
 
-from ..path_filter import PathFilter
 from bin.common.policy import SecurityConfig
 from bin.common.utils.audit import audit_log, setup_audit_logger
 from bin.common.utils.circuit_breaker import CircuitBreaker
+from ..path_filter import PathFilter
 
 T = TypeVar("T")
-
 
 # Exact format the system prompt mandates: <tool>{...}</tool>
 # Anchored start/end so any surrounding text causes an immediate miss.
@@ -328,7 +327,7 @@ class ToolRegistry:
     # System prompt generation
     # ------------------------------------------------------------------
 
-    def get_system_prompt(self, project_context: Optional[str] = None) -> str:
+    def get_system_prompt(self) -> str:
         """Generate production system prompt with tool catalog.
 
         When *project_context* is provided it is merged into the prompt as a

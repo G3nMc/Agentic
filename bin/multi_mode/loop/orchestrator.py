@@ -2,25 +2,20 @@
 
 from __future__ import annotations
 
-import threading
 import queue
 import sys
+import threading
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import Optional, List, Dict, Any
 
-from multi_mode.config.agent import AgentConfig
-from multi_mode.config.models import ModelRole
-from multi_mode.core.message import Message, MessageRole, ToolCall
-from multi_mode.core.state import WorkflowState, TaskStatus
-from multi_mode.core.context import ContextBuilder, SummarizationTrigger
-from multi_mode.backends.base import LLMBackend
-from multi_mode.backends.factory import get_backend_for_config
-from multi_mode.agents.reasoner import Reasoner, ReasonerOutput
-from multi_mode.agents.executor import Executor
-from multi_mode.agents.summarizer import Summarizer
-from multi_mode.tools.registry import ToolRegistry
-from multi_mode.tools.builtin import register_builtin_tools
-from multi_mode.tools.executor import ToolExecutor
+from bin.multi_mode import WorkflowState, AgentConfig, ModelRole, Message, MessageRole, TaskStatus
+from bin.multi_mode.agents import Reasoner, Executor, Summarizer
+from bin.multi_mode.backends import get_backend_for_config, LLMBackend
+from bin.multi_mode.core import ContextBuilder, SummarizationTrigger
+from bin.multi_mode.tools.builtin import register_builtin_tools
+from bin.multi_mode.tools.executor import ToolExecutor
+from bin.multi_mode.tools.registry import ToolRegistry
+from bin.multi_mode.utils.token_counter import count_tokens
 
 
 @dataclass
@@ -31,6 +26,34 @@ class WorkflowResult:
     error: Optional[str] = None
     state: Optional[WorkflowState] = None
     trace: List[Dict[str, Any]] = field(default_factory=list)
+
+
+def _extract_final_answer(state: WorkflowState) -> Optional[str]:
+    """Extract the final answer from the state."""
+    for msg in reversed(state.messages):
+        if msg.role == MessageRole.ASSISTANT and msg.content and not msg.tool_calls:
+            return msg.content
+    return None
+
+
+def _estimate_token_count(state: WorkflowState) -> int:
+    """Estimate token count for the state."""
+
+    total = 0
+    for msg in state.messages:
+        total += count_tokens(msg.content)
+        for tc in msg.tool_calls:
+            total += count_tokens(str(tc.arguments))
+    return total
+
+
+def _build_correction_prompt(errors: List[str]) -> str:
+    """Build a correction prompt for parse errors."""
+    return (
+        "Your previous response had parsing errors:\n"
+        + "\n".join(f"- {e}" for e in errors)
+        + "\n\nPlease provide a valid response with tool calls or a final answer."
+    )
 
 
 class Orchestrator:
@@ -91,7 +114,7 @@ class Orchestrator:
 
     def run(self, task: str, project_context: str = "") -> WorkflowResult:
         """Run the workflow for a task."""
-        state = WorkflowState.initial(task, self.config)
+        state = WorkflowState.initial(task)
 
         # Start async summarizer thread if enabled
         if self.summarizer:
@@ -105,7 +128,7 @@ class Orchestrator:
                 self._apply_pending_summary(state)
 
                 # Check if summarization needed (trigger async)
-                token_count = self._estimate_token_count(state)
+                token_count = _estimate_token_count(state)
                 if self.summarization_trigger.should_summarize(token_count):
                     self._trigger_async_summarization(state, project_context)
 
@@ -116,7 +139,7 @@ class Orchestrator:
                 if reasoner_output.parse_errors:
                     state.add_trace("reasoner", output=f"Parse errors: {reasoner_output.parse_errors}")
                     # Retry with correction prompt
-                    correction = self._build_correction_prompt(reasoner_output.parse_errors)
+                    correction = _build_correction_prompt(reasoner_output.parse_errors)
                     state.add_message(Message(role=MessageRole.USER, content=correction))
                     continue
 
@@ -154,35 +177,10 @@ class Orchestrator:
 
         return WorkflowResult(
             success=state.status == TaskStatus.COMPLETED,
-            final_answer=self._extract_final_answer(state),
+            final_answer=_extract_final_answer(state),
             error=state.metadata.get("error") if state.status == TaskStatus.FAILED else None,
             state=state,
             trace=state.get_trace(),
-        )
-
-    def _extract_final_answer(self, state: WorkflowState) -> Optional[str]:
-        """Extract the final answer from the state."""
-        for msg in reversed(state.messages):
-            if msg.role == MessageRole.ASSISTANT and msg.content and not msg.tool_calls:
-                return msg.content
-        return None
-
-    def _estimate_token_count(self, state: WorkflowState) -> int:
-        """Estimate token count for the state."""
-        from multi_mode.utils.token_counter import count_tokens
-        total = 0
-        for msg in state.messages:
-            total += count_tokens(msg.content)
-            for tc in msg.tool_calls:
-                total += count_tokens(str(tc.arguments))
-        return total
-
-    def _build_correction_prompt(self, errors: List[str]) -> str:
-        """Build a correction prompt for parse errors."""
-        return (
-            "Your previous response had parsing errors:\n"
-            + "\n".join(f"- {e}" for e in errors)
-            + "\n\nPlease provide a valid response with tool calls or a final answer."
         )
 
     # Async summarization methods
@@ -197,7 +195,7 @@ class Orchestrator:
                         break
                     messages, project_ctx, callback = item
                     try:
-                        summary = self.summarizer.summarize(messages, project_ctx)
+                        summary = self.summarizer.summarize(messages)
                         callback(summary)
                     except Exception as e:
                         print(f"[summarizer] error: {e}", file=sys.stderr)

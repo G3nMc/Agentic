@@ -175,7 +175,7 @@ def register(registry) -> None:
                     "properties": {
                         "url": {
                             "type": "string",
-                            "description": "Full URL to fetch (must start with http:// or https://)",
+                            "description": "Full URL to fetch (must start with https:// or http://)",
                         },
                         "timeout": {
                             "type": "integer",

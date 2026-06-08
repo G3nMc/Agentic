@@ -10,14 +10,14 @@ import sys
 import time
 from typing import Any, Dict, List, Optional
 
+from base import CompletionResponse, LLMBackend
 from bin.common.backends.http_client import (
     HttpError,
     RateLimitError,
     ServerError,
     stream_ndjson,
 )
-from multi_mode.backends.base import CompletionResponse, LLMBackend
-from multi_mode.config.models import ModelConfig
+from bin.multi_mode import ModelConfig
 
 
 def _log(msg: str) -> None:
@@ -45,10 +45,10 @@ class OllamaBackend(LLMBackend):
         return {}
 
     def complete(
-        self,
-        messages: List[Dict[str, Any]],
-        tools: Optional[List[Dict[str, Any]]] = None,
-        **kwargs,
+            self,
+            messages: List[Dict[str, Any]],
+            tools: Optional[List[Dict[str, Any]]] = None,
+            **kwargs,
     ) -> CompletionResponse:
         # [native-tools-removed] We never forward tools.
         _ = tools
@@ -81,11 +81,11 @@ class OllamaBackend(LLMBackend):
 
         try:
             for chunk in stream_ndjson(
-                f"{self._base_url}/api/chat",
-                payload,
-                headers=self._auth_headers(),
-                label="Ollama",
-                timeout=(15.0, 600.0),
+                    f"{self._base_url}/api/chat",
+                    payload,
+                    headers=self._auth_headers(),
+                    label="Ollama",
+                    timeout=(15.0, 600.0),
             ):
                 chunk_count += 1
                 msg = chunk.get("message") or {}

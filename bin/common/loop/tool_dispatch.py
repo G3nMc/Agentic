@@ -318,13 +318,13 @@ def _maybe_parse_scalar(value: str) -> Any:
 
 _OPEN_TAG_RE = re.compile(
     r"<(?P<tag>tool|tool_call|function_call|function)(?=[\s>/=:]|$)"
-    r"(?:\s*(?:=|:)\s*(?P<name>[a-zA-Z_][\w\-]*))?[^>]*>",
+    r"(?:\s*[=:]\s*(?P<name>[a-zA-Z_][\w\-]*))?[^>]*>",
     re.IGNORECASE,
 )
 
 _PARAM_TAG_RE = re.compile(
     r"<(?P<tag>parameter|parameters)(?=[\s>/=:]|$)"
-    r"(?:\s*(?:=|:)\s*(?P<name>[a-zA-Z_][\w\-]*))?\s*>"
+    r"(?:\s*[=:]\s*(?P<name>[a-zA-Z_][\w\-]*))?\s*>"
     r"(?P<value>.*?)"
     r"</\s*(?P=tag)\s*>",
     re.IGNORECASE | re.DOTALL,
@@ -332,7 +332,7 @@ _PARAM_TAG_RE = re.compile(
 
 _HYBRID_RE = re.compile(
     r'["\']?(?:tool|name)["\']?\s*["\':=]\s*["\']([a-zA-Z_][\w\-]*)["\']'
-    r"[^<{]*?<\s*(?:parameters|parameter)\b[^>]*>\s*(\{.*?\})",
+    r"[^<{]*?<\s*(?:parameters|parameter)\b[^>]*>\s*(\{.*?})",
     re.DOTALL | re.IGNORECASE,
 )
 
@@ -1036,7 +1036,7 @@ def _gather_candidates(response: str, tool_defs) -> List[str]:
         add_candidate(repaired_all)
 
     for m in re.finditer(
-        r"```(?:json|tool)?\s*({.*?\})\s*```",
+        r"```(?:json|tool)?\s*({.*?})\s*```",
         response,
         re.DOTALL | re.IGNORECASE,
     ):

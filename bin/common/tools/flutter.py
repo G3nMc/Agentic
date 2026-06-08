@@ -93,8 +93,8 @@ def register(registry) -> None:
             truncated = len(output) > MAX_CHARS
             if truncated:
                 output = (
-                    output[:MAX_CHARS]
-                    + f"\n... [truncated, {len(output) - MAX_CHARS} more chars]"
+                        output[:MAX_CHARS]
+                        + f"\n... [truncated, {len(output) - MAX_CHARS} more chars]"
                 )
             return json.dumps(
                 {

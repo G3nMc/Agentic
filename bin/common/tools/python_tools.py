@@ -274,13 +274,13 @@ def register(registry) -> None:
             ):
                 m = re.search(rf"(\d+)\s+{kw}", output)
                 if m:
-                    locals()[var]  # silence linter; we set via dict below
+                    var = locals()[var]  # silence linter; we set via dict below
 
             # Re-extract directly into named ints (locals() trick above
             # doesn't write back in CPython).
-            def _count(kw: str) -> int:
-                m = re.search(rf"(\d+)\s+{kw}", output)
-                return int(m.group(1)) if m else 0
+            def _count(kw2: str) -> int:
+                m2 = re.search(rf"(\d+)\s+{kw2}", output)
+                return int(m2.group(1)) if m2 else 0
 
             passed = _count("passed")
             failed = _count("failed")

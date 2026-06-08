@@ -127,8 +127,8 @@ def register(registry) -> None:
         except Exception as e:
             return json.dumps({"status": "error", "message": str(e)})
 
-    def _load_connections(registry) -> Dict[str, Dict[str, str]]:
-        return getattr(registry, "db_connections", None) or {}
+    def _load_connections(registry2) -> Dict[str, Dict[str, str]]:
+        return getattr(registry2, "db_connections", None) or {}
 
     # ------------------------------------------------------------------
     # MariaDB / MySQL

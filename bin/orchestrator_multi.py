@@ -43,7 +43,6 @@ if _PROJECT_ROOT not in sys.path:
 import argparse
 import json
 import subprocess
-from typing import Any, Dict, List
 
 # Reuse the shared I/O protocol utilities (the agent.utils.io_protocol
 # shim re-exports the same symbols for backwards compatibility).

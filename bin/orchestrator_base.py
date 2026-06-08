@@ -23,7 +23,7 @@ from __future__ import annotations
 
 import json
 import sys
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
 
 def _normalise_external_history(raw: Any) -> List[Dict[str, str]]:

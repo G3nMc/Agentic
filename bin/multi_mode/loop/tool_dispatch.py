@@ -6,13 +6,12 @@ Kept for backwards-compatibility with callers that import
 """
 
 from __future__ import annotations
-
 import sys as _sys
 
 _sys.dont_write_bytecode = True
 
-from common.loop.tool_dispatch import *  # noqa: F401,F403
-from common.loop import tool_dispatch as _impl
+import bin.common.loop.tool_dispatch as _impl
+
 
 def __getattr__(name):
     return getattr(_impl, name)

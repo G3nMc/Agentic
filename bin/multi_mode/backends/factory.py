@@ -2,13 +2,12 @@
 
 from typing import Optional
 
-from multi_mode.backends.base import LLMBackend
-from multi_mode.backends.openai import OpenAIBackend
-from multi_mode.backends.anthropic import AnthropicBackend
-from multi_mode.backends.gemini import GeminiBackend
-from multi_mode.backends.ollama import OllamaBackend
-from multi_mode.backends.openrouter import OpenRouterBackend
-from multi_mode.config.models import ModelConfig
+from base import LLMBackend
+from bin.multi_mode import ModelConfig
+from bin.multi_mode.backends.anthropic import AnthropicBackend
+from bin.multi_mode.backends.openai import OpenAIBackend
+from gemini import GeminiBackend
+from openrouter import OpenRouterBackend
 
 # Default base URLs for providers that are OpenAI-compatible
 _OPENAI_COMPATIBLE_DEFAULTS: dict[str, str] = {
@@ -25,9 +24,9 @@ def get_backend(config: Optional[ModelConfig]) -> Optional[LLMBackend]:
     """Get backend instance for a model config."""
     if not config:
         return None
-    
+
     provider = config.provider.lower()
-    
+
     if provider == "openai":
         return OpenAIBackend(config)
     elif provider == "anthropic":

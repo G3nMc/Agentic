@@ -3,10 +3,8 @@
 from dataclasses import dataclass
 from typing import List, Optional
 
-from multi_mode.core.message import Message, MessageRole
-from multi_mode.core.state import WorkflowState
-from multi_mode.config.agent import AgentConfig
-from multi_mode.utils.token_counter import count_tokens
+from bin.multi_mode import Message, AgentConfig, WorkflowState, MessageRole
+from bin.multi_mode.utils.token_counter import count_tokens
 
 
 @dataclass
@@ -15,6 +13,16 @@ class ContextWindow:
     token_count: int
     truncated: bool
     summary: Optional[str] = None
+
+
+def _count_tokens(messages: List[Message]) -> int:
+    """Count tokens for messages using the token counter utility."""
+    total = 0
+    for msg in messages:
+        total += count_tokens(msg.content)
+        for tc in msg.tool_calls:
+            total += count_tokens(str(tc.arguments))
+    return total
 
 
 class ContextBuilder:
@@ -50,7 +58,7 @@ class ContextBuilder:
             messages.insert(insert_idx, summary_msg)
         
         # Calculate token count
-        token_count = self._count_tokens(messages)
+        token_count = _count_tokens(messages)
         
         # Truncate if needed
         truncated = False
@@ -63,16 +71,7 @@ class ContextBuilder:
             token_count=token_count,
             truncated=truncated,
         )
-    
-    def _count_tokens(self, messages: List[Message]) -> int:
-        """Count tokens for messages using the token counter utility."""
-        total = 0
-        for msg in messages:
-            total += count_tokens(msg.content)
-            for tc in msg.tool_calls:
-                total += count_tokens(str(tc.arguments))
-        return total
-    
+
     def _truncate(self, messages: List[Message]) -> tuple[List[Message], int]:
         """Truncate messages to fit token budget using sliding window."""
         # Keep system messages and recent messages
@@ -81,12 +80,12 @@ class ContextBuilder:
         
         # Keep last N messages that fit
         budget = self.config.token_budget
-        system_tokens = self._count_tokens(system_msgs)
+        system_tokens = _count_tokens(system_msgs)
         remaining = budget - system_tokens
         
         kept = []
         for msg in reversed(other_msgs):
-            msg_tokens = self._count_tokens([msg])
+            msg_tokens = _count_tokens([msg])
             if msg_tokens <= remaining:
                 kept.insert(0, msg)
                 remaining -= msg_tokens
@@ -94,7 +93,7 @@ class ContextBuilder:
                 break
         
         result = system_msgs + kept
-        return result, self._count_tokens(result)
+        return result, _count_tokens(result)
 
 
 class SummarizationTrigger:

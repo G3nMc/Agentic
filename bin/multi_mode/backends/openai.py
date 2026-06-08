@@ -20,8 +20,9 @@ from bin.common.backends.http_client import (
     assemble_openai_chat_stream,
     stream_sse,
 )
-from multi_mode.backends.base import CompletionResponse, LLMBackend
-from multi_mode.config.models import ModelConfig
+from bin.multi_mode import ModelConfig
+from bin.multi_mode.backends import LLMBackend
+from bin.multi_mode.backends.base import CompletionResponse
 
 
 def _log(msg: str) -> None:

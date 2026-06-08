@@ -1,11 +1,11 @@
 """Workflow state management."""
 
 from dataclasses import dataclass, field
-from typing import List, Dict, Any, Optional
-from enum import Enum
 from datetime import datetime
+from enum import Enum
+from typing import List, Dict, Any, Optional
 
-from multi_mode.core.message import Message, ToolCall, ToolResult
+from bin.multi_mode import Message, ToolCall, ToolResult, MessageRole
 
 
 class TaskStatus(Enum):
@@ -51,50 +51,50 @@ class WorkflowState:
     created_at: datetime = field(default_factory=datetime.now)
     updated_at: datetime = field(default_factory=datetime.now)
     trace: List[TraceEntry] = field(default_factory=list)
-    
+
     def is_terminal(self) -> bool:
         return self.status in (TaskStatus.COMPLETED, TaskStatus.FAILED)
-    
+
     def add_message(self, message: Message) -> None:
         self.messages.append(message)
         self.updated_at = datetime.now()
-    
+
     def add_tool_call(self, tool_call: ToolCall) -> None:
         self.pending_tool_calls.append(tool_call)
         self.updated_at = datetime.now()
-    
+
     def add_tool_result(self, result: ToolResult) -> None:
         self.tool_results.append(result)
         self.updated_at = datetime.now()
-    
+
     def clear_pending_tools(self) -> None:
         self.pending_tool_calls.clear()
         self.updated_at = datetime.now()
-    
+
     def mark_completed(self) -> None:
         self.status = TaskStatus.COMPLETED
         self.updated_at = datetime.now()
-    
+
     def mark_failed(self, error: str) -> None:
         self.status = TaskStatus.FAILED
         self.metadata["error"] = error
         self.updated_at = datetime.now()
-    
+
     def mark_in_progress(self) -> None:
         self.status = TaskStatus.IN_PROGRESS
         self.updated_at = datetime.now()
-    
+
     def add_trace(self, agent: str, output: str = "", detail: Optional[str] = None, tokens: Optional[int] = None) -> None:
         self.trace.append(TraceEntry(agent=agent, output=output, detail=detail, tokens=tokens))
-    
+
     def get_trace(self) -> List[Dict[str, Any]]:
         return [t.to_dict() for t in self.trace]
-    
+
     @classmethod
-    def initial(cls, task: str, config) -> "WorkflowState":
+    def initial(cls, task: str) -> "WorkflowState":
         """Create initial state for a new task."""
         state = cls()
-        from multi_mode.core.message import Message, MessageRole
+
         state.add_message(Message(role=MessageRole.USER, content=task))
         state.mark_in_progress()
         return state

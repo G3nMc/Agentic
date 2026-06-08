@@ -12,10 +12,8 @@ import sys as _sys
 _sys.dont_write_bytecode = True
 
 # Re-export everything from the canonical module.
-from common.loop.tool_dispatch import *  # noqa: F401,F403
-# Make even underscore-prefixed names accessible via attribute lookup
-# (Python's ``*`` import skips them).
-from common.loop import tool_dispatch as _impl
+import bin.common.loop.tool_dispatch as _impl
+
 
 def __getattr__(name):  # PEP 562 module-level __getattr__
     return getattr(_impl, name)

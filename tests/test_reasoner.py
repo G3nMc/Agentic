@@ -52,7 +52,7 @@ def test_reasoner_parse_tool_calls():
             ],
         )
         
-        output = reasoner._parse_response(response)
+        output = _parse_response(response)
         
         assert len(output.tool_calls) == 2
         assert output.tool_calls[0]["name"] == "read_file"
@@ -83,7 +83,7 @@ def test_reasoner_parse_final_answer():
             tool_calls=[],
         )
         
-        output = reasoner._parse_response(response)
+        output = _parse_response(response)
         
         assert output.final_answer == "Task completed successfully."
         assert output.tool_calls == []
@@ -106,7 +106,7 @@ def test_reasoner_parse_empty():
         reasoner = Reasoner(config)
         
         response = CompletionResponse(content=None, tool_calls=[])
-        output = reasoner._parse_response(response)
+        output = _parse_response(response)
         
         assert output.reasoning == "No valid response from model"
         assert output.final_answer is None

@@ -9,6 +9,6 @@ import sys as _sys
 
 _sys.dont_write_bytecode = True
 
-from common.tools import collect_all_tools  # noqa: F401
+from bin.common.tools import collect_all_tools
 
 __all__ = ["collect_all_tools"]

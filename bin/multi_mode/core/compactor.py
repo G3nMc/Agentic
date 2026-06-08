@@ -37,11 +37,9 @@ from collections import Counter
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from bin.common.utils.token_estimator import (
-    estimate_messages_tokens,
     estimate_tokens,
     estimate_tokens_from_chars,
 )
-
 
 # Same factor the rate-limiter uses: leave headroom for output tokens
 # and provider-side overhead the chars/4 estimator can't see.

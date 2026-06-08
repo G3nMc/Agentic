@@ -2,8 +2,8 @@
 
 from typing import Any, Dict, List, Optional
 
-from multi_mode.core.tool_schema import ToolSchema
-from multi_mode.tools.base import Tool
+from bin.multi_mode.core import ToolSchema
+from bin.multi_mode.tools.base import Tool
 
 
 class ToolRegistry:
@@ -106,7 +106,7 @@ class ToolRegistry:
 
     
 
-    def get_tool_schemas_for_llm(self, format: str = "openai") -> List[Dict[str, Any]]:
+    def get_tool_schemas_for_llm(self, llm_format: str = "openai") -> List[Dict[str, Any]]:
 
         """Get tool schemas in the format expected by the LLM."""
 
@@ -114,15 +114,15 @@ class ToolRegistry:
 
         for schema in self._schemas.values():
 
-            if format == "openai":
+            if llm_format == "openai":
 
                 schemas.append(schema.to_json_schema())
 
-            elif format == "anthropic":
+            elif llm_format == "anthropic":
 
                 schemas.append(schema.to_anthropic_format())
 
-            elif format == "gemini":
+            elif llm_format == "gemini":
 
                 schemas.append(schema.to_gemini_format())
 

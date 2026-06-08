@@ -8,10 +8,10 @@ import os
 import sys
 from typing import Any, Dict, Optional
 
-from ..policy import SecurityConfig
+from bin.common.policy import SecurityConfig
 
 
-def sanitize_params_for_log(tool_name: str, params: Dict[str, Any]) -> Dict[str, Any]:
+def sanitize_params_for_log(params: Dict[str, Any]) -> Dict[str, Any]:
     """
     Remove or truncate large / sensitive parameter values before audit logging.
     The `content` field of write_file / append_file can be megabytes long and
@@ -63,15 +63,15 @@ def setup_audit_logger(config: SecurityConfig) -> Optional[logging.Logger]:
 
 
 def audit_log(
-    logger: Optional[logging.Logger],
-    tool_name: str,
-    params: Dict[str, Any],
-    result: str,
+        logger: Optional[logging.Logger],
+        tool_name: str,
+        params: Dict[str, Any],
+        result: str,
 ) -> None:
     """Append one structured line to the audit log."""
     if logger is None:
         return
-    sanitized = sanitize_params_for_log(tool_name, params)
+    sanitized = sanitize_params_for_log(params)
     try:
         result_obj = json.loads(result)
         status = result_obj.get("status", "unknown")

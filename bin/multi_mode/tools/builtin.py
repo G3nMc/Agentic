@@ -1,14 +1,14 @@
 """Built-in tools for filesystem, search, and execution."""
 
-import os
 import json
 import subprocess
 from pathlib import Path
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List
 
-from multi_mode.core.tool_schema import ToolSchema, ParameterSchema
-from multi_mode.tools.base import Tool, ToolResult
-from multi_mode.tools.registry import ToolRegistry
+from bin.multi_mode import ToolResult
+from bin.multi_mode.core import ToolSchema, ParameterSchema
+from bin.multi_mode.tools.base import Tool
+from bin.multi_mode.tools.registry import ToolRegistry
 
 
 class ReadFileTool(Tool):
@@ -29,14 +29,14 @@ class ReadFileTool(Tool):
             required=["path"],
         ),
     )
-    
+
     def execute(self, arguments: Dict[str, Any]) -> ToolResult:
         path = arguments["path"]
         start_line = arguments.get("start_line")
         end_line = arguments.get("end_line")
         offset = arguments.get("offset")
         limit = arguments.get("limit")
-        
+
         try:
             full_path = Path(path)
             if not full_path.exists():
@@ -46,17 +46,17 @@ class ReadFileTool(Tool):
                     content="",
                     error=f"File not found: {path}",
                 )
-            
+
             content = full_path.read_text(encoding="utf-8")
             lines = content.splitlines()
-            
+
             if start_line is not None and end_line is not None:
                 start = max(0, start_line - 1)
                 end = min(len(lines), end_line)
                 content = "\n".join(lines[start:end])
             elif offset is not None and limit is not None:
-                content = content[offset:offset+limit]
-            
+                content = content[offset:offset + limit]
+
             return ToolResult(
                 tool_call_id=arguments.get("tool_call_id", ""),
                 name=self.name,
@@ -87,16 +87,16 @@ class WriteFileTool(Tool):
             required=["path", "content"],
         ),
     )
-    
+
     def execute(self, arguments: Dict[str, Any]) -> ToolResult:
         path = arguments["path"]
         content = arguments["content"]
-        
+
         try:
             full_path = Path(path)
             full_path.parent.mkdir(parents=True, exist_ok=True)
             full_path.write_text(content, encoding="utf-8")
-            
+
             return ToolResult(
                 tool_call_id=arguments.get("tool_call_id", ""),
                 name=self.name,
@@ -128,12 +128,12 @@ class PatchFileTool(Tool):
             required=["path", "old_content", "new_content"],
         ),
     )
-    
+
     def execute(self, arguments: Dict[str, Any]) -> ToolResult:
         path = arguments["path"]
         old_content = arguments["old_content"]
         new_content = arguments["new_content"]
-        
+
         try:
             full_path = Path(path)
             if not full_path.exists():
@@ -143,9 +143,9 @@ class PatchFileTool(Tool):
                     content="",
                     error=f"File not found: {path}",
                 )
-            
+
             content = full_path.read_text(encoding="utf-8")
-            
+
             if old_content not in content:
                 return ToolResult(
                     tool_call_id=arguments.get("tool_call_id", ""),
@@ -153,10 +153,10 @@ class PatchFileTool(Tool):
                     content="",
                     error=f"Old content not found in file: {path}",
                 )
-            
+
             new_file_content = content.replace(old_content, new_content, 1)
             full_path.write_text(new_file_content, encoding="utf-8")
-            
+
             return ToolResult(
                 tool_call_id=arguments.get("tool_call_id", ""),
                 name=self.name,
@@ -188,19 +188,19 @@ class SearchInFilesTool(Tool):
             required=["pattern"],
         ),
     )
-    
+
     def execute(self, arguments: Dict[str, Any]) -> ToolResult:
         pattern = arguments["pattern"]
         path = arguments.get("path", ".")
         file_glob = arguments.get("file_glob", "**/*")
-        
+
         try:
             import re
             from pathlib import Path
-            
+
             root = Path(path)
             matches = []
-            
+
             for file_path in root.rglob(file_glob):
                 if file_path.is_file():
                     try:
@@ -214,7 +214,7 @@ class SearchInFilesTool(Tool):
                                 })
                     except Exception:
                         continue
-            
+
             return ToolResult(
                 tool_call_id=arguments.get("tool_call_id", ""),
                 name=self.name,
@@ -244,22 +244,22 @@ class ListFilesTool(Tool):
             required=["path"],
         ),
     )
-    
+
     def execute(self, arguments: Dict[str, Any]) -> ToolResult:
         path = arguments["path"]
-        
+
         try:
             from pathlib import Path
             root = Path(path)
             files = []
-            
+
             for item in root.iterdir():
                 files.append({
                     "name": item.name,
                     "type": "directory" if item.is_dir() else "file",
                     "size": item.stat().st_size if item.is_file() else None,
                 })
-            
+
             return ToolResult(
                 tool_call_id=arguments.get("tool_call_id", ""),
                 name=self.name,
@@ -291,12 +291,12 @@ class RunCommandTool(Tool):
             required=["command"],
         ),
     )
-    
+
     def execute(self, arguments: Dict[str, Any]) -> ToolResult:
         command = arguments["command"]
         cwd = arguments.get("cwd", ".")
         timeout = arguments.get("timeout", 30)
-        
+
         try:
             result = subprocess.run(
                 command,
@@ -306,11 +306,11 @@ class RunCommandTool(Tool):
                 text=True,
                 timeout=timeout,
             )
-            
+
             output = result.stdout
             if result.stderr:
                 output += f"\nSTDERR: {result.stderr}"
-            
+
             return ToolResult(
                 tool_call_id=arguments.get("tool_call_id", ""),
                 name=self.name,
@@ -349,11 +349,11 @@ class FlutterAnalyzeTool(Tool):
             required=[],
         ),
     )
-    
+
     def execute(self, arguments: Dict[str, Any]) -> ToolResult:
         path = arguments.get("path", ".")
         timeout = arguments.get("timeout", 60)
-        
+
         try:
             result = subprocess.run(
                 ["flutter", "analyze", path],
@@ -361,11 +361,11 @@ class FlutterAnalyzeTool(Tool):
                 text=True,
                 timeout=timeout,
             )
-            
+
             output = result.stdout
             if result.stderr:
                 output += f"\nSTDERR: {result.stderr}"
-            
+
             return ToolResult(
                 tool_call_id=arguments.get("tool_call_id", ""),
                 name=self.name,
@@ -404,19 +404,19 @@ class PythonCheckTool(Tool):
             required=[],
         ),
     )
-    
+
     def execute(self, arguments: Dict[str, Any]) -> ToolResult:
         path = arguments.get("path", ".")
         max_files = arguments.get("max_files", 100)
-        
+
         try:
             import py_compile
             from pathlib import Path
-            
+
             root = Path(path)
             errors = []
             checked = 0
-            
+
             for py_file in root.rglob("*.py"):
                 if checked >= max_files:
                     break
@@ -425,7 +425,7 @@ class PythonCheckTool(Tool):
                 except py_compile.PyCompileError as e:
                     errors.append(f"{py_file}: {e}")
                 checked += 1
-            
+
             if errors:
                 return ToolResult(
                     tool_call_id=arguments.get("tool_call_id", ""),
@@ -465,15 +465,15 @@ class ListFilesRecursiveTool(Tool):
             required=["path"],
         ),
     )
-    
+
     def execute(self, arguments: Dict[str, Any]) -> ToolResult:
         path = arguments["path"]
         max_depth = arguments.get("max_depth", 3)
-        
+
         try:
             from pathlib import Path
             root = Path(path)
-            
+
             def list_recursive(current_path: Path, current_depth: int, prefix: str = "") -> List[str]:
                 if current_depth > max_depth:
                     return []
@@ -490,10 +490,10 @@ class ListFilesRecursiveTool(Tool):
                 except PermissionError:
                     result.append(f"{prefix}â””â”€â”€ [Permission denied]")
                 return result
-            
+
             tree = [root.name]
             tree.extend(list_recursive(root, 1))
-            
+
             return ToolResult(
                 tool_call_id=arguments.get("tool_call_id", ""),
                 name=self.name,
@@ -524,20 +524,20 @@ class FindFilesTool(Tool):
             required=["pattern"],
         ),
     )
-    
+
     def execute(self, arguments: Dict[str, Any]) -> ToolResult:
         pattern = arguments["pattern"]
         path = arguments.get("path", ".")
-        
+
         try:
             from pathlib import Path
             root = Path(path)
             matches = []
-            
+
             for file_path in root.rglob(pattern):
                 if file_path.is_file():
                     matches.append(str(file_path))
-            
+
             return ToolResult(
                 tool_call_id=arguments.get("tool_call_id", ""),
                 name=self.name,

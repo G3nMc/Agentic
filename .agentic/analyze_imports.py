@@ -18,7 +18,6 @@ identical = [
     'backends/ollama.py',
     'backends/openai_compat.py',
     'backends/openrouter.py',
-    'core/project_context.py',
     'loop/history.py',
     'loop/run_loop.py',
     'loop/tool_detector.py',

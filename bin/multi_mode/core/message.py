@@ -3,8 +3,6 @@
 from dataclasses import dataclass, field
 from typing import List, Optional, Dict, Any
 from enum import Enum
-import json
-
 
 class MessageRole(Enum):
     SYSTEM = "system"

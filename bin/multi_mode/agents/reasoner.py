@@ -6,13 +6,11 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
-from multi_mode.config.agent import AgentConfig
-from multi_mode.config.models import ModelRole, ModelConfig
-from multi_mode.core.message import Message, MessageRole, ToolCall
-from multi_mode.core.state import WorkflowState, TaskStatus
-from multi_mode.core.context import ContextBuilder, ContextWindow
-from multi_mode.backends.base import LLMBackend, CompletionResponse
-from multi_mode.tools.registry import ToolRegistry
+from bin.multi_mode import ToolCall, AgentConfig, WorkflowState, MessageRole, Message, TaskStatus, ModelRole, ModelConfig
+from bin.multi_mode.backends import LLMBackend
+from bin.multi_mode.backends.base import CompletionResponse
+from bin.multi_mode.core.context import ContextBuilder
+from bin.multi_mode.tools.registry import ToolRegistry
 
 
 @dataclass
@@ -29,15 +27,100 @@ class ReasonerOutput:
         return bool(self.tool_calls or self.final_answer or self.plan)
 
 
+def _determine_mode(state: WorkflowState) -> str:
+    """Determine the Reasoner mode based on state."""
+    if state.iteration == 0:
+        return "planning"
+    elif state.status == TaskStatus.COMPLETED:
+        return "final"
+    else:
+        return "execution"
+
+
+def _get_system_prompt(mode: str) -> str:
+    """Get the system prompt for the given mode."""
+    base = (
+        "You are an expert software engineer and problem solver.\n"
+        "You work in a loop: Reason -> Act -> Observe -> Reason.\n"
+        "Use the available tools to accomplish the task.\n"
+        "When you have enough information, provide a final answer.\n"
+    )
+    if mode == "planning":
+        return base + (
+            "\nMODE: PLANNING\n"
+            "This is the first turn. Analyze the task and create a structured plan.\n"
+            "Break down the task into clear, actionable steps.\n"
+            "Output a plan as a JSON object with 'goal' and 'steps' (each step has 'id', 'description', 'status': 'pending').\n"
+            "Then immediately start executing the first step by calling the necessary tools.\n"
+        )
+    elif mode == "execution":
+        return base + (
+            "\nMODE: EXECUTION\n"
+            "Continue executing the plan. Call tools as needed.\n"
+            "When all steps are complete, provide the final answer.\n"
+        )
+    else:
+        return base + (
+            "\nMODE: FINAL\n"
+            "All work is complete. Synthesize a comprehensive final answer.\n"
+        )
+
+
+def _parse_response(response: CompletionResponse) -> ReasonerOutput:
+    """Parse the LLM response into ReasonerOutput."""
+    # Check for native tool calls
+    if response.tool_calls:
+        tool_calls = [
+            ToolCall(
+                id=tc.get("id", str(uuid.uuid4())),
+                name=tc["name"],
+                arguments=tc.get("arguments", {}),
+            )
+            for tc in response.tool_calls
+        ]
+        return ReasonerOutput(tool_calls=tool_calls, reasoning=response.content)
+
+    # Check for final answer
+    if response.content:
+        # Try to parse as JSON (plan or final answer)
+        import json
+        content = response.content.strip()
+        try:
+            data = json.loads(content)
+            if isinstance(data, dict):
+                if "plan" in data:
+                    return ReasonerOutput(plan=data["plan"], reasoning=content)
+                if "final_answer" in data:
+                    return ReasonerOutput(final_answer=data["final_answer"], reasoning=content)
+                if "tool_calls" in data:
+                    tool_calls = [
+                        ToolCall(
+                            id=tc.get("id", str(uuid.uuid4())),
+                            name=tc["name"],
+                            arguments=tc.get("arguments", {}),
+                        )
+                        for tc in data["tool_calls"]
+                    ]
+                    return ReasonerOutput(tool_calls=tool_calls, reasoning=content)
+        except json.JSONDecodeError:
+            pass
+
+        # Treat as final answer
+        return ReasonerOutput(final_answer=content, reasoning=content)
+
+    # No content and no tool calls - error
+    return ReasonerOutput(parse_errors=["Empty response from LLM"])
+
+
 class Reasoner:
     """The Reasoner agent - handles planning, execution, and synthesis."""
 
     def __init__(
-        self,
-        config: AgentConfig,
-        backend: LLMBackend,
-        context_builder: ContextBuilder,
-        tool_registry: ToolRegistry,
+            self,
+            config: AgentConfig,
+            backend: LLMBackend,
+            context_builder: ContextBuilder,
+            tool_registry: ToolRegistry,
     ):
         self.config = config
         self.backend = backend
@@ -53,8 +136,8 @@ class Reasoner:
 
     def run(self, state: WorkflowState, project_context: str = "") -> ReasonerOutput:
         """Run the Reasoner for one iteration."""
-        mode = self._determine_mode(state)
-        system_prompt = self._get_system_prompt(mode)
+        mode = _determine_mode(state)
+        system_prompt = _get_system_prompt(mode)
 
         # Build context
         context = self.context_builder.build(state, project_context)
@@ -67,49 +150,12 @@ class Reasoner:
         messages_dicts = [msg.to_dict() for msg in context.messages]
 
         # Call LLM with retry
-        response = self._call_llm_with_retry(messages_dicts, mode)
+        response = self._call_llm_with_retry(messages_dicts)
 
         # Parse response
-        return self._parse_response(response, mode)
+        return _parse_response(response)
 
-    def _determine_mode(self, state: WorkflowState) -> str:
-        """Determine the Reasoner mode based on state."""
-        if state.iteration == 0:
-            return "planning"
-        elif state.status == TaskStatus.COMPLETED:
-            return "final"
-        else:
-            return "execution"
-
-    def _get_system_prompt(self, mode: str) -> str:
-        """Get the system prompt for the given mode."""
-        base = (
-            "You are an expert software engineer and problem solver.\n"
-            "You work in a loop: Reason -> Act -> Observe -> Reason.\n"
-            "Use the available tools to accomplish the task.\n"
-            "When you have enough information, provide a final answer.\n"
-        )
-        if mode == "planning":
-            return base + (
-                "\nMODE: PLANNING\n"
-                "This is the first turn. Analyze the task and create a structured plan.\n"
-                "Break down the task into clear, actionable steps.\n"
-                "Output a plan as a JSON object with 'goal' and 'steps' (each step has 'id', 'description', 'status': 'pending').\n"
-                "Then immediately start executing the first step by calling the necessary tools.\n"
-            )
-        elif mode == "execution":
-            return base + (
-                "\nMODE: EXECUTION\n"
-                "Continue executing the plan. Call tools as needed.\n"
-                "When all steps are complete, provide the final answer.\n"
-            )
-        else:
-            return base + (
-                "\nMODE: FINAL\n"
-                "All work is complete. Synthesize a comprehensive final answer.\n"
-            )
-
-    def _call_llm_with_retry(self, messages: List[Dict[str, Any]], mode: str) -> CompletionResponse:
+    def _call_llm_with_retry(self, messages: List[Dict[str, Any]]) -> CompletionResponse:
         """Call LLM with retry logic."""
         last_error = None
         for attempt in range(self.config.max_retries + 1):
@@ -118,7 +164,8 @@ class Reasoner:
                     messages,
                     tools=self._tools_schema,
                     temperature=0.2,
-                    max_tokens=self.config.models.get(ModelRole.REASONER, ModelConfig(role=ModelRole.REASONER, provider="openai", model="gpt-4o")).max_tokens,
+                    max_tokens=self.config.models.get(ModelRole.REASONER,
+                                                      ModelConfig(role=ModelRole.REASONER, provider="openai", model="gpt-4o")).max_tokens,
                 )
             except Exception as e:
                 last_error = e
@@ -126,48 +173,3 @@ class Reasoner:
                     import time
                     time.sleep(self.config.retry_backoff_base * (2 ** attempt))
         raise last_error
-
-    def _parse_response(self, response: CompletionResponse, mode: str) -> ReasonerOutput:
-        """Parse the LLM response into ReasonerOutput."""
-        # Check for native tool calls
-        if response.tool_calls:
-            tool_calls = [
-                ToolCall(
-                    id=tc.get("id", str(uuid.uuid4())),
-                    name=tc["name"],
-                    arguments=tc.get("arguments", {}),
-                )
-                for tc in response.tool_calls
-            ]
-            return ReasonerOutput(tool_calls=tool_calls, reasoning=response.content)
-
-        # Check for final answer
-        if response.content:
-            # Try to parse as JSON (plan or final answer)
-            import json
-            content = response.content.strip()
-            try:
-                data = json.loads(content)
-                if isinstance(data, dict):
-                    if "plan" in data:
-                        return ReasonerOutput(plan=data["plan"], reasoning=content)
-                    if "final_answer" in data:
-                        return ReasonerOutput(final_answer=data["final_answer"], reasoning=content)
-                    if "tool_calls" in data:
-                        tool_calls = [
-                            ToolCall(
-                                id=tc.get("id", str(uuid.uuid4())),
-                                name=tc["name"],
-                                arguments=tc.get("arguments", {}),
-                            )
-                            for tc in data["tool_calls"]
-                        ]
-                        return ReasonerOutput(tool_calls=tool_calls, reasoning=content)
-            except json.JSONDecodeError:
-                pass
-
-            # Treat as final answer
-            return ReasonerOutput(final_answer=content, reasoning=content)
-
-        # No content and no tool calls - error
-        return ReasonerOutput(parse_errors=["Empty response from LLM"])

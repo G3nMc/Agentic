@@ -11,8 +11,8 @@ import sys as _sys
 
 _sys.dont_write_bytecode = True
 
-from common.tools.registry import *  # noqa: F401,F403
-from common.tools import registry as _impl
+import bin.common.tools.registry as _impl
+
 
 def __getattr__(name):  # PEP 562
     return getattr(_impl, name)

@@ -9,12 +9,10 @@ from __future__ import annotations
 
 import sys as _sys
 
+from bin.common.utils.io_protocol import RESPONSE_SENTINEL, configure_stdio_utf8, read_interactive_request
+
 _sys.dont_write_bytecode = True
 
-from common.utils.io_protocol import (  # noqa: F401
-    RESPONSE_SENTINEL,
-    configure_stdio_utf8,
-    read_interactive_request,
-)
+
 
 __all__ = ["RESPONSE_SENTINEL", "configure_stdio_utf8", "read_interactive_request"]

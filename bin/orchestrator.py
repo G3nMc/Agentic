@@ -58,13 +58,11 @@ if _PROJECT_ROOT not in sys.path:
 
 import argparse
 import json
-from typing import Any, Dict, List
 
 from agent.backends import RateLimitedBackend, build_backend
 from agent.backends.gemini import GeminiBackend
 from agent.backends.ollama import OllamaBackend
 from agent.loop import Orchestrator
-from agent.path_filter import PathFilter
 from common.policy import SecurityConfig
 from common.utils.bootstrap import (
     BACKEND_REQUIRED_MODULES,

@@ -4,10 +4,7 @@ import sys
 import argparse
 import os
 
-from multi_mode.config.agent import AgentConfig, load_config_from_env
-from multi_mode.config.models import ModelRole
-from multi_mode.loop.orchestrator import Orchestrator
-from multi_mode.core.state import TaskStatus
+from bin.multi_mode import load_config_from_env, ModelRole, Orchestrator
 
 
 def main():

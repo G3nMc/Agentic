@@ -1,10 +1,10 @@
 """Agent configuration."""
 
-from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Any
 import os
+from dataclasses import dataclass, field
+from typing import Dict, List
 
-from multi_mode.config.models import ModelConfig, ModelRole, DEFAULT_REASONER, DEFAULT_SUMMARIZER
+from models import ModelConfig, ModelRole, DEFAULT_REASONER, DEFAULT_SUMMARIZER
 
 
 @dataclass
@@ -20,11 +20,12 @@ class AgentConfig:
     retry_backoff_base: float = 2.0
     project_root: str = "."
     excluded_paths: List[str] = field(default_factory=lambda: [
-        ".git", "__pycache__", "*.pyc", ".venv", "venv", 
+        ".git", "__pycache__", "*.pyc", ".venv", "venv",
         "node_modules", ".dart_tool", "build", "dist"
     ])
     system_prompt: str = ""
     enable_summarization: bool = True
+
     # enable_shaper: REMOVED - deterministic context building only
 
     def __post_init__(self):
@@ -38,7 +39,7 @@ class AgentConfig:
 def load_config_from_env() -> AgentConfig:
     """Load configuration from environment variables."""
     config = AgentConfig()
-    
+
     # Reasoner model (required)
     reasoner_provider = os.getenv("REASONER_PROVIDER", "openai")
     reasoner_model = os.getenv("REASONER_MODEL", "gpt-4o")
@@ -47,7 +48,7 @@ def load_config_from_env() -> AgentConfig:
     reasoner_temp = float(os.getenv("REASONER_TEMPERATURE", "0.1"))
     reasoner_max_tokens = int(os.getenv("REASONER_MAX_TOKENS", "4096"))
     reasoner_context = int(os.getenv("REASONER_CONTEXT_WINDOW", "128000"))
-    
+
     config.models[ModelRole.REASONER] = ModelConfig(
         role=ModelRole.REASONER,
         provider=reasoner_provider,
@@ -58,7 +59,7 @@ def load_config_from_env() -> AgentConfig:
         max_tokens=reasoner_max_tokens,
         context_window=reasoner_context,
     )
-    
+
     # Summarizer model
     if config.enable_summarization:
         summarizer_provider = os.getenv("SUMMARIZER_PROVIDER", "openai")
@@ -68,7 +69,7 @@ def load_config_from_env() -> AgentConfig:
         summarizer_temp = float(os.getenv("SUMMARIZER_TEMPERATURE", "0.1"))
         summarizer_max_tokens = int(os.getenv("SUMMARIZER_MAX_TOKENS", "2048"))
         summarizer_context = int(os.getenv("SUMMARIZER_CONTEXT_WINDOW", "128000"))
-        
+
         config.models[ModelRole.SUMMARIZER] = ModelConfig(
             role=ModelRole.SUMMARIZER,
             provider=summarizer_provider,
@@ -79,7 +80,7 @@ def load_config_from_env() -> AgentConfig:
             max_tokens=summarizer_max_tokens,
             context_window=summarizer_context,
         )
-    
+
     # Other settings
     config.max_iterations = int(os.getenv("MAX_ITERATIONS", "50"))
     config.token_budget = int(os.getenv("TOKEN_BUDGET", "100000"))
@@ -89,5 +90,5 @@ def load_config_from_env() -> AgentConfig:
     config.project_root = os.getenv("PROJECT_ROOT", ".")
     config.system_prompt = os.getenv("SYSTEM_PROMPT", "")
     config.enable_summarization = os.getenv("ENABLE_SUMMARIZATION", "true").lower() == "true"
-    
+
     return config

@@ -19,7 +19,7 @@ def register(registry) -> None:
             fp = registry.resolve_path(path)
             size_bytes = len(content.encode("utf-8"))
             limit = registry.security_config.max_file_size_bytes
-            if limit > 0 and size_bytes > limit:
+            if 0 < limit < size_bytes:
                 limit_mb = limit / (1024 * 1024)
                 return json.dumps(
                     {

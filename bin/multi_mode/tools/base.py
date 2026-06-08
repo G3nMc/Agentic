@@ -1,10 +1,9 @@
 """Base tool classes."""
-
 from abc import ABC, abstractmethod
 from typing import Dict, Any, Optional
 
-from multi_mode.core.tool_schema import ToolSchema
-from multi_mode.core.message import ToolResult
+from bin.multi_mode import ToolResult
+from bin.multi_mode.core import ToolSchema
 
 
 class Tool(ABC):

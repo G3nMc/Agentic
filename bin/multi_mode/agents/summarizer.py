@@ -4,9 +4,8 @@ from __future__ import annotations
 
 from typing import List, Optional
 
-from multi_mode.config.agent import AgentConfig
-from multi_mode.core.message import Message
-from multi_mode.backends.base import LLMBackend
+from bin.multi_mode import AgentConfig, Message
+from bin.multi_mode.backends import LLMBackend
 
 
 class Summarizer:
@@ -16,7 +15,7 @@ class Summarizer:
         self.config = config
         self.backend = backend
 
-    def summarize(self, messages: List[Message], project_context: str = "") -> Optional[str]:
+    def summarize(self, messages: List[Message]) -> Optional[str]:
         """Summarize the conversation history.
 
         Preserves: decisions, tool results, errors, current plan.

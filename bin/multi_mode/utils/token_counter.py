@@ -1,6 +1,5 @@
 """Accurate token counting per provider."""
 
-import re
 from typing import Optional
 
 # Try to import tiktoken for OpenAI models
@@ -88,7 +87,7 @@ def count_tokens_for_model(text: str, provider: str, model: str) -> int:
     if provider_lower == "anthropic" and HAS_ANTHROPIC:
         try:
             client = Anthropic()
-            return client.messages.count_tokens(text=text).input_tokens
+            return client.messages.count_tokens(messages=text, model="anthropic").input_tokens
         except Exception:
             pass
     
