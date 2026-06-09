@@ -78,6 +78,26 @@ class OllamaBackend(ModelBackend):
             f"num_ctx={self.num_ctx}"
         )
 
+    # ------------------------------------------------------------------
+    # Context window
+    # ------------------------------------------------------------------
+
+    @property
+    def context_limit(self) -> int:
+        """Return the actual context window configured for this Ollama
+        backend (``num_ctx``).
+
+        The ``ModelBackend`` base falls back to a model-id lookup table
+        when this is not overridden, which only knows a fixed catalog
+        (Llama / Gemma / Qwen / Claude / GPT-* / ...) and returns 8192
+        for unknown models like ``nemotron-3-ultra``. That undersizes
+        the orchestrator's history budget to ~7K tokens on what is
+        actually a 256K context window and triggers spurious history
+        trimming on the very first turn. Returning ``num_ctx`` here
+        gives the orchestrator the real number.
+        """
+        return int(self.num_ctx)
+
     @staticmethod
     def _is_cloud_model_id(model_id: str) -> bool:
         m = (model_id or "").strip().lower()

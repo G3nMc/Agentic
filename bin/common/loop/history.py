@@ -163,13 +163,20 @@ def trim_history_by_tokens(
 def import_external_history(
     history: List[Dict[str, Any]], external: List[Dict[str, Any]]
 ) -> None:
-    """Append a caller-supplied history (filtered + normalised) to ``history``."""
+    """Append a caller-supplied history (filtered + normalised) to ``history``.
+
+    Only ``user`` and ``assistant`` roles are accepted. The system
+    prompt is owned exclusively by ``ensure_system_prompt`` and lives at
+    ``history[0]``; admitting external ``system`` turns mid-conversation
+    confuses the model into treating them as topic switches (seen as
+    "I don't understand" / "Can you be more specific" replies).
+    """
     for msg in external:
         if not isinstance(msg, dict):
             continue
         role = str(msg.get("role") or "").strip().lower()
         content = str(msg.get("content") or "")
-        if role not in ("user", "assistant", "system"):
+        if role not in ("user", "assistant"):
             continue
         if not content.strip():
             continue

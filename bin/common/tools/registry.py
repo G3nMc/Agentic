@@ -327,21 +327,23 @@ class ToolRegistry:
     # System prompt generation
     # ------------------------------------------------------------------
 
-    def get_system_prompt(self) -> str:
+    def get_system_prompt(self, project_context: Optional[str] = None) -> str:
         """Generate production system prompt with tool catalog.
 
-        When *project_context* is provided it is merged into the prompt as a
-        [PROJECT CONTEXT] block between the base rules and the tool catalog.
+        When ``project_context`` is provided it is merged into the prompt
+        as a [PROJECT CONTEXT] block between the base rules and the tool
+        catalog. This is what gives the model project-specific knowledge
+        (read from ``.agent.md`` by :func:`load_project_context`).
         """
         lines = self._base_system_prompt()
 
-        # if project_context and project_context.strip():
-        #     lines.append("")
-        #     lines.append("PROJECT CONTEXT (from .agent.md)")
-        #     lines.append("================================")
-        #     for cline in project_context.strip().splitlines():
-        #         lines.append(cline)
-        #     lines.append("")
+        if project_context and project_context.strip():
+            lines.append("")
+            lines.append("PROJECT CONTEXT (from .agent.md)")
+            lines.append("================================")
+            for cline in project_context.strip().splitlines():
+                lines.append(cline)
+            lines.append("")
 
         groups: Dict[str, List[str]] = {cat: [] for cat in self.TOOL_CATEGORIES}
         groups["Other"] = []
@@ -361,6 +363,7 @@ class ToolRegistry:
                 "Flutter",
                 "Python",
                 "Shell",
+                "Web",
                 "Other",
         ):
             entries = groups.get(cat_name, [])
@@ -393,6 +396,30 @@ class ToolRegistry:
             "---------------------",
             "You are a super software analyst and a super software engineer.",
             "You have access to all tools and capabilities. Do not hold back. Use every resource available to complete the task as thoroughly and efficiently as possible.",
+            "",
+            "REASONING / CHAIN-OF-THOUGHT WRAPPING",
+            "=====================================",
+            "Any planning, chain-of-thought, 'thinking out loud', or internal",
+            "scratchpad work you do MUST be wrapped in <think>...</think>",
+            "tags. Outside those tags emit ONLY the tool call OR ONLY the",
+            "user-facing final answer. Never let raw reasoning sentences",
+            "leak into the visible reply.",
+            "",
+            "CORRECT (reasoning wrapped, tool call clean):",
+            "  <think>The user wants X. I should check Y first.</think>",
+            '  <tool>{"tool":"read_file","parameters":{"path":"y.dart"}}</tool>',
+            "",
+            "CORRECT (reasoning wrapped, final answer clean):",
+            "  <think>Now I have everything. Time to synthesize.</think>",
+            "  The root cause is X. The fix is Y.",
+            "",
+            "WRONG (reasoning leaks before the tool call):",
+            "  We need to read this file.",
+            '  <tool>{"tool":"read_file","parameters":{"path":"y.dart"}}</tool>',
+            "",
+            "WRONG (reasoning leaks before the final answer):",
+            "  Let me think about this. We need to check X. Proceed.",
+            "  The actual answer follows here.",
             "",
             "PRIMARY CONSTRAINT: TOOL CALL FORMAT",
             "====================================",

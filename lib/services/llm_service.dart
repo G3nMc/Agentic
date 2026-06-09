@@ -99,6 +99,7 @@ class LlmService {
     String? ollamaModelId, // e.g., "llama3:latest"
     String? ollamaPythonBridgeUrl, // e.g., "http://127.0.0.1:11501"
     String? contextSummary, // Additional context summary to include
+    double? temperature, // Optional temperature override
   }) async {
     switch (backend) {
       case LlmBackend.orchestrator:
@@ -149,7 +150,7 @@ class LlmService {
 
         final settings = BackendSettingsRepository.instance;
         final ollamaApiKey = await settings.getOllamaApiKey() ?? '';
-        final temperature = await settings.getOllamaTemperature();
+        final settingTemperature = await settings.getOllamaTemperature();
         if (OrchestratorManager.instance.isRunning) {
           final currentBackend = OrchestratorManager.instance.currentBackend;
           if (currentBackend != OrchestratorBackend.ollama) {

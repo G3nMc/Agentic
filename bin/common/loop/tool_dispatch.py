@@ -22,46 +22,186 @@ JUNK_TAG_PATTERN = re.compile(
     re.IGNORECASE,
 )
 
-THINK_PATTERN = re.compile(r"<think>.*?</think>", re.DOTALL | re.IGNORECASE)
-
 CHAT_TEMPLATE_TOKEN_PATTERN = re.compile(r"<\|[^|>]{0,80}\|>")
 
-STRAY_THINK_CLOSE_PATTERN = re.compile(r"^\s*</think>\s*", re.IGNORECASE)
+
+# ---------------------------------------------------------------------------
+# Universal "thinking" / chain-of-thought detection
+# ---------------------------------------------------------------------------
+#
+# Every modern reasoning model leaks chain-of-thought into the visible
+# reply in one of two shapes:
+#
+#   (a) Delimited block. The model wraps its planning in known tags:
+#         <think>...</think>          (DeepSeek-R1, Qwen3-reasoning)
+#         <thinking>...</thinking>    (Anthropic extended thinking)
+#         <reasoning>...</reasoning>  (generic)
+#         <|reasoning|>...<|/reasoning|>  (chat-template variants)
+#         <analysis>...</analysis>    (some custom finetunes)
+#
+#   (b) Plain-text preamble before the structured deliverable. Models
+#       like ``gpt-oss-*`` and some Llama / Phi finetunes emit
+#       sentences such as "We need to read the file." right before
+#       the ``<tool>{...}</tool>`` call -- no delimiters at all. Per
+#       the orchestrator's tool protocol (the prompt mandates "emit
+#       ONLY the tool call"), anything before ``<tool>`` is by
+#       definition reasoning that leaked through.
+#
+# ``extract_thinking`` recognises both shapes. New tag formats can be
+# added by appending to ``_THINKING_TAG_PATTERNS`` -- there is no
+# model-specific code anywhere else.
+
+_THINKING_TAG_PATTERNS = (
+    re.compile(r"<think>(.*?)</think>", re.DOTALL | re.IGNORECASE),
+    re.compile(r"<thinking>(.*?)</thinking>", re.DOTALL | re.IGNORECASE),
+    re.compile(r"<reasoning>(.*?)</reasoning>", re.DOTALL | re.IGNORECASE),
+    re.compile(r"<\|reasoning\|>(.*?)<\|/reasoning\|>", re.DOTALL | re.IGNORECASE),
+    re.compile(r"<analysis>(.*?)</analysis>", re.DOTALL | re.IGNORECASE),
+)
+
+# Legacy aliases kept for any external caller that imported them
+# before the centralisation.
+THINK_PATTERN = _THINKING_TAG_PATTERNS[0]
+STRAY_THINK_CLOSE_PATTERN = re.compile(
+    r"^\s*</(?:think|thinking|reasoning|analysis)>\s*", re.IGNORECASE
+)
+
+
+_TOOL_OPEN_PROBE_RE = re.compile(r"<\s*tool\s*>", re.IGNORECASE)
+
+
+def extract_thinking(text: str) -> Tuple[str, str]:
+    """Separate model chain-of-thought from user-visible content.
+
+    Returns ``(visible, thinking)``. Either can be the empty string.
+
+    Detection (all centralised here, no model-specific code):
+      1. Tag-delimited blocks listed in ``_THINKING_TAG_PATTERNS`` are
+         removed from the visible text and concatenated into the
+         thinking output.
+      2. If a ``<tool>`` tag is present in what remains, every byte
+         BEFORE the first ``<tool>`` is treated as reasoning. The
+         protocol forbids preamble before a tool call, so this is
+         provably reasoning even when the model omits the tags.
+      3. A stray closing tag (``</think>`` / ``</thinking>`` / ...) at
+         the very start is dropped.
+    """
+    if not text:
+        return text, ""
+
+    thinking_parts: List[str] = []
+    visible = text
+
+    # (1) Pull out all delimited thinking blocks first.
+    for pat in _THINKING_TAG_PATTERNS:
+        for m in pat.finditer(visible):
+            body = m.group(1).strip()
+            if body:
+                thinking_parts.append(body)
+        visible = pat.sub("", visible)
+
+    # (2) Preamble before the first tool tag is reasoning by protocol.
+    tool_open = _TOOL_OPEN_PROBE_RE.search(visible)
+    if tool_open and tool_open.start() > 0:
+        preamble = visible[: tool_open.start()].strip()
+        if preamble:
+            thinking_parts.append(preamble)
+        visible = visible[tool_open.start():]
+
+    # (3) Strip any stray closing-tag fragment the model leaves behind.
+    visible = STRAY_THINK_CLOSE_PATTERN.sub("", visible).strip()
+
+    return visible, "\n\n".join(thinking_parts).strip()
+
+
+# Hallucinated-transcript cleanup
+#
+# Some models keep generating an entire pretend ``User: Tool foo
+# returned: ... Assistant: ...`` transcript after the real tool call
+# when the upstream endpoint silently ignores ``stop=["</tool>"]``
+# (seen on Ollama Cloud + nemotron-* / deepseek-*). Without this
+# truncation the parser would extract the hallucinated ``<tool>`` calls
+# from that transcript and dispatch them.
+_FAKE_TRANSCRIPT_MARKER_RE = re.compile(
+    r"(?:\r?\n)?\s*("
+    r"User:\s*Tool\s+[`'\"]?[\w_-]+[`'\"]?\s+returned"  # "User: Tool foo returned"
+    r"|User:\s+\[INTERNAL"                                # "User: [INTERNAL ..."
+    r"|\[INTERNAL:"                                       # bare [INTERNAL: marker
+    r"|Assistant:\s"                                      # "Assistant: ..."
+    r"|User:\s"                                           # generic "User: ..."
+    r")",
+    re.IGNORECASE,
+)
+_TOOL_CLOSE_RE = re.compile(r"</\s*tool\s*>", re.IGNORECASE)
+
+
+def _truncate_at_fake_transcript(text: str) -> str:
+    """Cut ``text`` at the first hallucinated speaker marker that
+    appears AFTER a closing ``</tool>`` tag.
+
+    Returns ``text`` unchanged when no ``</tool>`` is present (so a
+    plain conversational reply containing the word "User:" or
+    "Assistant:" in legitimate code/quotes is never truncated) or when
+    no fake-speaker marker follows it.
+    """
+    if not text:
+        return text
+    m_close = _TOOL_CLOSE_RE.search(text)
+    if m_close is None:
+        return text
+    m_fake = _FAKE_TRANSCRIPT_MARKER_RE.search(text, pos=m_close.end())
+    if m_fake is None:
+        return text
+    return text[: m_fake.start()].rstrip()
 
 
 def clean_history_text(text: str) -> str:
-    """Clean assistant text before storing it in conversation history."""
+    """Clean assistant text before storing it in conversation history.
+
+    Chain-of-thought (in any of the known forms -- see
+    :func:`extract_thinking`) is dropped here so it never pollutes the
+    context the next turn sees.
+    """
     if not text:
         return text
-    cleaned = THINK_PATTERN.sub("", text)
-    cleaned = CHAT_TEMPLATE_TOKEN_PATTERN.sub("", cleaned)
-    cleaned = STRAY_THINK_CLOSE_PATTERN.sub("", cleaned).strip()
-    return cleaned
+    cleaned = CHAT_TEMPLATE_TOKEN_PATTERN.sub("", text)
+    visible, _thinking = extract_thinking(cleaned)
+    # Defensive: cut at the first fake speaker marker if the upstream
+    # endpoint ignored ``stop=["</tool>"]`` and let the model emit a
+    # pretend transcript after the real tool call.
+    visible = _truncate_at_fake_transcript(visible)
+    return visible.strip()
 
 
 def clean_final_answer(text: str) -> str:
     """Clean the final text returned to the user.
 
-    <think> blocks are intentionally preserved here so the UI can render
-    them if desired.
+    Any chain-of-thought (delimited tags OR plain-text preamble before
+    a ``<tool>`` tag) is extracted by :func:`extract_thinking` and
+    re-wrapped in a single canonical ``<think>...</think>`` block at
+    the top of the answer, so the Flutter UI can render it collapsed
+    next to the user-facing content. If no reasoning was detected the
+    answer is returned unchanged.
     """
     if not text:
         return text
 
     cleaned = JUNK_TAG_PATTERN.sub("", text)
     cleaned = CHAT_TEMPLATE_TOKEN_PATTERN.sub("", cleaned)
-    cleaned = STRAY_THINK_CLOSE_PATTERN.sub("", cleaned)
-    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned).strip()
+    visible, thinking = extract_thinking(cleaned)
+    visible = re.sub(r"\n{3,}", "\n\n", visible).strip()
 
     if (
-        len(cleaned) >= 2
-        and cleaned[0] == '"'
-        and cleaned[-1] == '"'
-        and cleaned.count('"') == 2
+        len(visible) >= 2
+        and visible[0] == '"'
+        and visible[-1] == '"'
+        and visible.count('"') == 2
     ):
-        cleaned = cleaned[1:-1].strip()
+        visible = visible[1:-1].strip()
 
-    return cleaned
+    if thinking:
+        return f"<think>{thinking}</think>\n\n{visible}".strip()
+    return visible
 
 
 # ---------------------------------------------------------------------------

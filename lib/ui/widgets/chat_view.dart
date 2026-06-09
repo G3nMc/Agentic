@@ -749,6 +749,7 @@ class _ChatViewState extends StateManager<ChatView> with WidgetsBindingObserver 
         backend: backend,
         token: token ?? "",
         modelId: modelId,
+        temperature: temperature,
         history: historyForRequest,
         conversationId: conv.id,
         localServerUrl: serverUrl,

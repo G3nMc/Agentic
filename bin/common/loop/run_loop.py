@@ -144,6 +144,7 @@ _FOLLOWUP_DIRECTIVE = (
     "plan involves editing files, START EDITING with patch_file..]\n\n "
 )
 
+
 _AGENT_DIRECTIVE = (
     "[You have filesystem tools available. "
     "If this request requires any file access, inspection, editing, execution, or verification, you MUST emit exactly ONE tool call: "
@@ -222,6 +223,7 @@ _SYNTHESIS_DIRECTIVE = (
     "    ONE clarifying question instead."
 )
 
+
 # Pressure-injection: 20+ iterations of reads with zero writes on an
 # action-task. Forces the model to either patch or finalize next turn.
 _ACTION_FINAL_WARNING_DIRECTIVE = (
@@ -232,6 +234,7 @@ _ACTION_FINAL_WARNING_DIRECTIVE = (
     "  2) Your final plain-text answer (no more tool calls).\n "
     "Stop researching. Act or answer."
 )
+
 
 # Pressure-injection: 10+ iterations of reads with zero writes on an
 # action-task. Softer than the final warning above.
@@ -244,6 +247,7 @@ _ACTION_NUDGE_DIRECTIVE = (
     "Avoid reading files unless strictly necessary."
 )
 
+
 # Sent when the model emits a recognizable refusal ("I can't access
 # files...") despite having tool access. Forces a concrete tool call.
 _REFUSAL_DIRECTIVE = (
@@ -255,12 +259,14 @@ _REFUSAL_DIRECTIVE = (
     "the tool call tag."
 )
 
+
 # Sent when the model returns an empty reply.
 _EMPTY_REPLY_DIRECTIVE = (
     "Your reply was empty. Emit a single "
     '<tool>{"tool":"...","parameters":{...}}</tool> '
     "call or the final plain-text answer."
 )
+
 
 # Sent when the model hands work back to the user mid-task ("Would you
 # like me to proceed?", "Now I'll examine X.").
@@ -295,6 +301,7 @@ _CLIFFHANGER_DIRECTIVE = (
     "instead of immediately performing them."
 )
 
+
 # Sent when a final answer follows a file-modifying call but omits the
 # mandatory STEP REPORT block.
 _STEP_REPORT_DIRECTIVE = (
@@ -313,6 +320,7 @@ _STEP_REPORT_DIRECTIVE = (
     "Add this report to your final answer now. Do NOT "
     "call any more tools."
 )
+
 
 # Fallback message returned when the model fails to emit a valid tool
 # call even after retries. Used by both the retry-exhausted and
@@ -459,7 +467,7 @@ class Orchestrator:
             self,
             backend: ModelBackend,
             base_path: str = ".",
-            temperature: float = 0.1,
+            temperature: float = 0.2,
             max_tokens: int = 2048,
             security_config: Optional[SecurityConfig] = None,
             disable_tools: bool = False,
@@ -552,10 +560,12 @@ class Orchestrator:
 
     def _ensure_system_prompt(self) -> None:
         # Load per-project agent context (.agent.md / context.md) when present.
+        from ..core.project_context import load_project_context
 
+        project_context = load_project_context(str(self.tool_registry.base_path))
         _history.ensure_system_prompt(
             self.conversation_history,
-            self.tool_registry.get_system_prompt(),
+            self.tool_registry.get_system_prompt(project_context=project_context),
         )
 
     def _recompute_tool_budget(self) -> None:
@@ -1404,7 +1414,7 @@ class Orchestrator:
     _STEP_REPORT_MARKER_RE = re.compile(
         r"^\s*[_*]*STEP\s+REPORT[_*]*\s*$",
         re.IGNORECASE | re.MULTILINE,
-    )
+        )
 
     def _looks_like_step_report(self, text: str) -> bool:
         """True when the text contains the mandatory step-report marker."""
@@ -1489,7 +1499,7 @@ class Orchestrator:
             + (f" ({reason})" if reason else "")
             + ".**",
             "",
-        ]
+            ]
 
         if not results:
             return "\n".join(prefix_lines) + (
