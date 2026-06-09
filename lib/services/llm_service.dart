@@ -103,10 +103,15 @@ class LlmService {
   }) async {
     switch (backend) {
       case LlmBackend.orchestrator:
-        if (OrchestratorManager.instance.isRunning &&
-            OrchestratorManager.instance.currentBackend !=
-                OrchestratorBackend.huggingface) {
-          await OrchestratorManager.instance.stop();
+        if (OrchestratorManager.instance.isRunning) {
+          final currentBackend = OrchestratorManager.instance.currentBackend;
+          final currentModel = OrchestratorManager.instance.currentModelId;
+          final currentTemp = OrchestratorManager.instance.currentTemperature;
+          if (currentBackend != OrchestratorBackend.huggingface ||
+              currentModel != modelId ||
+              currentTemp != temperature) {
+            await OrchestratorManager.instance.stop();
+          }
         }
 
         if (!OrchestratorManager.instance.isRunning) {
@@ -114,6 +119,7 @@ class LlmService {
             hfToken: token,
             modelId: modelId,
             backend: OrchestratorBackend.huggingface,
+            temperature: temperature,
           );
           if (!started) {
             throw Exception(
@@ -153,7 +159,11 @@ class LlmService {
 
         if (OrchestratorManager.instance.isRunning) {
           final currentBackend = OrchestratorManager.instance.currentBackend;
-          if (currentBackend != OrchestratorBackend.ollama) {
+          final currentModel = OrchestratorManager.instance.currentModelId;
+          final currentTemp = OrchestratorManager.instance.currentTemperature;
+          if (currentBackend != OrchestratorBackend.ollama ||
+              currentModel != resolvedOllamaModel ||
+              currentTemp != temperature) {
             await OrchestratorManager.instance.stop();
           }
         }
@@ -202,10 +212,15 @@ class LlmService {
         final maxTokens = await settings.getGroqMaxTokens();
         final tpmLimit = await settings.getGroqTpmLimit();
 
-        if (OrchestratorManager.instance.isRunning &&
-            OrchestratorManager.instance.currentBackend !=
-                OrchestratorBackend.groq) {
-          await OrchestratorManager.instance.stop();
+        if (OrchestratorManager.instance.isRunning) {
+          final currentBackend = OrchestratorManager.instance.currentBackend;
+          final currentModel = OrchestratorManager.instance.currentModelId;
+          final currentTemp = OrchestratorManager.instance.currentTemperature;
+          if (currentBackend != OrchestratorBackend.groq ||
+              currentModel != groqModel ||
+              currentTemp != temperature) {
+            await OrchestratorManager.instance.stop();
+          }
         }
         if (!OrchestratorManager.instance.isRunning) {
           bool started = await OrchestratorManager.instance.start(
@@ -265,10 +280,15 @@ class LlmService {
         final maxTokens = await settings.getGeminiMaxTokens();
         final tpmLimit = await settings.getGeminiTpmLimit();
 
-        if (OrchestratorManager.instance.isRunning &&
-            OrchestratorManager.instance.currentBackend !=
-                OrchestratorBackend.gemini) {
-          await OrchestratorManager.instance.stop();
+        if (OrchestratorManager.instance.isRunning) {
+          final currentBackend = OrchestratorManager.instance.currentBackend;
+          final currentModel = OrchestratorManager.instance.currentModelId;
+          final currentTemp = OrchestratorManager.instance.currentTemperature;
+          if (currentBackend != OrchestratorBackend.gemini ||
+              currentModel != geminiModel ||
+              currentTemp != temperature) {
+            await OrchestratorManager.instance.stop();
+          }
         }
         if (!OrchestratorManager.instance.isRunning) {
           bool started = await OrchestratorManager.instance.start(
@@ -329,10 +349,15 @@ class LlmService {
         final orMaxTokens = await orSettings.getOpenRouterMaxTokens();
         final orTpmLimit = await orSettings.getOpenRouterTpmLimit();
 
-        if (OrchestratorManager.instance.isRunning &&
-            OrchestratorManager.instance.currentBackend !=
-                OrchestratorBackend.openrouter) {
-          await OrchestratorManager.instance.stop();
+        if (OrchestratorManager.instance.isRunning) {
+          final currentBackend = OrchestratorManager.instance.currentBackend;
+          final currentModel = OrchestratorManager.instance.currentModelId;
+          final currentTemp = OrchestratorManager.instance.currentTemperature;
+          if (currentBackend != OrchestratorBackend.openrouter ||
+              currentModel != orModel ||
+              currentTemp != orTemperature) {
+            await OrchestratorManager.instance.stop();
+          }
         }
         if (!OrchestratorManager.instance.isRunning) {
           bool started = await OrchestratorManager.instance.start(
@@ -395,10 +420,15 @@ class LlmService {
         final ghTpmLimit = await ghSettings.getGithubTpmLimit();
         final ghDisableTools = await ghSettings.getGithubDisableTools();
 
-        if (OrchestratorManager.instance.isRunning &&
-            OrchestratorManager.instance.currentBackend !=
-                OrchestratorBackend.github) {
-          await OrchestratorManager.instance.stop();
+        if (OrchestratorManager.instance.isRunning) {
+          final currentBackend = OrchestratorManager.instance.currentBackend;
+          final currentModel = OrchestratorManager.instance.currentModelId;
+          final currentTemp = OrchestratorManager.instance.currentTemperature;
+          if (currentBackend != OrchestratorBackend.github ||
+              currentModel != ghModel ||
+              currentTemp != ghTemperature) {
+            await OrchestratorManager.instance.stop();
+          }
         }
         if (!OrchestratorManager.instance.isRunning) {
           bool started = await OrchestratorManager.instance.start(

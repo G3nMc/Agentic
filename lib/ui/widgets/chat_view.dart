@@ -1779,6 +1779,7 @@ class _ChatViewState extends StateManager<ChatView> with WidgetsBindingObserver 
           ollamaBaseUrl = await settings.getOllamaBaseUrl();
           ollamaNumCtx = await settings.getOllamaNumCtx();
           ollamaApiKey = await settings.getOllamaApiKey();
+          temperature = await settings.getOllamaTemperature();
           final savedOllamaModel = await settings.getOllamaModel();
           modelId = convModelId.isNotEmpty ? convModelId : savedOllamaModel;
           if ((modelId ?? '').isEmpty) {
@@ -1860,17 +1861,28 @@ class _ChatViewState extends StateManager<ChatView> with WidgetsBindingObserver 
           break;
       }
 
-      // Already running on the desired backend -> nothing to do.
-      if (OrchestratorManager.instance.isRunning && OrchestratorManager.instance.currentBackend == desiredBackend) {
+      // Already running on the desired backend/model/temp -> nothing to do.
+      if (OrchestratorManager.instance.isRunning &&
+          OrchestratorManager.instance.currentBackend == desiredBackend &&
+          OrchestratorManager.instance.currentModelId == modelId &&
+          OrchestratorManager.instance.currentTemperature == temperature) {
         if (mounted && !_logVisible) {
           setState(() => _logVisible = true);
         }
         return true;
       }
 
-      // Stop existing orchestrator if backend changed.
-      if (OrchestratorManager.instance.isRunning && OrchestratorManager.instance.currentBackend != desiredBackend) {
-        await OrchestratorManager.instance.stop();
+      // Stop existing orchestrator if backend, model, or temperature changed.
+      if (OrchestratorManager.instance.isRunning) {
+        final currentBackend = OrchestratorManager.instance.currentBackend;
+        final currentModel = OrchestratorManager.instance.currentModelId;
+        final currentTemp = OrchestratorManager.instance.currentTemperature;
+
+        if (currentBackend != desiredBackend ||
+            currentModel != modelId ||
+            currentTemp != temperature) {
+          await OrchestratorManager.instance.stop();
+        }
       }
 
       // Rule: on any orchestrator start, open the output widget.

@@ -59,6 +59,8 @@ class OrchestratorManager {
   // result instead of each spawning their own subprocess.
   Future<bool>? _startingFuture;
   OrchestratorBackend _currentBackend = OrchestratorBackend.huggingface;
+  String? _currentModelId;
+  double? _currentTemperature;
   final StringBuffer _stderrBuffer = StringBuffer();
 
   // â”€â”€ Live log stream â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -347,6 +349,8 @@ class OrchestratorManager {
   bool get isRunning => _isRunning;
   bool get isReady => _isReady;
   OrchestratorBackend get currentBackend => _currentBackend;
+  String? get currentModelId => _currentModelId;
+  double? get currentTemperature => _currentTemperature;
   String get stderrLog => _stderrBuffer.toString();
 
   /// Platform-appropriate Python executable used as a fallback when the
@@ -668,9 +672,12 @@ class OrchestratorManager {
         if (modelId != null && modelId.isNotEmpty) {
           args.addAll(['--model', modelId]);
         }
-        if (temperature != null) {
-          args.addAll(['--temperature', temperature.toString()]);
+        // Fetch temperature from settings if not provided
+        double effectiveTemperature = temperature ?? 0.0;
+        if (backend == OrchestratorBackend.ollama) {
+          effectiveTemperature = temperature ?? await BackendSettingsRepository.instance.getOllamaTemperature();
         }
+        args.addAll(['--temperature', effectiveTemperature.toString()]);
         if (maxTokens != null) {
           args.addAll(['--max-tokens', maxTokens.toString()]);
         }
@@ -776,6 +783,8 @@ class OrchestratorManager {
       _isRunning = true;
       _isReady = true;
       _currentBackend = backend;
+      _currentModelId = modelId;
+      _currentTemperature = temperature;
       return true;
     } catch (e) {
       _appendLog('start() failed: $e');
