@@ -673,11 +673,10 @@ class OrchestratorManager {
           args.addAll(['--model', modelId]);
         }
         // Fetch temperature from settings if not provided
-        double effectiveTemperature = temperature ?? 0.0;
-        if (backend == OrchestratorBackend.ollama) {
-          effectiveTemperature = temperature ?? await BackendSettingsRepository.instance.getOllamaTemperature();
-        }
-        args.addAll(['--temperature', effectiveTemperature.toString()]);
+        double effectiveTemperature = temperature ?? await _getDefaultTemperatureForBackend(backend);
+        // Format temperature as a clean decimal (e.g., 0.30 instead of 0.30000000000000004)
+        final formattedTemperature = double.parse(effectiveTemperature.toStringAsFixed(2));
+        args.addAll(['--temperature', formattedTemperature.toString()]);
         if (maxTokens != null) {
           args.addAll(['--max-tokens', maxTokens.toString()]);
         }
@@ -1107,3 +1106,24 @@ class OrchestratorManager {
     }
   }
 }
+
+  /// Returns the default temperature for the given backend from BackendSettingsRepository.
+  Future<double> _getDefaultTemperatureForBackend(OrchestratorBackend backend) async {
+    final backendSettings = BackendSettingsRepository.instance;
+    switch (backend) {
+      case OrchestratorBackend.huggingface:
+        return await backendSettings.getHuggingFaceTemperature();
+      case OrchestratorBackend.ollama:
+        return await backendSettings.getOllamaTemperature();
+      case OrchestratorBackend.groq:
+        return await backendSettings.getGroqTemperature();
+      case OrchestratorBackend.gemini:
+        return await backendSettings.getGeminiTemperature();
+      case OrchestratorBackend.openrouter:
+        return await backendSettings.getOpenRouterTemperature();
+      case OrchestratorBackend.github:
+        return await backendSettings.getGitHubTemperature();
+      default:
+        return 0.0; // Fallback for unknown backends
+    }
+  }

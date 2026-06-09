@@ -335,7 +335,17 @@ class BackendSettingsRepository {
     return double.tryParse(v ?? '') ?? defaultGithubTemperature;
   }
   Future<void> setGithubTemperature(double v) =>
-      _writeString(_kGithubTemperature, v.toString());
+      _writeString(_kGithubTemperature, v.toStringAsFixed(2));
+
+  Future<double> getHuggingFaceTemperature() async {
+    final v = await _readString('huggingface.temperature');
+    return double.tryParse(v ?? '') ?? 0.1;
+  }
+
+  Future<double> getGitHubTemperature() async {
+    final v = await _readString(_kGithubTemperature);
+    return double.tryParse(v ?? '') ?? defaultGithubTemperature;
+  }
 
   Future<int> getGithubMaxTokens() async {
     final v = await _readString(_kGithubMaxTokens);
