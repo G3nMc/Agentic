@@ -150,7 +150,7 @@ class LlmService {
 
         final settings = BackendSettingsRepository.instance;
         final ollamaApiKey = await settings.getOllamaApiKey() ?? '';
-        final settingTemperature = await settings.getOllamaTemperature();
+
         if (OrchestratorManager.instance.isRunning) {
           final currentBackend = OrchestratorManager.instance.currentBackend;
           if (currentBackend != OrchestratorBackend.ollama) {

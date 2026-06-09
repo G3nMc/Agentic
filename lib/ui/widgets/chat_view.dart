@@ -389,7 +389,8 @@ class _ChatViewState extends StateManager<ChatView> with WidgetsBindingObserver 
     prompt.writeln('- **Immediate Focus**: ');
     prompt.writeln();
     prompt.writeln('## Behavioral Rules');
-    prompt.writeln('- **Must Always**: Place all temporary helper scripts, data files, and intermediate artifacts inside a `.agentic/` directory (create it if missing). After the task is complete and the files are no longer needed, delete them. Never create such files directly in the project root.');
+    prompt.writeln(
+        '- **Must Always**: Place all temporary helper scripts, data files, and intermediate artifacts inside a `.agentic/` directory (create it if missing). After the task is complete and the files are no longer needed, delete them. Never create such files directly in the project root.');
     prompt.writeln('- **Must Never**: ');
     prompt.writeln();
     prompt.writeln('## Communication Style');
@@ -744,38 +745,37 @@ class _ChatViewState extends StateManager<ChatView> with WidgetsBindingObserver 
       final historyForRequest = _isOrchestratorBackend(backend)
           ? history
           : (prepared.historyToSend.isNotEmpty ? prepared.historyToSend : history);
+      // Determine temperature based on backend settings.
+      double temperature = 0.2;
+      switch (backend) {
+        case LlmBackend.ollama:
+        case LlmBackend.ollamaPython:
+        case LlmBackend.ollamaOrchestrator:
+          temperature = await BackendSettingsRepository.instance.getOllamaTemperature();
+          break;
+        case LlmBackend.groq:
+        case LlmBackend.groqOrchestrator:
+          temperature = await BackendSettingsRepository.instance.getGroqTemperature();
+          break;
+        case LlmBackend.geminiOrchestrator:
+          temperature = await BackendSettingsRepository.instance.getGeminiTemperature();
+          break;
+        case LlmBackend.openRouter:
+        case LlmBackend.openRouterOrchestrator:
+          temperature = await BackendSettingsRepository.instance.getOpenRouterTemperature();
+          break;
+        case LlmBackend.githubOrchestrator:
+          temperature = await BackendSettingsRepository.instance.getGithubTemperature();
+          break;
+        default:
+          temperature = 0.2;
+      }
 
       final reply = await LlmService.instance.sendChat(
         backend: backend,
         token: token ?? "",
         modelId: modelId,
-        // Determine temperature based on backend settings.
-double temperature = 0.2;
-switch (backend) {
-  case LlmBackend.ollama:
-  case LlmBackend.ollamaPython:
-  case LlmBackend.ollamaOrchestrator:
-    temperature = await BackendSettingsRepository.instance.getOllamaTemperature() ?? 0.2;
-    break;
-  case LlmBackend.groq:
-  case LlmBackend.groqOrchestrator:
-    temperature = await BackendSettingsRepository.instance.getGroqTemperature() ?? 0.2;
-    break;
-  case LlmBackend.geminiOrchestrator:
-    temperature = await BackendSettingsRepository.instance.getGeminiTemperature() ?? 0.2;
-    break;
-  case LlmBackend.openRouter:
-  case LlmBackend.openRouterOrchestrator:
-    temperature = await BackendSettingsRepository.instance.getOpenRouterTemperature() ?? 0.2;
-    break;
-  case LlmBackend.github:
-  case LlmBackend.githubOrchestrator:
-    temperature = await BackendSettingsRepository.instance.getGithubTemperature() ?? 0.2;
-    break;
-  default:
-    temperature = 0.2;
-}
-temperature: temperature,
+        temperature: temperature,
         history: historyForRequest,
         conversationId: conv.id,
         localServerUrl: serverUrl,
