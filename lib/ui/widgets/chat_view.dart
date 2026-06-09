@@ -749,7 +749,33 @@ class _ChatViewState extends StateManager<ChatView> with WidgetsBindingObserver 
         backend: backend,
         token: token ?? "",
         modelId: modelId,
-        temperature: temperature,
+        // Determine temperature based on backend settings.
+double temperature = 0.2;
+switch (backend) {
+  case LlmBackend.ollama:
+  case LlmBackend.ollamaPython:
+  case LlmBackend.ollamaOrchestrator:
+    temperature = await BackendSettingsRepository.instance.getOllamaTemperature() ?? 0.2;
+    break;
+  case LlmBackend.groq:
+  case LlmBackend.groqOrchestrator:
+    temperature = await BackendSettingsRepository.instance.getGroqTemperature() ?? 0.2;
+    break;
+  case LlmBackend.geminiOrchestrator:
+    temperature = await BackendSettingsRepository.instance.getGeminiTemperature() ?? 0.2;
+    break;
+  case LlmBackend.openRouter:
+  case LlmBackend.openRouterOrchestrator:
+    temperature = await BackendSettingsRepository.instance.getOpenRouterTemperature() ?? 0.2;
+    break;
+  case LlmBackend.github:
+  case LlmBackend.githubOrchestrator:
+    temperature = await BackendSettingsRepository.instance.getGithubTemperature() ?? 0.2;
+    break;
+  default:
+    temperature = 0.2;
+}
+temperature: temperature,
         history: historyForRequest,
         conversationId: conv.id,
         localServerUrl: serverUrl,
