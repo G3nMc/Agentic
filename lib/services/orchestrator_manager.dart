@@ -1123,7 +1123,6 @@ class OrchestratorManager {
         return await backendSettings.getOpenRouterTemperature();
       case OrchestratorBackend.github:
         return await backendSettings.getGitHubTemperature();
-      default:
-        return 0.0; // Fallback for unknown backends
+      // Fallback for unknown backends
     }
   }
