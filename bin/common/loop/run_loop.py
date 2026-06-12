@@ -41,6 +41,11 @@ _IDEMPOTENT_VALIDATORS = frozenset(
 )
 _MAX_CONSECUTIVE_VALIDATIONS = 3
 
+# Task-flow nudges
+_MAX_ITERS_WITHOUT_STATUS = 3  # tool calls without <task_status> emission
+_MAX_ITERS_WITHOUT_PLAN = 1    # compliance iters without <tasks> plan
+_MAX_ITERS_WITH_EMPTY_REPLY = 2  # empty cleaned reply (post-strip)
+
 # Bare confirmations / continuations that mean "execute the prior plan", not
 # "open-ended exploration". Mirrors workflow.py's _FOLLOWUP_RE so the
 # single-agent path gets the same intent-recovery the multi-agent Shaper
@@ -473,12 +478,41 @@ class Orchestrator:
             disable_tools: bool = False,
             path_filter: Optional[Any] = None,
             db_connections: Optional[Dict[str, Dict[str, str]]] = None,
+            task_mode: str = "open",
     ):
         self._action_intent = None
         self._writes_this_turn = None
         self._action_pressure_nudges = None
         self._pending_step_report = None
         self.backend = backend
+        # Task-flow mode: open / task_compliance / task_compliance_auto.
+        # Drives whether the system prompt advertises the <tasks>
+        # protocol and whether the loop emits task_status events on
+        # stdout. See :mod:`common.loop.task_protocol`.
+        from . import task_protocol as _tp
+        self.task_mode = _tp.TaskMode.parse(task_mode)
+        # Consecutive iterations the model used a tool but failed to
+        # emit a ``<task_status>``. After ``_MAX_ITERS_WITHOUT_STATUS``
+        # the loop injects a corrective internal note pushing the
+        # model to report progress -- otherwise the UI checklist
+        # stays at 0/N forever even while work is actually done.
+        self._iters_without_status: int = 0
+        # Consecutive iterations whose visible reply was empty AFTER
+        # stripping reasoning / task tags / hallucinated transcripts.
+        # The fact that the model is producing only stripped content
+        # means it's "talking to itself" without doing real work --
+        # we inject a corrective nudge.
+        self._iters_with_empty_reply: int = 0
+        # Per-request flag: was a ``<tasks>`` plan emitted yet?
+        # Reset at the start of each ``run()`` call. In compliance
+        # modes the orchestrator forces an initial plan when this is
+        # still False at the end of iteration 0 (Fix 6).
+        self._plan_emitted_this_request: bool = False
+        # Per-request flag: was the incoming prompt a ``<task_action>``
+        # envelope (Proceed / Retry / Skip / Abort / Replan)? In that
+        # case the plan was already emitted in an earlier turn -- we
+        # do NOT force a re-plan.
+        self._is_task_action_request: bool = False
         # When True, every request is routed as a plain chat call — the
         # tool-decision heuristic and the tool loop are bypassed. Useful
         # for reasoning-only models (phi-4, plain Mistral, etc.) that
@@ -565,7 +599,10 @@ class Orchestrator:
         project_context = load_project_context(str(self.tool_registry.base_path))
         _history.ensure_system_prompt(
             self.conversation_history,
-            self.tool_registry.get_system_prompt(project_context=project_context),
+            self.tool_registry.get_system_prompt(
+                project_context=project_context,
+                task_mode=self.task_mode.value,
+            ),
         )
 
     def _recompute_tool_budget(self) -> None:
@@ -646,6 +683,25 @@ class Orchestrator:
     def run(self, user_input: str) -> str:
         self._ensure_system_prompt()
         self._trim_history()
+
+        # Task-flow: when the incoming user prompt is itself a
+        # ``<task_action>{...}</task_action>`` envelope (sent by the
+        # Flutter UI's Proceed / Retry / Skip / Abort / Replan
+        # buttons), log it on stderr so the log panel mirrors the
+        # manual-mode control loop. The envelope is still forwarded to
+        # the model verbatim -- the model interprets the directive in
+        # the context of the active task list.
+        # Reset per-request task-flow flags before the action-detection
+        # below so the plan-emission check (Fix 6) is in a known state.
+        self._plan_emitted_this_request = False
+        self._is_task_action_request = False
+        if self.task_mode.is_task_flow:
+            from . import task_protocol as _tp
+            action_ev = _tp.parse_task_action(user_input or "")
+            if action_ev is not None:
+                _tp.log_task_action_received(action_ev)
+                # Continuation of an existing plan: do NOT force a re-plan.
+                self._is_task_action_request = True
 
         # Detect a bare confirmation ("Yes", "Proceed", "Do it"). When found
         # AND there's a prior assistant turn to inherit context from, treat
@@ -941,6 +997,77 @@ class Orchestrator:
             if text and _td.looks_like_unclosed_tool(text):
                 text = text + "</tool>"
 
+            # Task-flow event extraction: when in task_compliance(_auto)
+            # mode, parse the reply for <tasks>/<task_status> tags and
+            # broadcast them on stdout as structured JSON envelopes so
+            # the Flutter side can update its task panel + DB live.
+            # Tags are then stripped from the visible reply so the user
+            # never sees the raw protocol noise. See
+            # :mod:`common.loop.task_protocol`.
+            # ``_iters_without_status`` counts consecutive iterations
+            # that produced a tool call but no ``<task_status>``. Used
+            # below to nudge the model when it forgets to report
+            # progress and the checklist UI stays frozen.
+            saw_status_this_iter = False
+            if text and self.task_mode.is_task_flow:
+                from . import task_protocol as _tp
+
+                proposed = _tp.parse_tasks(text)
+                if proposed:
+                    _tp.emit_tasks_proposed(proposed)
+                    # Fix 6: any time the model emits a plan, mark
+                    # the request as "planned" so the no-plan nudge
+                    # below stops firing.
+                    self._plan_emitted_this_request = True
+                status_events = _tp.parse_task_status(text)
+                for ev in status_events:
+                    _tp.emit_task_status(ev)
+                if status_events:
+                    saw_status_this_iter = True
+                text = _tp.strip_task_tags(text)
+                # Reset the no-status counter when we did see a status.
+                if saw_status_this_iter:
+                    self._iters_without_status = 0
+
+                # Fix 6: in compliance(_auto) modes the FIRST iteration
+                # of a brand-new request (i.e. not a continuation of a
+                # prior plan via <task_action>) MUST emit a <tasks>
+                # plan. If iter 0 didn't, inject a corrective nudge
+                # and skip dispatch so the next iteration re-attempts.
+                # The UI checklist depends on this plan -- without it
+                # the panel stays empty and the user has nothing to
+                # confirm.
+                if (
+                    iteration <= _MAX_ITERS_WITHOUT_PLAN
+                    and self.task_mode.is_task_flow
+                    and not self._plan_emitted_this_request
+                    and not self._is_task_action_request
+                ):
+                    print(
+                        f"[orch] iter {iteration} in {self.task_mode.value} "
+                        f"mode did not emit a <tasks> plan -- injecting "
+                        f"plan-first nudge",
+                        file=sys.stderr,
+                    )
+                    self.conversation_history.append(
+                        {
+                            "role": "user",
+                            "content": (
+                                "[INTERNAL: TASK FLOW PROTOCOL is active "
+                                "but you have not emitted a <tasks> plan "
+                                "yet. Your NEXT reply MUST begin with a "
+                                "<tasks>[{\"id\":1,\"name\":\"...\","
+                                "\"description\":\"...\"}, ...]</tasks> "
+                                "block enumerating every step needed for "
+                                "this request. Do NOT call any tool until "
+                                "the plan has been emitted. Do NOT echo "
+                                "this instruction back to the user.]"
+                            ),
+                        }
+                    )
+                    iteration += 1
+                    continue
+
             preview = (text or "").replace("\n", " ")[:800]
             print(
                 f"[orch] Model reply (iter {iteration}, finish={finish_reason}, "
@@ -988,6 +1115,42 @@ class Orchestrator:
                 # Reset the consecutive-malformed guard: a parseable call
                 # means the model has recovered.
                 consecutive_malformed = 0
+                # Reset the empty-reply counter -- the model is producing
+                # actual structured output again.
+                self._iters_with_empty_reply = 0
+
+                # Task-flow no-status nudge: when we're in task_compliance(_auto)
+                # mode AND the model used a tool without reporting a
+                # ``<task_status>``, bump the counter. Once it crosses
+                # the threshold inject a corrective user message so the
+                # next iteration has explicit pressure to emit the tag.
+                if self.task_mode.is_task_flow and not saw_status_this_iter:
+                    self._iters_without_status += 1
+                    if self._iters_without_status >= _MAX_ITERS_WITHOUT_STATUS:
+                        print(
+                            f"[orch] {self._iters_without_status} tool iterations "
+                            f"without a <task_status> emission -- injecting "
+                            f"corrective nudge",
+                            file=sys.stderr,
+                        )
+                        self.conversation_history.append(
+                            {
+                                "role": "user",
+                                "content": (
+                                    "[INTERNAL: You have used the tool protocol "
+                                    "for several iterations without emitting a "
+                                    "<task_status>. The UI checklist is frozen "
+                                    "because the orchestrator cannot tell which "
+                                    "task is progressing. Your NEXT reply must "
+                                    "include a <task_status>{\"id\":<int>,"
+                                    "\"status\":\"<value>\",\"note\":\"<short>\"}"
+                                    "</task_status> tag describing the work "
+                                    "completed so far. Do NOT echo this "
+                                    "instruction back to the user.]"
+                                ),
+                            }
+                        )
+                        self._iters_without_status = 0  # consumed by the nudge
 
                 # --- Repeat-call detection -----------------------------
                 # Same (tool, params) called more than once in the recent
@@ -1120,6 +1283,84 @@ class Orchestrator:
                             "content"
                         ]
                     )
+                iteration += 1
+                continue
+
+            # Empty-cleaned-reply guard: the raw reply may have been
+            # large (reasoning, hallucinated transcript, task tags)
+            # but after stripping nothing remained. Without this
+            # guard the loop interprets the empty text as "no tool
+            # call, also no final answer" and silently loops; the
+            # user just sees empty chat bubbles.
+            if not text_clean.strip():
+                self._iters_with_empty_reply += 1
+                print(
+                    f"[orch] WARNING: cleaned reply empty after stripping "
+                    f"(iter={iteration}, "
+                    f"streak={self._iters_with_empty_reply}). The raw model "
+                    f"reply was {len(text or '')} chars; everything was "
+                    f"reasoning / task tags / fake transcript.",
+                    file=sys.stderr,
+                )
+                # Fix 8b: plan-emitted-but-no-work nudge. When task-flow
+                # mode is active AND a <tasks> plan was already emitted
+                # for this request AND the model just produced an empty
+                # reply (typically only ``<tasks>...</tasks>`` that got
+                # stripped, or a re-plan that the user did NOT ask for),
+                # inject a targeted directive. The generic empty-reply
+                # nudge below is too vague for this case -- the model
+                # would just re-emit yet another plan and stall again.
+                # Fires immediately (no streak) because every wasted
+                # iteration here costs a full round-trip.
+                if (
+                    self.task_mode.is_task_flow
+                    and self._plan_emitted_this_request
+                ):
+                    print(
+                        f"[orch] plan was already emitted but reply has no "
+                        f"task_status + tool -- injecting plan-then-start "
+                        f"nudge",
+                        file=sys.stderr,
+                    )
+                    self.conversation_history.append(
+                        {
+                            "role": "user",
+                            "content": (
+                                "[INTERNAL: The <tasks> plan has already "
+                                "been saved by the orchestrator. Do NOT "
+                                "re-emit a new <tasks> block. Your NEXT "
+                                "reply must contain, in this exact order: "
+                                "(1) <task_status>{\"id\":1,"
+                                "\"status\":\"in_progress\",\"note\":\""
+                                "<one line>\"}</task_status>, then "
+                                "(2) the FIRST <tool>{...}</tool> call "
+                                "needed to start task #1. Nothing else. "
+                                "Do NOT echo this instruction back.]"
+                            ),
+                        }
+                    )
+                    # Reset the generic empty-reply counter so the
+                    # generic nudge does not also fire on the same iter.
+                    self._iters_with_empty_reply = 0
+                    iteration += 1
+                    continue
+                if self._iters_with_empty_reply >= _MAX_ITERS_WITH_EMPTY_REPLY:
+                    self.conversation_history.append(
+                        {
+                            "role": "user",
+                            "content": (
+                                "[INTERNAL: Your last reply was empty after "
+                                "the orchestrator removed reasoning, task "
+                                "tags, and simulated tool transcripts. Emit "
+                                "ONLY the single <tool>{...}</tool> call OR "
+                                "the user-facing final answer. No preamble, "
+                                "no fake 'User:' / 'Assistant:' lines, no "
+                                "'[INTERNAL: ...]' tags from you. Do NOT "
+                                "echo this instruction back.]"
+                            ),
+                        }
+                    )
+                    self._iters_with_empty_reply = 0
                 iteration += 1
                 continue
 
@@ -1631,12 +1872,24 @@ class Orchestrator:
                 # ``</tool>``) is repaired in the caller above.
                 #
                 # ROLLBACK: drop the ``stop=`` kwarg from this call.
+                #
+                # Multiple stop strings: not every provider honors
+                # ``</tool>`` (Ollama Cloud + nemotron-* notably do
+                # not). Adding the speaker markers that the model
+                # hallucinates lets us catch the failure via a
+                # different stop sequence -- whichever one the
+                # provider actually respects fires first.
                 result = self.backend.chat(
                     messages=self.conversation_history,
                     max_tokens=self.max_tokens,
                     temperature=self.temperature,
                     tools=self.tool_registry.definitions,
-                    stop=["</tool>"],
+                    stop=[
+                        "</tool>",
+                        "\nUser:",
+                        "\nAssistant:",
+                        "\n[INTERNAL:",
+                    ],
                 )
                 # Successful call: reset the circuit breaker failure count.
                 self._model_circuit_breaker.record_success()

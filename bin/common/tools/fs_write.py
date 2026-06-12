@@ -152,6 +152,149 @@ def register(registry) -> None:
         except Exception as e:
             return json.dumps({"status": "error", "message": str(e)})
 
+    # ------------------------------------------------------------------
+    # BATCH variants -- one tool call, N operations.
+    #
+    # Each batch tool returns:
+    #   {
+    #     "status": "success" | "partial" | "error",
+    #     "results": [{ "path": ..., "status": ..., "message": ... }, ...],
+    #     "succeeded": <int>,
+    #     "failed":    <int>,
+    #   }
+    # ``status`` is ``success`` when every sub-op succeeded, ``partial``
+    # when at least one failed, ``error`` when the input itself was
+    # malformed. The model sees per-item results and can retry only the
+    # failed ones.
+    # ------------------------------------------------------------------
+
+    def _summarise_batch(results, action: str) -> str:
+        succeeded = sum(1 for r in results if r.get("status") == "success")
+        failed = len(results) - succeeded
+        overall = "success" if failed == 0 else "partial"
+        return json.dumps(
+            {
+                "status": overall,
+                "message": f"{action}: {succeeded} succeeded, {failed} failed",
+                "succeeded": succeeded,
+                "failed": failed,
+                "results": results,
+            }
+        )
+
+    def write_files(items) -> str:
+        """Write many files in one call. ``items`` is a list of
+        ``{"path": ..., "content": ...}`` dicts. Each item is processed
+        independently -- a single failure does not abort the rest.
+        """
+        if not isinstance(items, list) or not items:
+            return json.dumps(
+                {
+                    "status": "error",
+                    "message": "items must be a non-empty list of {path, content}",
+                }
+            )
+        results = []
+        for entry in items:
+            if not isinstance(entry, dict):
+                results.append(
+                    {"path": "?", "status": "error", "message": "entry is not an object"}
+                )
+                continue
+            path = entry.get("path")
+            content = entry.get("content")
+            if not isinstance(path, str) or not isinstance(content, str):
+                results.append(
+                    {
+                        "path": str(path),
+                        "status": "error",
+                        "message": "each item requires path:str and content:str",
+                    }
+                )
+                continue
+            inner = json.loads(write_file(path, content))
+            inner["path"] = path
+            results.append(inner)
+        return _summarise_batch(results, "write_files")
+
+    def patch_files(items) -> str:
+        """Patch many files in one call. ``items`` is a list of
+        ``{"path", "old_content", "new_content"}`` dicts.
+        """
+        if not isinstance(items, list) or not items:
+            return json.dumps(
+                {
+                    "status": "error",
+                    "message": "items must be a non-empty list of "
+                    "{path, old_content, new_content}",
+                }
+            )
+        results = []
+        for entry in items:
+            if not isinstance(entry, dict):
+                results.append(
+                    {"path": "?", "status": "error", "message": "entry is not an object"}
+                )
+                continue
+            path = entry.get("path")
+            old_c = entry.get("old_content")
+            new_c = entry.get("new_content")
+            if (
+                not isinstance(path, str)
+                or not isinstance(old_c, str)
+                or not isinstance(new_c, str)
+            ):
+                results.append(
+                    {
+                        "path": str(path),
+                        "status": "error",
+                        "message": "each item requires path, old_content, new_content (all strings)",
+                    }
+                )
+                continue
+            inner = json.loads(patch_file(path, old_c, new_c))
+            inner["path"] = path
+            results.append(inner)
+        return _summarise_batch(results, "patch_files")
+
+    def create_directories(paths) -> str:
+        """Create many directories in one call. ``paths`` is a list of
+        directory paths (each gets ``mkdir -p`` semantics).
+        """
+        if not isinstance(paths, list) or not paths:
+            return json.dumps(
+                {"status": "error", "message": "paths must be a non-empty list of strings"}
+            )
+        results = []
+        for p in paths:
+            if not isinstance(p, str):
+                results.append(
+                    {"path": str(p), "status": "error", "message": "path must be a string"}
+                )
+                continue
+            inner = json.loads(create_directory(p))
+            inner["path"] = p
+            results.append(inner)
+        return _summarise_batch(results, "create_directories")
+
+    def delete_files(paths) -> str:
+        """Delete many files in one call. ``paths`` is a list of file paths."""
+        if not isinstance(paths, list) or not paths:
+            return json.dumps(
+                {"status": "error", "message": "paths must be a non-empty list of strings"}
+            )
+        results = []
+        for p in paths:
+            if not isinstance(p, str):
+                results.append(
+                    {"path": str(p), "status": "error", "message": "path must be a string"}
+                )
+                continue
+            inner = json.loads(delete_file(p))
+            inner["path"] = p
+            results.append(inner)
+        return _summarise_batch(results, "delete_files")
+
     registry.tools.update(
         {
             "write_file": write_file,
@@ -160,6 +303,10 @@ def register(registry) -> None:
             "delete_file": delete_file,
             "move_file": move_file,
             "create_directory": create_directory,
+            "write_files": write_files,
+            "patch_files": patch_files,
+            "create_directories": create_directories,
+            "delete_files": delete_files,
         }
     )
 
@@ -264,6 +411,111 @@ def register(registry) -> None:
                             },
                         },
                         "required": ["path"],
+                    },
+                },
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "write_files",
+                    "description": (
+                        "BATCH write of multiple files in a single call. "
+                        "Each item is processed independently; failures of "
+                        "individual files do not abort the rest. Prefer this "
+                        "over calling write_file N times -- saves N-1 "
+                        "iterations."
+                    ),
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "items": {
+                                "type": "array",
+                                "description": "List of {path, content} entries",
+                                "items": {
+                                    "type": "object",
+                                    "properties": {
+                                        "path": {"type": "string"},
+                                        "content": {"type": "string"},
+                                    },
+                                    "required": ["path", "content"],
+                                },
+                            },
+                        },
+                        "required": ["items"],
+                    },
+                },
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "patch_files",
+                    "description": (
+                        "BATCH patch of multiple files in a single call. "
+                        "Each item replaces the first occurrence of "
+                        "old_content with new_content in the given path. "
+                        "Use this for multi-file refactors -- saves N-1 "
+                        "iterations vs. calling patch_file repeatedly."
+                    ),
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "items": {
+                                "type": "array",
+                                "description": "List of {path, old_content, new_content} entries",
+                                "items": {
+                                    "type": "object",
+                                    "properties": {
+                                        "path": {"type": "string"},
+                                        "old_content": {"type": "string"},
+                                        "new_content": {"type": "string"},
+                                    },
+                                    "required": ["path", "old_content", "new_content"],
+                                },
+                            },
+                        },
+                        "required": ["items"],
+                    },
+                },
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "create_directories",
+                    "description": (
+                        "BATCH create multiple directories in a single call. "
+                        "Each path gets `mkdir -p` semantics."
+                    ),
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "paths": {
+                                "type": "array",
+                                "description": "List of directory paths to create",
+                                "items": {"type": "string"},
+                            },
+                        },
+                        "required": ["paths"],
+                    },
+                },
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "delete_files",
+                    "description": (
+                        "BATCH delete multiple files in a single call. "
+                        "Each path is processed independently."
+                    ),
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "paths": {
+                                "type": "array",
+                                "description": "List of file paths to delete",
+                                "items": {"type": "string"},
+                            },
+                        },
+                        "required": ["paths"],
                     },
                 },
             },

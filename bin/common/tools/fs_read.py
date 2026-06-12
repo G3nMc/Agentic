@@ -189,15 +189,62 @@ def register(registry) -> None:
         except Exception as e:
             return json.dumps({"status": "error", "message": str(e)})
 
-    def search_in_files(pattern: str, path: str = ".", file_glob: str = "*") -> str:
-        """Grep-like search: find lines matching a regex in files. Returns file:line: content."""
-        try:
-            target = registry.resolve_path(path)
-            compiled = re.compile(pattern)
-            matches = []
+    def search_in_files(
+        pattern: str = "",
+        path: str = ".",
+        file_glob: str = "*",
+        patterns=None,
+    ) -> str:
+        """Grep-like search: find lines matching a regex in files.
 
-            # Walk manually so we can prune denied directories cheaply
-            # instead of letting rglob descend into them.
+        Backward-compatible single-pattern mode:
+            pattern="foo"  -> returns {matches: [...], total: N, ...}
+
+        BATCH multi-pattern mode (avoids N separate iterations):
+            patterns=["foo","bar","baz"]
+            -> returns {results: {"foo": {...}, "bar": {...}, ...}}
+        Each per-pattern entry has its own matches / total /
+        truncated fields. The walk is performed ONCE across the file
+        tree and every line is tested against every pattern, so the
+        cost is roughly one search regardless of how many patterns are
+        passed.
+        """
+        try:
+            # Normalise pattern inputs.
+            if patterns is not None:
+                if not isinstance(patterns, list) or not patterns:
+                    return json.dumps(
+                        {
+                            "status": "error",
+                            "message": "patterns must be a non-empty list of strings",
+                        }
+                    )
+                pattern_list = [p for p in patterns if isinstance(p, str) and p]
+                if not pattern_list:
+                    return json.dumps(
+                        {
+                            "status": "error",
+                            "message": "patterns must contain at least one non-empty string",
+                        }
+                    )
+                batch_mode = True
+            else:
+                if not isinstance(pattern, str) or not pattern:
+                    return json.dumps(
+                        {
+                            "status": "error",
+                            "message": "pattern (or patterns) is required",
+                        }
+                    )
+                pattern_list = [pattern]
+                batch_mode = False
+
+            target = registry.resolve_path(path)
+            compiled = [(p, re.compile(p)) for p in pattern_list]
+            # Per-pattern accumulator.
+            per_pattern_matches = {p: [] for p in pattern_list}
+            cap_per_pattern = 300
+
             def walk(d):
                 if not pf.is_dir_allowed(d):
                     return
@@ -205,19 +252,25 @@ def register(registry) -> None:
                     entries = sorted(d.iterdir())
                 except (PermissionError, OSError):
                     return
+                # Early exit when every pattern has hit its cap.
+                if all(
+                    len(per_pattern_matches[p]) >= cap_per_pattern
+                    for p in pattern_list
+                ):
+                    return
                 for entry in entries:
                     if entry.is_dir():
                         walk(entry)
-                        if len(matches) >= 300:
+                        if all(
+                            len(per_pattern_matches[p]) >= cap_per_pattern
+                            for p in pattern_list
+                        ):
                             return
                     elif entry.is_file():
                         if not pf.is_file_allowed(entry):
                             continue
                         if not fnmatch.fnmatch(entry.name, file_glob):
                             continue
-                        # Skip very large files — almost always binary
-                        # blobs or generated bundles that drown real
-                        # matches in noise.
                         try:
                             if entry.stat().st_size > 1_000_000:
                                 continue
@@ -228,23 +281,49 @@ def register(registry) -> None:
                             if b"\x00" in raw[:8192]:
                                 continue
                             text = raw.decode("utf-8", errors="ignore")
+                            rel = str(entry.relative_to(base_path))
                             for i, line in enumerate(text.splitlines(), 1):
-                                if compiled.search(line):
-                                    rel = str(entry.relative_to(base_path))
-                                    matches.append(f"{rel}:{i}: {line.rstrip()}")
-                                    if len(matches) >= 300:
-                                        return
+                                for p, cr in compiled:
+                                    if len(per_pattern_matches[p]) >= cap_per_pattern:
+                                        continue
+                                    if cr.search(line):
+                                        per_pattern_matches[p].append(
+                                            f"{rel}:{i}: {line.rstrip()}"
+                                        )
                         except Exception:
                             pass
 
             if target.is_dir():
                 walk(target)
+
+            if not batch_mode:
+                # Preserve legacy response shape.
+                matches = per_pattern_matches[pattern_list[0]]
+                return json.dumps(
+                    {
+                        "status": "success",
+                        "matches": matches,
+                        "total": len(matches),
+                        "truncated": len(matches) >= cap_per_pattern,
+                    }
+                )
+            # Batch response: per-pattern breakdown.
+            results = {}
+            grand_total = 0
+            for p in pattern_list:
+                ms = per_pattern_matches[p]
+                results[p] = {
+                    "matches": ms,
+                    "total": len(ms),
+                    "truncated": len(ms) >= cap_per_pattern,
+                }
+                grand_total += len(ms)
             return json.dumps(
                 {
                     "status": "success",
-                    "matches": matches,
-                    "total": len(matches),
-                    "truncated": len(matches) >= 300,
+                    "results": results,
+                    "patterns": pattern_list,
+                    "grand_total": grand_total,
                 }
             )
         except Exception as e:
@@ -560,13 +639,29 @@ def register(registry) -> None:
                 "type": "function",
                 "function": {
                     "name": "search_in_files",
-                    "description": "Grep-like search: recursively find lines matching a regex pattern across all files in a directory and its subdirectories. Use this to locate where a symbol, function, or string is defined or used.",
+                    "description": (
+                        "Grep-like search: recursively find lines matching "
+                        "regex pattern(s) across files in a directory tree. "
+                        "Pass EITHER ``pattern`` (single regex) OR "
+                        "``patterns`` (list of regexes for a BATCH search -- "
+                        "the file tree is walked ONCE for all patterns, so "
+                        "this saves N-1 iterations vs. calling the tool "
+                        "repeatedly). Single-pattern returns {matches, "
+                        "total, truncated}. Multi-pattern returns "
+                        "{results: {pattern -> {matches, total, "
+                        "truncated}}, grand_total}."
+                    ),
                     "parameters": {
                         "type": "object",
                         "properties": {
                             "pattern": {
                                 "type": "string",
-                                "description": "Regular expression to search for",
+                                "description": "Regular expression to search for (single-pattern mode).",
+                            },
+                            "patterns": {
+                                "type": "array",
+                                "description": "List of regexes to search for in one pass (batch mode). Mutually exclusive with ``pattern``.",
+                                "items": {"type": "string"},
                             },
                             "path": {
                                 "type": "string",
@@ -577,7 +672,7 @@ def register(registry) -> None:
                                 "description": "Filename glob filter, e.g. '*.dart' or '*.py' (default '*')",
                             },
                         },
-                        "required": ["pattern"],
+                        "required": [],
                     },
                 },
             },

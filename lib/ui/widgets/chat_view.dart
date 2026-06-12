@@ -17,9 +17,11 @@ import '../../data/repositories/agent_role_settings_repository.dart';
 import '../../data/repositories/backend_settings_repository.dart';
 import '../../data/repositories/conversation_repository.dart';
 import '../../data/repositories/dev_filters_repository.dart';
+import '../../data/models/conversation_task.dart';
 import '../../data/repositories/local_server_config_repository.dart';
 import '../../data/repositories/message_repository.dart';
 import '../../data/repositories/settings_repository.dart';
+import '../../data/repositories/task_repository.dart';
 import '../../services/chat_processing_service.dart';
 import '../../services/context_summary_service.dart';
 import '../../services/huggingface_service.dart';
@@ -34,6 +36,7 @@ import '../screens/home_screen.dart';
 import 'chat_input.dart';
 import 'message_bubble.dart';
 import 'model_switcher.dart';
+import 'task_checklist_panel.dart';
 import 'openrouter_usage_badge.dart';
 import 'orchestrator_log_panel.dart';
 import 'quick_server_panel.dart';
@@ -76,6 +79,15 @@ class _ChatViewState extends StateManager<ChatView> with WidgetsBindingObserver 
   /// Active backend — loaded once and cached so build() never needs a
   /// FutureBuilder (which tears down child widgets on every setState).
   LlmBackend? _activeBackend;
+
+  /// Task-flow mode for this chat. Drives whether the structured
+  /// ``<tasks>`` / ``<task_status>`` protocol is active.
+  ///   - 'open'                : free-form chat (default for legacy chats)
+  ///   - 'task_compliance'      : plan + manual proceed buttons
+  ///   - 'task_compliance_auto' : plan + auto proceed
+  /// The user picks one from the dropdown above the message list and
+  /// the choice is forwarded to the orchestrator on every send.
+  String _taskMode = 'open';
 
   /// Whether the OrchestratorLogPanel is currently expanded under the input.
   /// Toggled by the log button in [ChatInput] and auto-set to true when the
@@ -782,6 +794,7 @@ class _ChatViewState extends StateManager<ChatView> with WidgetsBindingObserver 
         ollamaBaseUrl: ollamaBaseUrl,
         ollamaModelId: modelId,
         ollamaPythonBridgeUrl: ollamaPythonBridgeUrl,
+        taskMode: _taskMode,
       );
 
       if (cancelToken.isCancelled) return;
@@ -1202,9 +1215,16 @@ class _ChatViewState extends StateManager<ChatView> with WidgetsBindingObserver 
     return Column(
       children: [
         _buildHeader(_conversation!),
+        _buildTaskModeBar(),
         Expanded(child: _buildMessagesList()),
         if (_sendError != null) _buildErrorBar(),
         _buildScrollToBottomButton(),
+        if (_taskMode != 'open' && _conversation != null)
+          TaskChecklistPanel(
+            conversationId: _conversation!.id,
+            taskMode: _taskMode,
+            onAction: _onTaskAction,
+          ),
         ChatInput(
           enabled: !_sending,
           sending: _sending,
@@ -2158,6 +2178,67 @@ class _ChatViewState extends StateManager<ChatView> with WidgetsBindingObserver 
         );
       },
     );
+  }
+
+  /// Compact bar above the message list that lets the user pick the
+  /// task-flow mode (OPEN / TASK COMPLIANCE / TASK COMPLIANCE AUTO).
+  /// Changing the selection only affects subsequent prompts; previous
+  /// messages are not retroactively reinterpreted.
+  Widget _buildTaskModeBar() {
+    final theme = Theme.of(context);
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+      decoration: BoxDecoration(
+        border: Border(bottom: BorderSide(color: theme.dividerColor)),
+      ),
+      child: Row(
+        children: [
+          Icon(Icons.task_alt, size: 16, color: theme.colorScheme.onSurfaceVariant),
+          const SizedBox(width: 8),
+          Text('Mode:', style: theme.textTheme.labelMedium),
+          const SizedBox(width: 8),
+          DropdownButton<String>(
+            value: _taskMode,
+            isDense: true,
+            underline: const SizedBox.shrink(),
+            items: const [
+              DropdownMenuItem(
+                value: 'open',
+                child: Text('OPEN'),
+              ),
+              DropdownMenuItem(
+                value: 'task_compliance',
+                child: Text('TASK COMPLIANCE'),
+              ),
+              DropdownMenuItem(
+                value: 'task_compliance_auto',
+                child: Text('TASK COMPLIANCE AUTO'),
+              ),
+            ],
+            onChanged: _sending
+                ? null
+                : (v) {
+                    if (v == null || v == _taskMode) return;
+                    setState(() => _taskMode = v);
+                  },
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// Handle a click on a TaskChecklistPanel action button. Sends the
+  /// directive to the orchestrator as a ``<task_action>`` envelope --
+  /// the existing send/response cycle picks it up unchanged.
+  Future<void> _onTaskAction(int taskId, TaskAction action) async {
+    if (_sending) return;
+    final envelope = action.toEnvelope(taskId);
+    // _sendMessage handles the full pipeline (append to UI, persist,
+    // forward via LlmService.sendChat). The envelope is treated as a
+    // user message; the orchestrator-side regex in task_protocol.py
+    // parses the action and continues the workflow.
+    await _sendMessage(envelope);
   }
 
   Widget _buildErrorBar() {

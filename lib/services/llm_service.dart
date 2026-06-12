@@ -100,6 +100,7 @@ class LlmService {
     String? ollamaPythonBridgeUrl, // e.g., "http://127.0.0.1:11501"
     String? contextSummary, // Additional context summary to include
     double? temperature, // Optional temperature override
+    String taskMode = 'open', // open / task_compliance / task_compliance_auto
   }) async {
     switch (backend) {
       case LlmBackend.orchestrator:
@@ -139,6 +140,7 @@ class LlmService {
           sessionKey: conversationId,
           seedHistory: _seedHistoryForOrchestrator(history, contextSummary: contextSummary),
           forceHistorySync: true,
+          taskMode: taskMode,
         );
 
       case LlmBackend.ollamaOrchestrator:
@@ -199,6 +201,7 @@ class LlmService {
           sessionKey: conversationId,
           seedHistory: _seedHistoryForOrchestrator(history, contextSummary: contextSummary),
           forceHistorySync: true,
+          taskMode: taskMode,
         );
 
       case LlmBackend.groqOrchestrator:
@@ -269,6 +272,7 @@ class LlmService {
           sessionKey: conversationId,
           seedHistory: _seedHistoryForOrchestrator(history, contextSummary: contextSummary),
           forceHistorySync: true,
+          taskMode: taskMode,
         );
 
       case LlmBackend.geminiOrchestrator:
@@ -338,6 +342,7 @@ class LlmService {
           sessionKey: conversationId,
           seedHistory: _seedHistoryForOrchestrator(history, contextSummary: contextSummary),
           forceHistorySync: true,
+          taskMode: taskMode,
         );
 
       case LlmBackend.openRouterOrchestrator:
@@ -406,6 +411,7 @@ class LlmService {
           sessionKey: conversationId,
           seedHistory: _seedHistoryForOrchestrator(history, contextSummary: contextSummary),
           forceHistorySync: true,
+          taskMode: taskMode,
         );
 
       case LlmBackend.githubOrchestrator:
@@ -477,6 +483,7 @@ class LlmService {
           sessionKey: conversationId,
           seedHistory: _seedHistoryForOrchestrator(history, contextSummary: contextSummary),
           forceHistorySync: true,
+          taskMode: taskMode,
         );
 
       case LlmBackend.huggingFace:

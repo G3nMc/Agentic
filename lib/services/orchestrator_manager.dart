@@ -5,11 +5,42 @@ import 'dart:io';
 import 'package:agentic/services/project_service.dart';
 import 'package:path_provider/path_provider.dart';
 
+import '../data/models/conversation_task.dart';
 import '../data/repositories/agent_role_settings_repository.dart';
 import '../data/repositories/backend_settings_repository.dart';
 import '../data/repositories/database_connections_repository.dart';
 import '../data/repositories/dev_filters_repository.dart';
 import '../data/repositories/settings_repository.dart';
+import '../data/repositories/task_repository.dart';
+
+/// Structured event emitted by the Python orchestrator while running
+/// in TASK COMPLIANCE mode. Two concrete shapes:
+///   - [OrchestratorTasksProposed]: a fresh plan was declared.
+///   - [OrchestratorTaskStatusChanged]: one task moved to a new state.
+sealed class OrchestratorTaskEvent {
+  const OrchestratorTaskEvent({required this.conversationId});
+  final String conversationId;
+}
+
+class OrchestratorTasksProposed extends OrchestratorTaskEvent {
+  const OrchestratorTasksProposed({
+    required super.conversationId,
+    required this.tasks,
+  });
+  final List<ConversationTask> tasks;
+}
+
+class OrchestratorTaskStatusChanged extends OrchestratorTaskEvent {
+  const OrchestratorTaskStatusChanged({
+    required super.conversationId,
+    required this.taskId,
+    required this.status,
+    this.note = '',
+  });
+  final int taskId;
+  final TaskStatus status;
+  final String note;
+}
 
 // Inactivity timeout: if the orchestrator emits no output on stdout OR
 // stderr for this long, we assume it's wedged and give up. Activity
@@ -91,6 +122,26 @@ class OrchestratorManager {
   ///   "[orch] Groq streaming 'llama-3.3-70b-versatile' (42 chars)..."
   Stream<String> get logStream => _logController.stream;
 
+  // ── Task-flow event stream ────────────────────────────────────────
+  // Carries structured events emitted by the Python orchestrator while
+  // running in TASK COMPLIANCE mode: ``tasks_proposed`` (plan
+  // declared), ``task_status`` (one task moved to a new state). The UI
+  // subscribes via ``taskStream`` to update the checklist panel live
+  // and the persistence layer subscribes to mirror changes into the
+  // ``conversation_tasks`` SQLite table.
+  final StreamController<OrchestratorTaskEvent> _taskController =
+      StreamController<OrchestratorTaskEvent>.broadcast();
+
+  /// Live stream of structured task-flow events. Idle when the chat
+  /// runs in OPEN mode.
+  Stream<OrchestratorTaskEvent> get taskStream => _taskController.stream;
+
+  /// Conversation id currently being processed. Set by
+  /// [_sendPromptInternal] just before writing to stdin so the
+  /// dispatcher can attach it to incoming task events (Python doesn't
+  /// re-echo it on every event).
+  String? _currentConversationId;
+
   /// Rolling in-memory buffer of the most recent [_kMaxLogLines] lines.
   /// Useful for widgets that appear after the process has already emitted
   /// output (they can populate themselves from this list on first build).
@@ -150,6 +201,20 @@ class OrchestratorManager {
       // Best-effort: never let a disk write failure crash the orchestrator
       // or leak into the visible log stream.
     }
+  }
+
+  /// Push a synthetic line into the log buffer + stream + on-disk file.
+  /// Used by the UI to surface client-side events (e.g. task_action
+  /// envelopes leaving the Flutter side) in the same panel as the
+  /// orchestrator-side stderr output, so a debugger can see the full
+  /// model<->orchestrator<->UI exchange in chronological order.
+  void _injectLogLine(String line) {
+    final trimmed = line.trim();
+    if (trimmed.isEmpty) return;
+    _logLines.add(trimmed);
+    if (_logLines.length > _kMaxLogLines) _logLines.removeAt(0);
+    if (!_logController.isClosed) _logController.add(trimmed);
+    _writeToLogFile(trimmed);
   }
 
   /// Read the on-disk log file for [sessionKey] and push every line into the
@@ -804,6 +869,7 @@ class OrchestratorManager {
     String? sessionKey,
     List<Map<String, String>> seedHistory = const [],
     bool forceHistorySync = false,
+    String taskMode = 'open',
   }) {
     // Serialize requests so multiple callers don't interleave on stdin.
     final next = _chain.then(
@@ -813,6 +879,7 @@ class OrchestratorManager {
         sessionKey: sessionKey,
         seedHistory: seedHistory,
         forceHistorySync: forceHistorySync,
+        taskMode: taskMode,
       ),
     );
     _chain = next.catchError((_) => '');
@@ -825,6 +892,7 @@ class OrchestratorManager {
     String? sessionKey,
     List<Map<String, String>> seedHistory = const [],
     bool forceHistorySync = false,
+    String taskMode = 'open',
   }) async {
     if (!_isRunning || _process == null) {
       return 'Error: Orchestrator not running. Start it from Settings first.';
@@ -841,6 +909,10 @@ class OrchestratorManager {
     _activeCompleter = Completer<String>();
     _activeLines.clear();
     _requestStartedAt = DateTime.now();
+    // Stash the conversation id so the stdout dispatcher can attach it
+    // to incoming task-flow events (Python doesn't re-echo it on every
+    // event for the sake of payload size).
+    _currentConversationId = sessionKey;
     _bumpInactivityTimer();
 
     final request = jsonEncode({
@@ -853,7 +925,25 @@ class OrchestratorManager {
       // Python side has a stable contract independent of the legacy
       // session_key plumbing.
       if (sessionKey != null && sessionKey.isNotEmpty) 'conversation_id': sessionKey,
+      // Task-flow dropdown selection. Python looks at this on every
+      // request and switches the system prompt + event emission in or
+      // out of TASK COMPLIANCE mode accordingly.
+      'task_mode': taskMode,
     });
+    // Fix 10c: when the outgoing prompt is itself a <task_action>
+    // envelope (sent by the TaskChecklistPanel buttons), inject a
+    // synthetic log line so the orchestrator log panel shows the
+    // user-driven action alongside the model-driven [task] lines.
+    // Pattern: ``<task_action>{"id":N,"action":"<value>"}</task_action>``.
+    final taskActionMatch = RegExp(
+      r'<\s*task_action\s*>\s*(\{[^<]*\})\s*<\s*/\s*task_action\s*>',
+      caseSensitive: false,
+    ).firstMatch(prompt);
+    if (taskActionMatch != null) {
+      final body = taskActionMatch.group(1) ?? '';
+      _injectLogLine('[task-action-ui] sent $body');
+    }
+
     try {
       _process!.stdin.writeln(request);
       await _process!.stdin.flush();
@@ -929,7 +1019,92 @@ class OrchestratorManager {
       return;
     }
 
+    // Task-flow event interception: lines that parse as a JSON object
+    // carrying an ``event`` key (e.g. ``{"event":"tasks_proposed",...}``
+    // or ``{"event":"task_status",...}``) are NOT the response envelope
+    // -- they are intermediate structured events emitted by Python while
+    // running in TASK COMPLIANCE mode. Route them to ``taskStream`` and
+    // mirror to SQLite via TaskRepository. The line is then dropped
+    // from ``_activeLines`` so it never reaches the response extractor.
+    final maybeEvent = _tryParseTaskEvent(line);
+    if (maybeEvent) {
+      return;
+    }
+
     _activeLines.add(line);
+  }
+
+  /// Attempt to parse ``line`` as a task-flow event. Returns ``true``
+  /// when the line was an event (and was therefore consumed); ``false``
+  /// otherwise so the caller falls back to the normal response buffer.
+  bool _tryParseTaskEvent(String line) {
+    final trimmed = line.trim();
+    if (trimmed.length < 2 || trimmed[0] != '{') return false;
+    Object? decoded;
+    try {
+      decoded = jsonDecode(trimmed);
+    } catch (_) {
+      return false;
+    }
+    if (decoded is! Map) return false;
+    final event = decoded['event'];
+    if (event is! String) return false;
+    final convId = _currentConversationId;
+    if (convId == null || convId.isEmpty) {
+      // Without a conversation context we can't persist or attach the
+      // event meaningfully. Treat as consumed to avoid leaking it into
+      // the response buffer but skip the broadcast.
+      return true;
+    }
+    final now = DateTime.now().millisecondsSinceEpoch;
+    if (event == 'tasks_proposed') {
+      final rawList = decoded['tasks'];
+      if (rawList is! List) return true;
+      final tasks = <ConversationTask>[];
+      for (final entry in rawList) {
+        if (entry is Map) {
+          tasks.add(
+            ConversationTask.fromProposed(
+              raw: entry.cast<String, Object?>(),
+              conversationId: convId,
+              now: now,
+            ),
+          );
+        }
+      }
+      // Persist + broadcast.
+      TaskRepository.instance.replacePlan(convId, tasks);
+      _taskController.add(
+        OrchestratorTasksProposed(conversationId: convId, tasks: tasks),
+      );
+      return true;
+    }
+    if (event == 'task_status') {
+      final id = decoded['id'];
+      final statusRaw = decoded['status'];
+      final note = (decoded['note'] as String?) ?? '';
+      if (id is! int || statusRaw is! String) return true;
+      final status = TaskStatusX.parse(statusRaw);
+      TaskRepository.instance.applyStatusUpdate(
+        conversationId: convId,
+        taskId: id,
+        status: status,
+        note: note,
+        now: now,
+      );
+      _taskController.add(
+        OrchestratorTaskStatusChanged(
+          conversationId: convId,
+          taskId: id,
+          status: status,
+          note: note,
+        ),
+      );
+      return true;
+    }
+    // Unknown event types are silently consumed -- forwards
+    // compatibility with future protocol extensions.
+    return true;
   }
 
   /// Pull a clean user-facing reply out of `_activeLines`. Handles the normal

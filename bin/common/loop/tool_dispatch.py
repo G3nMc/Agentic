@@ -122,8 +122,23 @@ def extract_thinking(text: str) -> Tuple[str, str]:
 # (seen on Ollama Cloud + nemotron-* / deepseek-*). Without this
 # truncation the parser would extract the hallucinated ``<tool>`` calls
 # from that transcript and dispatch them.
+#
+# Two regex tiers:
+#  * ``_FAKE_TRANSCRIPT_MARKER_RE`` — generic speaker markers
+#    (``User: ``, ``Assistant: ``). Used only AFTER a ``</tool>`` is
+#    seen so legitimate replies that quote "User:" in prose are safe.
+#  * ``_STRONG_FAKE_MARKER_RE`` — patterns that essentially never
+#    appear in legitimate model output (a fake tool-return transcript,
+#    an INTERNAL pseudo-directive, or an explicit ``Assistant: <tool>``
+#    mid-reply). Safe to truncate on with NO ``</tool>`` gate.
+#
+# Both regexes intentionally allow arbitrary whitespace (spaces,
+# tabs, newlines) before the marker so the upstream stop sequences
+# ``\nUser:`` / ``\nAssistant:`` are no longer the only defense
+# against the model emitting ``</tool>  User:`` (two spaces, no
+# newline -- bypasses the Ollama stop list).
 _FAKE_TRANSCRIPT_MARKER_RE = re.compile(
-    r"(?:\r?\n)?\s*("
+    r"\s*("
     r"User:\s*Tool\s+[`'\"]?[\w_-]+[`'\"]?\s+returned"  # "User: Tool foo returned"
     r"|User:\s+\[INTERNAL"                                # "User: [INTERNAL ..."
     r"|\[INTERNAL:"                                       # bare [INTERNAL: marker
@@ -132,27 +147,58 @@ _FAKE_TRANSCRIPT_MARKER_RE = re.compile(
     r")",
     re.IGNORECASE,
 )
+
+# Strong markers: unique enough to fire even without a preceding
+# ``</tool>``. Each pattern is something a well-behaved model would
+# essentially never emit in a real reply.
+_STRONG_FAKE_MARKER_RE = re.compile(
+    r"\s*("
+    r"User:\s*Tool\s+[`'\"]?[\w_-]+[`'\"]?\s+returned"   # fake tool result
+    r"|User:\s+\[INTERNAL"                                 # "User: [INTERNAL ..."
+    r"|\[INTERNAL:\s*(?:Continue|Either)"                  # the canned nudge
+    r"|Assistant:\s*<\s*tool\s*>"                          # mid-reply tool drift
+    r")",
+    re.IGNORECASE,
+)
+
 _TOOL_CLOSE_RE = re.compile(r"</\s*tool\s*>", re.IGNORECASE)
 
 
 def _truncate_at_fake_transcript(text: str) -> str:
-    """Cut ``text`` at the first hallucinated speaker marker that
-    appears AFTER a closing ``</tool>`` tag.
+    """Cut ``text`` at the first hallucinated speaker marker.
 
-    Returns ``text`` unchanged when no ``</tool>`` is present (so a
-    plain conversational reply containing the word "User:" or
-    "Assistant:" in legitimate code/quotes is never truncated) or when
-    no fake-speaker marker follows it.
+    Two-tier defense:
+      1. If a closing ``</tool>`` is present, any speaker marker that
+         follows it is treated as fake (the model has already finished
+         the tool call; anything after is hallucination).
+      2. Even without ``</tool>``, the *strong* markers
+         (``User: Tool X returned``, ``[INTERNAL: Continue``,
+         ``Assistant: <tool>``) trigger a truncation because legitimate
+         content essentially never contains them.
+
+    Returns ``text`` unchanged when neither tier matches.
     """
     if not text:
         return text
+
+    # Tier 1: post-</tool> generic markers (allows legitimate quoting
+    # of "User:" before any tool is called).
+    cut: int | None = None
     m_close = _TOOL_CLOSE_RE.search(text)
-    if m_close is None:
+    if m_close is not None:
+        m_fake = _FAKE_TRANSCRIPT_MARKER_RE.search(text, pos=m_close.end())
+        if m_fake is not None:
+            cut = m_fake.start()
+
+    # Tier 2: strong markers anywhere in the text. Take the earlier of
+    # the two cut positions so we always trim to the safest boundary.
+    m_strong = _STRONG_FAKE_MARKER_RE.search(text)
+    if m_strong is not None:
+        cut = m_strong.start() if cut is None else min(cut, m_strong.start())
+
+    if cut is None:
         return text
-    m_fake = _FAKE_TRANSCRIPT_MARKER_RE.search(text, pos=m_close.end())
-    if m_fake is None:
-        return text
-    return text[: m_fake.start()].rstrip()
+    return text[:cut].rstrip()
 
 
 def clean_history_text(text: str) -> str:
@@ -182,6 +228,13 @@ def clean_final_answer(text: str) -> str:
     the top of the answer, so the Flutter UI can render it collapsed
     next to the user-facing content. If no reasoning was detected the
     answer is returned unchanged.
+
+    Task-flow tags (``<tasks>``, ``<task_status>``, ``<task_action>``)
+    are also stripped here as a defense-in-depth measure: the tool
+    loop already strips them per-iteration, but final-answer / synthesis
+    / recap paths may bypass that step. Without this strip the raw
+    protocol noise leaks into the chat bubble. The strip uses a lazy
+    import to avoid a circular dependency with ``task_protocol``.
     """
     if not text:
         return text
@@ -189,6 +242,16 @@ def clean_final_answer(text: str) -> str:
     cleaned = JUNK_TAG_PATTERN.sub("", text)
     cleaned = CHAT_TEMPLATE_TOKEN_PATTERN.sub("", cleaned)
     visible, thinking = extract_thinking(cleaned)
+
+    # Defense-in-depth: strip task-flow protocol tags from the visible
+    # text before it ever reaches the user. Lazy import keeps this
+    # module free of a hard dependency on task_protocol.
+    try:
+        from . import task_protocol as _tp
+        visible = _tp.strip_task_tags(visible)
+    except ImportError:
+        pass
+
     visible = re.sub(r"\n{3,}", "\n\n", visible).strip()
 
     if (
@@ -1256,14 +1319,21 @@ def parse_python_call_args(func_name: str, args_str: str, tool_defs) -> dict:
 def parse_all_tag_tool_calls(
     response: str, tool_defs=None
 ) -> List[Tuple[str, Dict[str, Any]]]:
-    """Parse all tool invocations out of the model reply."""
+    """Parse tool invocations out of the model reply.
+
+    Returns a list (kept for API compatibility) but stops at the FIRST
+    successfully-parsed call. This is intentional hardening: some
+    models hallucinate a chain of fake ``<tool>...</tool>`` tags after
+    the real one (see ``NEVER SIMULATE TOOL RETURNS`` in the system
+    prompt). Executing those hallucinated calls causes runaway loops.
+    The agent dispatches one real tool per iteration; if multiple
+    operations are needed the model is expected to use the BATCH tools
+    (``read_files`` / ``write_files`` / ``patch_files`` / ...).
+    """
     if not response:
         return []
 
     candidates = _gather_candidates(response, tool_defs)
-
-    results: List[Tuple[str, Dict[str, Any]]] = []
-    seen: set = set()
 
     for raw in candidates:
         for cleaned in json_variants(raw):
@@ -1276,13 +1346,10 @@ def parse_all_tag_tool_calls(
                 continue
 
             name, params = normalized
-            key = (name, json.dumps(params, sort_keys=True, ensure_ascii=False))
-            if key not in seen:
-                seen.add(key)
-                results.append((name, params))
-            break
+            # First valid tool call wins; later candidates ignored.
+            return [(name, params)]
 
-    return results
+    return []
 
 
 def parse_tag_tool_call(

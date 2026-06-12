@@ -239,6 +239,18 @@ def main():
         ),
     )
     parser.add_argument(
+        "--task-mode",
+        default="open",
+        choices=["open", "task_compliance", "task_compliance_auto"],
+        help=(
+            "Default task-flow mode. 'open' (free-form), 'task_compliance' "
+            "(structured plan + manual proceed between tasks), or "
+            "'task_compliance_auto' (structured plan + auto proceed). The "
+            "Flutter UI can override this per request by including a "
+            "'task_mode' field in the JSON envelope sent to stdin."
+        ),
+    )
+    parser.add_argument(
         "--max-file-size-mb",
         type=float,
         default=10.0,
@@ -354,6 +366,7 @@ def main():
         disable_tools=args.disable_tools,
         path_filter=path_filter,
         db_connections=db_connections,
+        task_mode=args.task_mode,
     )
     if args.disable_tools:
         print("[orch] Tools disabled — running in plain-chat mode.", file=sys.stderr)
@@ -515,6 +528,25 @@ def _run_interactive_loop(orchestrator: Orchestrator) -> None:
                 orchestrator.reset()
                 if history:
                     orchestrator.import_history(history)
+            # Per-request task-mode override: the Flutter dropdown can
+            # change between OPEN / TASK COMPLIANCE / TASK COMPLIANCE
+            # AUTO at any time without restarting the subprocess. The
+            # request envelope optionally carries a ``task_mode`` field.
+            requested_mode = req.get("task_mode")
+            if isinstance(requested_mode, str) and requested_mode.strip():
+                from common.loop.task_protocol import TaskMode as _TM
+                new_mode = _TM.parse(requested_mode)
+                if new_mode is not orchestrator.task_mode:
+                    orchestrator.task_mode = new_mode
+                    # System prompt must be re-derived on the next turn
+                    # because the TASK FLOW section visibility changed.
+                    orchestrator.reset()
+                    if history:
+                        orchestrator.import_history(history)
+                    print(
+                        f"[orch] task_mode switched to {new_mode.value}",
+                        file=sys.stderr,
+                    )
             prompt = (req.get("prompt") or "").strip()
             if not prompt:
                 # Respect the protocol even for empty prompts.

@@ -12,7 +12,7 @@ class AppDatabase {
   static final AppDatabase instance = AppDatabase._();
 
   static const String _dbName = "hf_chat.db";
-  static const int _dbVersion = 10;
+  static const int _dbVersion = 11;
 
   Database? _db;
   Completer<Database>? _opening;
@@ -180,6 +180,39 @@ class AppDatabase {
       );
     ''');
 
+    // Structured task list per conversation (TASK COMPLIANCE mode).
+    // task_id is the model-assigned sequence within the conversation
+    // (1, 2, 3, ...). status is one of:
+    //   pending, in_progress, done, partial, blocked, failed, skipped.
+    // depends_on stores a JSON array of task_id values.
+    batch.execute('''
+      CREATE TABLE conversation_tasks (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        conversation_id TEXT NOT NULL,
+        task_id INTEGER NOT NULL,
+        name TEXT NOT NULL,
+        description TEXT,
+        success_criteria TEXT,
+        depends_on TEXT,
+        status TEXT NOT NULL DEFAULT 'pending',
+        note TEXT,
+        started_at INTEGER,
+        completed_at INTEGER,
+        iterations_used INTEGER NOT NULL DEFAULT 0,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        FOREIGN KEY (conversation_id)
+          REFERENCES conversations(id)
+          ON DELETE CASCADE,
+        UNIQUE (conversation_id, task_id)
+      );
+    ''');
+
+    batch.execute('''
+      CREATE INDEX idx_conversation_tasks_conv
+      ON conversation_tasks(conversation_id, task_id ASC);
+    ''');
+
     await batch.commit(noResult: true);
   }
 
@@ -299,6 +332,37 @@ class AppDatabase {
       await db.execute('''
         CREATE INDEX IF NOT EXISTS idx_conversations_project_path
         ON conversations(project_path)
+      ''');
+    }
+    if (oldVersion < 11) {
+      // Migrate to v11: structured task list per conversation. Existing
+      // chats simply have no rows here and the UI task panel stays
+      // hidden for them (no migration of historical data needed).
+      await db.execute('''
+        CREATE TABLE IF NOT EXISTS conversation_tasks (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          conversation_id TEXT NOT NULL,
+          task_id INTEGER NOT NULL,
+          name TEXT NOT NULL,
+          description TEXT,
+          success_criteria TEXT,
+          depends_on TEXT,
+          status TEXT NOT NULL DEFAULT 'pending',
+          note TEXT,
+          started_at INTEGER,
+          completed_at INTEGER,
+          iterations_used INTEGER NOT NULL DEFAULT 0,
+          created_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL,
+          FOREIGN KEY (conversation_id)
+            REFERENCES conversations(id)
+            ON DELETE CASCADE,
+          UNIQUE (conversation_id, task_id)
+        )
+      ''');
+      await db.execute('''
+        CREATE INDEX IF NOT EXISTS idx_conversation_tasks_conv
+        ON conversation_tasks(conversation_id, task_id ASC)
       ''');
     }
   }

@@ -64,12 +64,16 @@ class ToolRegistry:
         "Filesystem": {
             "read_files",
             "patch_file",
+            "patch_files",
             "read_file",
             "write_file",
+            "write_files",
             "append_file",
             "delete_file",
+            "delete_files",
             "move_file",
             "create_directory",
+            "create_directories",
         },
         "Search": {
             "list_files",
@@ -107,11 +111,15 @@ class ToolRegistry:
             "read_file": 20.0,
             "read_files": 60.0,
             "write_file": 20.0,
+            "write_files": 60.0,
             "append_file": 20.0,
             "delete_file": 10.0,
+            "delete_files": 30.0,
             "patch_file": 25.0,
+            "patch_files": 90.0,
             "move_file": 20.0,
             "create_directory": 10.0,
+            "create_directories": 20.0,
             "list_files": 60.0,
             "list_files_recursive": 125.0,
             "search_in_files": 60.0,
@@ -327,13 +335,23 @@ class ToolRegistry:
     # System prompt generation
     # ------------------------------------------------------------------
 
-    def get_system_prompt(self, project_context: Optional[str] = None) -> str:
+    def get_system_prompt(
+        self,
+        project_context: Optional[str] = None,
+        task_mode: str = "open",
+    ) -> str:
         """Generate production system prompt with tool catalog.
 
         When ``project_context`` is provided it is merged into the prompt
         as a [PROJECT CONTEXT] block between the base rules and the tool
         catalog. This is what gives the model project-specific knowledge
         (read from ``.agent.md`` by :func:`load_project_context`).
+
+        When ``task_mode`` is ``task_compliance`` or
+        ``task_compliance_auto`` the TASK FLOW PROTOCOL section is
+        appended, instructing the model to declare a plan with
+        ``<tasks>`` and report progress with ``<task_status>``. In
+        ``open`` mode the section is omitted entirely.
         """
         lines = self._base_system_prompt()
 
@@ -344,6 +362,9 @@ class ToolRegistry:
             for cline in project_context.strip().splitlines():
                 lines.append(cline)
             lines.append("")
+
+        if task_mode in ("task_compliance", "task_compliance_auto"):
+            lines.extend(self._task_flow_prompt_lines(auto=task_mode == "task_compliance_auto"))
 
         groups: Dict[str, List[str]] = {cat: [] for cat in self.TOOL_CATEGORIES}
         groups["Other"] = []
@@ -379,6 +400,144 @@ class ToolRegistry:
                 lines.append("Registered: " + ", ".join(sorted(self.tools.keys())))
 
         return "\n".join(lines)
+
+    @staticmethod
+    def _task_flow_prompt_lines(auto: bool) -> List[str]:
+        """System-prompt section enabling the structured task-flow protocol.
+
+        Activated when the UI dropdown selects either ``task_compliance``
+        (manual proceed) or ``task_compliance_auto`` (auto proceed).
+        Parsed on the orchestrator side by
+        :mod:`common.loop.task_protocol`.
+        """
+        proceed_hint = (
+            "After every <task_status>, the orchestrator will AUTO-proceed "
+            "to the next pending task without further confirmation."
+            if auto
+            else "After every <task_status>, the orchestrator pauses; the "
+            "user clicks 'Proceed' (or Retry / Skip / Abort / Replan) "
+            "and the next prompt you receive will be a <task_action> tag "
+            "with the chosen action -- treat it as a directive and act."
+        )
+        return [
+            "",
+            "TASK FLOW PROTOCOL (ACTIVE)",
+            "===========================",
+            "This conversation runs in structured task-flow mode. Follow",
+            "these rules whenever the user's request requires 3+ distinct",
+            "steps (e.g. 'implement / refactor / fix multiple / build').",
+            "For trivial single-step requests, fall through to the normal",
+            "tool protocol without emitting any task tags.",
+            "",
+            "1) PLAN FIRST -- THIS IS NON-NEGOTIABLE. As the VERY FIRST",
+            "   thing you emit on the FIRST iteration of every new",
+            "   user request, declare the complete plan inside a single",
+            "   <tasks>...</tasks> block. NO tool call may precede it.",
+            "   If the first reply does not contain a <tasks> block, the",
+            "   orchestrator rejects the reply, discards it, and forces a",
+            "   re-emission with a corrective nudge -- you lose that whole",
+            "   iteration. The only exception is when the user prompt is",
+            "   itself a <task_action>{...}</task_action> envelope, which",
+            "   means you are continuing an existing plan (no re-plan needed).",
+            "",
+            "   Use compact JSON. Maximum 12 tasks; if the work needs",
+            "   more, plan only the next 12 and re-plan later. Each task",
+            "   must have:",
+            '     {"id": <int>, "name": "<short title>", '
+            '"description": "<what to do>", '
+            '"success_criteria": "<how you know it is done>", '
+            '"depends_on": [<int>, ...]}',
+            "",
+            "   CORRECT:",
+            '     <tasks>[{"id":1,"name":"Locate temperature setter",'
+            '"description":"Find where the slider writes the value",'
+            '"success_criteria":"File and line identified",'
+            '"depends_on":[]},'
+            '{"id":2,"name":"Forward to backend","description":"...",'
+            '"depends_on":[1]}]</tasks>',
+            "",
+            "2) PLAN-AND-START IN THE SAME REPLY -- NON-NEGOTIABLE.",
+            "   After the closing </tasks> tag, in the SAME reply, you MUST",
+            "   immediately:",
+            "     a) emit <task_status>{\"id\":1,\"status\":\"in_progress\","
+            "\"note\":\"<one-line plan for this task>\"}</task_status>",
+            "     b) emit the FIRST <tool> call for task #1.",
+            "   DO NOT stop after the </tasks> tag. The orchestrator treats",
+            "   a reply that contains ONLY a <tasks> block (no task_status,",
+            "   no tool) as a stall and forces a corrective nudge that costs",
+            "   one full iteration. A re-emitted plan is NOT recovery -- it",
+            "   is a second stall.",
+            "",
+            "   CORRECT (plan + start, single reply):",
+            '     <tasks>[{"id":1,"name":"Read pubspec","description":"...",'
+            '"depends_on":[]}, {"id":2,"name":"Patch dep","description":"...",'
+            '"depends_on":[1]}]</tasks>',
+            '     <task_status>{"id":1,"status":"in_progress",'
+            '"note":"reading pubspec.yaml to locate the record dep"}'
+            '</task_status>',
+            '     <tool>{"tool":"read_file","parameters":'
+            '{"path":"pubspec.yaml"}}</tool>',
+            "",
+            "   WRONG (plan only -- model stalls):",
+            '     <tasks>[{"id":1,...}, {"id":2,...}]</tasks>',
+            "     (no task_status, no tool -- the next iteration will be",
+            "      wasted on a corrective nudge.)",
+            "",
+            "3) WORK ONE TASK AT A TIME. Use the normal <tool> protocol",
+            "   for any reads / writes you need. Do not jump ahead.",
+            "",
+            "4) REPORT STATUS. After finishing (or failing to finish) the",
+            "   current task, emit ONE <task_status> tag:",
+            '     <task_status>{"id":<int>,"status":"<value>","note":"<one '
+            'line summary>"}</task_status>',
+            "   EVERY iteration that produces work output MUST include a",
+            "   <task_status> tag. Skipping it freezes the UI checklist",
+            "   at the previous state and the orchestrator will inject a",
+            "   corrective reminder forcing you to report on the next turn.",
+            "",
+            "   Valid status values:",
+            "     - pending      : not started yet (used only inside <tasks>)",
+            "     - in_progress  : starting work on this task",
+            "     - done         : completed and success_criteria met",
+            "     - partial      : made progress but not finished; you need",
+            "                      another iteration",
+            "     - blocked      : cannot proceed without information from",
+            "                      the user (state what you need)",
+            "     - failed       : tried and could not succeed; explain why",
+            "                      in the note",
+            "     - skipped      : decided this task is unnecessary",
+            "",
+            f"5) {proceed_hint}",
+            "",
+            "6) RE-PLANNING. If during execution you realise the plan is",
+            "   wrong (new tasks discovered, ordering off, etc.) emit a",
+            "   fresh <tasks>...</tasks> block with the REMAINING tasks",
+            "   (renumbered). The orchestrator will replace the open",
+            "   pending tasks with the new list and continue.",
+            "   IMPORTANT: do NOT re-emit a fresh plan just because the",
+            "   previous reply did not include task_status + tool. That",
+            "   was already counted as a stall; emit the missing pieces",
+            "   for the EXISTING plan instead.",
+            "",
+            "7) FINAL ANSWER. When ALL tasks are 'done' (or definitively",
+            "   skipped/failed), emit a normal user-facing answer in plain",
+            "   prose / markdown -- NO more task tags. Summarize what was",
+            "   accomplished and surface any caveats. This is what the",
+            "   user actually reads in the chat bubble.",
+            "",
+            "WRONG (no plan, jumps straight into a tool):",
+            '  <tool>{"tool":"read_file",...}</tool>',
+            "",
+            "WRONG (raw status update outside a tag):",
+            "  Task 1 is done.",
+            "",
+            "WRONG (mixing reasoning with the tag):",
+            '  Let me think... <task_status>{"id":1,"status":"done"}</task_status>',
+            "  (the reasoning belongs inside <think>...</think>; the tag",
+            "   must be the only top-level structured artefact in the reply",
+            "   alongside any single <tool> call.)",
+            "",
+        ]
 
     @staticmethod
     def _base_system_prompt() -> List[str]:
@@ -421,6 +580,100 @@ class ToolRegistry:
             "  Let me think about this. We need to check X. Proceed.",
             "  The actual answer follows here.",
             "",
+            "NEVER SIMULATE TOOL RETURNS",
+            "===========================",
+            "After you emit ``</tool>`` you MUST stop generating. Do not",
+            "produce ANY further text in the same reply. The orchestrator",
+            "executes the real tool and sends you back the real result in",
+            "the NEXT turn. Inventing the result yourself -- writing a",
+            "fake 'User: Tool foo returned: ...' / '[INTERNAL: Continue]'",
+            "/ 'Assistant: ...' transcript after the tag -- is a protocol",
+            "violation. The fabricated content will be parsed as if it",
+            "were a real tool dispatch and the agent will loop on",
+            "nonsense.",
+            "",
+            "HARD BAN ON SIMULATED SPEAKER TOKENS",
+            "------------------------------------",
+            "The literal tokens ``User:``, ``Assistant:`` and ``[INTERNAL:``",
+            "MUST NEVER appear in your reply. This applies regardless of",
+            "what precedes them -- newline, spaces, tabs, punctuation, or",
+            "the very start of the line. A common bypass pattern is to",
+            "write ``</tool>  User: ...`` with TWO spaces instead of a",
+            "newline so the upstream stop-sequence does not match. Do not",
+            "do this. The orchestrator detects and truncates these markers",
+            "regardless of whitespace; emitting them only wastes tokens",
+            "and burns the iteration budget. If you genuinely need to",
+            "quote one of these words in prose, rephrase (e.g. ``the user",
+            "asked`` instead of ``User:``).",
+            "",
+            "STOP RULE (read this twice):",
+            "  The character immediately following ``</tool>`` in your",
+            "  reply MUST be end-of-stream. Not a space. Not a newline",
+            "  followed by text. Nothing. The very next thing the model",
+            "  generates after ``</tool>`` ends the reply.",
+            "",
+            "CORRECT (one tool call, then STOP):",
+            '  <tool>{"tool":"read_file","parameters":{"path":"a.py"}}</tool>',
+            "  (end of reply -- nothing follows)",
+            "",
+            "WRONG (model hallucinates the user reply + a follow-up tool):",
+            '  <tool>{"tool":"read_file","parameters":{"path":"a.py"}}</tool>',
+            "  User: Tool `read_file` returned: {\"status\":\"success\","
+            "\"content\":\"...\"}",
+            "  Assistant: Now I will also read b.py.",
+            '  <tool>{"tool":"read_file","parameters":{"path":"b.py"}}</tool>',
+            "",
+            "WRONG (model invents an INTERNAL instruction):",
+            '  <tool>{"tool":"list_files","parameters":{"path":"."}}</tool>',
+            "  [INTERNAL: Continue with the next step.]",
+            "",
+            "WRONG (model uses spaces to bypass the newline-prefixed stop):",
+            '  <tool>{"tool":"list_files","parameters":{"path":"."}}</tool>'
+            "  User: Tool `list_files` returned: {...}",
+            "  (the two spaces between ``</tool>`` and ``User:`` are still",
+            "  a violation -- the orchestrator truncates it server-side)",
+            "",
+            "If you need multiple files / writes in the same turn, use the",
+            "BATCH tools (``read_files``, ``write_files``, ``patch_files``,",
+            "``create_directories``, ``delete_files``) -- a single tool",
+            "call that takes a list. Do NOT chain individual tool calls.",
+            "",
+            "ITERATION BUDGET (BATCH WHEN YOU CAN)",
+            "=====================================",
+            "Each tool call consumes one full round-trip with the cloud",
+            "backend (typically 20-90 s + tokens). Wasting iterations on",
+            "repeatable single-file operations is the #1 way agents",
+            "time-out or hit budget caps. RULE:",
+            "",
+            "  - If your plan touches 2+ files of the same kind in the",
+            "    same turn, you MUST use the matching batch tool.",
+            "  - If your plan touches 5+ files total, you MUST plan the",
+            "    sequence with batch tools from the start. A chain of",
+            "    single write_file / create_directory calls is forbidden.",
+            "  - The batch tool returns ``status: \"partial\"`` if some",
+            "    sub-ops failed; the ``results`` array lists the failed",
+            "    paths so you can retry only those (still in batch form).",
+            "",
+            "CORRECT (5 files in 1 iteration):",
+            '  <tool>{"tool":"write_files","parameters":{"items":['
+            '{"path":"lib/a.dart","content":"..."},'
+            '{"path":"lib/b.dart","content":"..."},'
+            '{"path":"lib/c.dart","content":"..."},'
+            '{"path":"lib/d.dart","content":"..."},'
+            '{"path":"lib/e.dart","content":"..."}]}}</tool>',
+            "",
+            "WRONG (5 files in 5 iterations -- 5x the cost):",
+            '  <tool>{"tool":"write_file","parameters":{"path":"lib/a.dart","content":"..."}}</tool>',
+            '  <tool>{"tool":"write_file","parameters":{"path":"lib/b.dart","content":"..."}}</tool>',
+            '  <tool>{"tool":"write_file","parameters":{"path":"lib/c.dart","content":"..."}}</tool>',
+            "  ... (and so on)",
+            "",
+            "CORRECT (3 directories in 1 iteration):",
+            '  <tool>{"tool":"create_directories","parameters":{"paths":["lib/a","lib/b","lib/c"]}}</tool>',
+            "",
+            "CORRECT (3 regex searches in 1 walk of the tree):",
+            '  <tool>{"tool":"search_in_files","parameters":{"patterns":["TODO","FIXME","XXX"],"file_glob":"*.dart"}}</tool>',
+            "",
             "PRIMARY CONSTRAINT: TOOL CALL FORMAT",
             "====================================",
             "When a tool is needed, output ONLY this exact format. No deviation. Period",
@@ -437,8 +690,13 @@ class ToolRegistry:
             '<tool>{"tool":"read_file","parameters":{"path":"src/main.py"}}</tool>',
             '<tool>{"tool":"read_files","parameters":{"paths":["a.py","b.py","c.py"]}}</tool>',
             '<tool>{"tool":"search_in_files","parameters":{"pattern":"error","file_glob":"*.log"}}</tool>',
+            '<tool>{"tool":"search_in_files","parameters":{"patterns":["TODO","FIXME","XXX"],"file_glob":"*.py"}}</tool>',
             '<tool>{"tool":"write_file","parameters":{"path":"out.txt","content":"hello"}}</tool>',
+            '<tool>{"tool":"write_files","parameters":{"items":[{"path":"a.txt","content":"A"},{"path":"b.txt","content":"B"}]}}</tool>',
             '<tool>{"tool":"patch_file","parameters":{"path":"src/main.py","old_content":"old","new_content":"new"}}</tool>',
+            '<tool>{"tool":"patch_files","parameters":{"items":[{"path":"a.py","old_content":"x","new_content":"y"},{"path":"b.py","old_content":"x","new_content":"y"}]}}</tool>',
+            '<tool>{"tool":"create_directories","parameters":{"paths":["lib/a","lib/b"]}}</tool>',
+            '<tool>{"tool":"delete_files","parameters":{"paths":["old1.py","old2.py"]}}</tool>',
             '<tool>{"tool":"delete_file","parameters":{"path":"obsolete.py"}}</tool>',
             '<tool>{"tool":"list_files","parameters":{"path":"lib"}}</tool>',
             '<tool>{"tool":"flutter_analyze","parameters":{}}</tool>',
