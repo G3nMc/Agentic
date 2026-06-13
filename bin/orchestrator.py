@@ -240,7 +240,7 @@ def main():
     )
     parser.add_argument(
         "--task-mode",
-        default="open",
+        default="task_compliance_auto",
         choices=["open", "task_compliance", "task_compliance_auto"],
         help=(
             "Default task-flow mode. 'open' (free-form), 'task_compliance' "

@@ -100,7 +100,7 @@ class LlmService {
     String? ollamaPythonBridgeUrl, // e.g., "http://127.0.0.1:11501"
     String? contextSummary, // Additional context summary to include
     double? temperature, // Optional temperature override
-    String taskMode = 'open', // open / task_compliance / task_compliance_auto
+    String taskMode = 'task_compliance_auto', // open / task_compliance / task_compliance_auto
   }) async {
     switch (backend) {
       case LlmBackend.orchestrator:

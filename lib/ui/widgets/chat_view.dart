@@ -87,7 +87,7 @@ class _ChatViewState extends StateManager<ChatView> with WidgetsBindingObserver 
   ///   - 'task_compliance_auto' : plan + auto proceed
   /// The user picks one from the dropdown above the message list and
   /// the choice is forwarded to the orchestrator on every send.
-  String _taskMode = 'open';
+  String _taskMode = 'task_compliance_auto';
 
   /// Whether the OrchestratorLogPanel is currently expanded under the input.
   /// Toggled by the log button in [ChatInput] and auto-set to true when the
@@ -1220,10 +1220,12 @@ class _ChatViewState extends StateManager<ChatView> with WidgetsBindingObserver 
         if (_sendError != null) _buildErrorBar(),
         _buildScrollToBottomButton(),
         if (_taskMode != 'open' && _conversation != null)
-          TaskChecklistPanel(
-            conversationId: _conversation!.id,
-            taskMode: _taskMode,
-            onAction: _onTaskAction,
+          Expanded(
+            child: TaskChecklistPanel(
+              conversationId: _conversation!.id,
+              taskMode: _taskMode,
+              onAction: _onTaskAction,
+            ),
           ),
         ChatInput(
           enabled: !_sending,
