@@ -21,7 +21,6 @@ import '../../data/models/conversation_task.dart';
 import '../../data/repositories/local_server_config_repository.dart';
 import '../../data/repositories/message_repository.dart';
 import '../../data/repositories/settings_repository.dart';
-import '../../data/repositories/task_repository.dart';
 import '../../services/chat_processing_service.dart';
 import '../../services/context_summary_service.dart';
 import '../../services/huggingface_service.dart';
@@ -2105,6 +2104,7 @@ class _ChatViewState extends StateManager<ChatView> with WidgetsBindingObserver 
           padding: const EdgeInsets.all(32),
           child: Column(
             mainAxisSize: MainAxisSize.min,
+            mainAxisAlignment: MainAxisAlignment.center,
             children: [
               const Text(
                 "Start the conversation",

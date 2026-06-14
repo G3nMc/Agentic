@@ -1506,8 +1506,14 @@ class Orchestrator:
             # Step-report enforcement: after a write/patch/append, the model
             # must include a STEP REPORT in its final answer. If missing,
             # nudge and retry.
+            # In task compliance modes, step reports are MANDATORY
             if (
                     self._pending_step_report
+                    and step_report_retries < 2
+                    and not self._looks_like_step_report(text_clean)
+            ) or (
+                    self.task_mode.is_task_flow  # Force step reports in task compliance modes
+                    and self._writes_this_turn > 0
                     and step_report_retries < 2
                     and not self._looks_like_step_report(text_clean)
             ):

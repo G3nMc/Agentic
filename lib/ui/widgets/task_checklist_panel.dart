@@ -41,7 +41,7 @@ class TaskChecklistPanel extends StatefulWidget {
 }
 
 class _TaskChecklistPanelState extends State<TaskChecklistPanel> {
-  static const double _collapsedHeight = 56.0;
+  static const double _collapsedHeight = 60.0;
   static const double _expandedHeight = 280.0;
 
   List<ConversationTask> _tasks = const [];
@@ -66,8 +66,7 @@ class _TaskChecklistPanelState extends State<TaskChecklistPanel> {
 
   Future<void> _hydrateFromDb() async {
     setState(() => _loading = true);
-    final rows = await TaskRepository.instance
-        .listByConversation(widget.conversationId);
+    final rows = await TaskRepository.instance.listByConversation(widget.conversationId);
     if (!mounted) return;
     setState(() {
       _tasks = rows;
@@ -119,7 +118,8 @@ class _TaskChecklistPanelState extends State<TaskChecklistPanel> {
         height: _collapsedHeight,
         child: Center(
           child: SizedBox(
-            width: 18, height: 18,
+            width: 18,
+            height: 18,
             child: CircularProgressIndicator(strokeWidth: 2),
           ),
         ),
@@ -143,7 +143,7 @@ class _TaskChecklistPanelState extends State<TaskChecklistPanel> {
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
           _buildHeader(theme, done, total),
-          if (_expanded) Expanded(child: _buildList(theme)),
+          if (_expanded) _buildList(theme),
         ],
       ),
     );
@@ -206,6 +206,8 @@ class _TaskChecklistPanelState extends State<TaskChecklistPanel> {
 
   Widget _buildTaskRow(ThemeData theme, ConversationTask t, {required bool isActive}) {
     final (icon, color) = _statusVisuals(t.status, theme);
+    // Show action buttons for ANY actionable task in manual mode, not just the active one
+    final showActions = _isManualMode && _shouldShowActions(t) && !t.status.isTerminal;
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
       child: Row(
@@ -231,9 +233,7 @@ class _TaskChecklistPanelState extends State<TaskChecklistPanel> {
                         t.name,
                         style: theme.textTheme.bodyMedium?.copyWith(
                           fontWeight: isActive ? FontWeight.w600 : FontWeight.w400,
-                          decoration: t.status == TaskStatus.skipped
-                              ? TextDecoration.lineThrough
-                              : null,
+                          decoration: t.status == TaskStatus.skipped ? TextDecoration.lineThrough : null,
                         ),
                         overflow: TextOverflow.ellipsis,
                       ),
@@ -259,7 +259,7 @@ class _TaskChecklistPanelState extends State<TaskChecklistPanel> {
                     maxLines: 2,
                     overflow: TextOverflow.ellipsis,
                   ),
-                if (isActive && _isManualMode && _shouldShowActions(t))
+                if (showActions)
                   Padding(
                     padding: const EdgeInsets.only(top: 6),
                     child: _buildActionBar(theme, t),
@@ -295,17 +295,14 @@ class _TaskChecklistPanelState extends State<TaskChecklistPanel> {
     switch (t.status) {
       case TaskStatus.pending:
         children.addAll([
-          _actionButton(theme, 'Start', Icons.play_arrow, TaskAction.proceed,
-              t.taskId, primary: true),
+          _actionButton(theme, 'Start', Icons.play_arrow, TaskAction.proceed, t.taskId, primary: true),
           _actionButton(theme, 'Skip', Icons.skip_next, TaskAction.skip, t.taskId),
-          _actionButton(theme, 'Abort', Icons.stop, TaskAction.abort, t.taskId,
-              danger: true),
+          _actionButton(theme, 'Abort', Icons.stop, TaskAction.abort, t.taskId, danger: true),
         ]);
         break;
       case TaskStatus.inProgress:
         children.addAll([
-          _actionButton(theme, 'Abort', Icons.stop, TaskAction.abort, t.taskId,
-              danger: true),
+          _actionButton(theme, 'Abort', Icons.stop, TaskAction.abort, t.taskId, danger: true),
         ]);
         break;
       case TaskStatus.done:
@@ -313,14 +310,11 @@ class _TaskChecklistPanelState extends State<TaskChecklistPanel> {
       case TaskStatus.blocked:
       case TaskStatus.failed:
         children.addAll([
-          _actionButton(theme, 'Proceed', Icons.arrow_forward,
-              TaskAction.proceed, t.taskId, primary: true),
+          _actionButton(theme, 'Proceed', Icons.arrow_forward, TaskAction.proceed, t.taskId, primary: true),
           _actionButton(theme, 'Retry', Icons.refresh, TaskAction.retry, t.taskId),
           _actionButton(theme, 'Skip', Icons.skip_next, TaskAction.skip, t.taskId),
-          _actionButton(theme, 'Replan', Icons.auto_fix_high, TaskAction.replan,
-              t.taskId),
-          _actionButton(theme, 'Abort', Icons.stop, TaskAction.abort, t.taskId,
-              danger: true),
+          _actionButton(theme, 'Replan', Icons.auto_fix_high, TaskAction.replan, t.taskId),
+          _actionButton(theme, 'Abort', Icons.stop, TaskAction.abort, t.taskId, danger: true),
         ]);
         break;
       case TaskStatus.skipped:
