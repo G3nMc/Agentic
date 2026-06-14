@@ -323,7 +323,30 @@ _STEP_REPORT_DIRECTIVE = (
     "Current state:\n"
     "  - [1-3 sentences describing current state]\n\n"
     "Add this report to your final answer now. Do NOT "
-    "call any more tools."
+    "call any more tools.\n\n"
+    "NOTE: In TASK COMPLIANCE modes, this is MANDATORY. "
+    "The model MUST emit step reports after any file-modifying operation."
+)
+
+# Sent when the model fails to emit a <task_status> tag in task compliance modes.
+# This directive is added in iteration 1+ when no status was emitted.
+_TASK_STATUS_FORCE_DIRECTIVE = (
+    "[TASK STATUS REQUIRED] You are in TASK COMPLIANCE mode. "
+    "You MUST emit a <task_status>{\"id\":<int>,\"status\":\"pending|in_progress|done|partial|blocked|failed|skipped\",\"note\":\"<short>\"}</task_status> "
+    "tag in your next reply so the UI checklist can show your progress. "
+    "The status must match the actual state of the task you are working on. "
+    "Do NOT emit only a tool call without the status tag. "
+    "Do NOT echo this instruction back to the user."
+)
+
+
+# Sent when the model fails to emit a <tasks> plan in task compliance modes.
+_TASKS_FORCE_DIRECTIVE = (
+    "[TASK PLAN REQUIRED] You are in TASK COMPLIANCE mode. "
+    "Your FIRST reply MUST begin with a <tasks>[{\"id\":1,\"name\":\"...\",\"description\":\"...\"}, ...]</tasks> "
+    "block enumerating every step needed for this request. "
+    "Do NOT call any tool until the plan has been emitted. "
+    "Do NOT echo this instruction back to the user."
 )
 
 
@@ -1124,9 +1147,33 @@ class Orchestrator:
                 # ``<task_status>``, bump the counter. Once it crosses
                 # the threshold inject a corrective user message so the
                 # next iteration has explicit pressure to emit the tag.
+                # We also enforce this from iteration 1+ even without
+                # a tool call - the model MUST emit task_status tags.
                 if self.task_mode.is_task_flow and not saw_status_this_iter:
                     self._iters_without_status += 1
-                    if self._iters_without_status >= _MAX_ITERS_WITHOUT_STATUS:
+                    
+                    # Force status tag from iteration 1 if no plan was emitted,
+                    # or from iteration 2+ after any tool call without status
+                    if iteration >= 1 or (
+                        iteration >= 2 and self._iters_without_status >= 1
+                    ):
+                        # Check if status tag is missing despite tool usage
+                        if saw_status_this_iter is False and self._iters_without_status >= 1:
+                            print(
+                                f"[orch] Iteration {iteration} in {self.task_mode.value} "
+                                f"mode without <task_status> emission -- injecting "
+                                f"TASK STATUS DIRECTIVE",
+                                file=sys.stderr,
+                            )
+                            self.conversation_history.append(
+                                {
+                                    "role": "user",
+                                    "content": _TASK_STATUS_FORCE_DIRECTIVE,
+                                }
+                            )
+                            self._iters_without_status = 0  # consumed by the nudge
+                            continue
+                    elif self._iters_without_status >= _MAX_ITERS_WITHOUT_STATUS:
                         print(
                             f"[orch] {self._iters_without_status} tool iterations "
                             f"without a <task_status> emission -- injecting "
@@ -1507,20 +1554,27 @@ class Orchestrator:
             # must include a STEP REPORT in its final answer. If missing,
             # nudge and retry.
             # In task compliance modes, step reports are MANDATORY
+            # and enforced more strictly - the model MUST emit step reports
+            # in task_compliance and task_compliance_auto modes
+            is_in_step_report_mode = (
+                self.task_mode.is_task_flow  # Task compliance modes
+                and self._writes_this_turn > 0
+            )
+            
             if (
-                    self._pending_step_report
-                    and step_report_retries < 2
-                    and not self._looks_like_step_report(text_clean)
+                self._pending_step_report
+                and step_report_retries < 2
+                and not self._looks_like_step_report(text_clean)
             ) or (
-                    self.task_mode.is_task_flow  # Force step reports in task compliance modes
-                    and self._writes_this_turn > 0
-                    and step_report_retries < 2
-                    and not self._looks_like_step_report(text_clean)
+                is_in_step_report_mode
+                and step_report_retries < 2
+                and not self._looks_like_step_report(text_clean)
             ):
                 step_report_retries += 1
+                mode_note = " (TASK COMPLIANCE MODE - MANDATORY)" if is_in_step_report_mode else ""
                 print(
                     f"[orch] Missing step report after write "
-                    f"(retry {step_report_retries}); nudging model.",
+                    f"(retry {step_report_retries}){mode_note}; nudging model.",
                     file=sys.stderr,
                 )
                 self.conversation_history.append(

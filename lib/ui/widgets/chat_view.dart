@@ -11,13 +11,13 @@ import 'package:uuid/uuid.dart';
 import '../../core/theme/app_theme.dart';
 import '../../core/utils/notification_helper.dart';
 import '../../data/models/conversation.dart';
+import '../../data/models/conversation_task.dart';
 import '../../data/models/message.dart';
 import '../../data/repositories/agent_credentials_repository.dart';
 import '../../data/repositories/agent_role_settings_repository.dart';
 import '../../data/repositories/backend_settings_repository.dart';
 import '../../data/repositories/conversation_repository.dart';
 import '../../data/repositories/dev_filters_repository.dart';
-import '../../data/models/conversation_task.dart';
 import '../../data/repositories/local_server_config_repository.dart';
 import '../../data/repositories/message_repository.dart';
 import '../../data/repositories/settings_repository.dart';
@@ -35,12 +35,12 @@ import '../screens/home_screen.dart';
 import 'chat_input.dart';
 import 'message_bubble.dart';
 import 'model_switcher.dart';
-import 'task_checklist_panel.dart';
 import 'openrouter_usage_badge.dart';
 import 'orchestrator_log_panel.dart';
 import 'quick_server_panel.dart';
 import 'resize_handle.dart';
 import 'sidebar.dart';
+import 'task_checklist_panel.dart';
 import 'workflow_breadcrumb.dart';
 
 class ChatView extends StatefulWidget {
@@ -94,7 +94,7 @@ class _ChatViewState extends StateManager<ChatView> with WidgetsBindingObserver 
   bool _logVisible = false;
 
   /// Current height of the orchestrator log panel when visible.
-  double _logPanelHeight = 220.0;
+  double _logPanelHeight = 220.0 - 123;
 
   /// Token for the currently in-flight send. Non-null only while [_sending].
   _CancelToken? _currentCancel;
@@ -329,9 +329,7 @@ class _ChatViewState extends StateManager<ChatView> with WidgetsBindingObserver 
               continue;
             }
             // Also check that the file's parent directory is visible.
-            final parentRel = relPath.contains(Platform.pathSeparator)
-                ? relPath.substring(0, relPath.lastIndexOf(Platform.pathSeparator))
-                : '';
+            final parentRel = relPath.contains(Platform.pathSeparator) ? relPath.substring(0, relPath.lastIndexOf(Platform.pathSeparator)) : '';
             if (parentRel.isNotEmpty && !_filterAllowsDir(parentRel, includeDirs, excludeDirs, dirWhitelist)) {
               continue;
             }
@@ -627,9 +625,7 @@ class _ChatViewState extends StateManager<ChatView> with WidgetsBindingObserver 
         });
         return;
       }
-    } else if (backend == LlmBackend.ollama ||
-        backend == LlmBackend.ollamaPython ||
-        backend == LlmBackend.ollamaOrchestrator) {
+    } else if (backend == LlmBackend.ollama || backend == LlmBackend.ollamaPython || backend == LlmBackend.ollamaOrchestrator) {
       final resolvedModel = (conv.modelId != null && conv.modelId!.trim().isNotEmpty) ? conv.modelId! : ollamaModel;
 
       if (resolvedModel == null || resolvedModel.trim().isEmpty) {
@@ -665,17 +661,12 @@ class _ChatViewState extends StateManager<ChatView> with WidgetsBindingObserver 
     }
 
     final modelId = switch (backend) {
-      LlmBackend.ollama ||
-      LlmBackend.ollamaPython ||
-      LlmBackend.ollamaOrchestrator =>
-        (conv.modelId != null && conv.modelId!.trim().isNotEmpty) ? conv.modelId! : (ollamaModel ?? ''),
+      LlmBackend.ollama || LlmBackend.ollamaPython || LlmBackend.ollamaOrchestrator => (conv.modelId != null && conv.modelId!.trim().isNotEmpty) ? conv.modelId! : (ollamaModel ?? ''),
       LlmBackend.openRouter => resolveOpenRouterModel(
           conv.modelId ?? '',
           openRouterModel ?? '',
         ),
-      LlmBackend.geminiOrchestrator => (conv.modelId != null && conv.modelId!.startsWith('gemini'))
-          ? conv.modelId!
-          : (geminiModel ?? BackendSettingsRepository.defaultGeminiModel),
+      LlmBackend.geminiOrchestrator => (conv.modelId != null && conv.modelId!.startsWith('gemini')) ? conv.modelId! : (geminiModel ?? BackendSettingsRepository.defaultGeminiModel),
       _ => conv.modelId ?? '',
     };
 
@@ -753,9 +744,7 @@ class _ChatViewState extends StateManager<ChatView> with WidgetsBindingObserver 
         ollamaPythonBridgeUrl: ollamaPythonBridgeUrl,
       );
 
-      final historyForRequest = _isOrchestratorBackend(backend)
-          ? history
-          : (prepared.historyToSend.isNotEmpty ? prepared.historyToSend : history);
+      final historyForRequest = _isOrchestratorBackend(backend) ? history : (prepared.historyToSend.isNotEmpty ? prepared.historyToSend : history);
       // Determine temperature based on backend settings.
       double temperature = 0.2;
       switch (backend) {
@@ -1197,9 +1186,6 @@ class _ChatViewState extends StateManager<ChatView> with WidgetsBindingObserver 
       );
     }
 
-    // Use the cached backend value so the widget tree is never torn down
-    // on a setState() — FutureBuilder was previously doing that, which made
-    // OrchestratorLogPanel lose its stream subscription on every repaint.
     final backend = _activeBackend;
     final showServerPanel = backend == LlmBackend.local;
     final multiAgentActive = AgentRoleSettingsRepository.instance.enabledNotifier.value;
@@ -1209,54 +1195,61 @@ class _ChatViewState extends StateManager<ChatView> with WidgetsBindingObserver 
         backend == LlmBackend.geminiOrchestrator ||
         backend == LlmBackend.openRouterOrchestrator ||
         backend == LlmBackend.githubOrchestrator ||
-        multiAgentActive; // Always show log panel when multi-agent mode is enabled, regardless of orchestrator running state
+        multiAgentActive;
 
-    return Column(
-      children: [
-        _buildHeader(_conversation!),
-        _buildTaskModeBar(),
-        Expanded(child: _buildMessagesList()),
-        if (_sendError != null) _buildErrorBar(),
-        _buildScrollToBottomButton(),
-        if (_taskMode != 'open' && _conversation != null)
-          Expanded(
-            child: TaskChecklistPanel(
-              conversationId: _conversation!.id,
-              taskMode: _taskMode,
-              onAction: _onTaskAction,
+    return LayoutBuilder(
+      builder: (ctx, constraints) {
+        // Cap the log panel to 45% of available height so the fixed-height
+        // non-Expanded children never crowd out the message list and overflow
+        // the parent Column.
+        final clampedLogHeight = _logPanelHeight.clamp(40.0, constraints.maxHeight * 0.3);
+
+        return Column(
+          children: [
+            _buildHeader(_conversation!),
+            _buildTaskModeBar(),
+            Expanded(child: _buildMessagesList()),
+            if (_sendError != null) _buildErrorBar(),
+            _buildScrollToBottomButton(),
+            if (_taskMode != 'open' && _conversation != null)
+              TaskChecklistPanel(
+                conversationId: _conversation!.id,
+                taskMode: _taskMode,
+                onAction: _onTaskAction,
+              ),
+            ChatInput(
+              enabled: !_sending,
+              sending: _sending,
+              onSend: _sendMessage,
+              onStop: _stopGeneration,
+              showLogToggle: showOrchestratorLog,
+              logVisible: _logVisible,
+              onToggleLog: () => setState(() => _logVisible = !_logVisible),
+              onProjectFolderChanged: _startOrchestrator,
+              onDownload: _downloadChatAsJson,
+              onCopyToClipboard: _copyChatToClipboard,
+              onDownloadAsMarkdown: _downloadChatAsMarkdown,
+              onCopyToClipboardAsMarkdown: _copyChatToClipboardAsMarkdown,
+              onNewChatFromJson: _newChatFromJson,
+              controller: _inputController,
+              onAutoGenerateAgentContext: _autoGenerateAgentContext,
             ),
-          ),
-        ChatInput(
-          enabled: !_sending,
-          sending: _sending,
-          onSend: _sendMessage,
-          onStop: _stopGeneration,
-          showLogToggle: showOrchestratorLog,
-          logVisible: _logVisible,
-          onToggleLog: () => setState(() => _logVisible = !_logVisible),
-          onProjectFolderChanged: _startOrchestrator,
-          onDownload: _downloadChatAsJson,
-          onCopyToClipboard: _copyChatToClipboard,
-          onDownloadAsMarkdown: _downloadChatAsMarkdown,
-          onCopyToClipboardAsMarkdown: _copyChatToClipboardAsMarkdown,
-          onNewChatFromJson: _newChatFromJson,
-          controller: _inputController,
-          onAutoGenerateAgentContext: _autoGenerateAgentContext,
-        ),
-        if (showServerPanel)
-          QuickServerPanel(
-            modelId: _conversation!.modelId ?? '',
-            onServerStatusChanged: () => setState(() {}),
-          ),
-        if (showOrchestratorLog && _logVisible) ...[
-          ResizeHandle(
-            height: _logPanelHeight,
-            onHeightChanged: (newHeight) => setState(() => _logPanelHeight = newHeight),
-            minHeight: 40.0,
-          ),
-          OrchestratorLogPanel(height: _logPanelHeight),
-        ],
-      ],
+            if (showServerPanel)
+              QuickServerPanel(
+                modelId: _conversation!.modelId ?? '',
+                onServerStatusChanged: () => setState(() {}),
+              ),
+            if (showOrchestratorLog && _logVisible) ...[
+              ResizeHandle(
+                height: clampedLogHeight,
+                onHeightChanged: (h) => setState(() => _logPanelHeight = h),
+                minHeight: 40.0,
+              ),
+              OrchestratorLogPanel(height: clampedLogHeight),
+            ],
+          ],
+        );
+      },
     );
   }
 
@@ -1813,9 +1806,7 @@ class _ChatViewState extends StateManager<ChatView> with WidgetsBindingObserver 
         case OrchestratorBackend.groq:
           groqApiKey = await settings.getGroqApiKey() ?? '';
           final savedGroqModel = await settings.getGroqModel() ?? '';
-          modelId = (convModelId.isNotEmpty && !convModelId.contains(':'))
-              ? convModelId
-              : (savedGroqModel.isNotEmpty ? savedGroqModel : convModelId);
+          modelId = (convModelId.isNotEmpty && !convModelId.contains(':')) ? convModelId : (savedGroqModel.isNotEmpty ? savedGroqModel : convModelId);
           temperature = await settings.getGroqTemperature();
           maxTokens = await settings.getGroqMaxTokens();
           tpmLimit = await settings.getGroqTpmLimit();
@@ -1899,9 +1890,7 @@ class _ChatViewState extends StateManager<ChatView> with WidgetsBindingObserver 
         final currentModel = OrchestratorManager.instance.currentModelId;
         final currentTemp = OrchestratorManager.instance.currentTemperature;
 
-        if (currentBackend != desiredBackend ||
-            currentModel != modelId ||
-            currentTemp != temperature) {
+        if (currentBackend != desiredBackend || currentModel != modelId || currentTemp != temperature) {
           await OrchestratorManager.instance.stop();
         }
       }

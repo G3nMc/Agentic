@@ -35,7 +35,6 @@ class _OrchestratorLogPanelState extends State<OrchestratorLogPanel> {
   @override
   void initState() {
     super.initState();
-    // Seed from the buffer already in memory (lines emitted before we mounted).
     _lines.addAll(OrchestratorManager.instance.logLines);
 
     _sub = OrchestratorManager.instance.logStream.listen((line) {
@@ -44,7 +43,6 @@ class _OrchestratorLogPanelState extends State<OrchestratorLogPanel> {
         _lines.add(line);
         if (_lines.length > _maxVisible) _lines.removeAt(0);
       });
-      // Auto-scroll to bottom on new line if enabled.
       if (_autoScroll) {
         WidgetsBinding.instance.addPostFrameCallback((_) {
           if (_scroll.hasClients) {
@@ -68,12 +66,9 @@ class _OrchestratorLogPanelState extends State<OrchestratorLogPanel> {
 
   @override
   Widget build(BuildContext context) {
-    // Don't render if the orchestrator isn't running and we have no lines yet.
     final hasContent = _lines.isNotEmpty || OrchestratorManager.instance.isRunning;
     if (!hasContent) return const SizedBox.shrink();
 
-    // When height is provided (drag mode), use it directly.
-    // Otherwise, use internal collapsed/expanded heights (toggle mode).
     final contentHeight = widget.height ?? (_expanded ? _expandedHeight : _collapsedHeight);
 
     return Container(
@@ -83,6 +78,8 @@ class _OrchestratorLogPanelState extends State<OrchestratorLogPanel> {
         borderRadius: BorderRadius.circular(8),
         border: Border.all(color: AppTheme.border),
       ),
+      // Column instead of Wrap: header stacks vertically above the log area,
+      // giving a predictable and bounded height to the parent layout.
       child: Column(
         mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -102,12 +99,16 @@ class _OrchestratorLogPanelState extends State<OrchestratorLogPanel> {
                     height: 7,
                     decoration: BoxDecoration(
                       shape: BoxShape.circle,
-                      color: OrchestratorManager.instance.isRunning ? Colors.greenAccent : Colors.grey,
+                      color: OrchestratorManager.instance.isRunning
+                          ? Colors.greenAccent
+                          : Colors.grey,
                     ),
                   ),
                   const SizedBox(width: 6),
                   Text(
-                    OrchestratorManager.instance.isRunning ? 'Orchestrator log' : 'Orchestrator log (stopped)',
+                    OrchestratorManager.instance.isRunning
+                        ? 'Orchestrator log'
+                        : 'Orchestrator log (stopped)',
                     style: const TextStyle(
                       fontSize: 11,
                       color: Color(0xFFCDD6F4),
@@ -182,50 +183,52 @@ class _OrchestratorLogPanelState extends State<OrchestratorLogPanel> {
 
           // ── Log lines ────────────────────────────────────────────────────
           AnimatedContainer(
-            duration: widget.height != null ? const Duration(milliseconds: 50) : const Duration(milliseconds: 200),
+            duration: widget.height != null
+                ? const Duration(milliseconds: 50)
+                : const Duration(milliseconds: 200),
             curve: Curves.easeInOut,
             height: contentHeight,
             child: _lines.isEmpty
                 ? const Center(
-                    child: Text(
-                      'Waiting for orchestrator output…',
+              child: Text(
+                'Waiting for orchestrator output...',
+                style: TextStyle(
+                  fontSize: 11,
+                  color: Color(0xFF6E6E7D),
+                  fontStyle: FontStyle.italic,
+                ),
+              ),
+            )
+                : NotificationListener<ScrollNotification>(
+              onNotification: (notification) {
+                if (notification is ScrollStartNotification &&
+                    notification.dragDetails != null) {
+                  setState(() => _autoScroll = false);
+                } else if (notification is UserScrollNotification) {
+                  setState(() => _autoScroll = false);
+                }
+                return false;
+              },
+              child: SelectionArea(
+                child: ListView.builder(
+                  controller: _scroll,
+                  padding: const EdgeInsets.fromLTRB(10, 10, 10, 6),
+                  itemCount: _lines.length,
+                  itemBuilder: (_, i) {
+                    final line = _lines[i];
+                    return Text(
+                      line,
                       style: TextStyle(
                         fontSize: 11,
-                        color: Color(0xFF6E6E7D),
-                        fontStyle: FontStyle.italic,
+                        fontFamily: 'monospace',
+                        color: _lineColor(line),
+                        height: 1.4,
                       ),
-                    ),
-                  )
-                : NotificationListener<ScrollNotification>(
-                    onNotification: (notification) {
-                      if (notification is ScrollStartNotification &&
-                          notification.dragDetails != null) {
-                        setState(() => _autoScroll = false);
-                      } else if (notification is UserScrollNotification) {
-                        setState(() => _autoScroll = false);
-                      }
-                      return false;
-                    },
-                    child: SelectionArea(
-                      child: ListView.builder(
-                        controller: _scroll,
-                        padding: const EdgeInsets.fromLTRB(10, 10, 10, 6),
-                        itemCount: _lines.length,
-                        itemBuilder: (_, i) {
-                          final line = _lines[i];
-                          return Text(
-                            line,
-                            style: TextStyle(
-                              fontSize: 11,
-                              fontFamily: 'monospace',
-                              color: _lineColor(line),
-                              height: 1.4,
-                            ),
-                          );
-                        },
-                      ),
-                    ),
-                  ),
+                    );
+                  },
+                ),
+              ),
+            ),
           ),
         ],
       ),
@@ -269,14 +272,14 @@ class _OrchestratorLogPanelState extends State<OrchestratorLogPanel> {
       return const Color(0xFFFAB387); // orange
     }
     if (l.contains('tool_call') || l.contains('<tool>') || l.contains('native tool')) {
-      return const Color(0xFFA6E3A1); // green — tool activity
+      return const Color(0xFFA6E3A1); // green
     }
     if (l.contains('ready') || l.contains('active') || l.contains('started')) {
       return const Color(0xFF89DCEB); // teal
     }
     if (l.contains('[orch]')) {
-      return const Color(0xFFCDD6F4); // bright white for tagged lines
+      return const Color(0xFFCDD6F4); // bright white
     }
-    return const Color(0xFF6C7086); // muted for everything else
+    return const Color(0xFF6C7086); // muted default
   }
 }
