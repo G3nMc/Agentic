@@ -126,6 +126,9 @@ def build_config_from_args(args):
     reasoner_max_tokens = args.max_tokens
     reasoner_context = args.reasoner_context_window
 
+    from multi_mode.config.models import ReasoningLevel
+    reasoning_level = ReasoningLevel(args.reasoning_level)
+
     config.models[ModelRole.REASONER] = ModelConfig(
         role=ModelRole.REASONER,
         provider=reasoner_provider,
@@ -135,6 +138,7 @@ def build_config_from_args(args):
         temperature=reasoner_temp,
         max_tokens=reasoner_max_tokens,
         context_window=reasoner_context,
+        reasoning_level=reasoning_level,
     )
 
     # Summarizer (optional)
@@ -286,6 +290,14 @@ def main():
         type=int,
         default=128000,
         help="Context window size for the reasoner model.",
+    )
+    parser.add_argument(
+        "--reasoning-level",
+        default="max",
+        choices=["minimal", "low", "medium", "high", "max"],
+        help="Reasoning effort level for the reasoner model. "
+             "Maps to OpenAI reasoning_effort, Anthropic thinking.budget_tokens, "
+             "Gemini thinkingConfig.thinkingBudget. Default: max.",
     )
 
     # Summarizer model (optional)

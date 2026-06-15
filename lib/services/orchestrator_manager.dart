@@ -716,6 +716,13 @@ class OrchestratorManager {
           args.addAll(['--reasoner-base-url', ollamaBaseUrl]);
         }
 
+        // Reasoning level: pass through to the Python orchestrator.
+        // Defaults to 'max' if not set in the agent config.
+        final rReasoningLevel = reasonerCfg.reasoningLevel.isNotEmpty
+            ? reasonerCfg.reasoningLevel
+            : 'max';
+        args.addAll(['--reasoning-level', rReasoningLevel]);
+
         args.addAll(['--summarizer-provider', sProvider]);
         args.addAll(['--summarizer-model', summarizerCfg.model]);
         final sKey = _apiKeyForProvider(sProvider,

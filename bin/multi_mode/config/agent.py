@@ -49,6 +49,8 @@ def load_config_from_env() -> AgentConfig:
     reasoner_max_tokens = int(os.getenv("REASONER_MAX_TOKENS", "4096"))
     reasoner_context = int(os.getenv("REASONER_CONTEXT_WINDOW", "128000"))
 
+    reasoner_reasoning = os.getenv("REASONER_REASONING_LEVEL", "max")
+    from .models import ReasoningLevel
     config.models[ModelRole.REASONER] = ModelConfig(
         role=ModelRole.REASONER,
         provider=reasoner_provider,
@@ -58,6 +60,7 @@ def load_config_from_env() -> AgentConfig:
         temperature=reasoner_temp,
         max_tokens=reasoner_max_tokens,
         context_window=reasoner_context,
+        reasoning_level=ReasoningLevel(reasoner_reasoning),
     )
 
     # Summarizer model
@@ -70,6 +73,7 @@ def load_config_from_env() -> AgentConfig:
         summarizer_max_tokens = int(os.getenv("SUMMARIZER_MAX_TOKENS", "2048"))
         summarizer_context = int(os.getenv("SUMMARIZER_CONTEXT_WINDOW", "128000"))
 
+        summarizer_reasoning = os.getenv("SUMMARIZER_REASONING_LEVEL", "max")
         config.models[ModelRole.SUMMARIZER] = ModelConfig(
             role=ModelRole.SUMMARIZER,
             provider=summarizer_provider,
@@ -79,6 +83,7 @@ def load_config_from_env() -> AgentConfig:
             temperature=summarizer_temp,
             max_tokens=summarizer_max_tokens,
             context_window=summarizer_context,
+            reasoning_level=ReasoningLevel(summarizer_reasoning),
         )
 
     # Other settings

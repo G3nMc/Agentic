@@ -56,6 +56,9 @@ class _AgentWorkflowSettingsState extends State<AgentWorkflowSettings> {
   final Map<String, TextEditingController> _ollamaUrlCtrls = {};
   final Map<String, TextEditingController> _ollamaCtxCtrls = {};
 
+  // Per-role reasoning level (no controller needed — dropdown tracks it).
+  final Map<String, String> _reasoningLevels = {};
+
   // Per-role debounce timers — coalesce rapid edits into a single save.
   final Map<String, Timer> _saveTimers = {};
 
@@ -143,6 +146,7 @@ class _AgentWorkflowSettingsState extends State<AgentWorkflowSettings> {
         _tpmCtrls[r]!.text = cfg.tpmLimit.toString();
         _ollamaUrlCtrls[r]!.text = cfg.ollamaBaseUrl ?? '';
         _ollamaCtxCtrls[r]!.text = cfg.ollamaNumCtx?.toString() ?? '';
+        _reasoningLevels[r] = cfg.reasoningLevel.isNotEmpty ? cfg.reasoningLevel : 'max';
       }
       _loading = false;
     });
@@ -771,6 +775,8 @@ class _AgentWorkflowSettingsState extends State<AgentWorkflowSettings> {
               Expanded(child: _maxTokensField(role)),
               const SizedBox(width: 10),
               Expanded(child: _tpmField(role)),
+              const SizedBox(width: 10),
+              Expanded(child: _reasoningLevelDropdown(role)),
             ],
           ),
         ],
@@ -1001,6 +1007,52 @@ class _AgentWorkflowSettingsState extends State<AgentWorkflowSettings> {
           _scheduleSave(role);
         },
       ),
+    );
+  }
+
+  Widget _reasoningLevelDropdown(String role) {
+    final cfg = _agents.get(role);
+    final current = _reasoningLevels[role] ?? cfg.reasoningLevel;
+    const levels = ['minimal', 'low', 'medium', 'high', 'max'];
+    const labels = {
+      'minimal': 'Minimal',
+      'low': 'Low',
+      'medium': 'Medium',
+      'high': 'High',
+      'max': 'Max',
+    };
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const Text(
+          'Reasoning',
+          style: TextStyle(fontSize: 12, color: AppTheme.textSecondary),
+        ),
+        const SizedBox(height: 4),
+        DropdownButtonFormField<String>(
+          initialValue: current,
+          decoration: const InputDecoration(
+            border: OutlineInputBorder(),
+            isDense: true,
+            contentPadding: EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+          ),
+          items: [
+            for (final l in levels)
+              DropdownMenuItem(
+                value: l,
+                child: Text(labels[l] ?? l, style: const TextStyle(fontSize: 13)),
+              ),
+          ],
+          onChanged: (v) {
+            if (v == null) return;
+            setState(() {
+              _reasoningLevels[role] = v;
+              _agents.put(role, cfg.copyWith(reasoningLevel: v));
+            });
+            _persistImmediately(role);
+          },
+        ),
+      ],
     );
   }
 

@@ -67,6 +67,13 @@ class OpenAIBackend(LLMBackend):
             "max_tokens": kwargs.get("max_tokens", self.config.max_tokens),
             "stream": True,
         }
+        # Reasoning effort: "max" maps to "high" (OpenAI's highest level)
+        rl = kwargs.get("reasoning_level")
+        if rl is not None:
+            rl_str = str(rl).lower()
+            if rl_str == "max":
+                rl_str = "high"
+            payload["reasoning_effort"] = rl_str
         stop = kwargs.get("stop")
         if stop:
             payload["stop"] = list(stop)[:4]

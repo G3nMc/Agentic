@@ -28,6 +28,11 @@ class AgentRoleConfig {
 
   final int maxTokens;
 
+  /// Reasoning effort level: minimal, low, medium, high, max.
+  /// Maps to OpenAI `reasoning_effort`, Anthropic `thinking.budget_tokens`,
+  /// Gemini `thinkingConfig.thinkingBudget`. Default: max.
+  final String reasoningLevel;
+
   /// Optional Ollama-specific overrides; ignored when [backend] != ollama.
   final String? ollamaBaseUrl;
   final int? ollamaNumCtx;
@@ -39,6 +44,7 @@ class AgentRoleConfig {
     this.tpmLimit = 0,
     this.temperature = 0.2,
     this.maxTokens = 1024,
+    this.reasoningLevel = 'max',
     this.ollamaBaseUrl,
     this.ollamaNumCtx,
   });
@@ -49,6 +55,7 @@ class AgentRoleConfig {
         'tpm_limit': tpmLimit,
         'temperature': temperature,
         'max_tokens': maxTokens,
+        'reasoning_level': reasoningLevel,
         if (ollamaBaseUrl != null && ollamaBaseUrl!.isNotEmpty) 'ollama_base_url': ollamaBaseUrl,
         if (ollamaNumCtx != null) 'ollama_num_ctx': ollamaNumCtx,
       };
@@ -60,6 +67,7 @@ class AgentRoleConfig {
         tpmLimit: json['tpm_limit'] as int? ?? 0,
         temperature: (json['temperature'] as num?)?.toDouble() ?? 0.2,
         maxTokens: json['max_tokens'] as int? ?? 1024,
+        reasoningLevel: json['reasoning_level'] as String? ?? 'max',
         ollamaBaseUrl: json['ollama_base_url'] as String?,
         ollamaNumCtx: json['ollama_num_ctx'] as int?,
       );
@@ -70,6 +78,7 @@ class AgentRoleConfig {
     int? tpmLimit,
     double? temperature,
     int? maxTokens,
+    String? reasoningLevel,
     String? ollamaBaseUrl,
     int? ollamaNumCtx,
   }) {
@@ -80,6 +89,7 @@ class AgentRoleConfig {
       tpmLimit: tpmLimit ?? this.tpmLimit,
       temperature: temperature ?? this.temperature,
       maxTokens: maxTokens ?? this.maxTokens,
+      reasoningLevel: reasoningLevel ?? this.reasoningLevel,
       ollamaBaseUrl: ollamaBaseUrl ?? this.ollamaBaseUrl,
       ollamaNumCtx: ollamaNumCtx ?? this.ollamaNumCtx,
     );

@@ -99,6 +99,19 @@ class AnthropicBackend(LLMBackend):
             "temperature": kwargs.get("temperature", self.config.temperature),
             "stream": True,
         }
+        # Reasoning level → Anthropic thinking budget_tokens
+        rl = kwargs.get("reasoning_level")
+        if rl is not None:
+            rl_str = str(rl).lower()
+            budget_map = {
+                "minimal": 1024,
+                "low": 2048,
+                "medium": 4096,
+                "high": 8192,
+                "max": 16000,
+            }
+            budget = budget_map.get(rl_str, 16000)
+            payload["thinking"] = {"type": "enabled", "budget_tokens": budget}
         if system:
             payload["system"] = system
         stop = kwargs.get("stop")

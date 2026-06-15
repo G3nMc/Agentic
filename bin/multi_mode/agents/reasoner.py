@@ -163,14 +163,21 @@ class Reasoner:
     def _call_llm_with_retry(self, messages: List[Dict[str, Any]]) -> CompletionResponse:
         """Call LLM with retry logic."""
         last_error = None
+        reasoner_cfg = self.config.models.get(ModelRole.REASONER)
+        reasoning_level = getattr(reasoner_cfg, 'reasoning_level', None) if reasoner_cfg else None
         for attempt in range(self.config.max_retries + 1):
             try:
+                kwargs: Dict[str, Any] = {
+                    "temperature": 0.2,
+                    "max_tokens": self.config.models.get(ModelRole.REASONER,
+                                                      ModelConfig(role=ModelRole.REASONER, provider="openai", model="gpt-4o")).max_tokens,
+                }
+                if reasoning_level is not None:
+                    kwargs["reasoning_level"] = reasoning_level
                 return self.backend.complete(
                     messages,
                     tools=self._tools_schema,
-                    temperature=0.2,
-                    max_tokens=self.config.models.get(ModelRole.REASONER,
-                                                      ModelConfig(role=ModelRole.REASONER, provider="openai", model="gpt-4o")).max_tokens,
+                    **kwargs,
                 )
             except Exception as e:
                 last_error = e

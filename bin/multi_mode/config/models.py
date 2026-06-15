@@ -13,6 +13,18 @@ class ModelRole(Enum):
     # SHAPER = REMOVED (deterministic context building only)
 
 
+# Reasoning effort levels supported across providers.
+# Maps to OpenAI `reasoning_effort`, Anthropic `thinking.budget_tokens`,
+# Gemini `thinkingConfig.thinkingBudget`, and OpenRouter passthrough.
+# Ollama has no native reasoning parameter — the field is silently ignored.
+class ReasoningLevel(str, Enum):
+    MINIMAL = "minimal"
+    LOW = "low"
+    MEDIUM = "medium"
+    HIGH = "high"
+    MAX = "max"
+
+
 @dataclass
 class ModelConfig:
     """Configuration for a single model."""
@@ -24,6 +36,7 @@ class ModelConfig:
     temperature: float = 0.1
     max_tokens: int = 4096
     context_window: int = 128000
+    reasoning_level: ReasoningLevel = ReasoningLevel.MAX
     # Provider-specific options
     extra: Dict[str, Any] = field(default_factory=dict)
 
@@ -84,6 +97,7 @@ DEFAULT_REASONER = ModelConfig(
     model="gpt-4o",
     temperature=0.1,
     max_tokens=4096,
+    reasoning_level=ReasoningLevel.MAX,
 )
 
 DEFAULT_SUMMARIZER = ModelConfig(
@@ -92,4 +106,5 @@ DEFAULT_SUMMARIZER = ModelConfig(
     model="gpt-4o-mini",
     temperature=0.1,
     max_tokens=2048,
+    reasoning_level=ReasoningLevel.MAX,
 )

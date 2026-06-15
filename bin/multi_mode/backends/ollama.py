@@ -67,6 +67,9 @@ class OllamaBackend(LLMBackend):
             "stream": True,
             "options": options,
         }
+        # Ollama has no native reasoning parameter — reasoning_level is
+        # silently ignored here (the field exists on ModelConfig for
+        # cross-provider uniformity but has no effect on Ollama).
 
         _log(
             f"[Ollama:complete] POST {self._base_url}/api/chat model={self.config.model} "
