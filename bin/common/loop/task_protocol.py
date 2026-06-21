@@ -130,9 +130,15 @@ class TaskStatusEvent:
     id: int
     status: TaskStatus
     note: str = ""
+    description: str = ""
 
     def to_dict(self) -> Dict[str, Any]:
-        return {"id": self.id, "status": self.status.value, "note": self.note}
+        return {
+            "id": self.id,
+            "status": self.status.value,
+            "note": self.note,
+            "description": self.description,
+        }
 
 
 @dataclass
@@ -243,6 +249,7 @@ def parse_task_status(text: str) -> List[TaskStatusEvent]:
                 id=tid,
                 status=TaskStatus.parse(parsed.get("status")),
                 note=str(parsed.get("note") or "").strip(),
+                description=str(parsed.get("description") or "").strip(),
             )
         )
     return out
