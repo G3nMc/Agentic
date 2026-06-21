@@ -42,7 +42,7 @@ class TaskChecklistPanel extends StatefulWidget {
 
 class _TaskChecklistPanelState extends State<TaskChecklistPanel> {
   static const double _collapsedHeight = 41.0;
-  static const double _expandedHeight = 280.0;
+  static const double _expandedHeight = 200.0;
 
   List<ConversationTask> _tasks = const [];
   StreamSubscription<OrchestratorTaskEvent>? _sub;

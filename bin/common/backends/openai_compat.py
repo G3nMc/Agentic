@@ -107,6 +107,8 @@ class OpenAICompatBackend(ModelBackend):
         temperature: float,
         tools: Optional[List[Dict[str, Any]]] = None,  # ignored on purpose
         stop: Optional[List[str]] = None,
+        thinking: bool = False,
+        effort: Optional[str] = None,
     ) -> Tuple[str, str]:
         # [native-tools-removed] We never forward ``tools`` to the API.
         # The agent uses text protocol exclusively (<tool>...</tool>).
@@ -124,6 +126,13 @@ class OpenAICompatBackend(ModelBackend):
         }
         if stop:
             payload["stop"] = list(stop)[:4]
+        # Thinking + Effort: when thinking is ON, map effort to
+        # OpenAI reasoning_effort ("max" -> "high", OpenAI's highest).
+        if thinking and effort:
+            effort_str = str(effort).lower()
+            if effort_str == "max":
+                effort_str = "high"
+            payload["reasoning_effort"] = effort_str
 
         _log(
             f"[{self._label}:chat] model={self.model_id} "

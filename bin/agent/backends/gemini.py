@@ -92,6 +92,8 @@ class GeminiBackend(ModelBackend):
         temperature: float,
         tools: Optional[List[Dict[str, Any]]] = None,
         stop: Optional[List[str]] = None,
+        thinking: bool = False,
+        effort: Optional[str] = None,
     ) -> Tuple[str, str]:
         # [native-tools-removed] We never forward function declarations.
         _ = tools
@@ -110,6 +112,19 @@ class GeminiBackend(ModelBackend):
             "contents": contents,
             "generationConfig": generation_config,
         }
+        # Thinking + Effort: when thinking is ON, map effort to
+        # Gemini thinkingConfig.thinkingBudget.
+        if thinking and effort:
+            effort_str = str(effort).lower()
+            budget_map = {
+                "minimal": 512,
+                "low": 1024,
+                "medium": 2048,
+                "high": 4096,
+                "max": 8192,
+            }
+            budget = budget_map.get(effort_str, 8192)
+            payload["thinkingConfig"] = {"thinkingBudget": budget}
         if system_instruction:
             payload["systemInstruction"] = {
                 "parts": [{"text": system_instruction}]

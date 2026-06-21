@@ -45,6 +45,8 @@ class _ChatSelectionModalState extends State<ChatSelectionModal> {
           children: [
             _buildHeader(),
             const Divider(height: 1, color: AppTheme.border),
+            _buildSelectAllRow(),
+            const Divider(height: 1, color: AppTheme.border),
             Expanded(child: _buildConversationList()),
             const Divider(height: 1, color: AppTheme.border),
             _buildActionButtons(),
@@ -92,6 +94,122 @@ class _ChatSelectionModalState extends State<ChatSelectionModal> {
       ),
     );
   }
+
+  Widget _buildSelectAllRow() {
+
+    if (widget.conversations.isEmpty) return const SizedBox.shrink();
+
+
+
+    final allSelected = _selectedIds.length == widget.conversations.length;
+
+    final someSelected = _selectedIds.isNotEmpty && !allSelected;
+
+
+
+    return InkWell(
+
+      onTap: _toggleSelectAll,
+
+      borderRadius: BorderRadius.circular(8),
+
+      child: Padding(
+
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
+
+        child: Row(
+
+          children: [
+
+            Checkbox(
+
+              value: allSelected ? true : (someSelected ? null : false),
+
+              tristate: true,
+
+              onChanged: (_) => _toggleSelectAll(),
+
+              activeColor: AppTheme.accent,
+
+              materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+
+              visualDensity: VisualDensity.compact,
+
+            ),
+
+            const SizedBox(width: 4),
+
+            Text(
+
+              'Select All',
+
+              style: TextStyle(
+
+                fontSize: 14,
+
+                fontWeight: FontWeight.w600,
+
+                color: someSelected
+
+                    ? AppTheme.textSecondary
+
+                    : AppTheme.textPrimary,
+
+              ),
+
+            ),
+
+            const Spacer(),
+
+            Text(
+
+              '${_selectedIds.length}/${widget.conversations.length}',
+
+              style: const TextStyle(
+
+                fontSize: 12,
+
+                color: AppTheme.textMuted,
+
+              ),
+
+            ),
+
+          ],
+
+        ),
+
+      ),
+
+    );
+
+  }
+
+
+
+  void _toggleSelectAll() {
+
+    setState(() {
+
+      if (_selectedIds.length == widget.conversations.length) {
+
+        _selectedIds.clear();
+
+      } else {
+
+        _selectedIds
+
+          ..clear()
+
+          ..addAll(widget.conversations.map((c) => c.id));
+
+      }
+
+    });
+
+  }
+
+
 
   Widget _buildConversationList() {
     if (widget.conversations.isEmpty) {

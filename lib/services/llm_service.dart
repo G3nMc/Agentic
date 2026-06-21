@@ -101,6 +101,8 @@ class LlmService {
     String? contextSummary, // Additional context summary to include
     double? temperature, // Optional temperature override
     String taskMode = 'task_compliance_auto', // open / task_compliance / task_compliance_auto
+    bool thinking = false, // Thinking ON/OFF master switch
+    String? effort, // Effort level: minimal/low/medium/high/max
   }) async {
     switch (backend) {
       case LlmBackend.orchestrator:
@@ -141,6 +143,8 @@ class LlmService {
           seedHistory: _seedHistoryForOrchestrator(history, contextSummary: contextSummary),
           forceHistorySync: true,
           taskMode: taskMode,
+          thinking: thinking,
+          effort: effort,
         );
 
       case LlmBackend.ollamaOrchestrator:
@@ -202,6 +206,8 @@ class LlmService {
           seedHistory: _seedHistoryForOrchestrator(history, contextSummary: contextSummary),
           forceHistorySync: true,
           taskMode: taskMode,
+          thinking: thinking,
+          effort: effort,
         );
 
       case LlmBackend.groqOrchestrator:
@@ -273,6 +279,8 @@ class LlmService {
           seedHistory: _seedHistoryForOrchestrator(history, contextSummary: contextSummary),
           forceHistorySync: true,
           taskMode: taskMode,
+          thinking: thinking,
+          effort: effort,
         );
 
       case LlmBackend.geminiOrchestrator:
@@ -343,6 +351,8 @@ class LlmService {
           seedHistory: _seedHistoryForOrchestrator(history, contextSummary: contextSummary),
           forceHistorySync: true,
           taskMode: taskMode,
+          thinking: thinking,
+          effort: effort,
         );
 
       case LlmBackend.openRouterOrchestrator:
@@ -412,6 +422,8 @@ class LlmService {
           seedHistory: _seedHistoryForOrchestrator(history, contextSummary: contextSummary),
           forceHistorySync: true,
           taskMode: taskMode,
+          thinking: thinking,
+          effort: effort,
         );
 
       case LlmBackend.githubOrchestrator:
@@ -484,6 +496,8 @@ class LlmService {
           seedHistory: _seedHistoryForOrchestrator(history, contextSummary: contextSummary),
           forceHistorySync: true,
           taskMode: taskMode,
+          thinking: thinking,
+          effort: effort,
         );
 
       case LlmBackend.huggingFace:

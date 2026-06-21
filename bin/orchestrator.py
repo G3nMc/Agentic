@@ -547,6 +547,14 @@ def _run_interactive_loop(orchestrator: Orchestrator) -> None:
                         f"[orch] task_mode switched to {new_mode.value}",
                         file=sys.stderr,
                     )
+            # Per-request thinking/effort override: the Flutter UI controls
+            # take effect immediately without restarting the subprocess.
+            thinking_val = req.get("thinking")
+            if isinstance(thinking_val, bool):
+                orchestrator.thinking = thinking_val
+            effort_val = req.get("effort")
+            if isinstance(effort_val, str) and effort_val.strip():
+                orchestrator.effort = effort_val.strip().lower()
             prompt = (req.get("prompt") or "").strip()
             if not prompt:
                 # Respect the protocol even for empty prompts.

@@ -86,19 +86,35 @@ class GeminiBackend(LLMBackend):
             "contents": contents,
             "generationConfig": generation_config,
         }
-        # Reasoning level → Gemini thinkingConfig.thinkingBudget
-        rl = kwargs.get("reasoning_level")
-        if rl is not None:
-            rl_str = str(rl).lower()
-            budget_map = {
-                "minimal": 512,
-                "low": 1024,
-                "medium": 2048,
-                "high": 4096,
-                "max": 8192,
-            }
-            budget = budget_map.get(rl_str, 8192)
-            payload["thinkingConfig"] = {"thinkingBudget": budget}
+        # Reasoning level → Gemini thinkingConfig.thinkingBudget.
+        # Only sent when thinking is ON (master switch).
+        thinking = kwargs.get("thinking", True)
+        if thinking:
+            rl = kwargs.get("reasoning_level")
+            if rl is not None:
+                rl_str = str(rl).lower()
+                budget_map = {
+                    "minimal": 512,
+                    "low": 1024,
+                    "medium": 2048,
+                    "high": 4096,
+                    "max": 8192,
+                }
+                budget = budget_map.get(rl_str, 8192)
+                payload["thinkingConfig"] = {"thinkingBudget": budget}
+            # Per-request effort override (from Flutter UI dropdown).
+            effort = kwargs.get("effort")
+            if effort is not None:
+                effort_str = str(effort).lower()
+                budget_map = {
+                    "minimal": 512,
+                    "low": 1024,
+                    "medium": 2048,
+                    "high": 4096,
+                    "max": 8192,
+                }
+                budget = budget_map.get(effort_str, 8192)
+                payload["thinkingConfig"] = {"thinkingBudget": budget}
         if system_instruction:
             payload["systemInstruction"] = {"parts": [{"text": system_instruction}]}
 

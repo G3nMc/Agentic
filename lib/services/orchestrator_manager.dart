@@ -877,6 +877,8 @@ class OrchestratorManager {
     List<Map<String, String>> seedHistory = const [],
     bool forceHistorySync = false,
     String taskMode = 'open',
+    bool thinking = false,
+    String? effort,
   }) {
     // Serialize requests so multiple callers don't interleave on stdin.
     final next = _chain.then(
@@ -887,6 +889,8 @@ class OrchestratorManager {
         seedHistory: seedHistory,
         forceHistorySync: forceHistorySync,
         taskMode: taskMode,
+        thinking: thinking,
+        effort: effort,
       ),
     );
     _chain = next.catchError((_) => '');
@@ -900,6 +904,8 @@ class OrchestratorManager {
     List<Map<String, String>> seedHistory = const [],
     bool forceHistorySync = false,
     String taskMode = 'open',
+    bool thinking = false,
+    String? effort,
   }) async {
     if (!_isRunning || _process == null) {
       return 'Error: Orchestrator not running. Start it from Settings first.';
@@ -928,7 +934,7 @@ class OrchestratorManager {
       if (seedHistory.isNotEmpty) 'history': seedHistory,
       if (sessionKey != null && sessionKey.isNotEmpty) 'session_key': sessionKey,
       // Sent explicitly so Team Mode can isolate per-chat board/artifacts.
-      // Same value as session_key â€” kept as a separate field so the
+      // Same value as session_key — kept as a separate field so the
       // Python side has a stable contract independent of the legacy
       // session_key plumbing.
       if (sessionKey != null && sessionKey.isNotEmpty) 'conversation_id': sessionKey,
@@ -936,6 +942,11 @@ class OrchestratorManager {
       // request and switches the system prompt + event emission in or
       // out of TASK COMPLIANCE mode accordingly.
       'task_mode': taskMode,
+      // Thinking ON/OFF master switch + Effort level. Sent per-request
+      // so the Flutter UI controls take effect immediately without
+      // restarting the orchestrator subprocess.
+      'thinking': thinking,
+      if (effort != null && effort.isNotEmpty) 'effort': effort,
     });
     // Fix 10c: when the outgoing prompt is itself a <task_action>
     // envelope (sent by the TaskChecklistPanel buttons), inject a

@@ -502,6 +502,8 @@ class Orchestrator:
             path_filter: Optional[Any] = None,
             db_connections: Optional[Dict[str, Dict[str, str]]] = None,
             task_mode: str = "open",
+            thinking: bool = False,
+            effort: Optional[str] = None,
     ):
         self._action_intent = None
         self._writes_this_turn = None
@@ -559,6 +561,11 @@ class Orchestrator:
         # let users tune them per-backend without editing Python.
         self.temperature = temperature
         self.max_tokens = max_tokens
+        # Thinking ON/OFF master switch + Effort level. Updated per-request
+        # by the interactive loop so the Flutter UI controls take effect
+        # immediately without restarting the orchestrator process.
+        self.thinking = thinking
+        self.effort = effort
         # Cap tool-chain length. Each iteration is potentially a 60–120 s
         # model call, so 30 bounds a single /sendPrompt at ~60 min worst case,
         # comfortably inside the Dart-side absolute timeout (120 min).
@@ -778,6 +785,8 @@ class Orchestrator:
                     max_tokens=self.max_tokens,
                     temperature=self.temperature,
                     tools=None,
+                    thinking=self.thinking,
+                    effort=self.effort,
                 )
             except Exception as e:
                 # Pop the just-added user turn so a retry doesn't end up
@@ -1415,46 +1424,64 @@ class Orchestrator:
                 text_clean
             )
             if is_malformed:
-                consecutive_malformed += 1
+                # When the malformed error is an unclosed JSON and the reply
+                # is long (>2000 chars), it's almost certainly a truncation
+                # (the model ran out of generation budget mid-JSON) rather
+                # than a genuine syntax error. Route it to the truncation
+                # path below, which gives 10 retries with tail context
+                # instead of only 2 malformed retries with generic feedback.
+                # This fixes models like glm-5.2 that generate massive
+                # patch_files calls and get cut off mid-JSON.
+                if "Unclosed JSON" in malformed_error and len(text_clean) > 2000:
+                    print(
+                        f"[orch] Malformed call looks like truncation "
+                        f"(unclosed JSON, {len(text_clean)} chars); "
+                        f"routing to truncation path.",
+                        file=sys.stderr,
+                    )
+                    # Fall through to truncation detection below — do NOT
+                    # increment consecutive_malformed or consume a retry.
+                else:
+                    consecutive_malformed += 1
 
-                if malformed_tool_retries < 2:
-                    # Still have correction retries — send feedback regardless
-                    # of consecutive count. Only bail after retries are gone.
-                    malformed_tool_retries += 1
-                    print(
-                        f"[orch] Malformed tool call detected (retry {malformed_tool_retries}): {malformed_error}",
-                        file=sys.stderr,
-                    )
-                    print(
-                        f"[orch] Unparseable reply (first 500 chars): "
-                        f"{text_clean[:500]!r}",
-                        file=sys.stderr,
-                    )
-                    self.conversation_history.append(
-                        _get_malformed_directive(malformed_error)
-                    )
-                    iteration += 1
-                    continue
+                    if malformed_tool_retries < 2:
+                        # Still have correction retries — send feedback regardless
+                        # of consecutive count. Only bail after retries are gone.
+                        malformed_tool_retries += 1
+                        print(
+                            f"[orch] Malformed tool call detected (retry {malformed_tool_retries}): {malformed_error}",
+                            file=sys.stderr,
+                        )
+                        print(
+                            f"[orch] Unparseable reply (first 500 chars): "
+                            f"{text_clean[:500]!r}",
+                            file=sys.stderr,
+                        )
+                        self.conversation_history.append(
+                            _get_malformed_directive(malformed_error)
+                        )
+                        iteration += 1
+                        continue
 
-                # Retries exhausted. Hard cap on consecutive malformed runs.
-                if consecutive_malformed >= _MAX_CONSECUTIVE_MALFORMED:
+                    # Retries exhausted. Hard cap on consecutive malformed runs.
+                    if consecutive_malformed >= _MAX_CONSECUTIVE_MALFORMED:
+                        print(
+                            f"[orch] Consecutive malformed cap reached "
+                            f"({consecutive_malformed}); bailing.",
+                            file=sys.stderr,
+                        )
+                        # Skip synthesis — history contains only broken calls,
+                        # not useful work; synthesis would likely fail too.
+                        return _MALFORMED_GIVE_UP_MESSAGE
+
+                    # Retries exhausted but consecutive cap not yet reached —
+                    # return the direct error.
                     print(
-                        f"[orch] Consecutive malformed cap reached "
-                        f"({consecutive_malformed}); bailing.",
+                        f"[orch] Malformed tool call: retries exhausted. "
+                        f"Error: {malformed_error}",
                         file=sys.stderr,
                     )
-                    # Skip synthesis — history contains only broken calls,
-                    # not useful work; synthesis would likely fail too.
                     return _MALFORMED_GIVE_UP_MESSAGE
-
-                # Retries exhausted but consecutive cap not yet reached —
-                # return the direct error.
-                print(
-                    f"[orch] Malformed tool call: retries exhausted. "
-                    f"Error: {malformed_error}",
-                    file=sys.stderr,
-                )
-                return _MALFORMED_GIVE_UP_MESSAGE
 
             # --- Truncation detection ---
             # The reply was cut off by max_tokens. Two shapes:
@@ -1635,6 +1662,8 @@ class Orchestrator:
                 max_tokens=self.max_tokens,
                 temperature=self.temperature,
                 tools=None,
+                thinking=self.thinking,
+                effort=self.effort,
             )
         except Exception as e:  # noqa: BLE001
             print(f"[orch] Synthesis call failed: {e}", file=sys.stderr)
@@ -1950,6 +1979,8 @@ class Orchestrator:
                         "\nAssistant:",
                         "\n[INTERNAL:",
                     ],
+                    thinking=self.thinking,
+                    effort=self.effort,
                 )
                 # Successful call: reset the circuit breaker failure count.
                 self._model_circuit_breaker.record_success()

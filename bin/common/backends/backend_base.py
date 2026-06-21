@@ -27,6 +27,8 @@ class ModelBackend:
         temperature: float,
         tools: Optional[List[Dict[str, Any]]] = None,
         stop: Optional[List[str]] = None,
+        thinking: bool = False,
+        effort: Optional[str] = None,
     ) -> Tuple[str, str]:
         # NOTE: ``stop`` is the set of strings the model should stop on
         # (the underlying API will not generate past any of them). The
@@ -72,7 +74,7 @@ class RateLimitedBackend(ModelBackend):
     def context_limit(self) -> int:
         return self.inner.context_limit
 
-    def chat(self, messages, max_tokens, temperature, tools=None, stop=None):
+    def chat(self, messages, max_tokens, temperature, tools=None, stop=None, thinking=False, effort=None):
         # [stop-sequence-fix] ``stop`` is forwarded verbatim to the inner
         # backend so callers (e.g. run_loop._call_model) can request
         # generation to stop at ``</tool>`` and similar markers.
@@ -83,7 +85,7 @@ class RateLimitedBackend(ModelBackend):
         tools = sanitize_for_agent(tools)
 
         if self.bucket.tpm_limit <= 0:
-            return self.inner.chat(messages, max_tokens, temperature, tools, stop=stop)
+            return self.inner.chat(messages, max_tokens, temperature, tools, stop=stop, thinking=thinking, effort=effort)
 
         # 🔥 CRITICAL FIX: safe estimation
         estimated = estimate_tokens(sanitize_for_agent(messages), max_tokens)
@@ -119,6 +121,8 @@ class RateLimitedBackend(ModelBackend):
                 temperature,
                 tools,
                 stop=stop,
+                thinking=thinking,
+                effort=effort,
             )
 
             # Note: Output content is NOT sanitized here to preserve markdown

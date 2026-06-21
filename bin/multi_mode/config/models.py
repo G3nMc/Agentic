@@ -37,6 +37,14 @@ class ModelConfig:
     max_tokens: int = 4096
     context_window: int = 128000
     reasoning_level: ReasoningLevel = ReasoningLevel.MAX
+    # Thinking ON/OFF master switch. When False, no reasoning params are
+    # sent to the provider API even if reasoning_level is set. When True,
+    # reasoning_level maps to provider-specific budgets.
+    thinking: bool = True
+    # Effort level string (minimal/low/medium/high/max). Mirrors the
+    # reasoning_level enum but as a plain string for per-request override
+    # from the Flutter UI without enum parsing.
+    effort: Optional[str] = None
     # Provider-specific options
     extra: Dict[str, Any] = field(default_factory=dict)
 

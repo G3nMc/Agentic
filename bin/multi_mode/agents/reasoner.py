@@ -165,6 +165,8 @@ class Reasoner:
         last_error = None
         reasoner_cfg = self.config.models.get(ModelRole.REASONER)
         reasoning_level = getattr(reasoner_cfg, 'reasoning_level', None) if reasoner_cfg else None
+        thinking = getattr(reasoner_cfg, 'thinking', True) if reasoner_cfg else True
+        effort = getattr(reasoner_cfg, 'effort', None) if reasoner_cfg else None
         for attempt in range(self.config.max_retries + 1):
             try:
                 kwargs: Dict[str, Any] = {
@@ -172,8 +174,12 @@ class Reasoner:
                     "max_tokens": self.config.models.get(ModelRole.REASONER,
                                                       ModelConfig(role=ModelRole.REASONER, provider="openai", model="gpt-4o")).max_tokens,
                 }
-                if reasoning_level is not None:
+                # Only pass reasoning params when thinking is ON (master switch).
+                if thinking and reasoning_level is not None:
                     kwargs["reasoning_level"] = reasoning_level
+                if thinking and effort is not None:
+                    kwargs["effort"] = effort
+                kwargs["thinking"] = thinking
                 return self.backend.complete(
                     messages,
                     tools=self._tools_schema,

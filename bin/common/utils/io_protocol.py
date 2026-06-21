@@ -76,6 +76,8 @@ def read_interactive_request(stream) -> Optional[Dict[str, Any]]:
                 obj.setdefault("prompt", "")
                 obj.setdefault("new_session", False)
                 obj.setdefault("history", [])
+                obj.setdefault("thinking", False)
+                obj.setdefault("effort", None)
                 return obj
         except json.JSONDecodeError:
             pass

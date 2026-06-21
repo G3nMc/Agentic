@@ -99,19 +99,35 @@ class AnthropicBackend(LLMBackend):
             "temperature": kwargs.get("temperature", self.config.temperature),
             "stream": True,
         }
-        # Reasoning level → Anthropic thinking budget_tokens
-        rl = kwargs.get("reasoning_level")
-        if rl is not None:
-            rl_str = str(rl).lower()
-            budget_map = {
-                "minimal": 1024,
-                "low": 2048,
-                "medium": 4096,
-                "high": 8192,
-                "max": 16000,
-            }
-            budget = budget_map.get(rl_str, 16000)
-            payload["thinking"] = {"type": "enabled", "budget_tokens": budget}
+        # Reasoning level → Anthropic thinking budget_tokens.
+        # Only sent when thinking is ON (master switch).
+        thinking = kwargs.get("thinking", True)
+        if thinking:
+            rl = kwargs.get("reasoning_level")
+            if rl is not None:
+                rl_str = str(rl).lower()
+                budget_map = {
+                    "minimal": 1024,
+                    "low": 2048,
+                    "medium": 4096,
+                    "high": 8192,
+                    "max": 16000,
+                }
+                budget = budget_map.get(rl_str, 16000)
+                payload["thinking"] = {"type": "enabled", "budget_tokens": budget}
+            # Per-request effort override (from Flutter UI dropdown).
+            effort = kwargs.get("effort")
+            if effort is not None:
+                effort_str = str(effort).lower()
+                budget_map = {
+                    "minimal": 1024,
+                    "low": 2048,
+                    "medium": 4096,
+                    "high": 8192,
+                    "max": 16000,
+                }
+                budget = budget_map.get(effort_str, 16000)
+                payload["thinking"] = {"type": "enabled", "budget_tokens": budget}
         if system:
             payload["system"] = system
         stop = kwargs.get("stop")

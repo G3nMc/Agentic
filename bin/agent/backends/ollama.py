@@ -179,9 +179,15 @@ class OllamaBackend(ModelBackend):
         temperature: float,
         tools: Optional[List[Dict[str, Any]]] = None,
         stop: Optional[List[str]] = None,
+        thinking: bool = False,
+        effort: Optional[str] = None,
     ) -> Tuple[str, str]:
         # [native-tools-removed] tools=... never forwarded.
+        # Ollama has no native reasoning parameter — thinking/effort are
+        # silently ignored (accepted for interface compatibility).
         _ = tools
+        _ = thinking
+        _ = effort
 
         messages = sanitize_for_agent(messages)
         prompt, system = self._build_prompt_and_system(messages)

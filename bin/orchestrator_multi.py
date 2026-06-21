@@ -201,6 +201,7 @@ def _create_orchestrator(args):
 
 def _run_interactive_loop(args) -> None:
     """Interactive loop using the new multi_mode Orchestrator."""
+    from multi_mode.config.models import ModelRole
     # Ensure stdout is line-buffered so the Flutter side sees __READY__ immediately.
     if hasattr(sys.stdout, 'reconfigure'):
         sys.stdout.reconfigure(line_buffering=True)
@@ -220,6 +221,20 @@ def _run_interactive_loop(args) -> None:
             if new_session or orchestrator is None:
                 orchestrator = _create_orchestrator(args)
 
+            # Per-request thinking/effort override: the Flutter UI controls
+            # take effect immediately without restarting the subprocess.
+            thinking_val = req.get("thinking")
+            if isinstance(thinking_val, bool):
+                # Update the reasoner model config's thinking flag.
+                reasoner_cfg = orchestrator.config.models.get(ModelRole.REASONER)
+                if reasoner_cfg:
+                    reasoner_cfg.thinking = thinking_val
+            effort_val = req.get("effort")
+            if isinstance(effort_val, str) and effort_val.strip():
+                effort_str = effort_val.strip().lower()
+                reasoner_cfg = orchestrator.config.models.get(ModelRole.REASONER)
+                if reasoner_cfg:
+                    reasoner_cfg.effort = effort_str
             prompt = (req.get("prompt") or "").strip()
             if not prompt:
                 print(RESPONSE_SENTINEL)

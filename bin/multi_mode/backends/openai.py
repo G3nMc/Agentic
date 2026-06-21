@@ -67,13 +67,23 @@ class OpenAIBackend(LLMBackend):
             "max_tokens": kwargs.get("max_tokens", self.config.max_tokens),
             "stream": True,
         }
-        # Reasoning effort: "max" maps to "high" (OpenAI's highest level)
-        rl = kwargs.get("reasoning_level")
-        if rl is not None:
-            rl_str = str(rl).lower()
-            if rl_str == "max":
-                rl_str = "high"
-            payload["reasoning_effort"] = rl_str
+        # Reasoning effort: "max" maps to "high" (OpenAI's highest level).
+        # Only sent when thinking is ON (master switch).
+        thinking = kwargs.get("thinking", True)
+        if thinking:
+            rl = kwargs.get("reasoning_level")
+            if rl is not None:
+                rl_str = str(rl).lower()
+                if rl_str == "max":
+                    rl_str = "high"
+                payload["reasoning_effort"] = rl_str
+            # Per-request effort override (from Flutter UI dropdown).
+            effort = kwargs.get("effort")
+            if effort is not None:
+                effort_str = str(effort).lower()
+                if effort_str == "max":
+                    effort_str = "high"
+                payload["reasoning_effort"] = effort_str
         stop = kwargs.get("stop")
         if stop:
             payload["stop"] = list(stop)[:4]
