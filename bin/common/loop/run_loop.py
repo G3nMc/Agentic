@@ -1160,29 +1160,8 @@ class Orchestrator:
                 # a tool call - the model MUST emit task_status tags.
                 if self.task_mode.is_task_flow and not saw_status_this_iter:
                     self._iters_without_status += 1
-                    
-                    # Force status tag from iteration 1 if no plan was emitted,
-                    # or from iteration 2+ after any tool call without status
-                    if iteration >= 1 or (
-                        iteration >= 2 and self._iters_without_status >= 1
-                    ):
-                        # Check if status tag is missing despite tool usage
-                        if saw_status_this_iter is False and self._iters_without_status >= 1:
-                            print(
-                                f"[orch] Iteration {iteration} in {self.task_mode.value} "
-                                f"mode without <task_status> emission -- injecting "
-                                f"TASK STATUS DIRECTIVE",
-                                file=sys.stderr,
-                            )
-                            self.conversation_history.append(
-                                {
-                                    "role": "user",
-                                    "content": _TASK_STATUS_FORCE_DIRECTIVE,
-                                }
-                            )
-                            self._iters_without_status = 0  # consumed by the nudge
-                            continue
-                    elif self._iters_without_status >= _MAX_ITERS_WITHOUT_STATUS:
+
+                    if self._iters_without_status >= _MAX_ITERS_WITHOUT_STATUS:
                         print(
                             f"[orch] {self._iters_without_status} tool iterations "
                             f"without a <task_status> emission -- injecting "
@@ -1732,11 +1711,15 @@ class Orchestrator:
 
     _ANNOUNCE_STUB_RE = re.compile(
         r"^(?:\s*)(?:"
-        r"now\s+i'?ll|"
-        r"let\s+me\s+(?:examine|read|check|look\s+(?:at|into)|continue|proceed|see|verify|inspect|review|analyze|investigate|explore|search|scan)|"
-        r"i'?ll\s+(?:examine|read|check|look\s+(?:at|into)|continue|proceed|see|verify|inspect|review|analyze|investigate|explore|search|scan|now)|"
-        r"next,?\s+i'?ll|"
-        r"next,?\s+let\s+me"
+        r"now\s+i\s*(?:'?ll|will)|"
+        r"let\s+me\s+(?:examine|read|check|look\s+(?:at|into)|continue|proceed|see|verify|inspect|review|analyze|investigate|explore|search|scan|trace)|"
+        r"i\s*(?:'?ll|will)\s+(?:examine|read|check|look\s+(?:at|into)|continue|proceed|see|verify|inspect|review|analyze|investigate|explore|search|scan|now|trace)|"
+        r"next,?\s+i\s*(?:'?ll|will)|"
+        r"next,?\s+let\s+me|"
+        r"i\s+need\s+to\s+(?:examine|read|check|look|trace|inspect|review|analyze|investigate|explore|search|scan|see|verify|understand|find|locate|figure\s+out)|"
+        r"we\s+need\s+to\s+(?:examine|read|check|look|trace|inspect|review|analyze|investigate|explore|search|scan|see|verify|understand|find|locate|figure\s+out)|"
+        r"i\s+(?:have|got)\s+to\s+(?:examine|read|check|look|trace|inspect|review|analyze|investigate|explore|search|scan|see|verify|understand|find|locate|figure\s+out)|"
+        r"i\s+must\s+(?:examine|read|check|look|trace|inspect|review|analyze|investigate|explore|search|scan|see|verify|understand|find|locate|figure\s+out)"
         r")\b",
         re.IGNORECASE,
     )

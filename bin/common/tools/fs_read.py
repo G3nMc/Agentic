@@ -65,6 +65,10 @@ def register(registry) -> None:
                 return json.dumps(
                     {"status": "error", "message": f"File not found: {path}"}
                 )
+            if fp.is_dir():
+                return json.dumps(
+                    {"status": "error", "message": f"Path is a directory, not a file: {path}"}
+                )
             raw = fp.read_bytes()
             total = len(raw)
             full_text = raw.decode("utf-8", errors="replace")
@@ -426,6 +430,16 @@ def register(registry) -> None:
                         "path": file_path,
                         "status": "error",
                         "message": f"File not found: {file_path}",
+                    }
+                )
+                continue
+
+            if fp.is_dir():
+                results.append(
+                    {
+                        "path": file_path,
+                        "status": "error",
+                        "message": f"Path is a directory, not a file: {file_path}",
                     }
                 )
                 continue

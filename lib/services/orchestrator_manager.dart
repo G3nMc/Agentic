@@ -36,10 +36,15 @@ class OrchestratorTaskStatusChanged extends OrchestratorTaskEvent {
     required this.taskId,
     required this.status,
     this.note = '',
+    this.description = '',
   });
   final int taskId;
   final TaskStatus status;
   final String note;
+
+  /// Human-readable task description, mirrored from the plan so the UI can
+  /// show what the model is working on without a separate DB lookup.
+  final String description;
 }
 
 // Inactivity timeout: if the orchestrator emits no output on stdout OR
@@ -1101,6 +1106,7 @@ class OrchestratorManager {
       final id = decoded['id'];
       final statusRaw = decoded['status'];
       final note = (decoded['note'] as String?) ?? '';
+      final description = (decoded['description'] as String?) ?? '';
       if (id is! int || statusRaw is! String) return true;
       final status = TaskStatusX.parse(statusRaw);
       TaskRepository.instance.applyStatusUpdate(
@@ -1116,6 +1122,7 @@ class OrchestratorManager {
           taskId: id,
           status: status,
           note: note,
+          description: description,
         ),
       );
       return true;

@@ -12,7 +12,7 @@ class AppDatabase {
   static final AppDatabase instance = AppDatabase._();
 
   static const String _dbName = "hf_chat.db";
-  static const int _dbVersion = 11;
+  static const int _dbVersion = 13;
 
   Database? _db;
   Completer<Database>? _opening;
@@ -102,7 +102,9 @@ class AppDatabase {
         backend TEXT,
         created_at INTEGER NOT NULL,
         updated_at INTEGER NOT NULL,
-        group_id TEXT
+        group_id TEXT,
+        thinking INTEGER NOT NULL DEFAULT 0,
+        effort TEXT NOT NULL DEFAULT 'medium'
       );
     ''');
 
@@ -126,6 +128,7 @@ class AppDatabase {
         created_at INTEGER NOT NULL,
         agent TEXT,
         response_time_ms INTEGER,
+        hidden INTEGER NOT NULL DEFAULT 0,
         FOREIGN KEY (conversation_id)
           REFERENCES conversations(id)
           ON DELETE CASCADE
@@ -364,6 +367,33 @@ class AppDatabase {
         CREATE INDEX IF NOT EXISTS idx_conversation_tasks_conv
         ON conversation_tasks(conversation_id, task_id ASC)
       ''');
+    }
+    if (oldVersion < 12) {
+      // Migrate to v12: per-conversation thinking mode and effort level.
+      final cols = await db.rawQuery('PRAGMA table_info(conversations)');
+      final hasThinking = cols.any((row) => row['name'] == 'thinking');
+      final hasEffort = cols.any((row) => row['name'] == 'effort');
+      if (!hasThinking) {
+        await db.execute(
+          'ALTER TABLE conversations ADD COLUMN thinking INTEGER NOT NULL DEFAULT 0',
+        );
+      }
+      if (!hasEffort) {
+        await db.execute(
+          "ALTER TABLE conversations ADD COLUMN effort TEXT NOT NULL DEFAULT 'medium'",
+        );
+      }
+    }
+    if (oldVersion < 13) {
+      // Migrate to v13: hidden status messages that are visible in the UI
+      // but excluded from the model's history.
+      final cols = await db.rawQuery('PRAGMA table_info(messages)');
+      final hasHidden = cols.any((row) => row['name'] == 'hidden');
+      if (!hasHidden) {
+        await db.execute(
+          'ALTER TABLE messages ADD COLUMN hidden INTEGER NOT NULL DEFAULT 0',
+        );
+      }
     }
   }
 

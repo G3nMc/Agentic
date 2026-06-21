@@ -88,6 +88,17 @@ class _ChatViewState extends StateManager<ChatView> with WidgetsBindingObserver 
   /// the choice is forwarded to the orchestrator on every send.
   String _taskMode = 'task_compliance_auto';
 
+  /// Thinking ON/OFF master switch. When ON, the backend enables extended
+  /// reasoning (Anthropic thinking, Gemini thinkingConfig, OpenAI reasoning_effort).
+  /// When OFF, no reasoning params are sent to the provider API.
+  bool _thinking = false;
+
+  /// Effort level for reasoning budget. One of: minimal, low, medium, high, max.
+  /// Only has effect when _thinking is ON. Maps to provider-specific budgets:
+  ///   OpenAI: reasoning_effort (max→high), Anthropic: thinking.budget_tokens,
+  ///   Gemini: thinkingConfig.thinkingBudget, Ollama: ignored.
+  String _effort = 'medium';
+
   /// Whether the OrchestratorLogPanel is currently expanded under the input.
   /// Toggled by the log button in [ChatInput] and auto-set to true when the
   /// orchestrator successfully starts.
@@ -98,6 +109,15 @@ class _ChatViewState extends StateManager<ChatView> with WidgetsBindingObserver 
 
   /// Token for the currently in-flight send. Non-null only while [_sending].
   _CancelToken? _currentCancel;
+
+  /// Subscription to structured task-flow events. Used to inject silent
+  /// "Working on task #N..." status bubbles into the chat while the
+  /// orchestrator is progressing through a TASK COMPLIANCE plan.
+  StreamSubscription<OrchestratorTaskEvent>? _taskSub;
+
+  /// ID of the most recent hidden status message, if any. Reused so a
+  /// single in-progress status bubble is updated rather than stacking up.
+  String? _statusMessageId;
 
   final ScrollController _scrollController = ScrollController();
 
@@ -122,6 +142,7 @@ class _ChatViewState extends StateManager<ChatView> with WidgetsBindingObserver 
     WidgetsBinding.instance.addObserver(this);
     _loadConversation();
     _refreshActiveBackend();
+    _taskSub = OrchestratorManager.instance.taskStream.listen(_onTaskEvent);
 
     _scrollController.addListener(() {
       if (!_scrollController.hasClients) return;
@@ -203,6 +224,10 @@ class _ChatViewState extends StateManager<ChatView> with WidgetsBindingObserver 
       _messages
         ..clear()
         ..addAll(msgs);
+      if (conv != null) {
+        _thinking = conv.thinking;
+        _effort = conv.effort.isNotEmpty ? conv.effort : 'medium';
+      }
       _loading = false;
     });
 
@@ -704,6 +729,10 @@ class _ChatViewState extends StateManager<ChatView> with WidgetsBindingObserver 
       _sendError = null;
     });
 
+    // A new user turn resets the task status bubble; a fresh one will be
+    // created if the orchestrator reports task progress during this turn.
+    _removeStatusBubble();
+
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _scrollToBottom();
     });
@@ -783,6 +812,8 @@ class _ChatViewState extends StateManager<ChatView> with WidgetsBindingObserver 
         ollamaModelId: modelId,
         ollamaPythonBridgeUrl: ollamaPythonBridgeUrl,
         taskMode: _taskMode,
+        thinking: _thinking,
+        effort: _effort,
       );
 
       if (cancelToken.isCancelled) return;
@@ -802,6 +833,8 @@ class _ChatViewState extends StateManager<ChatView> with WidgetsBindingObserver 
       await ConversationRepository.instance.touch(conv.id);
 
       if (!mounted) return;
+
+      _removeStatusBubble();
 
       setState(() {
         _messages.add(assistantMsg);
@@ -1281,6 +1314,44 @@ class _ChatViewState extends StateManager<ChatView> with WidgetsBindingObserver 
             ),
           ),
           const OpenRouterUsageBadge(),
+          const SizedBox(width: 8),
+          // Thinking ON/OFF master switch
+          GestureDetector(
+            onTap: () {
+              final newValue = !_thinking;
+              setState(() => _thinking = newValue);
+              final conv = _conversation;
+              if (conv != null) {
+                ConversationRepository.instance.updateThinking(conv.id, newValue);
+                _conversation = conv.copyWith(thinking: newValue);
+              }
+            },
+            child: Tooltip(
+              message: _thinking ? 'Thinking: ON' : 'Thinking: OFF',
+              child: Container(
+                width: 36,
+                height: 36,
+                decoration: BoxDecoration(
+                  border: Border.all(
+                    color: _thinking ? AppTheme.accent : AppTheme.accentSecondary,
+                    width: 0.5,
+                  ),
+                  borderRadius: BorderRadius.circular(8),
+                  color: _thinking ? AppTheme.accent.withValues(alpha: 0.1) : Colors.transparent,
+                ),
+                child: Icon(
+                  Icons.psychology,
+                  size: 18,
+                  color: _thinking ? AppTheme.accent : AppTheme.textSecondary,
+                ),
+              ),
+            ),
+          ),
+          // Effort dropdown (only visible when thinking is ON)
+          if (_thinking) ...[
+            const SizedBox(width: 6),
+            _buildEffortDropdown(),
+          ],
           const SizedBox(width: 8),
           ValueListenableBuilder<bool>(
             valueListenable: AgentRoleSettingsRepository.instance.enabledNotifier,
@@ -2162,10 +2233,11 @@ class _ChatViewState extends StateManager<ChatView> with WidgetsBindingObserver 
           message: m.content,
           timeInSeconds: (m.responseTimeMs ?? 0) / 1000.0,
           isUser: m.role == MessageRole.user,
+          isStatus: m.hidden,
           // Show resend only on user bubbles and only when not already sending.
-          onResend: (m.role == MessageRole.user && !_sending) ? () => _handleResend(m.id) : null,
-          onEdit: (m.role == MessageRole.user && !_sending) ? () => _handleEdit(m.id) : null,
-          onDelete: () => _handleDeleteMessage(m.id),
+          onResend: (m.role == MessageRole.user && !_sending && !m.hidden) ? () => _handleResend(m.id) : null,
+          onEdit: (m.role == MessageRole.user && !_sending && !m.hidden) ? () => _handleEdit(m.id) : null,
+          onDelete: !m.hidden ? () => _handleDeleteMessage(m.id) : null,
         );
       },
     );
@@ -2230,6 +2302,71 @@ class _ChatViewState extends StateManager<ChatView> with WidgetsBindingObserver 
     // user message; the orchestrator-side regex in task_protocol.py
     // parses the action and continues the workflow.
     await _sendMessage(envelope);
+  }
+
+  /// React to structured task-flow events from the orchestrator.
+  /// When a task moves to ``in_progress`` we silently insert (or update)
+  /// a compact status bubble into the chat so the user sees what the
+  /// model is doing, like Hermes/Codex/Claude do. The bubble is marked
+  /// ``hidden`` so it is excluded from the history sent back to the model.
+  void _onTaskEvent(OrchestratorTaskEvent event) {
+    if (event.conversationId != widget.conversationId) return;
+
+    // Only show status for the active in-progress task. Terminal or
+    // pending tasks don't need a live bubble.
+    if (event is! OrchestratorTaskStatusChanged) return;
+    if (event.status != TaskStatus.inProgress) {
+      // If the active status task finished, remove its bubble.
+      _removeStatusBubble();
+      return;
+    }
+
+    final statusText = event.note.isNotEmpty
+        ? event.note
+        : (event.description.isNotEmpty
+            ? event.description
+            : 'Task #${event.taskId}');
+    final text = 'Working on: $statusText';
+
+    final existingId = _statusMessageId;
+    if (existingId != null) {
+      final idx = _messages.indexWhere((m) => m.id == existingId);
+      if (idx != -1) {
+        setState(() {
+          _messages[idx] = _messages[idx].copyWith(content: text);
+        });
+        _scrollToBottom();
+        return;
+      }
+    }
+
+    final conv = _conversation;
+    if (conv == null) return;
+
+    final statusMsg = ChatMessage(
+      id: const Uuid().v4(),
+      conversationId: conv.id,
+      role: MessageRole.assistant,
+      content: text,
+      createdAt: DateTime.now().millisecondsSinceEpoch,
+      hidden: true,
+    );
+
+    _statusMessageId = statusMsg.id;
+    setState(() => _messages.add(statusMsg));
+    _scrollToBottom();
+  }
+
+  /// Drop the transient status bubble from the chat, if present.
+  void _removeStatusBubble() {
+    final id = _statusMessageId;
+    if (id == null) return;
+    final idx = _messages.indexWhere((m) => m.id == id);
+    if (idx == -1) return;
+    setState(() {
+      _messages.removeAt(idx);
+      _statusMessageId = null;
+    });
   }
 
   Widget _buildErrorBar() {
@@ -2349,9 +2486,52 @@ class _ChatViewState extends StateManager<ChatView> with WidgetsBindingObserver 
     );
   }
 
+  /// Builds the effort level dropdown shown next to the thinking toggle.
+  /// Only visible when [_thinking] is ON. Maps to provider-specific budgets:
+  ///   OpenAI: reasoning_effort, Anthropic: thinking.budget_tokens,
+  ///   Gemini: thinkingConfig.thinkingBudget.
+  Widget _buildEffortDropdown() {
+    const levels = ['minimal', 'low', 'medium', 'high', 'max'];
+    return Container(
+      height: 36,
+      padding: const EdgeInsets.symmetric(horizontal: 6),
+      decoration: BoxDecoration(
+        border: Border.all(color: AppTheme.accentSecondary, width: 0.5),
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: DropdownButtonHideUnderline(
+        child: DropdownButton<String>(
+          value: levels.contains(_effort) ? _effort : 'medium',
+          isDense: true,
+          style: const TextStyle(fontSize: 12, color: AppTheme.textPrimary),
+          icon: const Icon(Icons.keyboard_arrow_down, size: 14),
+          items: levels
+              .map((l) => DropdownMenuItem<String>(
+                    value: l,
+                    child: Text(
+                      l[0].toUpperCase() + l.substring(1),
+                      style: const TextStyle(fontSize: 12),
+                    ),
+                  ))
+              .toList(),
+          onChanged: (v) {
+            if (v == null) return;
+            setState(() => _effort = v);
+            final conv = _conversation;
+            if (conv != null) {
+              ConversationRepository.instance.updateEffort(conv.id, v);
+              _conversation = conv.copyWith(effort: v);
+            }
+          },
+        ),
+      ),
+    );
+  }
+
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
+    _taskSub?.cancel();
     _scrollController.dispose();
     _inputController.dispose();
     super.dispose();

@@ -68,7 +68,7 @@ def read_interactive_request(stream) -> Optional[Dict[str, Any]]:
         return None
     line = line.strip()
     if not line:
-        return {"prompt": "", "new_session": False, "history": []}
+        return {"prompt": "", "new_session": False, "history": [], "thinking": False, "effort": None}
     if line.startswith("{"):
         try:
             obj = json.loads(line)
@@ -81,4 +81,4 @@ def read_interactive_request(stream) -> Optional[Dict[str, Any]]:
                 return obj
         except json.JSONDecodeError:
             pass
-    return {"prompt": line, "new_session": False, "history": []}
+    return {"prompt": line, "new_session": False, "history": [], "thinking": False, "effort": None}

@@ -107,6 +107,28 @@ class ConversationRepository {
     );
   }
 
+  Future<void> updateThinking(String id, bool thinking) async {
+    final db = await AppDatabase.instance.database;
+    final now = DateTime.now().millisecondsSinceEpoch;
+    await db.update(
+      "conversations",
+      {"thinking": thinking ? 1 : 0, "updated_at": now},
+      where: "id = ?",
+      whereArgs: [id],
+    );
+  }
+
+  Future<void> updateEffort(String id, String effort) async {
+    final db = await AppDatabase.instance.database;
+    final now = DateTime.now().millisecondsSinceEpoch;
+    await db.update(
+      "conversations",
+      {"effort": effort, "updated_at": now},
+      where: "id = ?",
+      whereArgs: [id],
+    );
+  }
+
   Future<void> touch(String id) async {
     final db = await AppDatabase.instance.database;
     final now = DateTime.now().millisecondsSinceEpoch;

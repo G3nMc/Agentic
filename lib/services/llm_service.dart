@@ -542,6 +542,7 @@ class LlmService {
     if (history.isEmpty) return result;
     final seed = history.sublist(0, history.length - 1);
     result.addAll(seed
+        .where((m) => !m.hidden)
         .map((m) => {
               'role': switch (m.role) {
                 MessageRole.user => 'user',

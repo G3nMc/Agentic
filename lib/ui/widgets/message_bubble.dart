@@ -33,11 +33,17 @@ class MessageBubble extends StatefulWidget {
   final VoidCallback? onDelete;
   final VoidCallback? onEdit;
 
+  /// When true the bubble renders as a compact, non-interactive status
+  /// update (e.g. "Working on task #1...") rather than a full assistant
+  /// reply. Status bubbles are visually de-emphasised and omit actions.
+  final bool isStatus;
+
   const MessageBubble({
     super.key,
     required this.message,
     required this.timeInSeconds,
     this.isUser = false,
+    this.isStatus = false,
     this.onResend,
     this.onDelete,
     this.onEdit,
@@ -62,6 +68,16 @@ class _MessageBubbleState extends State<MessageBubble> {
   Widget build(BuildContext context) {
     final timeLabel = formatDuration(widget.timeInSeconds);
 
+    if (widget.isStatus) {
+      return Align(
+        alignment: Alignment.centerLeft,
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 700),
+          child: _StatusBubble(message: widget.message),
+        ),
+      );
+    }
+
     return Align(
       alignment: widget.isUser ? Alignment.centerRight : Alignment.centerLeft,
       child: ConstrainedBox(
@@ -76,10 +92,10 @@ class _MessageBubbleState extends State<MessageBubble> {
               color: widget.isUser ? AppTheme.aiBubble : AppTheme.userBubble,
             ),
             borderRadius: BorderRadius.only(
-              topLeft: Radius.circular(widget.isUser ? 16 : 4),
-              topRight: Radius.circular(widget.isUser ? 4 : 16),
-              bottomLeft: Radius.circular(widget.isUser ? 16 : 4),
-              bottomRight: Radius.circular(widget.isUser ? 4 : 16),
+              topLeft: widget.isUser ? const Radius.circular(16) : const Radius.circular(4),
+              topRight: widget.isUser ? const Radius.circular(4) : const Radius.circular(16),
+              bottomLeft: widget.isUser ? const Radius.circular(16) : const Radius.circular(4),
+              bottomRight: widget.isUser ? const Radius.circular(4) : const Radius.circular(16),
             ),
           ),
           child: Column(
@@ -205,6 +221,47 @@ class _MessageBubbleState extends State<MessageBubble> {
             ],
           ),
         ),
+      ),
+    );
+  }
+}
+class _StatusBubble extends StatelessWidget {
+  final String message;
+
+  const _StatusBubble({required this.message});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      margin: const EdgeInsets.only(bottom: 12, left: 0, right: 16),
+      padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 12),
+      decoration: BoxDecoration(
+        color: AppTheme.aiBubble.withValues(alpha: 0.5),
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          const SizedBox(
+            width: 12,
+            height: 12,
+            child: CircularProgressIndicator(
+              strokeWidth: 2,
+              color: AppTheme.accentSecondary,
+            ),
+          ),
+          const SizedBox(width: 10),
+          Flexible(
+            child: Text(
+              message,
+              style: const TextStyle(
+                fontSize: 13,
+                color: AppTheme.textSecondary,
+                fontStyle: FontStyle.italic,
+              ),
+            ),
+          ),
+        ],
       ),
     );
   }

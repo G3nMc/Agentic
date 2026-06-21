@@ -7,6 +7,8 @@ class Conversation {
   final int updatedAt;
   final String? groupId;
   final String? projectPath;
+  final bool thinking;
+  final String effort;
 
   Conversation({
     required this.id,
@@ -17,6 +19,8 @@ class Conversation {
     required this.updatedAt,
     this.groupId,
     this.projectPath,
+    this.thinking = false,
+    this.effort = 'medium',
   });
 
   factory Conversation.fromMap(Map<String, Object?> map) {
@@ -29,6 +33,8 @@ class Conversation {
       updatedAt: (map["updated_at"] as int?) ?? 0,
       groupId: map["group_id"] as String?,
       projectPath: map["project_path"] as String?,
+      thinking: (map["thinking"] as int?) == 1,
+      effort: (map["effort"] as String?) ?? 'medium',
     );
   }
 
@@ -42,6 +48,8 @@ class Conversation {
       "updated_at": updatedAt,
       "group_id": groupId,
       "project_path": projectPath,
+      "thinking": thinking ? 1 : 0,
+      "effort": effort,
     };
   }
 
@@ -54,6 +62,8 @@ class Conversation {
     int? updatedAt,
     String? groupId,
     String? projectPath,
+    bool? thinking,
+    String? effort,
   }) {
     return Conversation(
       id: id ?? this.id,
@@ -64,6 +74,8 @@ class Conversation {
       updatedAt: updatedAt ?? this.updatedAt,
       groupId: groupId ?? this.groupId,
       projectPath: projectPath ?? this.projectPath,
+      thinking: thinking ?? this.thinking,
+      effort: effort ?? this.effort,
     );
   }
 }

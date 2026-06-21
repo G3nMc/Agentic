@@ -43,6 +43,12 @@ class ChatMessage {
   /// response. Null for user messages or legacy data.
   final int? responseTimeMs;
 
+  /// When true the message is rendered in the chat but is NOT included in
+  /// the history sent to the model. Used for silent status updates such as
+  /// "Working on task #1..." so the user sees live progress without
+  /// polluting the model's context window.
+  final bool hidden;
+
   ChatMessage({
     required this.id,
     required this.conversationId,
@@ -51,6 +57,7 @@ class ChatMessage {
     required this.createdAt,
     this.agent,
     this.responseTimeMs,
+    this.hidden = false,
   });
 
   factory ChatMessage.fromMap(Map<String, Object?> map) {
@@ -62,6 +69,7 @@ class ChatMessage {
       createdAt: (map["created_at"] as int?) ?? 0,
       agent: map["agent"] as String?,
       responseTimeMs: map["response_time_ms"] as int?,
+      hidden: (map["hidden"] as int?) == 1,
     );
   }
 
@@ -74,10 +82,12 @@ class ChatMessage {
       "created_at": createdAt,
       if (agent != null) "agent": agent,
       if (responseTimeMs != null) "response_time_ms": responseTimeMs,
+      "hidden": hidden ? 1 : 0,
     };
   }
 
   // Format used when sending the conversation history to the HF router.
+  // Hidden status messages are stripped so they never reach the model.
   Map<String, Object?> toApiMap() {
     return {
       "role": role.apiValue,
@@ -93,6 +103,7 @@ class ChatMessage {
     int? createdAt,
     String? agent,
     int? responseTimeMs,
+    bool? hidden,
   }) {
     return ChatMessage(
       id: id ?? this.id,
@@ -102,6 +113,7 @@ class ChatMessage {
       createdAt: createdAt ?? this.createdAt,
       agent: agent ?? this.agent,
       responseTimeMs: responseTimeMs ?? this.responseTimeMs,
+      hidden: hidden ?? this.hidden,
     );
   }
 }
