@@ -3142,10 +3142,12 @@ class _SettingsScreenState extends State<SettingsScreen> {
       _ollamaPullCancelled = false;
     });
     _appendOllamaLog('Pulling "$name"… this may take several minutes.');
+    final apiKey = _ollamaApiKeyController.text.trim();
     try {
       await OllamaService.instance.pullModel(
         name,
         baseUrl: _ollamaBaseUrl,
+        apiKey: apiKey,
         onProgress: _appendOllamaLog,
         onBytes: (completed, total) {
           if (!mounted) return;
@@ -3186,6 +3188,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
           await OllamaService.instance.deleteModel(
             name,
             baseUrl: _ollamaBaseUrl,
+            apiKey: apiKey,
           );
           _appendOllamaLog('   Cleaned up partial download.');
         } catch (delErr) {
@@ -3312,8 +3315,13 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
     setState(() => _ollamaBusy = true);
     _appendOllamaLog('Deleting "$name"…');
+    final apiKey = _ollamaApiKeyController.text.trim();
     try {
-      await OllamaService.instance.deleteModel(name, baseUrl: _ollamaBaseUrl);
+      await OllamaService.instance.deleteModel(
+        name,
+        baseUrl: _ollamaBaseUrl,
+        apiKey: apiKey,
+      );
       _appendOllamaLog('✓ "$name" deleted.');
       // Clear the stored default if we just removed it.
       if (_ollamaSelectedModel == name) {
