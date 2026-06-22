@@ -1573,14 +1573,15 @@ class Orchestrator:
                 and not self._looks_like_step_report(text_clean)
             ) or (
                 is_in_step_report_mode
-                and step_report_retries < 2
+                and step_report_retries < 3
                 and not self._looks_like_step_report(text_clean)
             ):
                 step_report_retries += 1
                 mode_note = " (TASK COMPLIANCE MODE - MANDATORY)" if is_in_step_report_mode else ""
                 print(
                     f"[orch] Missing step report after write "
-                    f"(retry {step_report_retries}){mode_note}; nudging model.",
+                    f"(retry {step_report_retries}){mode_note}; nudging model. "
+                    f"Iteration: {iteration}",
                     file=sys.stderr,
                 )
                 self.conversation_history.append(
