@@ -251,6 +251,21 @@ def main():
         ),
     )
     parser.add_argument(
+        "--auto-num-ctx",
+        action="store_true",
+        default=False,
+        help=(
+            "Auto-calibrate the history budget from the model's first "
+            "API response. When ON, the orchestrator reads the actual "
+            "prompt_eval_count the model reports and clamps the internal "
+            "history token budget to that real value. This prevents "
+            "sending more tokens than the cloud model can actually "
+            "process, which causes silent truncation and garbled "
+            "replies. When OFF (default), the budget stays at 85%% of "
+            "the configured --ollama-num-ctx value."
+        ),
+    )
+    parser.add_argument(
         "--max-file-size-mb",
         type=float,
         default=10.0,
@@ -367,6 +382,7 @@ def main():
         path_filter=path_filter,
         db_connections=db_connections,
         task_mode=args.task_mode,
+        auto_num_ctx=args.auto_num_ctx,
     )
     if args.disable_tools:
         print("[orch] Tools disabled — running in plain-chat mode.", file=sys.stderr)

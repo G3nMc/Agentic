@@ -1329,8 +1329,8 @@ class _ChatViewState extends StateManager<ChatView> with WidgetsBindingObserver 
             child: Tooltip(
               message: _thinking ? 'Thinking: ON' : 'Thinking: OFF',
               child: Container(
-                width: 36,
-                height: 36,
+                width: 46,
+                height: 46,
                 decoration: BoxDecoration(
                   border: Border.all(
                     color: _thinking ? AppTheme.accent : AppTheme.accentSecondary,
@@ -1849,6 +1849,7 @@ class _ChatViewState extends StateManager<ChatView> with WidgetsBindingObserver 
       String? modelId;
       String? ollamaBaseUrl;
       int? ollamaNumCtx;
+      bool? ollamaAutoNumCtx;
       String? ollamaApiKey;
       String? groqApiKey;
       String? geminiApiKey;
@@ -1863,6 +1864,7 @@ class _ChatViewState extends StateManager<ChatView> with WidgetsBindingObserver 
         case OrchestratorBackend.ollama:
           ollamaBaseUrl = await settings.getOllamaBaseUrl();
           ollamaNumCtx = await settings.getOllamaNumCtx();
+          ollamaAutoNumCtx = await settings.getOllamaAutoNumCtx();
           ollamaApiKey = await settings.getOllamaApiKey();
           temperature = await settings.getOllamaTemperature();
           final savedOllamaModel = await settings.getOllamaModel();
@@ -1991,6 +1993,7 @@ class _ChatViewState extends StateManager<ChatView> with WidgetsBindingObserver 
         backend: desiredBackend,
         ollamaBaseUrl: ollamaBaseUrl,
         ollamaNumCtx: ollamaNumCtx,
+        ollamaAutoNumCtx: ollamaAutoNumCtx,
         ollamaApiKey: ollamaApiKey,
         groqApiKey: groqApiKey,
         geminiApiKey: geminiApiKey,
@@ -2493,8 +2496,8 @@ class _ChatViewState extends StateManager<ChatView> with WidgetsBindingObserver 
   Widget _buildEffortDropdown() {
     const levels = ['minimal', 'low', 'medium', 'high', 'max'];
     return Container(
-      height: 36,
-      padding: const EdgeInsets.symmetric(horizontal: 6),
+      height: 46,
+      padding: const EdgeInsets.symmetric(horizontal: 10),
       decoration: BoxDecoration(
         border: Border.all(color: AppTheme.accentSecondary, width: 0.5),
         borderRadius: BorderRadius.circular(8),

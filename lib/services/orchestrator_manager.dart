@@ -559,7 +559,7 @@ class OrchestratorManager {
   /// must be an Ollama tag (e.g. `qwen2.5-coder:7b`). For
   /// [OrchestratorBackend.gemini], pass a Gemini model (e.g.
   /// `gemini-2.5-flash`) and a Google AI Studio key. Optional
-  /// [ollamaBaseUrl] / [ollamaNumCtx] are forwarded to the Python side.
+  /// [ollamaBaseUrl] / [ollamaNumCtx] / [ollamaAutoNumCtx] are forwarded to the Python side.
   Future<bool> start({
     String? hfToken,
     String? modelId,
@@ -567,6 +567,7 @@ class OrchestratorManager {
     OrchestratorBackend backend = OrchestratorBackend.huggingface,
     String? ollamaBaseUrl,
     int? ollamaNumCtx,
+    bool? ollamaAutoNumCtx,
     double? temperature,
     int? maxTokens,
     String? ollamaApiKey,
@@ -590,6 +591,7 @@ class OrchestratorManager {
       backend: backend,
       ollamaBaseUrl: ollamaBaseUrl,
       ollamaNumCtx: ollamaNumCtx,
+      ollamaAutoNumCtx: ollamaAutoNumCtx,
       temperature: temperature,
       maxTokens: maxTokens,
       ollamaApiKey: ollamaApiKey,
@@ -612,6 +614,7 @@ class OrchestratorManager {
     OrchestratorBackend backend = OrchestratorBackend.huggingface,
     String? ollamaBaseUrl,
     int? ollamaNumCtx,
+    bool? ollamaAutoNumCtx,
     double? temperature,
     int? maxTokens,
     String? ollamaApiKey,
@@ -767,6 +770,7 @@ class OrchestratorManager {
             if (ollamaBaseUrl != null && ollamaBaseUrl.isNotEmpty) args.addAll(['--ollama-base-url', ollamaBaseUrl]);
             if (ollamaApiKey != null && ollamaApiKey.isNotEmpty) args.addAll(['--ollama-api-key', ollamaApiKey]);
             if (ollamaNumCtx != null) args.addAll(['--ollama-num-ctx', ollamaNumCtx.toString()]);
+            if (ollamaAutoNumCtx == true) args.add('--auto-num-ctx');
             break;
           case OrchestratorBackend.groq:
             if (groqApiKey != null && groqApiKey.isNotEmpty) args.addAll(['--groq-api-key', groqApiKey]);

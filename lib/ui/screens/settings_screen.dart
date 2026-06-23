@@ -150,6 +150,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   double _ollamaTemperature = BackendSettingsRepository.defaultOllamaTemperature;
   int _ollamaNumPredict = BackendSettingsRepository.defaultOllamaNumPredict;
   int _ollamaNumCtxValue = BackendSettingsRepository.defaultOllamaNumCtx;
+  bool _ollamaAutoNumCtx = false;
   final TextEditingController _ollamaNumPredictController = TextEditingController();
   final TextEditingController _ollamaNumCtxController = TextEditingController();
 
@@ -2448,6 +2449,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     final ollamaTemperature = await BackendSettingsRepository.instance.getOllamaTemperature();
     final ollamaNumPredict = await BackendSettingsRepository.instance.getOllamaNumPredict();
     final ollamaNumCtx = await BackendSettingsRepository.instance.getOllamaNumCtx();
+    final ollamaAutoNumCtx = await BackendSettingsRepository.instance.getOllamaAutoNumCtx();
     final ollamaApiKey = await BackendSettingsRepository.instance.getOllamaApiKey();
     final groqApiKey = await BackendSettingsRepository.instance.getGroqApiKey();
     final groqModel = await BackendSettingsRepository.instance.getGroqModel();
@@ -2493,6 +2495,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
       _ollamaTemperature = ollamaTemperature;
       _ollamaNumPredict = ollamaNumPredict;
       _ollamaNumCtxValue = ollamaNumCtx;
+      _ollamaAutoNumCtx = ollamaAutoNumCtx;
       _ollamaNumPredictController.text = ollamaNumPredict.toString();
       _ollamaNumCtxController.text = ollamaNumCtx.toString();
       _ollamaApiKeyController.text = ollamaApiKey ?? '';
@@ -3600,6 +3603,28 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 'reply, which is tight.',
           ),
           const SizedBox(height: 12),
+          // ---- Auto num_ctx toggle -----------------------------------------
+          SwitchListTile(
+            title: const Text(
+              'Auto-calibrate context window',
+              style: TextStyle(fontSize: 12.5),
+            ),
+            subtitle: const Text(
+              'After the first API call, clamp the history budget to the '
+              'actual prompt_eval_count the model reports. Prevents '
+              'silent truncation on cloud models.',
+              style: TextStyle(color: AppTheme.textMuted, fontSize: 11),
+            ),
+            value: _ollamaAutoNumCtx,
+            onChanged: (v) async {
+              setState(() => _ollamaAutoNumCtx = v);
+              await BackendSettingsRepository.instance
+                  .setOllamaAutoNumCtx(v);
+            },
+            dense: true,
+            contentPadding: EdgeInsets.zero,
+          ),
+          const SizedBox(height: 8),
           Align(
             alignment: Alignment.centerRight,
             child: TextButton.icon(

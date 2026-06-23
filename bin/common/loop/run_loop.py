@@ -504,6 +504,7 @@ class Orchestrator:
             task_mode: str = "open",
             thinking: bool = False,
             effort: Optional[str] = None,
+            auto_num_ctx: bool = False,
     ):
         self._action_intent = None
         self._writes_this_turn = None
@@ -566,7 +567,22 @@ class Orchestrator:
         # immediately without restarting the orchestrator process.
         self.thinking = thinking
         self.effort = effort
-        # Cap tool-chain length. Each iteration is potentially a 60–120 s
+        # Auto-calibrate history budget: when True, the orchestrator
+        # reads the actual prompt_eval_count from the backend's first
+        # API response and clamps _history_token_budget to that real
+        # value. This prevents the orchestrator from sending more
+        # tokens than the cloud model can actually process, which
+        # causes silent truncation and garbled replies.
+        self.auto_num_ctx = auto_num_ctx
+        # Set to True after the first successful model call so the
+        # dynamic clamp only fires once per session.
+        self._auto_num_ctx_calibrated: bool = False
+        # Track the largest prompt_eval_count seen across all API
+        # calls in this session. Used for progressive recalibration:
+        # the first call is always the smallest (just system prompt +
+        # user request), so we converge upward as the session grows.
+        self._max_prompt_eval_seen: int = 0
+        # Cap tool-chain length.
         # model call, so 30 bounds a single /sendPrompt at ~60 min worst case,
         # comfortably inside the Dart-side absolute timeout (120 min).
         # Dynamic scaling: starts at 30, can extend to 100+ for complex tasks.
@@ -1018,6 +1034,96 @@ class Orchestrator:
                 text, finish_reason = self._call_model()
             except Exception as e:
                 return f"Model error: {e}"
+
+            # --- Auto-calibrate history budget from the first API call ---
+            # When --auto-num-ctx is active, read the actual
+            # prompt_eval_count the model reported and clamp the
+            # history token budget to that real value. This prevents
+            # the orchestrator from accumulating more history than the
+            # cloud model can actually fit in its context window,
+            # which causes silent truncation and garbled replies.
+            #
+            # The first call is always the smallest (just system prompt
+            # + user request). As the session grows with tool results,
+            # prompt_eval_count rises toward the model's real capacity.
+            # We track the maximum seen and recalibrate upward when it
+            # grows significantly, so the budget converges on the
+            # model's actual context window rather than being stuck at
+            # the tiny initial value.
+            if self.auto_num_ctx:
+                real_eval = getattr(
+                    self.backend, "last_prompt_eval_count", 0
+                )
+                if real_eval and real_eval > 0:
+                    # Track the largest prompt_eval_count we've seen.
+                    prev_max = getattr(
+                        self, "_max_prompt_eval_seen", 0
+                    )
+                    if real_eval > prev_max:
+                        self._max_prompt_eval_seen = real_eval
+
+                    # Recalibrate when:
+                    #  (a) first call (not yet calibrated), OR
+                    #  (b) max seen grew by >= 50% since last calibration
+                    should_calibrate = (
+                        not self._auto_num_ctx_calibrated
+                        or (
+                            self._max_prompt_eval_seen
+                            >= int(prev_max * 1.5)
+                            and prev_max > 0
+                        )
+                    )
+                    if should_calibrate:
+                        # Use the max seen as the basis — it's the best
+                        # estimate of the model's real capacity.
+                        basis = self._max_prompt_eval_seen
+                        # Clamp to the smaller of: user's configured
+                        # num_ctx (ceiling) and 85% of the real eval
+                        # count (headroom for reply).
+                        clamped = min(
+                            self._history_token_budget,
+                            int(basis * 0.85),
+                        )
+                        # Floor: 24K tokens. Below this the model can't
+                        # retain enough history for multi-turn coding.
+                        # The system prompt alone is ~5K tokens; 24K
+                        # leaves ~19K for history (~6-8 turns).
+                        floor = 24_000
+                        target = max(floor, clamped)
+                        if target != self._history_token_budget:
+                            old_budget = self._history_token_budget
+                            self._history_token_budget = target
+                            # Also scale the char budget proportionally.
+                            ratio = (
+                                self._history_token_budget
+                                / old_budget
+                            ) if old_budget > 0 else 1.0
+                            self._history_char_budget = max(
+                                72_000,  # floor: ~24K tokens * 3 chars/tok
+                                int(self._history_char_budget * ratio),
+                            )
+                            self._max_tool_result_chars = max(
+                                12_000,
+                                int(
+                                    self._max_tool_result_chars
+                                    * ratio
+                                ),
+                            )
+                            direction = "down" if target < old_budget else "up"
+                            print(
+                                f"[orch] Auto-calibrated history "
+                                f"budget {direction} from "
+                                f"max_prompt_eval={basis}: "
+                                f"token_budget "
+                                f"{old_budget} -> "
+                                f"{self._history_token_budget}, "
+                                f"char_budget -> "
+                                f"{self._history_char_budget}, "
+                                f"tool_result_chars -> "
+                                f"{self._max_tool_result_chars}",
+                                file=sys.stderr,
+                            )
+                        self._auto_num_ctx_calibrated = True
 
             # [stop-sequence-fix] If we requested generation to stop at
             # ``</tool>`` (see _call_model), some APIs strip the stop

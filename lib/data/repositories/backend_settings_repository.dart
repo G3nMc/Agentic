@@ -18,6 +18,7 @@ class BackendSettingsRepository {
   static const String _kOllamaTemperature = "ollama_temperature";
   static const String _kOllamaNumPredict = "ollama_num_predict";
   static const String _kOllamaNumCtx = "ollama_num_ctx";
+  static const String _kOllamaAutoNumCtx = "ollama_auto_num_ctx";
   static const String _kOllamaApiKey = "ollama_api_key";
   static const String _kGroqApiKey = "groq_api_key";
   static const String _kGroqModel = "groq_model";
@@ -198,6 +199,17 @@ class BackendSettingsRepository {
 
   Future<void> setOllamaNumCtx(int value) =>
       _writeString(_kOllamaNumCtx, value.toString());
+
+  /// Auto-calibrate the history budget from the model's first API
+  /// response. When ON, the orchestrator reads the actual
+  /// prompt_eval_count and clamps the internal history token budget
+  /// to that real value. Defaults to false.
+  Future<bool> getOllamaAutoNumCtx() async {
+    final v = await _readString(_kOllamaAutoNumCtx);
+    return (v ?? '').toLowerCase() == 'true';
+  }
+  Future<void> setOllamaAutoNumCtx(bool value) =>
+      _writeString(_kOllamaAutoNumCtx, value.toString());
 
   /// API key for cloud-hosted Ollama-compatible endpoints.
   /// Empty / null means local daemon with no auth.

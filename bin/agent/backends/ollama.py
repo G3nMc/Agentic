@@ -73,6 +73,12 @@ class OllamaBackend(ModelBackend):
                 url_in = self.DEFAULT_LOCAL_URL
         self.base_url = url_in.rstrip("/")
         self.last_usage_tokens: int = 0
+        # Raw prompt_eval_count from the most recent /api/generate response.
+        # This is the actual number of input tokens the model processed —
+        # the real context window used. Exposed so the orchestrator can
+        # dynamically clamp its history budget to match reality when
+        # --auto-num-ctx is active.
+        self.last_prompt_eval_count: int = 0
         _log(
             f"[Ollama:init] model={self.model_id} base_url={self.base_url} "
             f"num_ctx={self.num_ctx}"
@@ -238,6 +244,11 @@ class OllamaBackend(ModelBackend):
                     # Best-effort usage accounting.
                     self.last_usage_tokens = int(
                         chunk.get("prompt_eval_count", 0) + chunk.get("eval_count", 0)
+                    )
+                    # Capture the raw input token count so the orchestrator
+                    # can auto-calibrate its history budget (--auto-num-ctx).
+                    self.last_prompt_eval_count = int(
+                        chunk.get("prompt_eval_count", 0)
                     )
                 now = time.time()
                 if now - last_heartbeat >= 5.0:
