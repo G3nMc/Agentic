@@ -829,6 +829,25 @@ class Orchestrator:
                             _AGENT_DIRECTIVE + user_input
                     )
                 use_tools = True
+            elif self._looks_like_cliffhanger(text_clean):
+                # The model said "I'll find and fix..." but didn't
+                # actually do anything. This is a cliffhanger in chat
+                # mode — escalate to tool mode so the model is forced
+                # to actually execute the work instead of narrating
+                # what it plans to do.
+                print(
+                    "[orch] Chat-mode reply is a cliffhanger "
+                    "(\"I'll find/fix/inspect...\"); retrying in tool mode.",
+                    file=sys.stderr,
+                )
+                if (
+                        self.conversation_history
+                        and self.conversation_history[-1].get("role") == "user"
+                ):
+                    self.conversation_history[-1]["content"] = (
+                            _AGENT_DIRECTIVE + user_input
+                    )
+                use_tools = True
             else:
                 self.conversation_history.append(
                     {
@@ -1819,14 +1838,14 @@ class Orchestrator:
     _ANNOUNCE_STUB_RE = re.compile(
         r"^(?:\s*)(?:"
         r"now\s+i\s*(?:'?ll|will)|"
-        r"let\s+me\s+(?:examine|read|check|look\s+(?:at|into)|continue|proceed|see|verify|inspect|review|analyze|investigate|explore|search|scan|trace)|"
-        r"i\s*(?:'?ll|will)\s+(?:examine|read|check|look\s+(?:at|into)|continue|proceed|see|verify|inspect|review|analyze|investigate|explore|search|scan|now|trace)|"
+        r"let\s+me\s+(?:examine|read|check|look\s+(?:at|into)|continue|proceed|see|verify|inspect|review|analyze|investigate|explore|search|scan|trace|find|fix|update|patch|replace|correct|modify|adjust|implement|handle|address|resolve)|"
+        r"i\s*(?:'?ll|will)\s+(?:examine|read|check|look\s+(?:at|into)|continue|proceed|see|verify|inspect|review|analyze|investigate|explore|search|scan|now|trace|find|fix|update|patch|replace|correct|modify|adjust|implement|handle|address|resolve)|"
         r"next,?\s+i\s*(?:'?ll|will)|"
         r"next,?\s+let\s+me|"
-        r"i\s+need\s+to\s+(?:examine|read|check|look|trace|inspect|review|analyze|investigate|explore|search|scan|see|verify|understand|find|locate|figure\s+out)|"
-        r"we\s+need\s+to\s+(?:examine|read|check|look|trace|inspect|review|analyze|investigate|explore|search|scan|see|verify|understand|find|locate|figure\s+out)|"
-        r"i\s+(?:have|got)\s+to\s+(?:examine|read|check|look|trace|inspect|review|analyze|investigate|explore|search|scan|see|verify|understand|find|locate|figure\s+out)|"
-        r"i\s+must\s+(?:examine|read|check|look|trace|inspect|review|analyze|investigate|explore|search|scan|see|verify|understand|find|locate|figure\s+out)"
+        r"i\s+need\s+to\s+(?:examine|read|check|look|trace|inspect|review|analyze|investigate|explore|search|scan|see|verify|understand|find|locate|figure\s+out|fix|update|patch|replace|correct|modify|adjust|implement|handle|address|resolve)|"
+        r"we\s+need\s+to\s+(?:examine|read|check|look|trace|inspect|review|analyze|investigate|explore|search|scan|see|verify|understand|find|locate|figure\s+out|fix|update|patch|replace|correct|modify|adjust|implement|handle|address|resolve)|"
+        r"i\s+(?:have|got)\s+to\s+(?:examine|read|check|look|trace|inspect|review|analyze|investigate|explore|search|scan|see|verify|understand|find|locate|figure\s+out|fix|update|patch|replace|correct|modify|adjust|implement|handle|address|resolve)|"
+        r"i\s+must\s+(?:examine|read|check|look|trace|inspect|review|analyze|investigate|explore|search|scan|see|verify|understand|find|locate|figure\s+out|fix|update|patch|replace|correct|modify|adjust|implement|handle|address|resolve)"
         r")\b",
         re.IGNORECASE,
     )
