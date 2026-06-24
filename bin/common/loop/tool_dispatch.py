@@ -224,10 +224,12 @@ def clean_final_answer(text: str) -> str:
 
     Any chain-of-thought (delimited tags OR plain-text preamble before
     a ``<tool>`` tag) is extracted by :func:`extract_thinking` and
-    re-wrapped in a single canonical ``<think>...</think>`` block at
-    the top of the answer, so the Flutter UI can render it collapsed
-    next to the user-facing content. If no reasoning was detected the
-    answer is returned unchanged.
+    DROPPED from the user-facing answer (Issue 1 fix). The orchestrator
+    UI path does not render ``<think>`` blocks, so keeping them only
+    surfaced raw tags / "thinking out loud" in the chat bubble. The
+    reasoning is still emitted to the orchestrator stderr log for
+    debugging. If no reasoning was detected the answer is returned
+    unchanged.
 
     Task-flow tags (``<tasks>``, ``<task_status>``, ``<task_action>``)
     are also stripped here as a defense-in-depth measure: the tool
@@ -241,7 +243,7 @@ def clean_final_answer(text: str) -> str:
 
     cleaned = JUNK_TAG_PATTERN.sub("", text)
     cleaned = CHAT_TEMPLATE_TOKEN_PATTERN.sub("", cleaned)
-    visible, thinking = extract_thinking(cleaned)
+    visible, _thinking = extract_thinking(cleaned)
 
     # Defense-in-depth: strip task-flow protocol tags from the visible
     # text before it ever reaches the user. Lazy import keeps this
@@ -262,8 +264,11 @@ def clean_final_answer(text: str) -> str:
     ):
         visible = visible[1:-1].strip()
 
-    if thinking:
-        return f"<think>{thinking}</think>\n\n{visible}".strip()
+    # Issue 1 fix: drop chain-of-thought from the user-facing answer.
+    # The orchestrator UI path does not render <think> blocks, so
+    # wrapping the reasoning here only surfaced raw tags / "thinking out
+    # loud" in the chat bubble. The reasoning is still visible in the
+    # orchestrator stderr log; it simply no longer leaks to the user.
     return visible
 
 

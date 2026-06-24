@@ -41,6 +41,21 @@ _IDEMPOTENT_VALIDATORS = frozenset(
 )
 _MAX_CONSECUTIVE_VALIDATIONS = 3
 
+# Code-correctness validators (subset of _IDEMPOTENT_VALIDATORS). A
+# FAILED run of one of these in the turn downgrades the orchestrator's
+# terminal task status from ``done`` to ``partial`` (Issue 3 fix). The
+# git_* read-only validators are intentionally excluded: a dirty
+# git_status is not a code failure.
+_CODE_VALIDATORS = frozenset(
+    {
+        "python_check",
+        "python_lint",
+        "python_test",
+        "flutter_analyze",
+        "flutter_test",
+    }
+)
+
 # Task-flow nudges
 _MAX_ITERS_WITHOUT_STATUS = 3  # tool calls without <task_status> emission
 _MAX_ITERS_WITHOUT_PLAN = 1    # compliance iters without <tasks> plan
@@ -198,6 +213,37 @@ _AGENT_DIRECTIVE = (
     "'Would you like me to proceed ...?', 'Would you like me to implement ...?'. "
     "Instead, perform the action immediately or give the final answer.]\n\n"
 )
+
+
+# Issue 4 fix (contradictory directives): the base _AGENT_DIRECTIVE tells
+# the model to emit ONLY the tool call with no surrounding text. In
+# task_compliance(_auto) modes that rule directly contradicts the task
+# protocol in the system prompt, which requires a <task_status> tag in the
+# same reply. Small local models thrash on the contradiction. This clause
+# is appended ONLY in task-flow modes to reconcile the two: the status tag
+# is protocol, not preamble.
+_TASK_FLOW_TOOL_CLAUSE = (
+    "[TASK COMPLIANCE addendum -- this OVERRIDES the 'emit ONLY the tool "
+    "call / no preamble' rule above: you SHOULD emit your "
+    "<task_status>{...}</task_status> tag in the SAME reply, immediately "
+    "BEFORE the tool call. Task-protocol tags (<tasks>, <task_status>) are "
+    "NOT preamble -- they are stripped from the user-visible reply. Emit no "
+    "OTHER prose around the tool call.]\n\n"
+)
+
+
+def _get_agent_directive(task_flow: bool) -> str:
+    """Return the agent directive, reconciled with task-flow mode.
+
+    In task_compliance(_auto) modes the base directive's "emit ONLY the
+    tool call" rule contradicts the task protocol (which wants a
+    <task_status> tag alongside the call); append a clause that resolves
+    the contradiction instead of leaving the model to guess.
+    """
+    if task_flow:
+        return _AGENT_DIRECTIVE + _TASK_FLOW_TOOL_CLAUSE
+    return _AGENT_DIRECTIVE
+
 
 # Final synthesis directive injected as a final user turn before the
 # synthesis call. Tells the model to stop tool-using and write the answer
@@ -534,6 +580,22 @@ class Orchestrator:
         # modes the orchestrator forces an initial plan when this is
         # still False at the end of iteration 0 (Fix 6).
         self._plan_emitted_this_request: bool = False
+        # --- Orchestrator-driven task status (Issue 3 fix) ---------------
+        # The TERMINAL status (done / partial / failed) of a task is
+        # decided by the orchestrator from the real turn outcome, NOT by
+        # the model's own ``<task_status>`` tags (which are unreliable:
+        # the model finishes the work but forgets to emit ``done``, so
+        # the UI checklist stays frozen). The model's ``in_progress``
+        # emissions are still honoured as a "cursor" telling us which
+        # task is being worked on.
+        #   ``_planned_task_ids``     order of ids from the last <tasks> plan
+        #   ``_active_task_id``       last task the model marked in_progress
+        #   ``_inprogress_task_ids``  every id seen in_progress this request
+        #   ``_turn_had_failed_validator`` a code validator failed this turn
+        self._planned_task_ids: List[int] = []
+        self._active_task_id: Optional[int] = None
+        self._inprogress_task_ids: set = set()
+        self._turn_had_failed_validator: bool = False
         # Per-request flag: was the incoming prompt a ``<task_action>``
         # envelope (Proceed / Retry / Skip / Abort / Replan)? In that
         # case the plan was already emitted in an earlier turn -- we
@@ -650,6 +712,29 @@ class Orchestrator:
                 task_mode=self.task_mode.value,
             ),
         )
+
+    def _strip_stale_directives(self) -> None:
+        """Remove the heavy agent directive from OLDER user turns.
+
+        Issue 4 fix: ``_AGENT_DIRECTIVE`` (+ task-flow clause + follow-up
+        preamble) is prepended to each request's user turn and then lives
+        in history forever, stacking ~2KB per request and crowding the
+        context window. Once the model has acted on a turn the directive
+        is dead weight, so we strip the known directive blocks from every
+        existing user message. The current turn is decorated AFTER this
+        runs, so it keeps its directive.
+        """
+        markers = (_TASK_FLOW_TOOL_CLAUSE, _AGENT_DIRECTIVE, _FOLLOWUP_DIRECTIVE)
+        for msg in self.conversation_history:
+            if msg.get("role") != "user":
+                continue
+            content = msg.get("content") or ""
+            if not content:
+                continue
+            for marker in markers:
+                if marker and marker in content:
+                    content = content.replace(marker, "")
+            msg["content"] = content
 
     def _recompute_tool_budget(self) -> None:
         """Dynamically scale the tool-result char cap based on free space.
@@ -771,6 +856,10 @@ class Orchestrator:
         self._writes_this_turn = 0
         self._pending_step_report = False
         self._action_pressure_nudges = 0
+        # Reset orchestrator-driven task-status tracking for this request.
+        self._active_task_id = None
+        self._inprogress_task_ids = set()
+        self._turn_had_failed_validator = False
 
         use_tools = (not self.disable_tools) and ToolIntentDetector.needs_tools(
             user_input
@@ -780,13 +869,21 @@ class Orchestrator:
         if is_followup and not self.disable_tools:
             use_tools = True
 
+        # Issue 4 fix (context bloat): the heavy _AGENT_DIRECTIVE (~2KB) was
+        # prepended to every prior user turn and persists in history,
+        # stacking once per request and competing with the system prompt.
+        # Strip it from OLDER turns now -- it already did its job (the model
+        # acted on it); only the current turn needs it.
+        self._strip_stale_directives()
+
+        agent_directive = _get_agent_directive(self.task_mode.is_task_flow)
         if use_tools:
-            decorated = _AGENT_DIRECTIVE + user_input
+            decorated = agent_directive + user_input
         else:
             decorated = user_input
 
         if is_followup and use_tools:
-            decorated = _AGENT_DIRECTIVE + _FOLLOWUP_DIRECTIVE + user_input
+            decorated = agent_directive + _FOLLOWUP_DIRECTIVE + user_input
 
         self.conversation_history.append({"role": "user", "content": decorated})
 
@@ -1108,7 +1205,20 @@ class Orchestrator:
                         # The system prompt alone is ~5K tokens; 24K
                         # leaves ~19K for history (~6-8 turns).
                         floor = 24_000
-                        target = max(floor, clamped)
+                        # Issue 1 fix: the target must NEVER exceed the
+                        # context-window-derived budget. For models whose
+                        # real window is below ~28K, max(floor, clamped)
+                        # would push the budget ABOVE the window, over-fill
+                        # the prompt and cause Ollama to silently truncate it
+                        # -- dropping the system prompt that forbids
+                        # thinking-out-loud, so the model reverts to verbose
+                        # chain-of-thought / empty replies ("quasi regolare"
+                        # when auto-calibrate is on). Capping at the current
+                        # budget keeps the prompt inside the real window.
+                        target = min(
+                            self._history_token_budget,
+                            max(floor, clamped),
+                        )
                         if target != self._history_token_budget:
                             old_budget = self._history_token_budget
                             self._history_token_budget = target
@@ -1172,13 +1282,34 @@ class Orchestrator:
                 proposed = _tp.parse_tasks(text)
                 if proposed:
                     _tp.emit_tasks_proposed(proposed)
+                    # Remember the plan's task ids (in order) so the
+                    # orchestrator can close them out at end of turn even
+                    # if the model never emits a terminal status.
+                    self._planned_task_ids = [t.id for t in proposed]
                     # Fix 6: any time the model emits a plan, mark
                     # the request as "planned" so the no-plan nudge
                     # below stops firing.
                     self._plan_emitted_this_request = True
                 status_events = _tp.parse_task_status(text)
+                # Issue 3 fix: the model's TERMINAL statuses (done /
+                # failed / skipped) are NOT trusted -- the model often
+                # finishes the work but forgets to emit ``done``, so the
+                # checklist stays frozen. The orchestrator decides the
+                # terminal status from the real outcome at end of turn
+                # (see _emit_terminal_task_status). Here we only forward
+                # the non-terminal statuses and use ``in_progress`` as a
+                # cursor for which task is being worked on.
+                _terminal_statuses = (
+                    _tp.TaskStatus.DONE,
+                    _tp.TaskStatus.FAILED,
+                    _tp.TaskStatus.SKIPPED,
+                )
                 for ev in status_events:
-                    _tp.emit_task_status(ev)
+                    if ev.status == _tp.TaskStatus.IN_PROGRESS:
+                        self._active_task_id = ev.id
+                        self._inprogress_task_ids.add(ev.id)
+                    if ev.status not in _terminal_statuses:
+                        _tp.emit_task_status(ev)
                 if status_events:
                     saw_status_this_iter = True
                 text = _tp.strip_task_tags(text)
@@ -1400,6 +1531,11 @@ class Orchestrator:
                             consecutive_validations = 0
                     else:
                         consecutive_validations = 0
+                        # Issue 3 fix: a FAILED code validator this turn
+                        # downgrades the orchestrator's terminal status
+                        # from done to partial (balanced rule).
+                        if name in _CODE_VALIDATORS:
+                            self._turn_had_failed_validator = True
 
                     # Truncate oversized tool results before they bloat the
                     # conversation history and blow the model's context window.
@@ -1684,29 +1820,21 @@ class Orchestrator:
             # Step-report enforcement: after a write/patch/append, the model
             # must include a STEP REPORT in its final answer. If missing,
             # nudge and retry.
-            # In task compliance modes, step reports are MANDATORY
-            # and enforced more strictly - the model MUST emit step reports
-            # in task_compliance and task_compliance_auto modes
-            is_in_step_report_mode = (
-                self.task_mode.is_task_flow  # Task compliance modes
-                and self._writes_this_turn > 0
-            )
+            # Issue 4 fix: step reports are now a SINGLE best-effort nudge in
+            # all modes. Previously task-compliance forced up to 3 extra
+            # model round-trips per write turn ("MANDATORY"); since task
+            # status is orchestrator-decided (Issue 3) and the final answer
+            # is always synthesised (Issue 2), one nudge is enough.
             
             if (
                 self._pending_step_report
-                and step_report_retries < 2
-                and not self._looks_like_step_report(text_clean)
-            ) or (
-                is_in_step_report_mode
-                and step_report_retries < 3
+                and step_report_retries < 1
                 and not self._looks_like_step_report(text_clean)
             ):
                 step_report_retries += 1
-                mode_note = " (TASK COMPLIANCE MODE - MANDATORY)" if is_in_step_report_mode else ""
                 print(
                     f"[orch] Missing step report after write "
-                    f"(retry {step_report_retries}){mode_note}; nudging model. "
-                    f"Iteration: {iteration}",
+                    f"(single nudge); iteration {iteration}.",
                     file=sys.stderr,
                 )
                 self.conversation_history.append(
@@ -1718,8 +1846,32 @@ class Orchestrator:
             # Reset the flag after a successful step report or after giving up.
             self._pending_step_report = False
 
-            # Otherwise treat as final answer.
-            return _td.clean_final_answer(text or "")
+            # Build the user-facing answer.
+            # Issue 2 fix (empty replies): clean_final_answer strips more
+            # than the history cleaner (junk HTML tags, task-flow tags,
+            # chat-template tokens), so a reply that passed the empty-guard
+            # above as ``text_clean`` can still collapse to an empty string
+            # here. Returning that shows the user a blank bubble. Instead we
+            # fall back to _build_recap_answer (synthesis call, then a
+            # tool-result recap) which always yields non-empty text, so the
+            # loop never hands back an empty final answer.
+            final_answer = _td.clean_final_answer(text or "")
+            if final_answer.strip():
+                # Issue 3 fix: a real final answer was produced, so the
+                # orchestrator now closes out the task(s) it worked on,
+                # using the actual outcome instead of the model's (often
+                # missing) terminal status tag.
+                self._emit_terminal_task_status()
+                return final_answer
+
+            print(
+                "[orch] Final answer empty after cleaning; "
+                "falling back to synthesis/recap.",
+                file=sys.stderr,
+            )
+            return self._build_recap_answer(
+                reason="final answer empty after cleaning"
+            )
 
         # If we reach here, we've exhausted all iterations without a final answer.
         print(
@@ -1748,6 +1900,50 @@ class Orchestrator:
         if idx == -1:
             return body
         return body[:idx].rstrip()
+
+    def _emit_terminal_task_status(self) -> None:
+        """Issue 3 fix: decide and emit the TERMINAL status of the
+        task(s) worked this turn from the real outcome, instead of
+        trusting the model's (often missing) ``done`` tag.
+
+        Balanced rule (chosen by the user):
+          * a code validator FAILED this turn        -> partial
+          * otherwise (writes succeeded, OR the turn
+            was read-only and produced a valid answer) -> done
+
+        Targets: every task id the model marked ``in_progress`` this
+        turn; falling back to the active cursor, then to the first
+        planned task id. No-op outside task-flow modes or when there is
+        no task to close.
+        """
+        if not self.task_mode.is_task_flow:
+            return
+        from . import task_protocol as _tp
+
+        targets = set(self._inprogress_task_ids)
+        if not targets and self._active_task_id is not None:
+            targets.add(self._active_task_id)
+        if not targets and self._planned_task_ids:
+            targets.add(self._planned_task_ids[0])
+        if not targets:
+            return
+
+        if self._turn_had_failed_validator:
+            status = _tp.TaskStatus.PARTIAL
+            note = "auto: a code validator failed this turn"
+        else:
+            status = _tp.TaskStatus.DONE
+            note = "auto: completed this turn"
+
+        for tid in sorted(targets):
+            _tp.emit_task_status(
+                _tp.TaskStatusEvent(id=tid, status=status, note=note)
+            )
+            print(
+                f"[orch] terminal task_status (orchestrator-decided): "
+                f"#{tid} -> {status.value}",
+                file=sys.stderr,
+            )
 
     def _attempt_synthesis(self) -> Optional[str]:
         """Make one last non-tool model call asking for a final answer.
@@ -2042,7 +2238,8 @@ class Orchestrator:
             )
 
         last_exc: Optional[BaseException] = None
-        # attempt 0 = immediate; attempts 1..N = after waiting backoffs[i-1]
+        # attempt 0 = immediate; attempts 1..N = after waiting backoffs[i-1].
+        # (Retry/backoff schedule unchanged.)
         for attempt in range(len(self._RETRY_BACKOFFS) + 1):
             if attempt > 0:
                 wait_s = self._RETRY_BACKOFFS[attempt - 1]
