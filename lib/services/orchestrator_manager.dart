@@ -469,7 +469,6 @@ class OrchestratorManager {
   static File _resolveScriptPath(bool multiAgent) {
     final scriptName = multiAgent ? 'orchestrator_multi.py' : 'orchestrator.py';
     final cwd = Directory.current.path;
-    final projectPath = ProjectService().currentPath;
     final candidates = <String>[
       '$cwd/bin/$scriptName',
       '$cwd/$scriptName',
