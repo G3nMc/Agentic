@@ -8,6 +8,7 @@ import 'package:flutter/services.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:uuid/uuid.dart';
 
+import '../../core/constants/agent_context_template.dart';
 import '../../core/theme/app_theme.dart';
 import '../../core/utils/notification_helper.dart';
 import '../../data/models/conversation.dart';
@@ -299,8 +300,8 @@ class _ChatViewState extends StateManager<ChatView> with WidgetsBindingObserver 
     if (!projectService.hasExplicitFolder) return;
 
     final projectPath = projectService.currentPath;
-    final agenticDirPath = '$projectPath${Platform.pathSeparator}.agentic';
-    final agentMdPath = '$agenticDirPath${Platform.pathSeparator}.agent.md';
+    final agenticDirPath = '$projectPath${Platform.pathSeparator}$kAgentContextDirName';
+    final agentMdPath = '$agenticDirPath${Platform.pathSeparator}$kAgentContextFileName';
 
     // Ensure .agentic/ directory exists.
     try {
@@ -312,7 +313,7 @@ class _ChatViewState extends StateManager<ChatView> with WidgetsBindingObserver 
       // Ignore — can't create directory; agent will handle it.
     }
 
-    // 1. Read existing .agent.md if present (as current state of art).
+    // 1. Read existing .context.md if present (as current state of art).
     String existingContext = '';
     try {
       final agentFile = File(agentMdPath);
@@ -375,22 +376,22 @@ class _ChatViewState extends StateManager<ChatView> with WidgetsBindingObserver 
     prompt.writeln();
     if (hasExisting) {
       prompt.writeln(
-        'Below is the CURRENT `.agentic/.agent.md` for this project. '
+        'Below is the CURRENT `.agentic/.context.md` for this project. '
         'Read it, then analyse the project directory tree to see if '
         'anything has changed. Update the file to reflect the current '
-        'state of the project. Use write_file to overwrite `.agentic/.agent.md`. '
+        'state of the project. Use write_file to overwrite `.agentic/.context.md`. '
         'Ensure the `.agentic/` directory exists before writing.',
       );
       prompt.writeln();
-      prompt.writeln('### CURRENT .agentic/.agent.md');
+      prompt.writeln('### CURRENT .agentic/.context.md');
       prompt.writeln('```markdown');
       prompt.writeln(existingContext);
       prompt.writeln('```');
     } else {
       prompt.writeln(
         'Analyse the project directory tree below and create a '
-        '`.agentic/.agent.md` file that describes this project for future '
-        'coding agents. Use write_file to create `.agentic/.agent.md`. '
+        '`.agentic/.context.md` file that describes this project for future '
+        'coding agents. Use write_file to create `.agentic/.context.md`. '
         'First create the `.agentic/` directory if it does not exist.',
       );
     }
@@ -400,38 +401,9 @@ class _ChatViewState extends StateManager<ChatView> with WidgetsBindingObserver 
     prompt.writeln(dirTree);
     prompt.writeln('```');
     prompt.writeln();
-    prompt.writeln('### .agentic/.agent.md TEMPLATE (use these sections)');
+    prompt.writeln('### .agentic/.context.md TEMPLATE (use these sections)');
     prompt.writeln('```markdown');
-    prompt.writeln('## Agent Identity & Role');
-    prompt.writeln('- **Agent Name**: ');
-    prompt.writeln('- **Role / Persona**: ');
-    prompt.writeln('- **Tech Stack**: ');
-    prompt.writeln();
-    prompt.writeln('## Knowledge & Skills');
-    prompt.writeln('- **Core Competencies**: ');
-    prompt.writeln('- **Domain Knowledge**: ');
-    prompt.writeln();
-    prompt.writeln('## Project Structure & Standards');
-    prompt.writeln('- **Project Structure**: ');
-    prompt.writeln('- **Coding Standards**: ');
-    prompt.writeln('- **Testing Requirements**: ');
-    prompt.writeln();
-    prompt.writeln('## Current State & Working Context');
-    prompt.writeln('- **Codebase Overview**: ');
-    prompt.writeln('- **Recent Changes**: ');
-    prompt.writeln('- **Known Issues / Tech Debt**: ');
-    prompt.writeln('- **Immediate Focus**: ');
-    prompt.writeln();
-    prompt.writeln('## Behavioral Rules');
-    prompt.writeln(
-        '- **Must Always**: Place all temporary helper scripts, data files, and intermediate artifacts inside a `.agentic/` directory (create it if missing). After the task is complete and the files are no longer needed, delete them. Never create such files directly in the project root.');
-    prompt.writeln('- **Must Never**: ');
-    prompt.writeln();
-    prompt.writeln('## Communication Style');
-    prompt.writeln();
-    prompt.writeln('## Tools & Workflow');
-    prompt.writeln('- **Available Tools**: ');
-    prompt.writeln('- **Workflow Notes**: ');
+    prompt.writeln(kAgentContextTemplate);
     prompt.writeln('```');
     prompt.writeln();
     prompt.writeln(

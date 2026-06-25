@@ -42,6 +42,7 @@ if _PROJECT_ROOT not in sys.path:
 
 import argparse
 import json
+import re
 import subprocess
 
 # Reuse the shared I/O protocol utilities (the agent.utils.io_protocol
@@ -199,7 +200,201 @@ def _create_orchestrator(args):
     return orchestrator
 
 
-def _run_interactive_loop(args) -> None:
+# ======================================================================
+# Executor stage: REASONER -> (heuristic) -> run_loop using SUMMARIZER model
+# ----------------------------------------------------------------------
+# The multi_mode Reasoner can only produce TEXT (every multi_mode backend
+# has native tool-calling removed), so on its own it never executes tools.
+# We bridge that here: when the planner's answer needs real implementation,
+# we hand it as a brief to the proven single-agent run_loop Orchestrator,
+# driven by the model configured in the SUMMARIZER slot. That loop uses the
+# <tool> text protocol to read/edit/validate the actual project.
+# ======================================================================
+
+# Action verbs that signal the user wants something implemented (not just
+# explained). Mirrors the single-agent loop's intent gate.
+_ACTION_VERB_RE = re.compile(
+    r"\b(implement|fix|write|create|edit|update|modify|refactor|add|delete|"
+    r"remove|rename|build|generate|patch|change|apply|install|setup|"
+    r"configure|migrate|port|replace|integrate|scaffold|"
+    r"implementing|adding|creating|building|fixing|updating|generating|"
+    r"integrating|refactoring|writing|editing|patching|replacing|"
+    r"implements|adds|creates|builds|fixes)\b",
+    re.IGNORECASE,
+)
+_CODE_FENCE_RE = re.compile(r"```")
+# A file-path-ish token: an extension we care about, or a common source dir.
+_FILE_PATH_RE = re.compile(
+    r"\b[\w./-]+\.(?:py|dart|yaml|yml|json|js|ts|tsx|html|css|md|sql)\b"
+    r"|\bNEW FILE\b|\blib/|\bapp/|\bbin/|\bsrc/",
+    re.IGNORECASE,
+)
+
+
+def _needs_implementation(task: str, answer: str) -> bool:
+    """Heuristic gate: should the planner's answer be handed to the
+    tool-using executor (run_loop) to actually implement it?
+
+    Implementation-biased (the whole point is to make the agent ACT):
+    fires when the original request shows action intent, OR the planner's
+    answer contains code blocks together with file-path markers.
+    """
+    task = task or ""
+    answer = answer or ""
+    if _ACTION_VERB_RE.search(task):
+        return True
+    if _CODE_FENCE_RE.search(answer) and _FILE_PATH_RE.search(answer):
+        return True
+    return False
+
+
+def _build_execution_brief(user_request: str, planner_answer: str) -> str:
+    """Wrap the planner's answer as a brief for the executor run_loop."""
+    return (
+        "[EXECUTION BRIEF] A planner agent produced the plan/solution below "
+        "for the user's request. Implement it for real in this project: read "
+        "the actual files first, then make the necessary edits / create the "
+        "necessary files. Do NOT paste placeholder or mock code -- adapt to "
+        "the real codebase and respect the user's constraints. When done, "
+        "report what you changed and the validation result.\n\n"
+        "=== USER REQUEST ===\n"
+        f"{user_request}\n\n"
+        "=== PLANNER OUTPUT ===\n"
+        f"{planner_answer}"
+    )
+
+
+# Directories never worth showing the planner (build output, VCS, caches).
+_TREE_IGNORE_DIRS = frozenset({
+    ".git", ".dart_tool", "build", ".idea", ".vscode", "node_modules",
+    "__pycache__", ".gradle", ".pub-cache", "Pods", ".venv", "venv",
+    "dist", "out", ".next", ".expo", ".cxx", "DerivedData",
+})
+
+
+def _build_project_tree(base_path: str, max_entries: int = 1500, max_depth: int = 10) -> str:
+    """Build a bounded, indented listing of the project's files and nested
+    folders so the tool-less planner can reference REAL paths instead of
+    inventing them. Skips build output / VCS / cache and hidden dirs.
+    """
+    try:
+        base = os.path.abspath(base_path)
+    except Exception:  # noqa: BLE001
+        return ""
+    if not os.path.isdir(base):
+        return ""
+    lines = []
+    count = 0
+    truncated = False
+    for root, dirs, files in os.walk(base):
+        rel = os.path.relpath(root, base)
+        depth = 0 if rel == "." else (rel.count(os.sep) + 1)
+        if depth >= max_depth:
+            dirs[:] = []
+        # Prune ignored / hidden dirs in place (sorted for stable output).
+        dirs[:] = sorted(
+            d for d in dirs
+            if d not in _TREE_IGNORE_DIRS and not d.startswith(".")
+        )
+        indent = "  " * depth
+        if rel != ".":
+            lines.append(f"{indent}{os.path.basename(root)}/")
+        for fname in sorted(files):
+            if fname.startswith("."):
+                continue
+            if count >= max_entries:
+                truncated = True
+                break
+            lines.append(f"{indent}  {fname}")
+            count += 1
+        if truncated:
+            break
+    body = "\n".join(lines)
+    if not body:
+        return ""
+    header = f"PROJECT FILE TREE (root: {base}) -- real paths, use these:\n"
+    if truncated:
+        body += f"\n... (truncated at {max_entries} files)"
+    return header + body
+
+
+def _build_executor_orchestrator(args, summarizer_cfg, path_filter, db_connections):
+    """Build a single-agent run_loop Orchestrator to act as the EXECUTOR
+    stage, driven by the SUMMARIZER-slot model.
+
+    Returns None when no summarizer model is configured or its provider is
+    unsupported / fails to build -- the caller then falls back to returning
+    the planner's answer unchanged.
+    """
+    if summarizer_cfg is None or not getattr(summarizer_cfg, "model", ""):
+        print(
+            "[orch_multi] No SUMMARIZER model configured -> executor stage "
+            "disabled; planner answer goes straight to the UI.",
+            file=sys.stderr, flush=True,
+        )
+        return None
+
+    provider = (getattr(summarizer_cfg, "provider", "") or "").lower().strip()
+    try:
+        from agent.backends import build_backend
+        from agent.loop import Orchestrator as RunLoopOrchestrator
+        from common.policy import SecurityConfig
+    except Exception as ex:  # noqa: BLE001
+        print(f"[orch_multi] Executor imports failed: {ex}", file=sys.stderr, flush=True)
+        return None
+
+    # Map the ModelConfig to build_backend kwargs per provider.
+    kwargs = {"model_id": summarizer_cfg.model}
+    if getattr(summarizer_cfg, "api_key", None):
+        kwargs["api_key"] = summarizer_cfg.api_key
+    if provider == "ollama":
+        if getattr(summarizer_cfg, "base_url", None):
+            kwargs["base_url"] = summarizer_cfg.base_url
+        kwargs["num_ctx"] = int(getattr(summarizer_cfg, "context_window", 32768) or 32768)
+    elif provider == "openrouter":
+        if getattr(summarizer_cfg, "base_url", None):
+            kwargs["base_url"] = summarizer_cfg.base_url
+
+    try:
+        backend = build_backend(provider, **kwargs)
+    except Exception as ex:  # noqa: BLE001
+        print(
+            f"[orch_multi] Could not build executor backend for provider "
+            f"'{provider}': {ex}; executor stage disabled.",
+            file=sys.stderr, flush=True,
+        )
+        return None
+
+    try:
+        security_config = SecurityConfig(sandbox_mode=bool(getattr(args, "sandbox", False)))
+        executor = RunLoopOrchestrator(
+            backend=backend,
+            base_path=args.base_path,
+            temperature=float(getattr(summarizer_cfg, "temperature", 0.2) or 0.2),
+            max_tokens=max(int(getattr(summarizer_cfg, "max_tokens", 0) or 0), 8192),
+            security_config=security_config,
+            disable_tools=bool(getattr(args, "disable_tools", False)),
+            path_filter=path_filter,
+            db_connections=db_connections,
+            task_mode="open",
+            auto_num_ctx=False,
+        )
+    except Exception as ex:  # noqa: BLE001
+        print(
+            f"[orch_multi] Could not construct executor orchestrator: {ex}",
+            file=sys.stderr, flush=True,
+        )
+        return None
+
+    print(
+        f"[orch_multi] Executor stage ready (run_loop) using SUMMARIZER model "
+        f"{provider}:{summarizer_cfg.model}.",
+        file=sys.stderr, flush=True,
+    )
+    return executor
+
+
+def _run_interactive_loop(args, path_filter=None, db_connections=None) -> None:
     """Interactive loop using the new multi_mode Orchestrator."""
     from multi_mode.config.models import ModelRole
     # Ensure stdout is line-buffered so the Flutter side sees __READY__ immediately.
@@ -209,6 +404,7 @@ def _run_interactive_loop(args) -> None:
     print("[orch_multi] Ready for requests.", file=sys.stderr, flush=True)
 
     orchestrator = None
+    executor_orch = None  # lazily-built run_loop executor (SUMMARIZER model)
     try:
         while True:
             req = read_interactive_request(sys.stdin)
@@ -244,12 +440,79 @@ def _run_interactive_loop(args) -> None:
             # Prepend visible history if provided
             full_prompt = _prompt_with_visible_history(prompt, history)
 
+            # Context for the (tool-less) planner, assembled in order:
+            #   1. APP CONTEXT from <root>/.agentic/.context.md -- loaded ALWAYS
+            #      (the project's own analysis), per "prima di qualsiasi cosa".
+            #   2. PROJECT FILE TREE -- only for code/dev requests (skipped for
+            #      chit-chat like "hi"), so the planner cites real paths.
+            context_parts = []
             try:
-                result = orchestrator.run(full_prompt)
+                from common.core.project_context import load_project_context
+                app_ctx = load_project_context(args.base_path)
+                if app_ctx:
+                    context_parts.append(
+                        "APP CONTEXT (from .agentic/.context.md):\n" + app_ctx
+                    )
+            except Exception as ex_ctx:  # noqa: BLE001
+                print(
+                    f"[orch_multi] App context (.context.md) load skipped: {ex_ctx}",
+                    file=sys.stderr, flush=True,
+                )
+            try:
+                from common.loop.tool_detector import ToolIntentDetector
+                if ToolIntentDetector.needs_tools(prompt):
+                    tree = _build_project_tree(args.base_path)
+                    if tree:
+                        context_parts.append(tree)
+            except Exception as ex_tree:  # noqa: BLE001
+                print(
+                    f"[orch_multi] Project tree build skipped: {ex_tree}",
+                    file=sys.stderr, flush=True,
+                )
+            project_context = "\n\n".join(context_parts)
+
+            try:
+                result = orchestrator.run(full_prompt, project_context=project_context)
                 if result.success:
                     response = result.final_answer or "Task completed."
                 else:
                     response = result.error or "Task failed."
+
+                # --- Executor stage: REASONER -> run_loop (SUMMARIZER model) ---
+                # When the planner's answer needs real implementation, hand it
+                # as a brief to the single-agent run_loop Orchestrator driven by
+                # the SUMMARIZER-slot model. That loop reads the real files,
+                # edits/creates them, validates, and reports -- which is what
+                # actually "uses tools". Falls back to the planner answer when
+                # no executor is available or it errors.
+                if (
+                    result.success
+                    and result.final_answer
+                    and _needs_implementation(prompt, result.final_answer)
+                ):
+                    summarizer_cfg = orchestrator.config.models.get(ModelRole.SUMMARIZER)
+                    if executor_orch is None:
+                        executor_orch = _build_executor_orchestrator(
+                            args, summarizer_cfg, path_filter, db_connections
+                        )
+                    if executor_orch is not None:
+                        print(
+                            "[orch_multi] Planner answer needs implementation "
+                            "-> running executor stage (run_loop).",
+                            file=sys.stderr, flush=True,
+                        )
+                        try:
+                            executor_orch.reset()
+                            brief = _build_execution_brief(prompt, result.final_answer)
+                            exec_answer = executor_orch.run(brief)
+                            if exec_answer and exec_answer.strip():
+                                response = exec_answer
+                        except Exception as ex_exec:  # noqa: BLE001
+                            print(
+                                f"[orch_multi] Executor stage failed: {ex_exec}; "
+                                f"returning planner answer.",
+                                file=sys.stderr, flush=True,
+                            )
             except Exception as ex:
                 response = f"Error: {ex}"
 
@@ -423,7 +686,9 @@ def main():
 
     print("[orch_multi] Starting...", file=sys.stderr, flush=True)
 
-    # Load optional filters and DB connections (for future use)
+    # Load optional filters and DB connections (passed to the executor stage).
+    path_filter = None
+    db_connections = None
     try:
         path_filter = _load_path_filter(args.filters_config, args.base_path)
         if path_filter is not None:
@@ -443,7 +708,7 @@ def main():
         print(f"[orch_multi] Failed to load DB connections: {ex}", file=sys.stderr, flush=True)
 
     if args.interactive:
-        _run_interactive_loop(args)
+        _run_interactive_loop(args, path_filter, db_connections)
     else:
         _run_oneshot(args)
 

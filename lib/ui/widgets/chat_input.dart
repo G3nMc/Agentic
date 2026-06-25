@@ -1284,7 +1284,7 @@ class _TemplateButton extends StatelessWidget {
 
 /// Small icon button placed right next to the project-folder dropdown.
 /// On tap it fires a one-shot prompt that asks the current agent to analyse
-/// the project and write a `.agent.md` file.
+/// the project and write a `.context.md` file.
 class _AutoAgentContextButton extends StatelessWidget {
   final bool enabled;
   final VoidCallback? onTap;
@@ -1293,7 +1293,7 @@ class _AutoAgentContextButton extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => Tooltip(
-        message: 'Auto-generate .agentic/.agent.md from project analysis',
+        message: 'Auto-generate .agentic/.context.md from project analysis',
         child: InkWell(
           onTap: (enabled && onTap != null) ? onTap : null,
           borderRadius: BorderRadius.circular(6),

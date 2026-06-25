@@ -42,29 +42,38 @@ def _determine_mode(state: WorkflowState) -> str:
 def _get_system_prompt(mode: str) -> str:
     """Get the system prompt for the given mode."""
     base = (
-        "You are an expert software engineer and problem solver.\n"
-        "You work in a loop: Reason -> Act -> Observe -> Reason.\n"
-        "Use the available tools to accomplish the task.\n"
-        "When you have enough information, provide a final answer.\n"
+        "You are an expert software engineer acting as the PLANNER in a "
+        "two-stage workflow. You do NOT have tools and you do NOT edit files "
+        "yourself. A separate executor agent will read the real project files "
+        "and implement your plan.\n"
+        "An APP CONTEXT (from .agentic/.context.md) and a PROJECT FILE TREE "
+        "may be provided in the context. Use the APP CONTEXT to understand "
+        "what the app does and how it is built, and the FILE TREE to refer to "
+        "REAL files and folders; never invent paths that do not fit it.\n"
     )
     if mode == "planning":
         return base + (
             "\nMODE: PLANNING\n"
-            "This is the first turn. Analyze the task and create a structured plan.\n"
-            "Break down the task into clear, actionable steps.\n"
-            "Output a plan as a JSON object with 'goal' and 'steps' (each step has 'id', 'description', 'status': 'pending').\n"
-            "Then immediately start executing the first step by calling the necessary tools.\n"
+            "Produce a clear, high-level, step-by-step plan in MARKDOWN (not a "
+            "bare JSON object). For each step, name the REAL file(s) to modify "
+            "or the new file path(s) to create, consistent with the project "
+            "file tree. Rules:\n"
+            "- Do NOT invent file paths that do not fit the tree's structure.\n"
+            "- Do NOT assume the contents of files you cannot see.\n"
+            "- Do NOT write final production code; describe WHAT each step "
+            "changes and WHERE. The executor reads the files and writes the code.\n"
+            "- End with the plan. Do not ask for permission to proceed.\n"
         )
     elif mode == "execution":
         return base + (
             "\nMODE: EXECUTION\n"
-            "Continue executing the plan. Call tools as needed.\n"
-            "When all steps are complete, provide the final answer.\n"
+            "Refine or restate the plan if needed and present the final plan "
+            "for the executor. Do not write final production code.\n"
         )
     else:
         return base + (
             "\nMODE: FINAL\n"
-            "All work is complete. Synthesize a comprehensive final answer.\n"
+            "Synthesize a clear, comprehensive final summary of the plan.\n"
         )
 
 

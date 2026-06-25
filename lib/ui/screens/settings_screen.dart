@@ -9,6 +9,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:path_provider/path_provider.dart';
 
+import '../../core/constants/agent_context_template.dart';
 import '../../core/constants/api_constants.dart';
 import '../../core/theme/app_theme.dart';
 import '../../data/models/agent_credentials.dart';
@@ -6012,8 +6013,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
   String? get _agentContextFilePath {
     final projectPath = ProjectService().activeProjectKey;
     if (projectPath == null || projectPath.isEmpty) return null;
-    // Use .agentic/.agent.md as the canonical name (matches Python backend's first candidate).
-    return '$projectPath${Platform.pathSeparator}.agentic${Platform.pathSeparator}.agent.md';
+    // Canonical context file: <root>/.agentic/.context.md (see project_context.py).
+    return '$projectPath${Platform.pathSeparator}$kAgentContextDirName${Platform.pathSeparator}$kAgentContextFileName';
   }
 
   Future<void> _loadAgentContext() async {
@@ -6025,40 +6026,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
     if (await file.exists()) {
       _agentContextController.text = await file.readAsString();
     } else {
-      // Seed with a helpful template.
-      _agentContextController.text = '''# Project Context
-Brief overview of this project.
-
-## Agent Identity & Role
-- **Agent Name**: 
-- **Role / Persona**: 
-
-## Knowledge & Skills
-- **Core Competencies**: 
-- **Domain Knowledge**: 
-
-## Project Structure & Standards
-- **Project Structure**: 
-- **Coding Standards**: 
-- **Testing Requirements**: 
-
-## Current State & Working Context
-- **Codebase Overview**: 
-- **Recent Changes**: 
-- **Known Issues / Tech Debt**: 
-- **Immediate Focus**: 
-
-## Behavioral Rules
-- **Must Always**: 
-- **Must Never**: 
-
-## Communication Style
-- 
-
-## Tools & Workflow
-- **Available Tools**: 
-- **Workflow Notes**: 
-''';
+      // Seed with the canonical, well-structured template (shared const).
+      _agentContextController.text = kAgentContextTemplate;
     }
     if (!mounted) return;
     setState(() {});
@@ -6111,7 +6080,7 @@ Brief overview of this project.
     final hasProject = filePath != null;
 
     return _section(
-      title: 'Agent Context (.agent.md)',
+      title: 'Agent Context (.context.md)',
       subtitle: hasProject
           ? 'Edit the per-project agent configuration file. '
               'This Markdown file is merged into the system prompt '
