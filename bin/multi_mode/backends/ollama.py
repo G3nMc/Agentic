@@ -72,6 +72,27 @@ class OllamaBackend(LLMBackend):
             return {"Authorization": f"Bearer {self.config.api_key}"}
         return {}
 
+    @staticmethod
+    def _map_thinking_to_think(thinking: bool, effort: Optional[str]) -> Optional[Any]:
+        """Map the generic ``thinking`` + ``effort`` knobs to Ollama's
+        ``think`` parameter.
+
+        Ollama thinking models accept either a boolean or one of
+        ``low`` / ``medium`` / ``high`` / ``max``. GPT-OSS ignores
+        booleans and requires a level. To keep behavior predictable:
+
+        * thinking=False  -> ``False`` (explicitly disable trace).
+        * thinking=True   -> use ``effort`` if provided, else ``True``.
+        * effort values are normalised to the supported level set.
+        """
+        if not thinking:
+            return False
+        if effort:
+            level = str(effort).lower()
+            if level in {"minimal", "low", "medium", "high", "max"}:
+                return "low" if level == "minimal" else level
+        return True
+
     def complete(
             self,
             messages: List[Dict[str, Any]],
@@ -95,13 +116,18 @@ class OllamaBackend(LLMBackend):
             "stream": True,
             "options": options,
         }
-        # Ollama has no native reasoning parameter — reasoning_level is
-        # silently ignored here (the field exists on ModelConfig for
-        # cross-provider uniformity but has no effect on Ollama).
+        # Ollama thinking-capable models accept a `think` field on /api/chat.
+        # Map the generic thinking master switch + effort override to it.
+        thinking = kwargs.get("thinking", self.config.thinking)
+        effort = kwargs.get("effort") or self.config.effort
+        think_value = self._map_thinking_to_think(thinking, effort)
+        if think_value is not None:
+            payload["think"] = think_value
 
         _log(
             f"[Ollama:complete] POST {self._base_url}/api/chat model={self.config.model} "
-            f"msgs={len(messages)} max_tokens={options['num_predict']} stop={options.get('stop')}"
+            f"msgs={len(messages)} max_tokens={options['num_predict']} stop={options.get('stop')} "
+            f"think={payload.get('think')}"
         )
 
         parts: List[str] = []

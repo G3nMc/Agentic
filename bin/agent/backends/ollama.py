@@ -118,6 +118,28 @@ class OllamaBackend(ModelBackend):
     def _is_cloud_host(self) -> bool:
         return self.base_url.startswith(self.CLOUD_URL)
 
+    @staticmethod
+    def _map_thinking_to_think(thinking: bool, effort: Optional[str]) -> Optional[Any]:
+        """Map the generic ``thinking`` + ``effort`` knobs to Ollama's
+        ``think`` parameter.
+
+        Ollama thinking models accept either a boolean or one of
+        ``low`` / ``medium`` / ``high`` / ``max``. GPT-OSS ignores
+        booleans and requires a level. To keep behavior predictable:
+
+        * thinking=False  -> ``False`` (explicitly disable trace).
+        * thinking=True   -> use ``effort`` if provided, else ``True``.
+        * effort values are normalised to the supported level set.
+        """
+        if not thinking:
+            return False
+        if effort:
+            level = str(effort).lower()
+            if level in {"minimal", "low", "medium", "high", "max"}:
+                # "minimal" is not a documented Ollama level; collapse it to low.
+                return "low" if level == "minimal" else level
+        return True
+
     def _auth_headers(self) -> Dict[str, str]:
         if self.api_key:
             return {"Authorization": f"Bearer {self.api_key}"}
@@ -189,11 +211,12 @@ class OllamaBackend(ModelBackend):
         effort: Optional[str] = None,
     ) -> Tuple[str, str]:
         # [native-tools-removed] tools=... never forwarded.
-        # Ollama has no native reasoning parameter — thinking/effort are
-        # silently ignored (accepted for interface compatibility).
+        # Ollama supports a `think` field on /api/generate for thinking-capable
+        # models (Qwen 3, GPT-OSS, DeepSeek-v3.1, DeepSeek R1, etc.). Most
+        # models accept booleans (true/false) or levels (low/medium/high/max).
+        # GPT-OSS only accepts levels. We map the frontend `thinking` master
+        # switch and `effort` string to that field.
         _ = tools
-        _ = thinking
-        _ = effort
 
         messages = sanitize_for_agent(messages)
         prompt, system = self._build_prompt_and_system(messages)
@@ -216,10 +239,16 @@ class OllamaBackend(ModelBackend):
         if system:
             payload["system"] = system
 
+        # Map thinking/effort to Ollama's `think` field.
+        think_value = self._map_thinking_to_think(thinking, effort)
+        if think_value is not None:
+            payload["think"] = think_value
+
         _log(
             f"[Ollama:chat] POST {self.base_url}/api/generate model={self.model_id} "
             f"msgs={len(messages)} max_tokens={max_tokens} temperature={temperature} "
-            f"cloud={self._is_cloud_host()} stop={options.get('stop')}"
+            f"cloud={self._is_cloud_host()} stop={options.get('stop')} "
+            f"think={payload.get('think')}"
         )
 
         parts: List[str] = []
