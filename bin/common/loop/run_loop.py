@@ -41,6 +41,12 @@ _IDEMPOTENT_VALIDATORS = frozenset(
 )
 _MAX_CONSECUTIVE_VALIDATIONS = 3
 
+# Repetition detection for model text output. When the model generates
+# the same phrase/sentence repeatedly (e.g. "Let me check..." x100),
+# it's stuck in a degenerate loop and further iterations are wasted.
+_REP_MIN_PHRASE_LEN = 25
+_REP_THRESHOLD = 5  # same sentence appears this many times -> bail
+
 # Code-correctness validators (subset of _IDEMPOTENT_VALIDATORS). A
 # FAILED run of one of these in the turn downgrades the orchestrator's
 # terminal task status from ``done`` to ``partial`` (Issue 3 fix). The
@@ -143,6 +149,24 @@ def _is_short_followup(text: str) -> bool:
     return len(stripped) <= 25 and not any(
         m in stripped.lower() for m in (".dart", ".py", "lib/", "bin/", "git ")
     )
+
+
+def _has_repetitive_output(text: str) -> bool:
+    """True when the model's text contains a phrase repeated excessively.
+
+    Catches degenerate loops like "Let me check the current implementation
+    of the popup menu and the favorite toggle." repeated 100+ times. These
+    waste the entire iteration budget and return garbage to the user.
+    """
+    if not text or len(text) < _REP_MIN_PHRASE_LEN * _REP_THRESHOLD:
+        return False
+    from collections import Counter
+    sentences = re.split(r"(?<=[.!?])\s*", text)
+    long = [s.strip() for s in sentences if len(s.strip()) >= _REP_MIN_PHRASE_LEN]
+    if len(long) < _REP_THRESHOLD:
+        return False
+    count = Counter(long).most_common(1)
+    return bool(count and count[0][1] >= _REP_THRESHOLD)
 
 
 # ======================================================================
@@ -1372,6 +1396,20 @@ class Orchestrator:
             self.conversation_history.append(
                 {"role": "assistant", "content": text_clean}
             )
+
+            # Repetition guard: bail immediately when the model is stuck
+            # in a degenerate text loop ("Let me check..." x100). No
+            # amount of retries/nudges will fix this -- the model has
+            # lost coherence and further iterations only waste time.
+            if _has_repetitive_output(text_clean):
+                print(
+                    f"[orch] Repetitive output detected at iter {iteration} "
+                    f"({len(text_clean)} chars); bailing to recap.",
+                    file=sys.stderr,
+                )
+                return self._build_recap_answer(
+                    reason="model stuck in repetitive text loop"
+                )
 
             # Parse tool calls from the cleaned text to avoid false positives
             # when a model embeds JSON examples inside its <tool_call> block.

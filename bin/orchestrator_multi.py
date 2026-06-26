@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env python3
+#!/usr/bin/env python3
 """
 Multi-agent Orchestrator — entry point for the new multi_mode workflow.
 ==============================================================
@@ -386,6 +386,21 @@ def _build_executor_orchestrator(args, summarizer_cfg, path_filter, db_connectio
         )
         return None
 
+    # Remove batch/multi-file tools that produce huge JSON payloads
+    # exceeding max_tokens and causing truncation spirals. The model
+    # must use patch_file (singular) one file at a time instead.
+    _oversized_tools = ("patch_files", "write_files", "delete_files")
+    for tool_name in _oversized_tools:
+        try:
+            executor.tool_registry.unregister(tool_name)
+        except Exception:  # noqa: BLE001
+            pass  # tool may not be registered
+    print(
+        f"[orch_multi] Removed batch tools {_oversized_tools} from executor "
+        f"to prevent truncation.",
+        file=sys.stderr, flush=True,
+    )
+
     print(
         f"[orch_multi] Executor stage ready (run_loop) using SUMMARIZER model "
         f"{provider}:{summarizer_cfg.model}.",
@@ -405,6 +420,7 @@ def _run_interactive_loop(args, path_filter=None, db_connections=None) -> None:
 
     orchestrator = None
     executor_orch = None  # lazily-built run_loop executor (SUMMARIZER model)
+    last_exec_summary = ""  # brief summary of the previous execution
     try:
         while True:
             req = read_interactive_request(sys.stdin)
@@ -502,17 +518,46 @@ def _run_interactive_loop(args, path_filter=None, db_connections=None) -> None:
                             file=sys.stderr, flush=True,
                         )
                         try:
+                            # Preserve a brief summary of the previous
+                            # execution so the executor knows what was
+                            # already done. This prevents re-doing work
+                            # when the user sends a follow-up correction
+                            # like "There was a misunderstanding...".
                             executor_orch.reset()
+                            if last_exec_summary:
+                                executor_orch.conversation_history.append({
+                                    "role": "system",
+                                    "content": (
+                                        "[PREVIOUS EXECUTION CONTEXT]\n"
+                                        "The following is a summary of changes "
+                                        "made in the immediately preceding "
+                                        "execution. The user may be asking for "
+                                        "a correction or continuation. Do NOT "
+                                        "redo work that is already done unless "
+                                        "the user explicitly asks.\n\n"
+                                        + last_exec_summary
+                                    ),
+                                })
+                                print(
+                                    f"[orch_multi] Injected previous execution "
+                                    f"summary ({len(last_exec_summary)} chars).",
+                                    file=sys.stderr, flush=True,
+                                )
                             brief = _build_execution_brief(prompt, result.final_answer)
                             exec_answer = executor_orch.run(brief)
                             if exec_answer and exec_answer.strip():
                                 response = exec_answer
+                                # Save a short summary for the next request.
+                                last_exec_summary = exec_answer[:2000]
+                            else:
+                                last_exec_summary = ""
                         except Exception as ex_exec:  # noqa: BLE001
                             print(
                                 f"[orch_multi] Executor stage failed: {ex_exec}; "
                                 f"returning planner answer.",
                                 file=sys.stderr, flush=True,
                             )
+                            last_exec_summary = ""
             except Exception as ex:
                 response = f"Error: {ex}"
 

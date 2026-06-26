@@ -192,6 +192,15 @@ class ToolRegistry:
         self.definitions.append(definition)
         self._category_cache.clear()
 
+    def unregister(self, name: str) -> None:
+        """Remove a tool by name. No-op if the tool is not registered."""
+        self.tools.pop(name, None)
+        self.definitions = [
+            d for d in self.definitions
+            if d.get("function", {}).get("name") != name
+        ]
+        self._category_cache.clear()
+
     def _get_tool_category(self, name: str) -> str:
         """Get category for tool name (cached)."""
         if name in self._category_cache:
