@@ -52,7 +52,7 @@ class OrchestratorTaskStatusChanged extends OrchestratorTaskEvent {
 // (including per-chunk heartbeat lines from the Python streaming loops)
 // resets it. 10 min gives slow local models (phi3:mini on CPU) enough
 // headroom while still catching a truly wedged process.
-const Duration _kOrchestratorInactivityTimeout = Duration(minutes: 10);
+const Duration _kOrchestratorInactivityTimeout = Duration(minutes: 60);
 
 // Absolute ceiling: even if the orchestrator keeps heart-beating, refuse to
 // wait longer than this for a single prompt. Prevents runaway tool chains.
