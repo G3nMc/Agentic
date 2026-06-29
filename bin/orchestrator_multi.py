@@ -60,6 +60,9 @@ from orchestrator_base import (
     _prompt_with_visible_history,
     _load_path_filter as _base_load_path_filter,
     _load_db_connections as _base_load_db_connections,
+    _resolve_debug_chat_path,
+    _read_last_user_turn,
+    _append_debug_response,
 )
 
 
@@ -109,6 +112,7 @@ def _install_dependencies() -> None:
 # :mod:`orchestrator_base` at the top of this file. The two ``_load_*``
 # names are bound to multi-mode-specific wrappers that pass
 # ``log_prefix="orch_multi"``; call sites below stay unchanged.
+# Debug helpers are also imported from :mod:`orchestrator_base`.
 
 
 def build_config_from_args(args):
@@ -418,6 +422,14 @@ def _run_interactive_loop(args, path_filter=None, db_connections=None) -> None:
     print("__READY__", flush=True)
     print("[orch_multi] Ready for requests.", file=sys.stderr, flush=True)
 
+    debug_mode = bool(getattr(args, "is_debug", False))
+    debug_chat_path = _resolve_debug_chat_path(args.base_path, args.file_name) if debug_mode else ""
+    if debug_mode:
+        print(
+            f"[orch_multi] DEBUG MODE active. Chat file: {debug_chat_path}",
+            file=sys.stderr, flush=True,
+        )
+
     orchestrator = None
     executor_orch = None  # lazily-built run_loop executor (SUMMARIZER model)
     last_exec_summary = ""  # brief summary of the previous execution
@@ -429,6 +441,22 @@ def _run_interactive_loop(args, path_filter=None, db_connections=None) -> None:
 
             history = _normalise_external_history(req.get("history"))
             new_session = req.get("new_session") or bool(history)
+
+            # Debug mode: ignore the incoming prompt and read the latest user
+            # turn from the chat file. This lets a developer edit the file and
+            # rerun the backend without touching the Flutter UI.
+            prompt = (req.get("prompt") or "").strip()
+            if debug_mode:
+                file_prompt, file_history = _read_last_user_turn(debug_chat_path)
+                if file_prompt:
+                    prompt = file_prompt
+                    history = file_history
+                    new_session = False
+                    print(
+                        f"[orch_multi] Debug: loaded prompt ({len(prompt)} chars) "
+                        f"with {len(history)} history turns from {debug_chat_path}",
+                        file=sys.stderr, flush=True,
+                    )
 
             if new_session or orchestrator is None:
                 orchestrator = _create_orchestrator(args)
@@ -447,7 +475,6 @@ def _run_interactive_loop(args, path_filter=None, db_connections=None) -> None:
                 reasoner_cfg = orchestrator.config.models.get(ModelRole.REASONER)
                 if reasoner_cfg:
                     reasoner_cfg.effort = effort_str
-            prompt = (req.get("prompt") or "").strip()
             if not prompt:
                 print(RESPONSE_SENTINEL)
                 sys.stdout.flush()
@@ -565,6 +592,9 @@ def _run_interactive_loop(args, path_filter=None, db_connections=None) -> None:
             print(json.dumps({"response": response}))
             print(RESPONSE_SENTINEL)
             sys.stdout.flush()
+
+            if debug_mode:
+                _append_debug_response(debug_chat_path, response)
     except KeyboardInterrupt:
         print("[orch_multi] Shutdown requested.", file=sys.stderr)
 
@@ -721,6 +751,20 @@ def main():
         default="",
         metavar="PATH",
         help="Path to JSON file with database connections.",
+    )
+
+    # Debug mode: backend reads the last USER turn from a chat file and
+    # appends the AGENT response, bypassing the Flutter prompt.
+    parser.add_argument(
+        "--is_debug",
+        action="store_true",
+        help="Enable debug mode: read the user prompt from --file_name and append the response there.",
+    )
+    parser.add_argument(
+        "--file_name",
+        default="",
+        metavar="RELATIVE_PATH",
+        help="Relative path (from --base-path) of the chat file used in debug mode. Example: /chats/modifiche.txt",
     )
 
     args = parser.parse_args()

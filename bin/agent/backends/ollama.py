@@ -224,18 +224,23 @@ class OllamaBackend(ModelBackend):
         options: Dict[str, Any] = {
             "temperature": temperature,
             "num_predict": max_tokens,
+            "num_ctx": self.num_ctx
         }
-        if not self._is_cloud_host():
-            options["num_ctx"] = self.num_ctx
+
+        # if not self._is_cloud_host():
+        #     options["num_ctx"] = self.num_ctx
+
+
         if stop:
             options["stop"] = list(stop)
 
         payload: Dict[str, Any] = {
             "model": self.model_id,
             "prompt": prompt,
-            "stream": True,
+            "stream": False,
             "options": options,
         }
+
         if system:
             payload["system"] = system
 

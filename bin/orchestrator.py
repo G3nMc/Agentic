@@ -82,6 +82,9 @@ from orchestrator_base import (
     _normalise_external_history,
     _load_path_filter,
     _load_db_connections,
+    _resolve_debug_chat_path,
+    _read_last_user_turn,
+    _append_debug_response,
 )
 
 configure_stdio_utf8()
@@ -114,87 +117,87 @@ def main():
         "--model",
         default="",
         help="Model ID. For HF: e.g. 'meta-llama/Llama-3.1-70B-Instruct'. "
-        "For Gemini: e.g. 'gemini-2.5-flash' or 'gemini-2.5-pro'. "
-        "For Ollama: e.g. 'qwen2.5-coder:7b' or 'llama3:8b'. "
-        "Groq and Ollama backends require an explicit model. "
-        "Small models (<7B) frequently fail the tool-call protocol.",
+             "For Gemini: e.g. 'gemini-2.5-flash' or 'gemini-2.5-pro'. "
+             "For Ollama: e.g. 'qwen2.5-coder:7b' or 'llama3:8b'. "
+             "Groq and Ollama backends require an explicit model. "
+             "Small models (<7B) frequently fail the tool-call protocol.",
     )
     parser.add_argument(
         "--ollama-base-url",
         default="http://localhost:11434",
         help="Ollama daemon or cloud endpoint URL. Local default is "
-        "http://localhost:11434. Models tagged ':<size>-cloud' are "
-        "auto-routed to https://ollama.com when this flag is left at "
-        "the default — pass it explicitly only to override (e.g. a "
-        "self-hosted proxy).",
+             "http://localhost:11434. Models tagged ':<size>-cloud' are "
+             "auto-routed to https://ollama.com when this flag is left at "
+             "the default — pass it explicitly only to override (e.g. a "
+             "self-hosted proxy).",
     )
     parser.add_argument(
         "--ollama-api-key",
         default="",
         help="Bearer token for cloud-hosted Ollama endpoints. Leave empty "
-        "for a local daemon (no auth needed).",
+             "for a local daemon (no auth needed).",
     )
     parser.add_argument(
         "--ollama-num-ctx",
         type=int,
         default=OllamaBackend.DEFAULT_NUM_CTX,
         help="Context window for Ollama. Defaults to 8192. Do NOT raise "
-        "this to match the model's Modelfile default (often 128K) — "
-        "it explodes KV-cache RAM use. Drop to 4096 for very small "
-        "local models on tight RAM; raise to 16384/32768 for 7B+ "
-        "models on >=16 GB or for cloud-hosted backends.",
+             "this to match the model's Modelfile default (often 128K) — "
+             "it explodes KV-cache RAM use. Drop to 4096 for very small "
+             "local models on tight RAM; raise to 16384/32768 for 7B+ "
+             "models on >=16 GB or for cloud-hosted backends.",
     )
     parser.add_argument(
         "--temperature",
         type=float,
         default=0.1,
         help="Sampling temperature. Lower = more deterministic tool calls "
-        "(0.2 is the sweet spot for small models); raise to ~0.7 for "
-        "more natural free-form answers.",
+             "(0.2 is the sweet spot for small models); raise to ~0.7 for "
+             "more natural free-form answers.",
     )
     parser.add_argument(
         "--max-tokens",
         type=int,
         default=8192 * 2,
         help="Hard cap on generated tokens per model call. Covers any tool "
-        "call + typical file writes. Raising past ~4096 on a 3B model "
-        "(phi3) can push a single iteration over a minute.",
+             "call + typical file writes. Raising past ~4096 on a 3B model "
+             "(phi3) can push a single iteration over a minute.",
     )
     parser.add_argument(
         "--tpm-limit",
         type=int,
         default=0,
         help="Tokens-per-minute cap for the selected backend. 0 = unlimited "
-        "(default). When >0, the orchestrator wraps the backend in a "
-        "sliding-window rate limiter that sleeps before oversize calls "
-        "and auto-trims history when a single request exceeds the "
-        "budget. Use the free-tier TPM from your provider dashboard "
-        "(Groq free: 6000-8000 depending on model).",
+             "(default). When >0, the orchestrator wraps the backend in a "
+             "sliding-window rate limiter that sleeps before oversize calls "
+             "and auto-trims history when a single request exceeds the "
+             "budget. Use the free-tier TPM from your provider dashboard "
+             "(Groq free: 6000-8000 depending on model).",
     )
     parser.add_argument(
         "--groq-api-key",
         default="",
         help="Groq Cloud API key (required when --backend=groq). "
-        "Get one free at https://console.groq.com/keys.",
+             "Get one free at https://console.groq.com/keys.",
     )
     parser.add_argument(
         "--gemini-api-key",
         default="",
         help="Google AI Studio API key (required when --backend=gemini). "
-        "Get one free at https://aistudio.google.com/app/apikey.",
+             "Get one free at https://aistudio.google.com/app/apikey.",
     )
     parser.add_argument(
         "--openrouter-api-key",
         default="",
         help="OpenRouter API key (required when --backend=openrouter). "
-        "Get one free at https://openrouter.ai/keys.",
+             "Get one free at https://openrouter.ai/keys.",
     )
     parser.add_argument(
         "--github-api-key",
         default="",
         help="GitHub fine-grained PAT with `models:read` scope (required when "
-        "--backend=github). Create one at "
-        "https://github.com/settings/personal-access-tokens/new.",
+             "--backend=github). Create one at "
+             "https://github.com/settings/personal-access-tokens/new.",
     )
     parser.add_argument(
         "--interactive",
@@ -303,6 +306,17 @@ def main():
             "filesystem."
         ),
     )
+    parser.add_argument(
+        "--is_debug",
+        action="store_true",
+        help="Enable debug mode: read the user prompt from --file_name and append the response there.",
+    )
+    parser.add_argument(
+        "--file_name",
+        default="",
+        metavar="RELATIVE_PATH",
+        help="Relative path (from --base-path) of the chat file used in debug mode. Example: /chats/modifiche.txt",
+    )
 
     args = parser.parse_args()
 
@@ -388,7 +402,7 @@ def main():
         print("[orch] Tools disabled — running in plain-chat mode.", file=sys.stderr)
 
     if args.interactive:
-        _run_interactive_loop(orchestrator)
+        _run_interactive_loop(orchestrator, args)
     else:
         _run_oneshot(orchestrator)
 
@@ -430,9 +444,9 @@ def _build_backend_for_args(args):
             )
             sys.exit(2)
         gemini_key = (
-            args.gemini_api_key
-            or os.environ.get("GOOGLE_API_KEY", "")
-            or os.environ.get("GEMINI_API_KEY", "")
+                args.gemini_api_key
+                or os.environ.get("GOOGLE_API_KEY", "")
+                or os.environ.get("GEMINI_API_KEY", "")
         )
         if not gemini_key:
             print(
@@ -485,9 +499,9 @@ def _build_backend_for_args(args):
 
     if args.backend == "github":
         github_key = (
-            args.github_api_key
-            or os.environ.get("GITHUB_TOKEN", "")
-            or os.environ.get("GITHUB_API_KEY", "")
+                args.github_api_key
+                or os.environ.get("GITHUB_TOKEN", "")
+                or os.environ.get("GITHUB_API_KEY", "")
         )
         if not github_key:
             print(
@@ -530,7 +544,14 @@ def _build_backend_for_args(args):
     return backend
 
 
-def _run_interactive_loop(orchestrator: Orchestrator) -> None:
+def _run_interactive_loop(orchestrator: Orchestrator, args=None) -> None:
+    debug_mode = bool(args is not None and getattr(args, "is_debug", False))
+    debug_chat_path = _resolve_debug_chat_path(args.base_path, args.file_name) if debug_mode else ""
+    if debug_mode:
+        print(
+            f"[orch] DEBUG MODE active. Chat file: {debug_chat_path}",
+            file=sys.stderr, flush=True,
+        )
     # Signal readiness so the client knows the process is up.
     print("__READY__")
     sys.stdout.flush()
@@ -572,6 +593,21 @@ def _run_interactive_loop(orchestrator: Orchestrator) -> None:
             if isinstance(effort_val, str) and effort_val.strip():
                 orchestrator.effort = effort_val.strip().lower()
             prompt = (req.get("prompt") or "").strip()
+
+            # Debug mode: override prompt from the chat file.
+            if debug_mode:
+                file_prompt, file_history = _read_last_user_turn(debug_chat_path)
+                if file_prompt:
+                    prompt = file_prompt
+                    history = file_history
+                    orchestrator.reset()
+                    orchestrator.import_history(history)
+                    print(
+                        f"[orch] Debug: loaded prompt ({len(prompt)} chars) "
+                        f"with {len(history)} history turns from {debug_chat_path}",
+                        file=sys.stderr, flush=True,
+                    )
+
             if not prompt:
                 # Respect the protocol even for empty prompts.
                 print(RESPONSE_SENTINEL)
@@ -585,6 +621,9 @@ def _run_interactive_loop(orchestrator: Orchestrator) -> None:
             print(json.dumps({"response": response}))
             print(RESPONSE_SENTINEL)
             sys.stdout.flush()
+
+            if debug_mode:
+                _append_debug_response(debug_chat_path, response)
     except KeyboardInterrupt:
         print("[orch] Shutdown requested.", file=sys.stderr)
 
