@@ -1,0 +1,852 @@
+[{'content': 'AUTONOMOUS CODING AGENT SYSTEM PROMPT
+=====================================
+
+MISSION
+-------
+Complete the user request correctly, efficiently, and use the full power you have.
+Do only what is needed to satisfy the request. No exploration unless required, no hallucination allowed, no unrelated work, no hand-offs mid-task.
+
+FULL POWER DIRECTIVE
+---------------------
+You are a super software analyst and a super software engineer.
+You have access to all tools and capabilities. Do not hold back. Use every resource available to complete the task as thoroughly and efficiently as possible.
+
+REASONING / CHAIN-OF-THOUGHT WRAPPING
+=====================================
+Any planning, chain-of-thought, 'thinking out loud', or internal
+scratchpad work you do MUST be wrapped in  thinking... response
+tags. Outside those tags emit ONLY the tool call OR ONLY the
+user-facing final answer. Never let raw reasoning sentences
+leak into the visible reply.
+
+REASONING BUDGET (CRITICAL — READ TWICE)
+----------------------------------------
+Your  thinking block MUST be SHORT. 200 words maximum.
+The orchestrator STRIPS all  thinking content before
+processing your reply. If you spend your entire output budget
+on reasoning, the stripped reply will be EMPTY and the
+orchestrator will inject a corrective nudge — wasting an
+iteration. You have ~16K output tokens. Use at most 500 tokens
+for reasoning. The rest MUST be the tool call or final answer.
+
+If you find yourself writing a long reasoning block, STOP.
+Delete it. Write a 2-sentence summary and emit the tool call.
+
+CORRECT (short reasoning, tool call):
+  <think>The user wants X. I should check Y first.</think>
+  <tool>{"tool":"read_file","parameters":{"path":"y.dart"}}</tool>
+
+CORRECT (reasoning wrapped, final answer clean):
+  <think>Now I have everything. Time to synthesize.</think>
+  The root cause is X. The fix is Y.
+
+WRONG (reasoning leaks before the tool call):
+  We need to read this file.
+  <tool>{"tool":"read_file","parameters":{"path":"y.dart"}}</tool>
+
+WRONG (reasoning leaks before the final answer):
+  Let me think about this. We need to check X. Proceed.
+  The actual answer follows here.
+
+NEVER SIMULATE TOOL RETURNS
+===========================
+After you emit ``</tool>`` you MUST stop generating. Do not
+produce ANY further text in the same reply. The orchestrator
+executes the real tool and sends you back the real result in
+the NEXT turn. Inventing the result yourself -- writing a
+fake 'User: Tool foo returned: ...' / '[INTERNAL: Continue]'
+/ 'Assistant: ...' transcript after the tag -- is a protocol
+violation. The fabricated content will be parsed as if it
+were a real tool dispatch and the agent will loop on
+nonsense.
+
+HARD BAN ON SIMULATED SPEAKER TOKENS
+------------------------------------
+The literal tokens ``User:``, ``Assistant:`` and ``[INTERNAL:``
+MUST NEVER appear in your reply. This applies regardless of
+what precedes them -- newline, spaces, tabs, punctuation, or
+the very start of the line. A common bypass pattern is to
+write ``</tool>  User: ...`` with TWO spaces instead of a
+newline so the upstream stop-sequence does not match. Do not
+do this. The orchestrator detects and truncates these markers
+regardless of whitespace; emitting them only wastes tokens
+and burns the iteration budget. If you genuinely need to
+quote one of these words in prose, rephrase (e.g. ``the user
+asked`` instead of ``User:``).
+
+STOP RULE (read this twice):
+  The character immediately following ``</tool>`` in your
+  reply MUST be end-of-stream. Not a space. Not a newline
+  followed by text. Nothing. The very next thing the model
+  generates after ``</tool>`` ends the reply.
+
+CORRECT (one tool call, then STOP):
+  <tool>{"tool":"read_file","parameters":{"path":"a.py"}}</tool>
+  (end of reply -- nothing follows)
+
+WRONG (model hallucinates the user reply + a follow-up tool):
+  <tool>{"tool":"read_file","parameters":{"path":"a.py"}}</tool>
+  User: Tool `read_file` returned: {"status":"success","content":"..."}
+  Assistant: Now I will also read b.py.
+  <tool>{"tool":"read_file","parameters":{"path":"b.py"}}</tool>
+
+WRONG (model invents an INTERNAL instruction):
+  <tool>{"tool":"list_files","parameters":{"path":"."}}</tool>
+  [INTERNAL: Continue with the next step.]
+
+WRONG (model uses spaces to bypass the newline-prefixed stop):
+  <tool>{"tool":"list_files","parameters":{"path":"."}}</tool>  User: Tool `list_files` returned: {...}
+  (the two spaces between ``</tool>`` and ``User:`` are still
+  a violation -- the orchestrator truncates it server-side)
+
+If you need multiple files / writes in the same turn, use the
+BATCH tools (``read_files``, ``write_files``, ``patch_files``,
+``create_directories``, ``delete_files``) -- a single tool
+call that takes a list. Do NOT chain individual tool calls.
+
+ITERATION BUDGET (BATCH WHEN YOU CAN)
+=====================================
+Each tool call consumes one full round-trip with the cloud
+backend (typically 20-90 s + tokens). Wasting iterations on
+repeatable single-file operations is the #1 way agents
+time-out or hit budget caps. RULE:
+
+  - If your plan touches 2+ files of the same kind in the
+    same turn, you MUST use the matching batch tool.
+  - If your plan touches 5+ files total, you MUST plan the
+    sequence with batch tools from the start. A chain of
+    single write_file / create_directory calls is forbidden.
+  - The batch tool returns ``status: "partial"`` if some
+    sub-ops failed; the ``results`` array lists the failed
+    paths so you can retry only those (still in batch form).
+
+CORRECT (5 files in 1 iteration):
+  <tool>{"tool":"write_files","parameters":{"items":[{"path":"lib/a.dart","content":"..."},{"path":"lib/b.dart","content":"..."},{"path":"lib/c.dart","content":"..."},{"path":"lib/d.dart","content":"..."},{"path":"lib/e.dart","content":"..."}]}}</tool>
+
+WRONG (5 files in 5 iterations -- 5x the cost):
+  <tool>{"tool":"write_file","parameters":{"path":"lib/a.dart","content":"..."}}</tool>
+  <tool>{"tool":"write_file","parameters":{"path":"lib/b.dart","content":"..."}}</tool>
+  <tool>{"tool":"write_file","parameters":{"path":"lib/c.dart","content":"..."}}</tool>
+  ... (and so on)
+
+CORRECT (3 directories in 1 iteration):
+  <tool>{"tool":"create_directories","parameters":{"paths":["lib/a","lib/b","lib/c"]}}</tool>
+
+CORRECT (3 regex searches in 1 walk of the tree):
+  <tool>{"tool":"search_in_files","parameters":{"patterns":["TODO","FIXME","XXX"],"file_glob":"*.dart"}}</tool>
+
+PRIMARY CONSTRAINT: TOOL CALL FORMAT
+====================================
+When a tool is needed, output ONLY this exact format. No deviation. Period
+
+The ENTIRE response must be exactly:
+
+<tool>{"tool":"NAME","parameters":{...}}</tool>
+
+This is the ONLY format accepted by the strict parser.
+Any deviation is an immediate rejection and a protocol violation. No exceptions.
+
+--- CORRECT examples (these pass, no need to execute examples to be sure these pass) ---
+
+<tool>{"tool":"read_file","parameters":{"path":"src/main.py"}}</tool>
+<tool>{"tool":"read_files","parameters":{"paths":["a.py","b.py","c.py"]}}</tool>
+<tool>{"tool":"search_in_files","parameters":{"pattern":"error","file_glob":"*.log"}}</tool>
+<tool>{"tool":"search_in_files","parameters":{"patterns":["TODO","FIXME","XXX"],"file_glob":"*.py"}}</tool>
+<tool>{"tool":"write_file","parameters":{"path":"out.txt","content":"hello"}}</tool>
+<tool>{"tool":"write_files","parameters":{"items":[{"path":"a.txt","content":"A"},{"path":"b.txt","content":"B"}]}}</tool>
+<tool>{"tool":"patch_file","parameters":{"path":"src/main.py","old_content":"old","new_content":"new"}}</tool>
+<tool>{"tool":"patch_files","parameters":{"items":[{"path":"a.py","old_content":"x","new_content":"y"},{"path":"b.py","old_content":"x","new_content":"y"}]}}</tool>
+<tool>{"tool":"create_directories","parameters":{"paths":["lib/a","lib/b"]}}</tool>
+<tool>{"tool":"delete_files","parameters":{"paths":["old1.py","old2.py"]}}</tool>
+<tool>{"tool":"delete_file","parameters":{"path":"obsolete.py"}}</tool>
+<tool>{"tool":"list_files","parameters":{"path":"lib"}}</tool>
+<tool>{"tool":"flutter_analyze","parameters":{}}</tool>
+<tool>{"tool":"python_check","parameters":{}}</tool>
+<tool>{"tool":"run_command","parameters":{"command":"git status"}}</tool>
+<tool>{"tool":"git_commit","parameters":{"message":"fix: resolve null check"}}</tool>
+
+Key rules visible in every correct example:
+  - The response starts with <tool> and ends with </tool>
+  - Nothing exists before <tool> or after </tool>
+  - Inside the tags: a single JSON object with exactly two top-level keys: "tool" and "parameters"
+  - "tool" is a string: the exact tool name
+  - "parameters" is a JSON object (even if empty: {})
+  - All strings use double quotes, never single quotes
+  - No trailing commas anywhere
+  - No comments inside the JSON
+  - The JSON is compact; no pretty-printing needed
+  - A VALIDATION of JSON between tags <tool> and </tool>, before providing it, is mandatory
+
+--- INVALID examples (these are REJECTED) ---
+
+#1: Missing <tool> wrapper — bare JSON is NOT accepted
+{"tool":"read_file","parameters":{"path":"file.txt"}}
+
+#2: Text before the tool call — preamble is forbidden
+"I will now read the file..." <tool>{"tool":"read_file","parameters":{"path":"file.txt"}}</tool>
+
+#3: Text after the tool call — explanation is forbidden
+<tool>{"tool":"read_file","parameters":{"path":"file.txt"}}</tool> This will show the contents.
+
+#4: Wrong tag syntax — <tool=...> is not valid
+<tool=read_file>{"tool":"read_file","parameters":{"path":"file.txt"}}</tool>
+
+#5: Wrong tag name — only <tool> is accepted
+<tool_call>{"tool":"read_file","parameters":{"path":"file.txt"}}</tool_call>
+
+#6: Single quotes in JSON — only double quotes are valid JSON
+<tool>{'tool':'read_file','parameters':{'path':'file.txt'}}</tool>
+
+#7: Trailing comma in JSON — invalid JSON syntax
+<tool>{"tool":"read_file","parameters":{"path":"file.txt",}}</tool>
+
+#8: Missing colon — using > or = instead of :
+<tool>{"tool" > "read_file", "parameters" > {}}</tool>
+
+#9: Unquoted keys — JSON requires double-quoted keys
+<tool>{tool:"read_file",parameters:{path:"file.txt"}}</tool>
+
+#10: Extra keys — only "tool" and "parameters" are allowed at the top level
+<tool>{"tool":"read_file","parameters":{"path":"file.txt"},"comment":"please read this"}</tool>
+
+#11: Python-style function call — not valid
+read_file(path="file.txt")
+
+#12: Markdown code block wrapping — tags must be raw
+```
+<tool>{"tool":"read_file","parameters":{"path":"file.txt"}}</tool>
+```
+
+#13: Nested wrapper keys — do NOT wrap parameters in an extra object
+<tool>{"tool":"read_file","parameters":{"parameters":{"path":"file.txt"}}}</tool>
+
+#14: Using "name" instead of "tool"
+<tool>{"name":"read_file","parameters":{"path":"file.txt"}}</tool>
+
+#15: Using "args" or "arguments" instead of "parameters"
+<tool>{"tool":"read_file","args":{"path":"file.txt"}}</tool>
+
+#16: Leading whitespace — even a single space before <tool> causes rejection
+ <tool>{"tool":"read_file","parameters":{"path":"file.txt"}}</tool>
+
+#17: Multiple tool calls in one response — only ONE tool call per response
+<tool>{"tool":"read_file","parameters":{"path":"a.py"}}</tool>
+<tool>{"tool":"read_file","parameters":{"path":"b.py"}}</tool>
+
+#18: Unclosed JSON object — missing closing brace
+<tool>{"tool":"read_file","parameters":{"path":"file.txt"}</tool>
+
+#19: JSON comment inside — comments are not valid JSON
+<tool>{"tool":"read_file",/* tool name */"parameters":{"path":"file.txt"}}</tool>
+
+#20: Escaped or encoded tags — do NOT escape angle brackets
+&lt;tool&gt;{"tool":"read_file","parameters":{"path":"file.txt"}}&lt;/tool&gt;
+
+--- MANDATORY CHECKLIST before emitting a tool call ---
+
+[ ] Does the response start with exactly '<tool>' (no leading spaces)?
+[ ] Does the response end with exactly '</tool>' (no trailing spaces or newlines)?
+[ ] Is there NOTHING else in the response besides the <tool>...</tool> block?
+[ ] Is the content between the tags valid JSON (double quotes, no trailing commas)?
+[ ] Does the JSON have exactly two top-level keys: "tool" and "parameters"?
+[ ] Is "tool" a string matching an available tool name exactly?
+[ ] Is "parameters" a JSON object ({} if no parameters are needed)?
+[ ] Are all parameter values the correct type?
+[ ] Is this the ONLY tool call in the response?
+
+If any checkbox is unchecked, the parser will reject the call.
+Rejection means wasted turn and retry penalty. Get it right the first time.
+
+CORE BEHAVIORAL RULES
+=====================
+
+1. DECISIVENESS
+   - Use tools when necessary; answer directly when not.
+   - Continue until the task is complete or genuinely blocked.
+   - No internal planning narration unless explicitly asked.
+   - No permission-seeking for routine tool work.
+   - No empty responses.
+   - If the final response is empty and no errors occurred, retry up to 3 times.
+
+2. EXECUTION AUTONOMY
+   - User says 'proceed/yes/go/do it/continue' -> execute every required step in this turn.
+   - Do not pause between steps asking to keep going.
+   - A turn ends only one of two ways:
+     a) A tool call (more work needed), or
+     b) A complete final answer (task done or genuinely blocked)
+   - Forbidden phrases when work remains:
+     * 'I will ...'
+     * 'I need to see ...'
+     * 'We need to ...'
+     * 'Let me to proceed ...'
+     * 'Let me search...'
+     * 'Is there anything specific ...'
+     * 'Would you like me to proceed ...?'
+     * 'Would you like me to implement ...?'
+     * 'Shall I continue...?'
+     * 'Should I now...?'
+     * 'Ready when you are'
+     * 'Let me know if you'd like me to...'
+     * Any 'Now I'll [X]' / 'Let me [examine/check/read] [Y]' without immediately performing it
+
+3. BLOCKING RULES
+   - Valid end states only:
+     * Task complete
+     * Genuinely blocked, with the blocker stated plainly
+   - Anything else means keep working.
+
+TOOL USAGE DISCIPLINE
+====================
+
+WHEN TO USE TOOLS
+- Use tools only when they are needed to complete the task.
+- When you need to read more than one file, you MUST use read_files tool.
+- Never use multiple read_file calls in sequence when read_files can read them all at once.
+- Prefer dedicated tools (read_files, search_in_files, list_files) over run_command.
+
+WHEN NOT TO USE TOOLS
+- If the task is solvable without tools, answer directly.
+
+BATCH READING MANDATE
+- If you need to read more than ONE file, you MUST use read_files tool. PERIOD.
+- Using multiple read_file calls instead of a single read_files call is a protocol violation.
+
+MANDATORY VALIDATION
+- Any .dart file written, patched, or edited -> run flutter_analyze immediately in the same turn.
+- Any .py file written, patched, or edited -> run python_check immediately in the same turn.
+- You MUST read and parse the full validator output before proceeding.
+- If the output contains any error, validation has failed.
+- Warnings is better to not exists in the files you are editing.
+- Info and Typo do not count as errors unless they are explicit errors.
+- On failure: fix all errors in the same file immediately, re-run the validator, and repeat until zero errors remain.
+- Only when zero errors remain is considered done and work may continue.
+- When zero errors and zero warnings remain the work is considered perfect.
+- Strictly forbidden:
+  * Asking the user to run validation
+  * Claiming a validator tool is unavailable
+  * Ignoring errors or treating them as non-blocking
+  * Providing a final answer while errors are still present
+- Validators are run by the agent, not the user. No exceptions.
+
+TOOL OUTPUT HANDLING
+- Never echo, repeat, or stream raw tool output into the response.
+- Never include raw tool output in generated text; summarize only.
+- If output is repetitive or near-identical, collapse it into one representative item plus count.
+- Report only what was actually observed in the current turn.
+- Never invent file names, error messages, line numbers, or results.
+- Never claim that a tool returned a specific result unless it really did in this turn.
+
+SCOPE BOUNDARIES
+================
+- Work only inside the current project/workspace folder.
+- Never traverse outside: no '..' paths, no parent directories, no absolute system paths.
+- If the file is not in the project, ask the user for the location instead of broadening search.
+- Respect configured filesystem filters; excluded paths are authoritative.
+
+TEMPORARY FILES AND SCRIPTS (STRICT)
+====================================
+- NEVER create any file directly in the project root directory. PERIOD.
+- All temporary helper scripts, data files, intermediate artifacts, and any generated files MUST be placed inside the `.agentic/` directory.
+- If `.agentic/` does not exist, create it first before writing any temporary file.
+- This rule applies to ALL file creation tools: write_file, append_file, patch_file, move_file, and any command that generates TEMPORARY files.
+- Violating this rule is a protocol violation and will cause the turn to be rejected.
+
+EDITING RULES
+=============
+- Always inspect a file before changing it.
+- Always inspect and validate a file after changing it.
+- Prefer the most logic edit that solves the problem.
+- Never ask the user to apply changes manually when tools exist.
+- Use relative paths only.
+- Do not repeat the same failing action if validation fails; adjust strategy.
+- Target only files involved in the task and direct analysis; no unrelated modifications.
+- For heavy edits, apply changes block by block.
+- For any modification to an existing file, you MUST use patch_file. MANDATORY
+- write_file is ONLY allowed when creating a new file.
+- Never rewrite an entire existing file just to change one string or add one line.
+- Never delete or remove content outside the exact user request or proven necessity.
+- If a deletion would remove content whose relevance is unclear, preserve it and add a comment instead of deleting it.
+- When unsure whether content is truly obsolete, do not delete it, rather comment it than delete it
+- When the intent is uncertain, prefer a minimal comment, marker, or TODO over destructive change.
+- When you work in blocks make markers as identifiers if you need to return on a specific block.
+- Before deleting or replacing any existing content, verify the exact target and scope.
+
+PATCHING REQUIREMENT
+====================
+- patch_file is mandatory for every change to an existing file, you know that.
+- Do not use write_file to modify existing files, you know that.
+- When using patch_file, provide the exact old content from the file, including indentation, to guarantee a match.
+- If the patch target is ambiguous, inspect again before patching.
+
+HALUCINATION CONTROL
+====================
+- Never claim tools are unavailable before trying them.
+- Never invent tool results.
+- Never guess when information is insufficient.
+- Never provide responses aproximately, be sure on what you provide.
+- Use only evidence from the current workspace and current tool outputs.
+- If unsure, preserve content and comment rather than deleting or rewriting it, you know that.
+- Do not perform unrelated cleanup, refactoring, formatting, naming changes, or optimization unless explicitly requested or strictly required.
+- Do not expand the task beyond the user's request.
+
+DECISION LOGIC (in order)
+=========================
+1. Is a tool needed?
+   -> YES: call it immediately (use read_files for multiple reads; never chain read_file calls)
+   -> NO: answer directly
+
+2. Multiple tool choices?
+   -> Choose the sugested one or most direct and reliable one
+
+3. Unclear but solvable?
+   -> Using the full your power, make the most logic safe assumption and proceed
+
+4. Genuinely ambiguous or blocked?
+   -> Ask the user only at this point
+
+5. Multiple equally valid options?
+   -> Stop and ask for clarification
+
+SEARCH DISCIPLINE
+=================
+- Search only when necessary.
+- Keep searches narrow and specific.
+- Prefer exact names or symbols over broad scans, on failure use logic combinations
+- If search fails, refine instead of broadening.
+- search_in_files searches recursively through subdirectories; use it for targeted lookup.
+
+LARGE CONTEXT HANDLING
+======================
+
+ANALYSIS (read-heavy, no writes yet)
+- If full understanding requires inspecting many files or concepts, split analysis into numbered parts.
+- Do not begin implementation until analysis is complete.
+- Complete each part fully before moving to the next.
+- Drag the report onto each response for up-to-date context.
+
+IMPLEMENTATION (write-heavy, multi-step)
+- If the task requires more than one implementation step, execute exactly one step per turn, then stop.
+- Do not chain multiple write steps in a single turn.
+- Stop after the current safe step is done.
+
+MANDATORY STEP REPORT
+- After each implementation step, output this exact structure:
+
+  STEP REPORT
+  -----------
+  Done:
+    - [task completed in this step]
+    - ...
+  Pending:
+    - [next task]
+    - ...
+  Current state:
+    [1-3 sentences describing what is working, what is wired, what is missing]
+
+- This report is mandatory. Missing it is a protocol violation
+- It must reflect actual result, not assumptions.
+- Dragging this report to each response will help a lot for the next step, do it regularly
+
+FULL QUALITY MANDATE
+====================
+
+CODE QUALITY
+- Preferred code architecture. Follow the existing one
+- Every file you write or patch must be production-ready. No stubs, no placeholders, no TODO left unresolved unless explicitly permitted by the user.
+- No dead code, no commented-out blocks, no debug prints left in final output.
+- Logic must be correct and complete. Partial implementations are a protocol violation. Period
+- Every function, method, or class you produce must be fully implemented with correct behavior.
+- Variable names, function names, and structure must be clear, consistent, and idiomatic for the language.
+- Error handling must be present where failures are plausible. Silent failures are forbidden.
+- No copy-paste duplication. Extract shared logic into reusable units.
+
+VISUAL AND UI QUALITY
+- Any UI, screen, widget, page, or visual component must follow modern design standards.
+- Use current design language: clean layouts, intentional spacing, consistent typography, visual hierarchy.
+- Color usage must be purposeful. Avoid legacy or flat-looking default styles.
+- Animations and transitions, where applicable, must feel fluid and natural, not abrupt.
+- Responsiveness is mandatory: layouts must adapt correctly to different screen sizes.
+- Avoid generic or placeholder aesthetics. Every visual output must look intentional and polished.
+- Apply modern component patterns: cards, elevated surfaces, subtle shadows, smooth state transitions.
+- Icons, padding, and spacing must follow a consistent visual rhythm.
+
+QUALITY IS NOT OPTIONAL
+- Delivering low-quality output when high-quality is achievable is a protocol violation.
+- If a cleaner, more robust, or more modern approach exists and is within scope, use it.
+- Quality applies to every single file, not just the primary deliverable.
+
+TESTING MANDATE
+===============
+- For EVERY feature, function, or use case implemented, you MUST create corresponding tests.
+- Test framework is determined by project type:
+  * Flutter/Dart projects → Use flutter_test with widget, unit, and integration tests
+  * Python projects → Use pytest with unit and integration tests
+  * JavaScript/TypeScript → Use Jest or appropriate framework
+- Tests must cover:
+  * Happy path scenarios
+  * Edge cases and error conditions
+  * Boundary conditions
+- Test files must be created alongside implementation files (e.g., `feature.dart` → `feature_test.dart`).
+- All tests must pass before considering a task complete.
+- If a test runner is available (flutter test, pytest, etc.), run it after creating tests.
+
+
+PROJECT CONTEXT (from .agent.md)
+================================
+Overview:
+  We Radio (`we_radio`) is a cross-platform Flutter internet radio streaming application backed by a Python Flask API. It lets users browse, search, filter, favorite, and stream radio stations from a MariaDB catalog while persisting personal favorites and user-added stations locally in SQLite.
+
+Operative Nature:
+  - **Purpose**: Provide a modern, searchable internet radio client with persistent favorites, background playback, and cross-platform support (Android, Windows, Linux, macOS).
+  - **Primary Use Cases / User Flows**:
+  - Browse stations by country or genre.
+  - Search stations by name.
+  - Stream a station with play/pause and metadata display.
+  - Add/remove favorites and custom stations stored locally.
+  - Share stations and configure backend connectivity.
+  - **Key Features**: Paginated station catalog, search/filter by name/country/genre, favorites, local user-added stations, audio streaming, background images, ads, sharing, URL launching, casting, settings for backend URL.
+  - **Target Users / Domain**: General consumers of internet radio across mobile and desktop platforms.
+
+Technical Nature:
+  - **Tech Stack**:
+  - **Backend**: Python 3, Flask, SQLAlchemy + PyMySQL, MariaDB.
+  - **Frontend**: Flutter/Dart (SDK `>=3.1.0 <4.0.0`), Material Design.
+  - **Architecture & Layers**:
+  - `lib/` contains the Flutter app organized into screens, services, managers, models, controllers, widgets, theme, and utilities.
+  - `backend/app.py` exposes REST endpoints for querying the MariaDB `stations` table.
+  - The Flutter app consumes the backend via `ApiService`/`BackendService` and caches favorites/user stations in a local SQLite `local_radio.db` via `DatabaseHelper`.
+  - **Key Modules & Responsibilities**:
+  - `lib/screens/` — UI screens (home, search, favorites, genres, countries, now playing, settings, etc.).
+  - `lib/services/` — HTTP backend communication and local SQLite persistence.
+  - `lib/managers/` — `PlayerManager` (audio playback), `ThemeManager` (theming/backgrounds).
+  - `lib/controllers/` — pagination logic.
+  - `lib/models/` — `RadioStation`, `Country` data classes.
+  - `lib/core/statemanagement/` — `StateManager`/`MethodListener`/`ActionManager` cross-class communication mechanism.
+  - `backend/app.py` — Flask routes for paginated, filtered, and searched station data plus health checks.
+  - **Data Models / Persistence**:
+  - **Remote**: MariaDB `stations` table (fields: `ID`, `NAME`, `URL`, `URL_RESOLVED`, `HOMEPAGE`, `FAVICON`, `TAGS`, `COUNTRY`, `COUNTRYCODE`, `STATE`, `LANGUAGE`, `LANGUAGECODES`, `VOTES`, `CODEC`, `BITRATE`, `HLS`, `LASTCHECKOK`, `LASTCHECKTIME`, `CLICKCOUNT`, `CLICKTREND`, `SSL_ERROR`, `GEO_LAT`, `GEO_LONG`, `HAS_EXTENDED_INFO`).
+  - **Local**: SQLite `local_radio.db` managed via `sqflite`/`sqflite_common_ffi`, storing favorites and user-added stations.
+  - **API / Endpoints** (Flask):
+  - `GET /get_all` — paginated list of all stations.
+  - `GET /get_by_id?id=<id>` — single station by ID.
+  - `GET|POST /get_by_ids` — multiple stations by IDs.
+  - `GET /get_by_name?name=<name>` — search by name.
+  - `GET /get_by_country?country=<country>` — filter by country.
+  - `GET /get_by_genre?genre=<genre>` — filter by genre/tag.
+  - `GET /search?query=<query>` — general search.
+  - `GET /health` — backend health check.
+  - Responses are JSON with pagination metadata (`page`, `per_page`, `total`, `total_pages`, `stations`).
+  - **Build & Run**:
+  - **Backend**: `cd backend` (or run from project root), set `RADIOS_DB` env var, install requirements from `requirements.txt`, run `python app.py` or use `flask.wsgi` for WSGI deployment. See `backend_startup.md`.
+  - **Flutter**: `flutter pub get`, then `flutter run` for the target device. Use `flutter build <platform>` for releases.
+  - **Coding Standards**:
+  - Follow `analysis_options.yaml` including `package:flutter_lints/flutter.yaml`.
+  - Use `StateManager`/`MethodListener` for cross-class communication in `StatefulWidget`s.
+  - Use `ActionManager` for the same pattern in non-widget classes.
+  - Do **not** use `onMethodListener` for internal same-class calls.
+  - Never commit real credentials; configure backend DB via `RADIOS_DB` environment variable and app Settings.
+  - **Testing**:
+  - Flutter tests live in `test/`.
+  - Run `flutter analyze` project-wide after any Dart change.
+  - Run `flutter test` project-wide when tests exist or are affected.
+  - Python changes are validated with `python_check` on the affected directory.
+
+Project Structure:
+  - **Directory Layout**:
+  - `.agentic/` — agent context and temporary helper files (must never be committed to root).
+  - `lib/` — Flutter source code.
+  - `backend/` — Flask backend (`app.py`, `requirements.txt`, `flask.wsgi`).
+  - `android/`, `windows/`, `linux/`, `macos/` — platform-specific configurations.
+  - `assets/` — images, backgrounds, flags.
+  - `test/` — Flutter tests.
+  - `tools/` — utility scripts.
+  - `logs/` — log files.
+  - **Dependencies**:
+  - **Flutter**: `just_audio`, `just_audio_media_kit`, `sqflite`, `sqflite_common_ffi`, `provider`, `go_router`, `http`, `connectivity_plus`, `shared_preferences`, `path_provider`, `cached_network_image`, `flutter_svg`, `google_fonts`, `google_mobile_ads`, `share_plus`, `url_launcher`, `cast`, `mailer`, `audio_session`, `media_kit_libs_windows_audio`, `media_kit_libs_linux`.
+  - **Backend**: Flask, SQLAlchemy, PyMySQL (see `backend/requirements.txt`).
+
+Current State & Working Context:
+  - **Codebase Overview**:
+  - Flutter app version `1.0.0+1`.
+  - Connects to a Flask backend serving a MariaDB catalog of radio stations.
+  - Audio playback uses `just_audio` plus platform-specific media kit libraries.
+  - UI uses Material Design, cached network images, SVGs, Google Fonts, and background assets.
+  - **Recent Changes**:
+  - Backend `app.py` structured with pagination, search, filter, and health endpoints.
+  - `backend_startup.md` documents how to run the Flask backend and configure the Flutter app to connect.
+  - **Known Issues / Tech Debt**:
+  - Multiple screens and `state_manager.dart` contain empty `onMethodListener` stubs that need to be wired to cross-class method calls (see `todo.txt`).
+  - The `MethodListener`/`StateManager` mechanism is partially implemented and needs consistent use across the app.
+  - Default backend URL and DB credentials are hardcoded for a public test catalog; production deployments must override via `RADIOS_DB` and app Settings.
+  - **Immediate Focus**:
+  - Implement the `MethodListener`/`StateManager` cross-class communication pattern across all files listed in `todo.txt`.
+  - Ensure backend connectivity and error handling work correctly.
+  - Maintain project-wide lint/test compliance.
+
+Behavioral Rules:
+  - **Must Always**: Place all temporary helper scripts, data files, and intermediate artifacts inside `.agentic/` (create it if missing). Delete them when no longer needed. Never create such files directly in the project root.
+  - **Must Never**: Commit credentials, skip `flutter analyze` after Dart changes, use `onMethodListener` for internal same-class communication, or create temporary files in the project root.
+
+Other Resources:
+  - **External Docs / Links**:
+  - `backend_startup.md` — backend startup and Flutter connectivity configuration.
+  - `todo.txt` — list of files needing `MethodListener` wiring.
+  - **Config & Env Vars**:
+  - `RADIOS_DB` — MariaDB connection string for the Flask backend (override the hardcoded default).
+  - App Settings screen allows overriding the backend URL from the Flutter client.
+  - **Database Connections**:
+  - Remote: MariaDB `stations` table via SQLAlchemy `QueuePool`.
+  - Local: SQLite `local_radio.db` via `sqflite`/`sqflite_common_ffi`.
+  - **Notes**:
+  - The `StateManager`/`MethodListener` pattern uses `MethodListener<T>().callMethod("method_name", params: {...})` to dispatch messages that are intercepted in `onMethodListener(MethodData methodData)` of registered listeners.
+  - For non-widget classes use `ActionManager` with the same dispatch/listen architecture.
+
+
+TASK FLOW PROTOCOL (ACTIVE)
+===========================
+This conversation runs in structured task-flow mode. Follow
+these rules whenever the user's request requires 3+ distinct
+steps (e.g. 'implement / refactor / fix multiple / build').
+For trivial single-step requests, fall through to the normal
+tool protocol without emitting any task tags.
+
+1) PLAN FIRST -- THIS IS NON-NEGOTIABLE. As the VERY FIRST
+   thing you emit on the FIRST iteration of every new
+   user request, declare the complete plan inside a single
+   <tasks>...</tasks> block. NO tool call may precede it.
+   If the first reply does not contain a <tasks> block, the
+   orchestrator rejects the reply, discards it, and forces a
+   re-emission with a corrective nudge -- you lose that whole
+   iteration. The only exception is when the user prompt is
+   itself a <task_action>{...}</task_action> envelope, which
+   means you are continuing an existing plan (no re-plan needed).
+
+   Use compact JSON. Maximum 12 tasks; if the work needs
+   more, plan only the next 12 and re-plan later. Each task
+   must have:
+     {"id": <int>, "name": "<short title>", "description": "<what to do>", "success_criteria": "<how you know it is done>", "depends_on": [<int>, ...]}
+
+   CORRECT:
+     <tasks>[{"id":1,"name":"Locate temperature setter","description":"Find where the slider writes the value","success_criteria":"File and line identified","depends_on":[]},{"id":2,"name":"Forward to backend","description":"...","depends_on":[1]}]</tasks>
+
+2) PLAN-AND-START IN THE SAME REPLY -- NON-NEGOTIABLE.
+   After the closing </tasks> tag, in the SAME reply, you MUST
+   immediately:
+     a) emit <task_status>{"id":1,"status":"in_progress","note":"<one-line plan for this task>"}</task_status>
+     b) emit the FIRST <tool> call for task #1.
+   DO NOT stop after the </tasks> tag. The orchestrator treats
+   a reply that contains ONLY a <tasks> block (no task_status,
+   no tool) as a stall and forces a corrective nudge that costs
+   one full iteration. A re-emitted plan is NOT recovery -- it
+   is a second stall.
+
+   CORRECT (plan + start, single reply):
+     <tasks>[{"id":1,"name":"Read pubspec","description":"...","depends_on":[]}, {"id":2,"name":"Patch dep","description":"...","depends_on":[1]}]</tasks>
+     <task_status>{"id":1,"status":"in_progress","note":"reading pubspec.yaml to locate the record dep"}</task_status>
+     <tool>{"tool":"read_file","parameters":{"path":"pubspec.yaml"}}</tool>
+
+   WRONG (plan only -- model stalls):
+     <tasks>[{"id":1,...}, {"id":2,...}]</tasks>
+     (no task_status, no tool -- the next iteration will be
+      wasted on a corrective nudge.)
+
+3) WORK ONE TASK AT A TIME. Use the normal <tool> protocol
+   for any reads / writes you need. Do not jump ahead.
+
+4) REPORT STATUS. After finishing (or failing to finish) the
+   current task, emit ONE <task_status> tag:
+     <task_status>{"id":<int>,"status":"<value>","note":"<one line summary>"}</task_status>
+   EVERY iteration that produces work output MUST include a
+   <task_status> tag. Skipping it freezes the UI checklist
+   at the previous state and the orchestrator will inject a
+   corrective reminder forcing you to report on the next turn.
+
+   Valid status values:
+     - pending      : not started yet (used only inside <tasks>)
+     - in_progress  : starting work on this task
+     - done         : completed and success_criteria met
+     - partial      : made progress but not finished; you need
+                      another iteration
+     - blocked      : cannot proceed without information from
+                      the user (state what you need)
+     - failed       : tried and could not succeed; explain why
+                      in the note
+     - skipped      : decided this task is unnecessary
+
+5) After every <task_status>, the orchestrator will AUTO-proceed to the next pending task without further confirmation.
+
+6) RE-PLANNING. If during execution you realise the plan is
+   wrong (new tasks discovered, ordering off, etc.) emit a
+   fresh <tasks>...</tasks> block with the REMAINING tasks
+   (renumbered). The orchestrator will replace the open
+   pending tasks with the new list and continue.
+   IMPORTANT: do NOT re-emit a fresh plan just because the
+   previous reply did not include task_status + tool. That
+   was already counted as a stall; emit the missing pieces
+   for the EXISTING plan instead.
+
+7) FINAL ANSWER. When ALL tasks are 'done' (or definitively
+   skipped/failed), emit a normal user-facing answer in plain
+   prose / markdown -- NO more task tags. Summarize what was
+   accomplished and surface any caveats. This is what the
+   user actually reads in the chat bubble.
+
+WRONG (no plan, jumps straight into a tool):
+  <tool>{"tool":"read_file",...}</tool>
+
+WRONG (raw status update outside a tag):
+  Task 1 is done.
+
+WRONG (mixing reasoning with the tag):
+  Let me think... <task_status>{"id":1,"status":"done"}</task_status>
+  (the reasoning belongs inside <think>...</think>; the tag
+   must be the only top-level structured artefact in the reply
+   alongside any single <tool> call.)
+
+[Filesystem]
+- read_file(path:string, start_line?:integer, end_line?:integer, offset?:integer, limit?:integer): Read a local file. Pass only `path` to read the whole file (capped at 100 KB). For large files, pass start_line+end_line (1-indexed, inclusive) or offset+limit to read a specific window — the response includes the line-numbered slice plus the file's total line_count so you can ask for the next window.
+- read_files(paths:array, max_lines_per_file?:integer): Read multiple files in one call. Returns concatenated contents with file headers, ideal for loading several related files at once instead of making separate read_file calls for each one. Each file is prefixed with a === path === separator. Output is capped at 200 KB total; files beyond the cap are listed by name only. Use max_lines_per_file to limit lines per file (default 200).
+- write_file(path:string, content:string): Create or overwrite a local file.
+- append_file(path:string, content:string): Append content to an existing file.
+- delete_file(path:string): Delete a local file.
+- patch_file(path:string, old_content:string, new_content:string): Replace the FIRST occurrence of old_content with new_content in a file. Use this for targeted edits (a function, a block) instead of rewriting the whole file with write_file.
+- move_file(source:string, destination:string): Move or rename a file or directory.
+- create_directory(path:string): Create a directory and any missing parent directories.
+- write_files(items:array): BATCH write of multiple files in a single call. Each item is processed independently; failures of individual files do not abort the rest. Prefer this over calling write_file N times -- saves N-1 iterations.
+- patch_files(items:array): BATCH patch of multiple files in a single call. Each item replaces the first occurrence of old_content with new_content in the given path. Use this for multi-file refactors -- saves N-1 iterations vs. calling patch_file repeatedly.
+- create_directories(paths:array): BATCH create multiple directories in a single call. Each path gets `mkdir -p` semantics.
+- delete_files(paths:array): BATCH delete multiple files in a single call. Each path is processed independently.
+
+[Search]
+- list_files(path?:string): List files in a directory (relative to project root).
+- list_files_recursive(path?:string, max_depth?:integer): Recursively list the directory tree (up to max_depth levels). Better than list_files for exploring project structure.
+- search_in_files(pattern?:string, patterns?:array, path?:string, file_glob?:string): Grep-like search: recursively find lines matching regex pattern(s) across files in a directory tree. Pass EITHER ``pattern`` (single regex) OR ``patterns`` (list of regexes for a BATCH search -- the file tree is walked ONCE for all patterns, so this saves N-1 iterations vs. calling the tool repeatedly). Single-pattern returns {matches, total, truncated}. Multi-pattern returns {results: {pattern -> {matches, total, truncated}}, grand_total}.
+- find_files(pattern:string, path?:string): Recursively find files or directories whose name matches a glob pattern, e.g. '*.dart', 'main.*', 'settings*'.
+
+[Git]
+- git_status(no parameters): Show the current git branch and working-tree changes (modified/untracked files).
+- git_branches(no parameters): List all local and remote git branches and indicate which is currently checked out.
+- git_log(count?:integer): Show recent git commit history.
+- git_diff(path?:string): Show the git diff for a file or directory relative to HEAD.
+- git_checkout(branch:string): Switch to a different git branch.
+- git_commit(message:string): Stage all changes (git add -A) and commit with a message.
+
+[Flutter]
+- flutter_analyze(path?:string, timeout?:integer): Run `flutter analyze` on the project (or a specific file/dir) and return the diagnostics. Use after editing Dart code to verify there are no static errors or new lints. Read-only — safe to call in sandbox mode.
+
+[Python]
+- python_check(path?:string, max_files?:integer): Compile Python source files to detect syntax errors without writing artifacts. Read-only and safe in sandbox mode. Use after editing Python code to ensure it still parses.
+- python_lint(path?:string, timeout?:integer): Run `ruff check` on a Python file or directory and return the lint diagnostics. Read-only — safe to call in sandbox mode. Use after editing Python code to verify there are no style/error issues.
+- python_format(path?:string, timeout?:integer): Run `ruff format` on a Python file or directory. Rewrites files in place — call after large edits to normalise quotes, indentation, and line length.
+- python_test(path?:string, timeout?:integer): Run pytest on a Python file or directory. Returns pass/fail/error/skipped counts plus the captured output. Use after editing Python code to verify behaviour. Executes user code — disabled in sandbox mode.
+
+[Shell]
+- run_command(command:string): Run a shell command (30s timeout) inside the project root.
+
+[Web]
+- web_fetch(url:string, timeout?:integer): Fetch a URL and return its text content (up to 100 KB). Use for reading documentation pages, API references, or any publicly accessible web resource. Only http/https URLs are allowed.
+- web_search(query:string, max_results?:integer, timeout?:integer): Search the web using DuckDuckGo and return a list of results (title, snippet, URL). No API key required. Use when you need to look up current information, documentation, or answers that are not in the local codebase.
+
+[Other]
+- db_query(connection_key:string, query:string, parameters?:object): Execute a SQL query using a named database connection. Supports MariaDB (mysql+pymysql://user:pass@host:port/db), SQL Server (mssql://user:pass@host:port/db), and SQLite (file path). Connections must be configured in Settings -> Developer -> Database Connections. SELECT results are capped at 500 rows; use LIMIT/TOP for pagination.
+', 'role': 'system'}, {'content': 'Analizza il progetto e dimmi come deve essere migliorato.', 'role': 'user'}, {'content': 'Ho analizzato il progetto We Radio. Ecco un quadro completo di come deve essere migliorato, organizzato per area.
+
+## 1. Completare il meccanismo `StateManager` / `MethodListener`
+
+Questo è il debito tecnico principale, esplicitato in `todo.txt`.
+
+- **File con `onMethodListener` vuoto**: `app.dart`, `countries_screen.dart`, `favorites_screen.dart`, `genres_screen.dart`, `home_screen.dart`, `now_playing_screen.dart`, `radios_by_country_screen.dart`, `radios_by_genre_screen.dart`, `search_screen.dart`, `settings_screen.dart`, `state_manager.dart`.
+- **Problema**: le classi estendono `StateManager` ma non implementano la logica di dispatch, quindi i messaggi cross-class non producono effetti.
+- **Soluzione**:
+  - Definire costanti per i metodi in `lib/core/constants/method_listeners_constants.dart` (es. `CHANGE_SCREEN`, `PLAY_STATION`, `REFRESH_FAVORITES`, `TOGGLE_FAVORITE`, `CHANGE_BACKGROUND`, `SET_BG_COLOR`, `SET_BG_IMAGE`, `SHOW_ERROR`, `BACKEND_REACHED`).
+  - Sostituire le chiamate dirette a `AppManager().weRadioAppState!.changeScreen(...)` con `MethodListener<WeRadioApp>().callMethod(MethodName.CHANGE_SCREEN, params: {...})`.
+  - Implementare `onMethodListener` in ogni screen per reagire ai metodi ricevuti.
+  - Per classi non-widget usare `ActionManager` (se esiste) oppure completarne l'implementazione.
+
+## 2. Correggere la navigazione e i nomi delle route
+
+- In `app.dart`, `ScreenName.RADIOS_BY_COUNTRY_SCREEN` e `ScreenName.RADIOS_BY_GENRE_SCREEN` ritornano entrambi `CountriesScreen()` e `GenresScreen()`, cioè le liste di filtri, non le liste di stazioni. Mancano gli screen `RadiosByCountryScreen` e `RadiosByGenreScreen`.
+- `ScreenName.RANDOM_SCREEN` punta a `SearchScreen`, che è fuorviante: la ricerca casuale è gestita internamente da `SearchScreen` con `_isSearchMode = false`, ma il nome dello screen e l'icona del drawer dicono "Casuale". Meglio creare uno `RandomScreen` dedicato o rinominare.
+
+## 3. Migliorare la gestione del player
+
+- `PlayerManager` è un `ChangeNotifier`, ma in diversi screen viene istanziato con `PlayerManager()` invece di `Provider.of<PlayerManager>(context, listen: false)`, perdendo lo stato condiviso. Esempi: `favorites_screen.dart` riga 94, `search_screen.dart` riga 124.
+- `home_screen.dart` usa `Provider.of<PlayerManager>(context, listen: false)` correttamente, ma poi chiama `AppManager().weRadioAppState!.changeScreen(...)` in modo sincrono prima di `await player.playStation(...)`. Va bene, ma manca un feedback di caricamento.
+- `NowPlayingScreen` legge `playerProvider` dentro `build`, ma non ascolta i cambiamenti di `currentStation` in modo robusto. Inoltre il menu "favorite" usa `StatefulBuilder` con una closure asincrona mal strutturata.
+- Aggiungere gestione errori visibili nel player (toast/snackbar quando `hasFatalError` diventa true).
+
+## 4. Sistemare i riferimenti al backend
+
+- `BackendService._tryStartBackend()` cerca `backend/main.py`, ma il file si chiama `backend/app.py`. Questo rende impossibile l'avvio automatico desktop.
+- Il backend di default (`ims.helioho.st`) ha credenziali hardcoded. Va bene per sviluppo, ma va documentato e reso facile l'override via `RADIOS_DB`.
+- `ApiService` non gestisce timeout espliciti: aggiungere `http.get(...).timeout(Duration(seconds: ...))` per evitare blocchi indefiniti.
+
+## 5. Migliorare la persistenza locale
+
+- `DatabaseHelper` usa `sqflite_common_ffi` solo per desktop, ma non inizializza `sqfliteFfiInit()` su Windows/Linux/macOS. Su alcune piattaforme può fallire.
+- Manca la gestione della migrazione: `onUpgrade` è vuoto.
+- I campi `created_at` in `user_stations` non vengono popolati.
+- `getUserStation` usa `id.abs()` per ricostruire l'ID negativo, ma `_radioStationFromUserRow` già nega l'ID. Verificare la coerenza.
+
+## 6. UI/UX
+
+- **Contrasto**: `NowPlayingScreen` usa testo nero (`Colors.black`) su sfondo che può essere chiaro (immagini casuali + gradienti chiari). A volte può diventare illeggibile. Aggiungere uno scrim scuro sotto i testi principali o usare colori adattivi.
+- **Background**: `BackgroundWidget` carica immagini da `assets/images/backgrounds/backgrounds/N.jpg`, ma il path doppio `backgrounds/backgrounds` è sospetto. Verificare la struttura reale in `assets/`.
+- **Drawer**: chiude e poi naviga con `AppManager().weRadioAppState!.changeScreen(...)`. Se `WeRadioAppState` è null (non ancora inizializzato) crasha. Aggiungere null-check.
+- **Settings**: la sezione backend è visibile solo in `kDebugMode`. Per produzione è un problema perché l'utente non può cambiare URL. Rimuovere il flag o renderlo configurabile.
+
+## 7. Lint e qualità del codice
+
+`flutter analyze` riporta solo 3 info, tutte su nomi costanti non `lowerCamelCase`:
+
+- `MethodName.CHANGE_BACKGROUND`
+- `Resources.PATH_BASE`
+- `Resources.ASSETS_BACKGROUNDS`
+
+Non sono errori, ma correggerli migliora la conformità a `flutter_lints`.
+
+## 8. Test
+
+- I test esistenti (`test/paginated_list_test.dart`, `test/pagination_controller_test.dart`, `test/widget_test.dart`) coprono solo paginazione e un widget generico.
+- Mancano test per:
+  - `PlayerManager`
+  - `BackendService`
+  - `ApiService`
+  - `DatabaseHelper`
+  - `StateManager` / `MethodListener`
+  - `RadioStation.fromMap`
+  - Gli screen principali.
+
+## 9. Sicurezza e pulizia
+
+- `keystore.jks` e `keystore_leggimi.txt` sono nel repository. Verificare che non contengano chiavi di firma reali; in caso, rimuoverli da Git e aggiungerli a `.gitignore`.
+- `backend/site-packages/` è una copia locale di dipendenze Python. Non dovrebbe essere committato; usare `requirements.txt` e `.gitignore`.
+- Credenziali DB in chiaro in `backend/app.py` e `backend_startup.md`: va bene solo se è un catalogo pubblico di test, ma aggiungere un avviso prominente.
+
+## 10. Architettura generale
+
+- Il progetto mischia Provider, `StateManager` custom e `AppManager` globale. Scegliere un unico pattern per la navigazione e lo stato condiviso. Il `StateManager` custom è ridondante rispetto a Provider; se lo si vuole mantenere, usarlo in modo coerente, altrimenti deprecarlo.
+- `AppManager` espone `WeRadioAppState?` che viene forzato con `!` in molti punti. Sostituire con null-check e metodi helper sicuri.
+
+## Priorità consigliata
+
+1. **Completare `StateManager`/`MethodListener`** in tutti i file di `todo.txt`.
+2. **Correggere la navigazione** per Paese/Genere e creare gli screen mancanti.
+3. **Unificare l'uso di Provider** per `PlayerManager`.
+4. **Correggere `BackendService._tryStartBackend`** (`app.py` invece di `main.py`).
+5. **Rendere Settings accessibile in release** per cambiare URL backend.
+6. **Aggiungere test** per i servizi critici.
+7. **Pulire il repository** da `site-packages`, keystore e credenziali esposte.
+8. **Migliorare contrasto e feedback UI** in `NowPlayingScreen` e durante il caricamento.
+
+Se vuoi, posso procedere con una di queste aree iniziando a implementare le modifiche.', 'role': 'assistant'}, {'content': '[You have filesystem tools available. If this request requires any file access, inspection, editing, execution, or verification, you MUST emit exactly ONE tool call: <tool>{"tool":"NAME","parameters":{...}}</tool>. - Do not add any explanation, preamble, or follow-up text before or after the tool call. - Prefer dedicated tools first (read_files/search_in_files/list_files/flutter_analyze/python_check/python_lint/python_test/git_*) and use run_command only as a last resort. - The tool JSON must remain strictly valid under the initial system prompt; prefer single quotes inside shell commands. After any code change, you MUST run the highest-scope validator available before responding. Flutter validation scope priority: 1. Entire project/workspace. 2. Package/module. 3. Single file. Always choose the highest available scope unless the user explicitly requests a narrower scope. Workspace validation defaults: - Flutter/Dart validation is PROJECT-SCOPED by default. - Treat every source file as part of an interconnected codebase. - Assume changes may affect imports, dependencies, generated code, tests, build configuration, and runtime behavior outside the modified file. - Never limit validation to the edited file unless the user explicitly requests file-only validation. Flutter rules: - Whenever any .dart file, pubspec.yaml, analysis_options.yaml, build configuration, generated source, asset configuration, or test is created, modified, analyzed, reviewed, refactored, or verified, run flutter_analyze against the project root. - The purpose of flutter_analyze is to detect cross-file errors, type issues, dependency problems, build issues, and regressions that cannot be detected from a single file. - Passing a specific file path to flutter_analyze is prohibited unless the user explicitly requests file-specific analysis. - If both a modified file path and project root are available, always prefer the project root. - After any Flutter/Dart code change, project-wide flutter_analyze is mandatory before reporting success. - If Flutter tests exist or are affected by the change, run project-wide flutter_test after flutter_analyze. - When running flutter_analyze or flutter_test, always prefer the working directory and never pass a specific file unless explicitly requested by the user. Python rules: - Whenever any .py file, package configuration, dependency definition, generated source, or test is created or modified, run python_check passing the directory of each affected file as the target path. - If multiple modified files span different directories, run python_check once per affected directory. - After python_check passes, if tests exist in or near the affected directory, run python_test passing that same directory as the target path. - Never run project-wide Python validation unless the user explicitly requests it. Shared validation rules: - Never use cd to change directory before any command. - Never claim validation passed unless the required validators were actually executed. - Never skip validation when a validator exists. - If the request is not file-related, reply normally.]
+[- You are an excellent software analyst and an excellent software engineer. - You have access to all tools and capabilities. Do not hold back. - Use every resource available and all your power to complete the task as thoroughly and efficiently as possible. - If this task requires a lot of effort, you must break it down into separate, numbered tasks. - Upon confirmation of running the tasks, if there is more than one task, run them one at a time and wait for confirmation for the next task. - If you need to create tests on use cases, you need to place the test files in the tests/ folder. If the folder doesn't exist, create it. Do not use phrases like: 'I will ...', 'I need to see ...', 'We need to ...', 'Let me proceed ...', 'Let me search...', 'Is there anything specific ...', 'Would you like me to proceed ...?', 'Would you like me to implement ...?'. Instead, perform the action immediately or give the final answer.]
+
+[TASK COMPLIANCE addendum -- this OVERRIDES the 'emit ONLY the tool call / no preamble' rule above: you SHOULD emit your <task_status>{...}</task_status> tag in the SAME reply, immediately BEFORE the tool call. Task-protocol tags (<tasks>, <task_status>) are NOT preamble -- they are stripped from the user-visible reply. Emit no OTHER prose around the tool call.]
+
+[CONTEXT: This is a confirmation reply. The user is confirming the plan from your IMMEDIATELY PRECEDING assistant turn. Execute the FIRST concrete action from that plan now. Do NOT re-explain the plan. Do NOT re-research the codebase if you already have enough context. If the plan involves editing files, START EDITING with patch_file..]
+
+ Da dove inizieresti?', 'role': 'user'}, {'content': '<tool>{"tool":"read_files","parameters":{"paths":["todo.txt","lib/core/statemanagement/state_manager.dart","lib/core/statemanagement/method_listener.dart","lib/core/app_manager.dart","lib/app.dart","lib/screens/home_screen.dart","lib/screens/search_screen.dart","lib/screens/favorites_screen.dart","lib/screens/countries_screen.dart","lib/screens/genres_screen.dart","lib/screens/radios_by_country_screen.dart","lib/screens/radios_by_genre_screen.dart","lib/screens/now_playing_screen.dart","lib/screens/settings_screen.dart"]}}</tool>', 'role': 'assistant'}, {'content': 'Tool `read_files` returned:
+{"status": "success", "files_read": 11, "files_error": 3, "files_omitted": 0, "total_bytes": 57178, "content": "=== todo.txt ===\nIn those files:\r\n\r\napp.dart\r\ncountries_screen.dart\r\nfavorites_screen.dart\r\ngenres_screen.dart\r\nhome_screen.dart\r\nnow_playing_screen.dart\r\nradios_by_country_screen.dart\r\nradios_by_genre_screen.dart\r\nsearch_screen.dart\r\nsettings_screen.dart\r\nstate_manager.dart\r\n\r\nIs implemented the method:\r\n\r\n @override\r\n  void onMethodListener(MethodData methodData) {\r\n    // TODO: implement onMethodListener\r\n  }\r\n\r\nThe method is a listener of calls made from out of that class.\r\nOn extended class creation exists a mechanism of StateManager  that attach and detach the class itself as listener on that method.\r\n\r\nThe method receives messages via a StateStreamFactory that are intercepted on onMethodListener.\r\n\r\nAn example of use of  that is: \"MethodListener<T>().callMethod(\"Method_name\"...\"\r\n\r\nReal example:\r\nMethodListener<WeRadioApp>().callMethod( MethodName.CHANGE_SCREEN, params: {MethodParameterName.SCREEN_NAME: screenName});\r\n\r\n@override\r\nvoid onMethodListener(MethodData methodData) {\r\n    switch (methodData.methodName) {\r\n      case ThemeMethodName.setBgImage:\r\n      case ThemeMethodName.setBgColor:\r\n        break;\r\n      case MethodName.CHANGE_SCREEN:\r\n        final screenName = methodData.methodParams?[MethodParameterName.SCREEN_NAME] as String?;\r\n        if (screenName == null) return;\r\n        _home = _screenByName(screenName, methodData.methodParams);\r\n        break;\r\n    }\r\n}\r\n\r\nIn this case _home get the value that is passed in methodData.\r\n\r\nGiven this mechanism, you should link all methods with their caller out of class itself. Don't use onMethodListener for internal class calls in the same state.\r\n\r\nIf in class A should be called method methodA() it can be with this mechanism;\r\n\r\nMethodListener<A>().callMethod( \"MEHTOD_A\", params: {\"msg\": \"say ciao\"});\r\n\r\nThen in class A:\r\n@override\r\nvoid onMethodListener(MethodData methodData) {\r\n    switch (methodData.methodName) {\r\n      case \"MEHTOD_A\":\r\n        print (methodData.methodParams?[\"msg\"] as String?);\r\n        break;\r\n    }\r\n}\r\n\r\nConclusion, implement all calls everywhere in app using this mechanism.\r\nIf there is needed a mechanism for simple classes and not widgets with the same logic can be used ActionManager which have the same architecture but doesn't work on StatefulWidgets, but, in classes\r\n\n\n=== lib/core/statemanagement/state_manager.dart ===\nimport 'dart:async';\r\nimport 'dart:developer';\r\nimport 'package:flutter/foundation.dart';\r\nimport 'package:flutter/widgets.dart';\r\nimport 'method_data.dart';\r\nimport 'method_listener.dart';\r\nimport 'state_stream_factory.dart';\r\n\r\nabstract class IStateManager<W extends StatefulWidget> extends State<W> {\r\n  void onMethodListener(MethodData methodData);\r\n  Object? get methodListenerId;\r\n  void attachListener();\r\n  void detachListener();\r\n\r\n  @override\r\n  void initState() {\r\n    super.initState();\r\n    attachListener();\r\n  }\r\n\r\n  @override\r\n  void dispose() {\r\n    detachListener();\r\n    super.dispose();\r\n  }\r\n}\r\n\r\nabstract class StateManager<T extends StatefulWidget> extends IStateManager<T> {\r\n  StreamSubscription<IMethodData>? _subscription;\r\n\r\n  void _methodListener(IMethodData methodData) {\r\n    final Object? receiverId = methodData.methodReceiverId;\r\n    final bool fire = receiverId == null || receiverId == methodListenerId;\r\n    final bool isOK = methodData is MethodData;\r\n\r\n    if (mounted && isOK && fire) {\r\n      setState(() {\r\n        onMethodListener(methodData);\r\n      });\r\n    }\r\n  }\r\n\r\n  IMethodListener<L> getStateListener<L>() => MethodListener<L>();\r\n\r\n  @override\r\n  Object? get methodListenerId => null;\r\n\r\n  int get _classTypeHashCode => widget.runtimeType.hashCode;\r\n\r\n  @override\r\n  void attachListener() {\r\n    if (_subscription != null) {\r\n      if (kDebugMode) {\r\n        log(\"WARNING: Listener already attached for $_classTypeHashCode (${widget.runtimeType})\");\r\n      }\r\n      return;\r\n    }\r\n\r\n    if (kDebugMode) {\r\n      log(\"attachListener _classTypeHashCode $_classTypeHashCode (${widget.runtimeType})\");\r\n    }\r\n\r\n    _subscription = StateStreamFactory(_classTypeHashCode).addListener(_methodListener);\r\n  }\r\n\r\n  @override\r\n  void detachListener() {\r\n    if (_subscription == null) {\r\n      if (kDebugMode) {\r\n        log(\"WARNING: Attempted to detach listener that was not attached for $_classTypeHashCode\");\r\n      }\r\n      return;\r\n    }\r\n\r\n    if (kDebugMode) {\r\n      log(\"detachListener _classTypeHashCode $_classTypeHashCode (${widget.runtimeType})\");\r\n    }\r\n\r\n    StateStreamFactory(_classTypeHashCode).removeListener(_subscription!);\r\n    _subscription = null;\r\n  }\r\n}\r\n\n\n=== lib/core/statemanagement/method_listener.dart ===\nimport 'method_data.dart';\r\nimport 'state_stream_factory.dart';\r\n\r\nabstract interface class IMethodListener<T> {\r\n  Future<void> callMethod(String methodName, {Object? receiverId, Map<String, Object>? params});\r\n}\r\n\r\nclass MethodListener<T> implements IMethodListener<T> {\r\n  MethodListener._();\r\n\r\n  static final _methodListener = <int, MethodListener>{};\r\n\r\n  factory MethodListener() => _methodListener.putIfAbsent(T.hashCode, () => MethodListener<T>._()) as MethodListener<T>;\r\n\r\n  @override\r\n  Future<void> callMethod(String methodName, {Object? receiverId, Map<String, Object>? params}) async =>\r\n      StateStreamFactory(T.hashCode).addToStream(MethodData(methodName, methodReceiverId: receiverId, methodParams: params));\r\n}\r\n\n\n=== lib/core/app_manager.dart ===\nERROR: File not found: lib/core/app_manager.dart\n\n=== lib/app.dart ===  (truncated)\n  1\timport 'package:flutter/foundation.dart';\n  2\timport 'package:flutter/material.dart';\n  3\timport 'package:provider/provider.dart';\n  4\t\n  5\timport 'managers/player_manager.dart';\n  6\timport 'managers/theme_manager.dart';\n  7\timport 'screens/countries_screen.dart';\n  8\timport 'screens/edit_radio_screen.dart';\n  9\timport 'screens/favorites_screen.dart';\n 10\timport 'screens/genres_screen.dart';\n 11\timport 'screens/home_screen.dart';\n 12\timport 'screens/now_playing_screen.dart';\n 13\timport 'screens/search_screen.dart';\n 14\timport 'screens/settings_screen.dart';\n 15\timport 'screens/suggest_screen.dart';\n 16\timport 'services/backend_service.dart';\n 17\timport 'services/preferences_service.dart';\n 18\timport 'theme/app_theme.dart';\n 19\timport 'widgets/background_widget.dart';\n 20\t\n 21\tAppManager? appManager;\n 22\t\n 23\tclass AppManager {\n 24\t  WeRadioAppState? weRadioAppState;\n 25\t  final GlobalKey<NavigatorState> navigatorKey = GlobalKey<NavigatorState>();\n 26\t  static final AppManager _instance = AppManager._();\n 27\t\n 28\t  factory AppManager() => _instance;\n 29\t\n 30\t  AppManager._();\n 31\t}\n 32\t\n 33\t/// Root widget of the We Radio app.\n 34\t/// Uses Provider for shared state (theme and player) and a [Navigator] so that\n 35\t/// going back from [NowPlayingScreen] returns to the previous list screen with\n 36\t/// its scroll position and loaded data intact.\n 37\tclass WeRadioApp extends StatefulWidget {\n 38\t  final String? backendError;\n 39\t\n 40\t  WeRadioApp({super.key, this.backendError});\n 41\t\n 42\t  @override\n 43\t  State<WeRadioApp> createState() => WeRadioAppState();\n 44\t}\n 45\t\n 46\tclass WeRadioAppState extends State<WeRadioApp> {\n 47\t  @override\n 48\t  void initState() {\n 49\t    super.initState();\n 50\t    AppManager().weRadioAppState = this;\n 51\t    PlayerManager().init();\n 52\t    ThemeManager().loadFromPreferences(\n 53\t      PreferencesService.instance.getBgImageActivity(),\n 54\t      PreferencesService.instance.getBgColorActivity(),\n 55\t    );\n 56\t  }\n 57\t\n 58\t  @override\n 59\t  Widget build(BuildContext context) {\n 60\t    return MultiProvider(\n 61\t      providers: [\n 62\t        ChangeNotifierProvider<ThemeManager>.value(value: ThemeManager()),\n 63\t        ChangeNotifierProvider<PlayerManager>.value(value: PlayerManager()),\n 64\t      ],\n 65\t      child: Consumer2<ThemeManager, PlayerManager>(\n 66\t        builder: (context, themeManager, playerManager, child) {\n 67\t          return MaterialApp(\n 68\t            title: 'We Radio',\n 69\t            debugShowCheckedModeBanner: false,\n 70\t            theme: AppTheme.lightTheme,\n 71\t            darkTheme: AppTheme.darkTheme,\n 72\t            themeMode: ThemeMode.dark,\n 73\t            navigatorKey: AppManager().navigatorKey,\n 74\t            builder: (context, child) {\n 75\t              return BackgroundWidget(child: child!);\n 76\t            },\n 77\t            initialRoute: widget.backendError != null ? ScreenName.BACKEND_UNAVAILABLE_SCREEN : ScreenName.HOME_SCREEN,\n 78\t            onGenerateRoute: _onGenerateRoute,\n 79\t          );\n 80\t        },\n 81\t      ),\n 82\t    );\n 83\t  }\n 84\t\n 85\t  Route<dynamic>? _onGenerateRoute(RouteSettings settings) {\n 86\t    final name = settings.name ?? ScreenName.HOME_SCREEN;\n 87\t    final params = settings.arguments as Map<String, dynamic>?;\n 88\t\n 89\t    // Hidden route used only on startup when the backend is not reachable.\n 90\t    if (name == ScreenName.BACKEND_UNAVAILABLE_SCREEN) {\n 91\t      return MaterialPageRoute(\n 92\t        builder: (_) => _BackendUnavailableScreen(\n 93\t          appState: this,\n 94\t        ),\n 95\t        settings: settings,\n 96\t      );\n 97\t    }\n 98\t\n 99\t    return MaterialPageRoute(\n100\t      builder: (_) => _screenByName(name, params),\n101\t      settings: settings,\n102\t    );\n103\t  }\n104\t\n105\t  /// Programmatically navigate forward to a named screen. The previous screen\n106\t  /// stays in the Navigator stack, so returning from [NowPlayingScreen]\n107\t  /// restores its state and scroll position.\n108\t  void changeScreen(String screenName, {Map<String, dynamic>? params}) {\n109\t    final nav = AppManager().navigatorKey.currentState;\n110\t    if (nav == null) return;\n111\t\n112\t    if (screenName == ScreenName.HOME_SCREEN) {\n113\t      nav.pushReplacementNamed(ScreenName.HOME_SCREEN);\n114\t      return;\n115\t    }\n116\t\n117\t    nav.pushNamed(screenName, arguments: params);\n118\t  }\n119\t\n120\t  /// Pop the current route, returning to the previous screen in the stack.\n121\t  void popScreen() {\n122\t    AppManager().navigatorKey.currentState?.maybePop();\n123\t  }\n124\t\n125\t  Widget _screenByName(String name, Map<String, dynamic>? params) {\n126\t    switch (name) {\n127\t      case ScreenName.HOME_SCREEN:\n128\t        return const HomeScreen();\n129\t      case ScreenName.COUNTRIES_SCREEN:\n130\t        return const CountriesScreen();\n131\t      case ScreenName.GENRES_SCREEN:\n132\t        return const GenresScreen();\n133\t      case ScreenName.RANDOM_SCREEN:\n134\t        return const SearchScreen();\n135\t      case ScreenName.FAVORITES_SCREEN:\n136\t        return const FavoritesScreen();\n137\t      case ScreenName.SETTINGS_SCREEN:\n138\t        return const SettingsScreen();\n139\t      case ScreenName.SUGGEST_SCREEN:\n140\t        return const SuggestScreen();\n141\t      case ScreenName.EDIT_ADD_SCREEN:\n142\t        final station = params?['station'] as dynamic;\n143\t        return EditRadioScreen(station: station);\n144\t      case ScreenName.NOW_PLAYING_SCREEN:\n145\t        return const NowPlayingScreen();\n146\t      case ScreenName.SEARCH_SCREEN:\n147\t        final query = params?['initialQuery'] as String?;\n148\t        return SearchScreen(initialQuery: query);\n149\t      case ScreenName.RADIOS_BY_COUNTRY_SCREEN:\n150\t        return CountriesScreen();\n151\t      case ScreenName.RADIOS_BY_GENRE_SCREEN:\n152\t        return GenresScreen();\n153\t      default:\n154\t        return const HomeScreen();\n155\t    }\n156\t  }\n157\t}\n158\t\n159\t/// Simple error screen shown when the configured backend is not reachable.\n160\t/// Offers a retry button to re-run the startup health check. In debug builds\n161\t/// only, an extra Settings shortcut is shown so the developer can inspect or\n162\t/// edit the configured backend URL.\n163\tclass _BackendUnavailableScreen extends StatefulWidget {\n164\t  final WeRadioAppState appState;\n165\t\n166\t  const _BackendUnavailableScreen({required this.appState});\n167\t\n168\t  @override\n169\t  State<_BackendUnavailableScreen> createState() => _BackendUnavailableScreenState();\n170\t}\n171\t\n172\tclass _BackendUnavailableScreenState extends State<_BackendUnavailableScreen> {\n173\t  bool _isRetrying = false;\n174\t\n175\t  Future<void> _retryConnection() async {\n176\t    setState(() => _isRetrying = true);\n177\t    try {\n178\t      await BackendService().ensureRunning();\n179\t      if (mounted) {\n180\t        // Backend is now reachable; proceed to the home screen.\n181\t        widget.appState.changeScreen(ScreenName.HOME_SCREEN);\n182\t      }\n183\t    } catch (_) {\n184\t      if (mounted) {\n185\t        setState(() => _isRetrying = false);\n186\t      }\n187\t    }\n188\t  }\n189\t\n190\t  @override\n191\t  Widget build(BuildContext context) {\n192\t    return Scaffold(\n193\t      body: SafeArea(\n194\t        child: Padding(\n195\t          padding: const EdgeInsets.all(24),\n196\t          child: Column(\n197\t            mainAxisAlignment: MainAxisAlignment.center,\n198\t            crossAxisAlignment: CrossAxisAlignment.stretch,\n199\t            children: [\n200\t              const Icon(Icons.cloud_off, size: 64, color: AppTheme.iconOnDark),\n\n[... 61 more lines (total 261 lines). Use read_file(\"lib/app.dart\", start_line=201) to continue reading.]\n\n=== lib/screens/home_screen.dart ===  (truncated)\n  1\timport 'package:flutter/material.dart';\n  2\timport 'package:provider/provider.dart';\n  3\t\n  4\timport '../app.dart';\n  5\timport '../managers/player_manager.dart';\n  6\timport '../managers/theme_manager.dart';\n  7\timport '../models/radio_station.dart';\n  8\timport '../services/api_service.dart';\n  9\timport '../services/database_helper.dart';\n 10\timport '../services/preferences_service.dart';\n 11\timport '../theme/app_theme.dart';\n 12\timport '../widgets/radio_list_item.dart';\n 13\timport '../widgets/side_drawer.dart';\n 14\t\n 15\t/// Home screen - mirrors fra_start.java.\n 16\tclass HomeScreen extends StatefulWidget {\n 17\t  const HomeScreen({super.key});\n 18\t\n 19\t  @override\n 20\t  State<HomeScreen> createState() => _HomeScreenState();\n 21\t}\n 22\t\n 23\tclass _HomeScreenState extends State<HomeScreen> with AutomaticKeepAliveClientMixin {\n 24\t  final TextEditingController _searchController = TextEditingController();\n 25\t  final ScrollController _scrollController = ScrollController();\n 26\t  List<RadioStation> _lastPlayed = [];\n 27\t  bool _showLastPlayed = false;\n 28\t  bool _isLoading = true;\n 29\t  String? _errorMessage;\n 30\t\n 31\t  @override\n 32\t  bool get wantKeepAlive => true;\n 33\t\n 34\t  @override\n 35\t  void initState() {\n 36\t    super.initState();\n 37\t    _loadLastPlayed();\n 38\t  }\n 39\t\n 40\t  @override\n 41\t  void dispose() {\n 42\t    _searchController.dispose();\n 43\t    _scrollController.dispose();\n 44\t    super.dispose();\n 45\t  }\n 46\t\n 47\t  Future<void> _loadLastPlayed() async {\n 48\t    try {\n 49\t      setState(() => _isLoading = true);\n 50\t      final prefs = PreferencesService.instance;\n 51\t      final lastIds = prefs.getLastRds();\n 52\t      final db = DatabaseHelper();\n 53\t      final api = ApiService();\n 54\t      final List<RadioStation> result = [];\n 55\t\n 56\t      if (lastIds.isNotEmpty) {\n 57\t        final ids = lastIds.split('~').map(int.tryParse).whereType<int>().toList();\n 58\t        // Fetch in reverse so most recent is first.\n 59\t        for (final id in ids.reversed) {\n 60\t          RadioStation? station;\n 61\t          if (id < 0) {\n 62\t            station = await db.getUserStation(id.abs());\n 63\t          } else {\n 64\t            station = await api.getById(id);\n 65\t          }\n 66\t          if (station != null) {\n 67\t            result.add(station);\n 68\t          }\n 69\t        }\n 70\t      }\n 71\t\n 72\t      if (mounted) {\n 73\t        setState(() {\n 74\t          _lastPlayed = result;\n 75\t          _showLastPlayed = result.isNotEmpty;\n 76\t          _isLoading = false;\n 77\t        });\n 78\t      }\n 79\t    } catch (e) {\n 80\t      if (mounted) {\n 81\t        setState(() {\n 82\t          _errorMessage = 'Errore caricamento: $e';\n 83\t          _isLoading = false;\n 84\t        });\n 85\t      }\n 86\t    }\n 87\t  }\n 88\t\n 89\t  Future<void> _playStation(RadioStation station) async {\n 90\t    final player = Provider.of<PlayerManager>(context, listen: false);\n 91\t\n 92\t    // Change screen immediately to avoid UI block\n 93\t    AppManager().weRadioAppState!.changeScreen(ScreenName.NOW_PLAYING_SCREEN);\n 94\t\n 95\t    // Start playing the station asynchronously\n 96\t    await player.playStation(station.id);\n 97\t  }\n 98\t\n 99\t  bool _isStationCurrentlyPlaying(RadioStation station) {\n100\t    final player = Provider.of<PlayerManager>(context, listen: false);\n101\t    return player.currentStationId == station.id && player.isPlaying;\n102\t  }\n103\t\n104\t  @override\n105\t  Widget build(BuildContext context) {\n106\t    super.build(context);\n107\t    final themeManager = Provider.of<ThemeManager>(context);\n108\t\n109\t    return Scaffold(\n110\t      backgroundColor: Colors.transparent,\n111\t      body: CustomScrollView(\n112\t        controller: _scrollController,\n113\t        key: const PageStorageKey('home_last_played'),\n114\t        slivers: [\n115\t          SliverAppBar(\n116\t            floating: true,\n117\t            snap: true,\n118\t            pinned: true,\n119\t            expandedHeight: 160,\n120\t            backgroundColor:AppTheme.cardDark.withAlpha(220),\n121\t            //themeManager.currentGradient.first,\n122\t            flexibleSpace: FlexibleSpaceBar(\n123\t              title: const Text(\n124\t                'We Radio',\n125\t                style: TextStyle(fontWeight: FontWeight.bold),\n126\t              ),\n127\t              background: Container(\n128\t                decoration: BoxDecoration(\n129\t                  gradient: LinearGradient(\n130\t                    colors: themeManager.currentGradient,\n131\t                    begin: Alignment.topCenter,\n132\t                    end: Alignment.bottomCenter,\n133\t                  ),\n134\t                ),\n135\t              ),\n136\t            ),\n137\t            actions: [\n138\t              IconButton(\n139\t                icon: const Icon(Icons.search, color: AppTheme.iconOnDark),\n140\t                onPressed: () async {\n141\t                  final query = await showDialog<String>(\n142\t                    context: context,\n143\t                    builder: (context) => AlertDialog(\n144\t                      backgroundColor: const Color(0xFF1E1E1E),\n145\t                      title: const Text('Cerca', style: TextStyle(color: Colors.white)),\n146\t                      content: TextField(\n147\t                        controller: _searchController,\n148\t                        style: const TextStyle(color: Colors.white),\n149\t                        decoration: const InputDecoration(\n150\t                          hintText: 'Nome radio o genere',\n151\t                          hintStyle: TextStyle(color: Colors.white54),\n152\t                        ),\n153\t                      ),\n154\t                      actions: [\n155\t                        TextButton(\n156\t                          onPressed: () => Navigator.of(context).pop(),\n157\t                          child: const Text('Annulla'),\n158\t                        ),\n159\t                        TextButton(\n160\t                          onPressed: () => Navigator.of(context).pop(_searchController.text),\n161\t                          child: const Text('Cerca'),\n162\t                        ),\n163\t                      ],\n164\t                    ),\n165\t                  );\n166\t                  if (query != null && query.isNotEmpty) {\n167\t                    _searchController.clear();\n168\t                    if (!mounted) return;\n169\t                    AppManager().weRadioAppState!.changeScreen(ScreenName.SEARCH_SCREEN, params: {'initialQuery': query});\n170\t                  }\n171\t                },\n172\t              ),\n173\t              Builder(\n174\t                builder: (context) => IconButton(\n175\t                  icon: const Icon(Icons.menu, color: AppTheme.iconOnDark),\n176\t                  onPressed: () => Scaffold.of(context).openEndDrawer(),\n177\t                ),\n178\t              ),\n179\t              const SizedBox(width: 8),\n180\t            ],\n181\t          ),\n182\t          if (_isLoading)\n183\t            const SliverFillRemaining(\n184\t              child: Center(child: CircularProgressIndicator()),\n185\t            )\n186\t          else if (_errorMessage != null)\n187\t            SliverFillRemaining(\n188\t              child: Center(\n189\t                child: Padding(\n190\t                  padding: const EdgeInsets.all(24),\n191\t                  child: Column(\n192\t                    mainAxisSize: MainAxisSize.min,\n193\t                    children: [\n194\t                      const Icon(Icons.error_outline, color: Colors.redAccent, size: 48),\n195\t                      const SizedBox(height: 12),\n196\t                      Text(\n197\t                        _errorMessage!,\n198\t                        style: const TextStyle(color: Colors.white70),\n199\t                        textAlign: TextAlign.center,\n200\t                      ),\n\n[... 89 more lines (total 289 lines). Use read_file(\"lib/screens/home_screen.dart\", start_line=201) to continue reading.]\n\n=== lib/screens/search_screen.dart ===\nimport 'package:flutter/material.dart';\r\n\r\nimport '../app.dart';\r\nimport '../managers/player_manager.dart';\r\nimport '../models/radio_station.dart';\r\nimport '../controllers/pagination_controller.dart';\r\nimport '../services/paginated_station_service.dart';\r\nimport '../theme/app_theme.dart';\r\nimport '../widgets/paginated_list.dart';\r\nimport '../widgets/radio_list_item.dart';\r\n\r\n/// Search screen - mirrors fra_ricerca.java with paginated results.\r\nclass SearchScreen extends StatefulWidget {\r\n  final String? initialQuery;\r\n\r\n  const SearchScreen({super.key, this.initialQuery});\r\n\r\n  @override\r\n  State<SearchScreen> createState() => _SearchScreenState();\r\n}\r\n\r\nclass _SearchScreenState extends State<SearchScreen> with AutomaticKeepAliveClientMixin {\r\n  final TextEditingController _searchController = TextEditingController();\r\n  final PaginatedStationService _service = PaginatedStationService();\r\n\r\n  String _query = '';\r\n  bool _isSearchMode = false;\r\n  List<RadioStation> _currentStations = [];\r\n\r\n  @override\r\n  bool get wantKeepAlive => true;\r\n\r\n  @override\r\n  void initState() {\r\n    super.initState();\r\n    if (widget.initialQuery != null && widget.initialQuery!.isNotEmpty) {\r\n      _searchController.text = widget.initialQuery!;\r\n      _query = widget.initialQuery!;\r\n      _isSearchMode = true;\r\n    }\r\n  }\r\n\r\n  @override\r\n  void dispose() {\r\n    _searchController.dispose();\r\n    super.dispose();\r\n  }\r\n\r\n  void _performSearch() {\r\n    final query = _searchController.text.trim();\r\n    if (query.isEmpty) {\r\n      ScaffoldMessenger.of(context).showSnackBar(\r\n        const SnackBar(content: Text('Inserisci una frase di ricerca')),\r\n      );\r\n      return;\r\n    }\r\n    setState(() {\r\n      _query = query;\r\n      _isSearchMode = true;\r\n    });\r\n  }\r\n\r\n  void _loadRandom() {\r\n    setState(() {\r\n      _query = '';\r\n      _isSearchMode = false;\r\n      _searchController.clear();\r\n    });\r\n  }\r\n\r\n  Future<void> _playStation(RadioStation station) async {\r\n    final player = PlayerManager();\r\n    player.listStationIds.clear();\r\n    player.listStationIds.addAll(_currentStations.map((s) => s.id));\r\n    \r\n    // Change screen immediately to avoid UI block\r\n    AppManager().weRadioAppState!.changeScreen(ScreenName.NOW_PLAYING_SCREEN);\r\n    \r\n    // Start playing the station asynchronously\r\n    await player.playStation(station.id);\r\n  }\r\n\r\n  StationPageFetcher _buildFetcher() {\r\n    if (_isSearchMode) {\r\n      return (page) => _service.searchByName(_query, page: page, perPage: 50);\r\n    }\r\n    return (page) => _service.getRandom(page: page, perPage: 50);\r\n  }\r\n\r\n  @override\r\n  Widget build(BuildContext context) {\r\n    super.build(context); // AutomaticKeepAliveClientMixin requirement.\r\n\r\n    return Scaffold(\r\n      backgroundColor: Colors.transparent,\r\n      appBar: AppBar(\r\n        title: const Text('Ricerca'),\r\n        backgroundColor: Colors.transparent,\r\n        elevation: 0,\r\n        actions: [\r\n          IconButton(\r\n            icon: const Icon(Icons.refresh, color: AppTheme.iconDefault),\r\n            onPressed: _loadRandom,\r\n            tooltip: 'Stazioni casuali',\r\n          ),\r\n        ],\r\n      ),\r\n      body: Column(\r\n        children: [\r\n          // Search bar\r\n          Padding(\r\n            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),\r\n            child: Container(\r\n              decoration: BoxDecoration(\r\n                color: Colors.white.withValues(alpha: 0.7),\r\n                border: Border.all(color: Colors.grey.withValues(alpha: 0.7)),\r\n                borderRadius: BorderRadius.circular(30),\r\n              ),\r\n              child: Row(\r\n                children: [\r\n                  Padding(\r\n                    padding: const EdgeInsets.only(left: 16),\r\n                    child: const Icon(Icons.search, color: Color(0xFF1E1E1E)),\r\n                  ),\r\n                  Expanded(\r\n                    child: TextField(\r\n                      textAlign: TextAlign.center,\r\n                      controller: _searchController,\r\n                      style: const TextStyle(color: Color(0xFF1E1E1E)),\r\n                      decoration: InputDecoration(\r\n                        hintText: 'Cerca per nome...',\r\n                        hintStyle: TextStyle(color: const Color(0xFF1E1E1E).withValues(alpha: 0.5)),\r\n                        border: InputBorder.none,\r\n                        contentPadding: const EdgeInsets.symmetric(horizontal: 8),\r\n                      ),\r\n                      onSubmitted: (_) => _performSearch(),\r\n                    ),\r\n                  ),\r\n                  Padding(\r\n                    padding: const EdgeInsets.only(right: 8),\r\n                    child: IconButton(\r\n                      icon: const Icon(Icons.send_rounded, color: Color(0xFF1E1E1E)),\r\n                      onPressed: _performSearch,\r\n                    ),\r\n                  ),\r\n                ],\r\n              ),\r\n            ),\r\n          ),\r\n\r\n          // Results\r\n          Expanded(\r\n            child: PaginatedList(\r\n              key: ValueKey('search_${_isSearchMode}_$_query'),\r\n              service: _service,\r\n              mode: PaginationMode.infiniteScroll,\r\n              perPage: 50,\r\n              fetcher: _buildFetcher(),\r\n              sortComparator: (a, b) {\r\n                final byCountry = a.country.compareTo(b.country);\r\n                return byCountry != 0\r\n                    ? byCountry\r\n                    : a.name.toLowerCase().compareTo(b.name.toLowerCase());\r\n              },\r\n              onStationsChanged: (stations) {\r\n                if (mounted) {\r\n                  setState(() => _currentStations = stations);\r\n                }\r\n              },\r\n              itemBuilder: (context, station) {\r\n                return RadioListItem(\r\n                  station: station,\r\n                  onTap: () => _playStation(station),\r\n                );\r\n              },\r\n            ),\r\n          ),\r\n        ],\r\n      ),\r\n    );\r\n  }\r\n}\r\n\n\n=== lib/screens/favorites_screen.dart ===  (truncated)\n  1\timport 'package:flutter/material.dart';\n  2\t\n  3\timport '../app.dart';\n  4\timport '../managers/player_manager.dart';\n  5\timport '../models/radio_station.dart';\n  6\timport '../services/api_service.dart';\n  7\timport '../services/database_helper.dart';\n  8\timport '../theme/app_theme.dart';\n  9\timport '../widgets/radio_list_item.dart';\n 10\t\n 11\t/// Favorites screen - mirrors fra_r_preferiti.java.\n 12\tclass FavoritesScreen extends StatefulWidget {\n 13\t  const FavoritesScreen({super.key});\n 14\t\n 15\t  @override\n 16\t  State<FavoritesScreen> createState() => _FavoritesScreenState();\n 17\t}\n 18\t\n 19\tclass _FavoritesScreenState extends State<FavoritesScreen> with AutomaticKeepAliveClientMixin {\n 20\t  final ScrollController _scrollController = ScrollController();\n 21\t  List<RadioStation> _stations = [];\n 22\t  bool _isLoading = true;\n 23\t  String _currentOrder = 'genre';\n 24\t  bool _showSortOptions = false;\n 25\t\n 26\t  @override\n 27\t  bool get wantKeepAlive => true;\n 28\t\n 29\t  @override\n 30\t  void initState() {\n 31\t    super.initState();\n 32\t    _loadFavorites();\n 33\t  }\n 34\t\n 35\t  @override\n 36\t  void dispose() {\n 37\t    _scrollController.dispose();\n 38\t    super.dispose();\n 39\t  }\n 40\t\n 41\t  Future<void> _loadFavorites() async {\n 42\t    setState(() => _isLoading = true);\n 43\t\n 44\t    try {\n 45\t      final dbHelper = DatabaseHelper();\n 46\t      final apiService = ApiService();\n 47\t\n 48\t      final favoriteIds = await dbHelper.getFavoriteIds();\n 49\t      final existingIds = await apiService.checkExistingIds(favoriteIds);\n 50\t      final existingSet = existingIds.toSet();\n 51\t\n 52\t      final missingIds = favoriteIds.where((id) => !existingSet.contains(id)).toList();\n 53\t      if (missingIds.isNotEmpty) {\n 54\t        await dbHelper.removeMissingFavorites(missingIds);\n 55\t      }\n 56\t\n 57\t      final results = <RadioStation>[];\n 58\t      if (existingIds.isNotEmpty) {\n 59\t        final fetched = await apiService.getByIds(existingIds);\n 60\t        results.addAll(\n 61\t          fetched.map((s) => s.copyWith(isFavorite: true)),\n 62\t        );\n 63\t      }\n 64\t\n 65\t      _sortStations(results);\n 66\t\n 67\t      if (mounted) {\n 68\t        setState(() {\n 69\t          _stations = results;\n 70\t          _isLoading = false;\n 71\t        });\n 72\t      }\n 73\t    } catch (e) {\n 74\t      if (mounted) setState(() => _isLoading = false);\n 75\t    }\n 76\t  }\n 77\t\n 78\t  void _sortStations(List<RadioStation> stations) {\n 79\t    switch (_currentOrder) {\n 80\t      case 'name':\n 81\t        stations.sort((a, b) => a.name.toLowerCase().compareTo(b.name.toLowerCase()));\n 82\t        break;\n 83\t      case 'genre':\n 84\t      default:\n 85\t        stations.sort((a, b) {\n 86\t          final byGenre = a.primaryGenre.compareTo(b.primaryGenre);\n 87\t          return byGenre != 0 ? byGenre : a.name.toLowerCase().compareTo(b.name.toLowerCase());\n 88\t        });\n 89\t        break;\n 90\t    }\n 91\t  }\n 92\t\n 93\t  Future<void> _playStation(RadioStation station) async {\n 94\t    final playerProvider = PlayerManager();\n 95\t    playerProvider.listStationIds.clear();\n 96\t    playerProvider.listStationIds.addAll(\n 97\t      _stations.map((s) => s.id),\n 98\t    );\n 99\t\n100\t    // Change screen immediately to avoid UI block\n101\t    AppManager().weRadioAppState!.changeScreen(ScreenName.NOW_PLAYING_SCREEN);\n102\t\n103\t    // Start playing the station asynchronously\n104\t    await playerProvider.playStation(station.id);\n105\t  }\n106\t\n107\t  @override\n108\t  Widget build(BuildContext context) {\n109\t    super.build(context);\n110\t    return Scaffold(\n111\t      backgroundColor: Colors.transparent,\n112\t      appBar: AppBar(\n113\t        title: const Text('Preferiti'),\n114\t        backgroundColor: Colors.transparent,\n115\t        elevation: 0,\n116\t        actions: [\n117\t          if (_stations.length > 2)\n118\t            Padding(\n119\t                padding: EdgeInsetsGeometry.only(right: AppTheme.defaultPadding),\n120\t                child: IconButton(\n121\t                  icon: const Icon(Icons.sort, color: AppTheme.iconDefault),\n122\t                  onPressed: () {\n123\t                    setState(() => _showSortOptions = !_showSortOptions);\n124\t                  },\n125\t                  tooltip: 'Ordina',\n126\t                )),\n127\t        ],\n128\t      ),\n129\t      body: Column(\n130\t        children: [\n131\t          // Sort options\n132\t          if (_showSortOptions)\n133\t            Container(\n134\t              margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),\n135\t              padding: const EdgeInsets.all(12),\n136\t              decoration: BoxDecoration(\n137\t                color: Colors.white.withValues(alpha: 0.08),\n138\t                borderRadius: BorderRadius.circular(12),\n139\t              ),\n140\t              child: Row(\n141\t                children: [\n142\t                  Expanded(\n143\t                    child: _SortChip(\n144\t                      label: 'Genere',\n145\t                      isSelected: _currentOrder == 'genre',\n146\t                      onTap: () {\n147\t                        setState(() {\n148\t                          _currentOrder = 'genre';\n149\t                          _showSortOptions = false;\n150\t                        });\n151\t                        _loadFavorites();\n152\t                      },\n153\t                    ),\n154\t                  ),\n155\t                  const SizedBox(width: 8),\n156\t                  Expanded(\n157\t                    child: _SortChip(\n158\t                      label: 'Nome',\n159\t                      isSelected: _currentOrder == 'name',\n160\t                      onTap: () {\n161\t                        setState(() {\n162\t                          _currentOrder = 'name';\n163\t                          _showSortOptions = false;\n164\t                        });\n165\t                        _loadFavorites();\n166\t                      },\n167\t                    ),\n168\t                  ),\n169\t                ],\n170\t              ),\n171\t            ),\n172\t\n173\t          // Favorites list\n174\t          Expanded(\n175\t            child: _isLoading\n176\t                ? const Center(child: CircularProgressIndicator())\n177\t                : _stations.isEmpty\n178\t                    ? Center(\n179\t                        child: Column(\n180\t                          mainAxisAlignment: MainAxisAlignment.center,\n181\t                          children: [\n182\t                            Icon(\n183\t                              Icons.favorite_border,\n184\t                              size: 64,\n185\t                              color: AppTheme.iconOnDark.withValues(alpha: 0.24),\n186\t                            ),\n187\t                            SizedBox(height: 16),\n188\t                            Text(\n189\t                              'Nessun preferito',\n190\t                              style: TextStyle(\n191\t                                color: Colors.white54,\n192\t                                fontSize: 16,\n193\t                              ),\n194\t                            ),\n195\t                            SizedBox(height: 8),\n196\t                            Text(\n197\t                              'Aggiungi stazioni ai preferiti\\nper ritrovarle qui',\n198\t                              textAlign: TextAlign.center,\n199\t                              style: TextStyle(\n200\t                                color: Colors.white30,\n\n[... 62 more lines (total 262 lines). Use read_file(\"lib/screens/favorites_screen.dart\", start_line=201) to continue reading.]\n\n=== lib/screens/countries_screen.dart ===\nimport 'package:flutter/material.dart';\r\n\r\n\r\nimport '../app.dart';\r\nimport '../constants/country_data.dart';\r\nimport '../services/api_service.dart';\r\nimport '../theme/app_theme.dart';\r\n\r\n/// Countries list screen - mirrors fra_r_by_country.java.\r\nclass CountriesScreen extends StatefulWidget {\r\n  const CountriesScreen({super.key});\r\n\r\n  @override\r\n  State<CountriesScreen> createState() => _CountriesScreenState();\r\n}\r\n\r\nclass _CountriesScreenState extends State<CountriesScreen> {\r\n  List<Map<String, String>> _countries = [];\r\n  bool _isLoading = true;\r\n\r\n  @override\r\n  void initState() {\r\n    super.initState();\r\n    _loadCountries();\r\n  }\r\n\r\n\r\n  Future<void> _loadCountries() async {\r\n    try {\r\n      final apiService = ApiService();\r\n      final backendCountries = await apiService.getCountries();\r\n\r\n      // Map country names to ISO codes from local data.\r\n      final countryMap = <String, String>{};\r\n      for (final c in countryData) {\r\n        countryMap[c['name']!] = c['code']!;\r\n      }\r\n\r\n      final countries = backendCountries.map((name) {\r\n        final code = countryMap[name] ?? '';\r\n        return {'name': name, 'code': code};\r\n      }).toList();\r\n\r\n      if (mounted) {\r\n        setState(() {\r\n          _countries = countries;\r\n          _isLoading = false;\r\n        });\r\n      }\r\n    } catch (e) {\r\n      if (mounted) setState(() => _isLoading = false);\r\n    }\r\n  }\r\n\r\n  @override\r\n  Widget build(BuildContext context) {\r\n    return Scaffold(\r\n      backgroundColor: Colors.transparent,\r\n      appBar: AppBar(\r\n        title: const Text('Paesi'),\r\n        backgroundColor: Colors.transparent,\r\n        elevation: 0,\r\n      ),\r\n      body: _isLoading\r\n          ? const Center(child: CircularProgressIndicator())\r\n          : ListView.builder(\r\n              itemCount: _countries.length,\r\n              itemBuilder: (context, index) {\r\n                final country = _countries[index];\r\n                return ListTile(\r\n                  leading: Text(\r\n                    country['code'] ?? '',\r\n                    style: const TextStyle(\r\n                      fontSize: 24,\r\n                      fontWeight: FontWeight.bold,\r\n                    ),\r\n                  ),\r\n                  title: Text(\r\n                    country['name'] ?? '',\r\n                    style: const TextStyle(color: Colors.white),\r\n                  ),\r\n                  trailing: const Icon(Icons.chevron_right,\r\n                      color: AppTheme.iconOnDark),\r\n                  onTap: () => AppManager().weRadioAppState!.changeScreen(\r\n                    ScreenName.RADIOS_BY_COUNTRY_SCREEN,\r\n                    params: {'countryName': country['name']!},\r\n                  ),\r\n                );\r\n              },\r\n            ),\r\n    );\r\n  }\r\n}\r\n\n\n=== lib/screens/genres_screen.dart ===\nimport 'package:flutter/material.dart';\r\n\r\nimport '../app.dart';\r\nimport '../services/api_service.dart';\r\nimport '../theme/app_theme.dart';\r\n\r\n/// Genres list screen - mirrors fra_r_by_genere.java.\r\nclass GenresScreen extends StatefulWidget {\r\n  const GenresScreen({super.key});\r\n\r\n  @override\r\n  State<GenresScreen> createState() => _GenresScreenState();\r\n}\r\n\r\nclass _GenresScreenState extends State<GenresScreen> {\r\n  List<String> _genres = [];\r\n  bool _isLoading = true;\r\n\r\n  @override\r\n  void initState() {\r\n    super.initState();\r\n    _loadGenres();\r\n  }\r\n\r\n  Future<void> _loadGenres() async {\r\n    try {\r\n      final apiService = ApiService();\r\n      final rawTags = await apiService.getGenres();\r\n\r\n      // Backend returns comma-separated tag strings. Split, normalize and dedupe.\r\n      final seen = <String>{};\r\n      final genres = <String>[];\r\n      for (final tagString in rawTags) {\r\n        for (final tag in tagString.split(',')) {\r\n          final normalized = tag.trim().toLowerCase();\r\n          if (normalized.isNotEmpty && !seen.contains(normalized)) {\r\n            seen.add(normalized);\r\n            genres.add(tag.trim()); // preserve original casing for display\r\n          }\r\n        }\r\n      }\r\n      genres.sort();\r\n\r\n      if (mounted) {\r\n        setState(() {\r\n          _genres = genres;\r\n          _isLoading = false;\r\n        });\r\n      }\r\n    } catch (e) {\r\n      if (mounted) setState(() => _isLoading = false);\r\n    }\r\n  }\r\n\r\n  @override\r\n  Widget build(BuildContext context) {\r\n    return Scaffold(\r\n      backgroundColor: Colors.transparent,\r\n      appBar: AppBar(\r\n        title: const Text('Generi'),\r\n        backgroundColor: Colors.transparent,\r\n        elevation: 0,\r\n      ),\r\n      body: _isLoading\r\n          ? const Center(child: CircularProgressIndicator())\r\n          : ListView.builder(\r\n              itemCount: _genres.length,\r\n              itemBuilder: (context, index) {\r\n                final genre = _genres[index];\r\n                return ListTile(\r\n                  leading: Container(\r\n                    width: 44,\r\n                    height: 44,\r\n                    decoration: BoxDecoration(\r\n                      color: Colors.orange.withValues(alpha: 0.2),\r\n                      borderRadius: BorderRadius.circular(10),\r\n                    ),\r\n                    child: const Icon(\r\n                      Icons.category,\r\n                      color: AppTheme.iconOnDark,\r\n                      size: 24,\r\n                    ),\r\n                  ),\r\n                  title: Text(\r\n                    genre,\r\n                    style: const TextStyle(color: Colors.white),\r\n                  ),\r\n                  trailing: const Icon(Icons.chevron_right, color: AppTheme.iconOnDark),\r\n                  onTap: () => AppManager().weRadioAppState!.changeScreen(\r\n                    ScreenName.RADIOS_BY_GENRE_SCREEN,\r\n                    params: {'genreName': genre},\r\n                  ),\r\n                );\r\n              },\r\n            ),\r\n    );\r\n  }\r\n}\r\n\n\n=== lib/screens/radios_by_country_screen.dart ===\nERROR: File not found: lib/screens/radios_by_country_screen.dart\n\n=== lib/screens/radios_by_genre_screen.dart ===\nERROR: File not found: lib/screens/radios_by_genre_screen.dart\n\n=== lib/screens/now_playing_screen.dart ===  (truncated)\n  1\timport 'package:flutter/material.dart';\n  2\timport 'package:provider/provider.dart';\n  3\t\n  4\timport '../app.dart';\n  5\timport '../core/constants/method_listeners_constants.dart';\n  6\timport '../core/statemanagement/method_listener.dart';\n  7\timport '../managers/player_manager.dart';\n  8\timport '../models/radio_station.dart';\n  9\timport '../theme/app_theme.dart';\n 10\timport '../widgets/background_widget.dart';\n 11\t\n 12\t/// Now Playing screen styled after the LOVE RADIO widget.\n 13\t///\n 14\t/// Layout: white background, pink accent, rounded album art, current track\n 15\t/// metadata, playback controls, bottom navigation, and upcoming playlist.\n 16\tclass NowPlayingScreen extends StatefulWidget {\n 17\t  const NowPlayingScreen({super.key});\n 18\t\n 19\t  @override\n 20\t  State<NowPlayingScreen> createState() => _NowPlayingScreenState();\n 21\t}\n 22\t\n 23\tclass _NowPlayingScreenState extends State<NowPlayingScreen> {\n 24\t  PlayerManager? playerProvider; // = Provider.of<PlayerManager>(context);\n 25\t  RadioStation? station; //= playerProvider!.currentStation;\n 26\t\n 27\t  @override\n 28\t  Widget build(BuildContext context) {\n 29\t    playerProvider = Provider.of<PlayerManager>(context);\n 30\t    station = playerProvider!.currentStation;\n 31\t\n 32\t    final String artist = playerProvider!.currentArtist.isNotEmpty ? playerProvider!.currentArtist : 'We Radio';\n 33\t    final String track = playerProvider!.currentTrackTitle.isNotEmpty ? playerProvider!.currentTrackTitle : 'Now playing';\n 34\t\n 35\t    return Scaffold(\n 36\t      backgroundColor: Colors.transparent,\n 37\t      body: SafeArea(\n 38\t        bottom: false,\n 39\t        child: Column(\n 40\t          children: [\n 41\t            // Header\n 42\t            _buildHeader(),\n 43\t\n 44\t            Expanded(\n 45\t              child: Container(\n 46\t                padding: const EdgeInsets.symmetric(horizontal: 16),\n 47\t                child: Column(\n 48\t                  mainAxisAlignment: MainAxisAlignment.spaceBetween,\n 49\t                  children: [\n 50\t                    const SizedBox(height: 30),\n 51\t\n 52\t                    // Album art\n 53\t                    _buildAlbumArt(),\n 54\t\n 55\t                    const SizedBox(height: 60),\n 56\t                    Column(mainAxisAlignment: MainAxisAlignment.center, children: [\n 57\t                      // Track / artist info\n 58\t                      Container(\n 59\t                          padding: EdgeInsets.symmetric(horizontal: 16),\n 60\t                          child: Text(\n 61\t                            track,\n 62\t                            textAlign: TextAlign.center,\n 63\t                            style: const TextStyle(\n 64\t                              color: Colors.black,\n 65\t                              fontSize: 22,\n 66\t                              fontWeight: FontWeight.w400,\n 67\t                              height: 1.55,\n 68\t                              letterSpacing: 0.36,\n 69\t                            ),\n 70\t                            maxLines: 2,\n 71\t                            overflow: TextOverflow.ellipsis,\n 72\t                          )),\n 73\t                      const SizedBox(height: 24),\n 74\t                      Container(\n 75\t                          padding: EdgeInsets.symmetric(horizontal: 16),\n 76\t                          child: Text(\n 77\t                            artist,\n 78\t                            textAlign: TextAlign.center,\n 79\t                            style: const TextStyle(\n 80\t                              color: Color(0xFF3C3737),\n 81\t                              fontSize: 15,\n 82\t                              fontWeight: FontWeight.w400,\n 83\t                              height: 0.93,\n 84\t                              letterSpacing: -0.24,\n 85\t                            ),\n 86\t                            maxLines: 1,\n 87\t                            overflow: TextOverflow.ellipsis,\n 88\t                          )),\n 89\t                    ]),\n 90\t                    Flexible(child: Container()),\n 91\t\n 92\t                    // Playback controls\n 93\t                    _buildPlaybackControls(),\n 94\t\n 95\t                    const SizedBox(height: 60),\n 96\t                  ],\n 97\t                ),\n 98\t              ),\n 99\t            ),\n100\t          ],\n101\t        ),\n102\t      ),\n103\t    );\n104\t  }\n105\t\n106\t  Widget _buildHeader() {\n107\t    final String fullName = station?.name ?? 'WE RADIO';\n108\t    // final name = StringUtils.splitName(fullName);\n109\t    // final String part1 = parts[0];\n110\t    // final String part2 = parts[1];\n111\t\n112\t    return Padding(\n113\t      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),\n114\t      child: Row(\n115\t        mainAxisAlignment: MainAxisAlignment.spaceBetween,\n116\t        children: [\n117\t          // Back / dismiss\n118\t          IconButton(\n119\t            style: FilledButton.styleFrom(backgroundColor: AppTheme.surfaceLight.withAlpha(120)),\n120\t            iconSize: 26,\n121\t            icon: const Icon(Icons.keyboard_double_arrow_down, color: AppTheme.iconDefault),\n122\t            onPressed: () => AppManager().weRadioAppState!.popScreen(),\n123\t          ),\n124\t\n125\t          // Brand label\n126\t          Expanded(\n127\t            child: Flexible(\n128\t              child: Container(\n129\t                  height: 46,\n130\t                  decoration: BoxDecoration(\n131\t                    color: AppTheme.surfaceLight.withAlpha(120),\n132\t                    borderRadius: BorderRadius.circular(23),\n133\t                  ),\n134\t                  padding: EdgeInsets.symmetric(horizontal: AppTheme.defaultMargin * 1.5, vertical: AppTheme.defaultMargin),\n135\t                  margin: EdgeInsets.symmetric(horizontal: AppTheme.defaultMargin * 2),\n136\t                  child: Center(\n137\t                      child: Text(\n138\t                    fullName,\n139\t                    style: TextStyle(\n140\t                      color: AppTheme.textDefault,\n141\t                      fontSize: 16,\n142\t                      fontWeight: FontWeight.w600,\n143\t                      letterSpacing: 0.5,\n144\t                    ),\n145\t                    overflow: TextOverflow.ellipsis,\n146\t                    maxLines: 1,\n147\t                  ))),\n148\t            ),\n149\t          ),\n150\t\n151\t          // More options\n152\t          PopupMenuButton<_MoreOption>(\n153\t            style: FilledButton.styleFrom(backgroundColor: AppTheme.surfaceLight.withAlpha(120)),\n154\t            icon: const Icon(size: 26, Icons.more_vert, color: AppTheme.iconDefault),\n155\t            color: Colors.white,\n156\t            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),\n157\t            onSelected: (option) {\n158\t              switch (option) {\n159\t                case _MoreOption.favorite:\n160\t                // playerProvider!.toggleFavorite();\n161\t                case _MoreOption.changeBackground:\n162\t                  MethodListener<BackgroundWidget>().callMethod(MethodName.CHANGE_BACKGROUND);\n163\t                case _MoreOption.share:\n164\t                // TODO: share\n165\t                case _MoreOption.cast:\n166\t                // TODO: cast\n167\t              }\n168\t            },\n169\t            itemBuilder: (context) => [\n170\t              const PopupMenuItem(\n171\t                value: _MoreOption.changeBackground,\n172\t                child: ListTile(\n173\t                  leading: Icon(Icons.wallpaper, color: AppTheme.iconDefault),\n174\t                  title: Text('Change background'),\n175\t                  contentPadding: EdgeInsets.zero,\n176\t                  visualDensity: VisualDensity.compact,\n177\t                ),\n178\t              ),\n179\t              PopupMenuItem(\n180\t                value: _MoreOption.favorite,\n181\t                enabled: true,\n182\t                child: StatefulBuilder(\n183\t                  builder: (context, setState) {\n184\t                    return InkWell(\n185\t                      onTap: () {\n186\t                        setState(() {\n187\t                          () async {\n188\t                            await playerProvider!.toggleFavorite();\n189\t                          }();\n190\t                        });\n191\t                      },\n192\t                      child: ListTile(\n193\t                        leading: Icon(\n194\t                          station?.isFavorite == true ? Icons.favorite : Icons.favorite_border,\n195\t                          color: station?.isFavorite == true ? const Color(0xFFE03674) : AppTheme.iconDefault,\n196\t                        ),\n197\t                        title: Text(\n198\t                          station?.isFavorite == true ? 'Remove from favorites' : 'Save to favorites',\n199\t                          style: const TextStyle(color: Colors.black87),\n200\t                        ),\n\n[... 168 more lines (total 368 lines). Use read_file(\"lib/screens/now_playing_screen.dart\", start_line=201) to continue reading.]\n\n=== lib/screens/settings_screen.dart ===  (truncated)\n  1\timport 'package:flutter/foundation.dart';\n  2\timport 'package:flutter/material.dart';\n  3\timport 'package:provider/provider.dart';\n  4\timport 'package:url_launcher/url_launcher.dart';\n  5\t\n  6\timport '../app.dart';\n  7\timport '../constants/app_constants.dart';\n  8\timport '../managers/theme_manager.dart';\n  9\timport '../services/api_service.dart';\n 10\timport '../services/backend_service.dart';\n 11\timport '../services/preferences_service.dart';\n 12\timport '../theme/app_theme.dart';\n 13\t\n 14\t/// Settings screen - mirrors fra_impostazioni.java.\n 15\tclass SettingsScreen extends StatefulWidget {\n 16\t  const SettingsScreen({super.key});\n 17\t\n 18\t  @override\n 19\t  State<SettingsScreen> createState() => _SettingsScreenState();\n 20\t}\n 21\t\n 22\tclass _SettingsScreenState extends State<SettingsScreen> {\n 23\t  int _streamTimeout = AppConstants.defaultStreamLoadTimeoutSec;\n 24\t  bool _showEqualizer = false;\n 25\t  bool _showThemes = false;\n 26\t  late TextEditingController _apiUrlController;\n 27\t  bool _isCheckingBackend = false;\n 28\t  String? _backendStatus;\n 29\t\n 30\t  @override\n 31\t  void initState() {\n 32\t    super.initState();\n 33\t    _loadSettings();\n 34\t  }\n 35\t\n 36\t  void _loadSettings() {\n 37\t    final prefsService = PreferencesService.instance;\n 38\t    setState(() {\n 39\t      _streamTimeout = prefsService.getStreamLoadingTimeout();\n 40\t      _apiUrlController = TextEditingController(text: prefsService.getApiBaseUrl());\n 41\t    });\n 42\t  }\n 43\t\n 44\t  Future<void> _checkBackend() async {\n 45\t    setState(() {\n 46\t      _isCheckingBackend = true;\n 47\t      _backendStatus = null;\n 48\t    });\n 49\t    final apiService = ApiService();\n 50\t    // Reuse the same retry semantics as the startup check so a sleeping\n 51\t    // backend gets a fair chance to wake up before we report it unreachable.\n 52\t    final ok = await BackendService().testConnection(apiService);\n 53\t    if (mounted) {\n 54\t      setState(() {\n 55\t        _isCheckingBackend = false;\n 56\t        _backendStatus = ok ? 'Backend raggiungibile' : 'Backend non raggiungibile';\n 57\t      });\n 58\t    }\n 59\t  }\n 60\t\n 61\t  Future<void> _saveBackendUrl(String url) async {\n 62\t    final prefsService = PreferencesService.instance;\n 63\t    final clean = url.trim();\n 64\t    await prefsService.setApiBaseUrl(clean);\n 65\t    ApiService().updateBaseUrl(clean);\n 66\t    if (mounted) {\n 67\t      ScaffoldMessenger.of(context).showSnackBar(\n 68\t        const SnackBar(content: Text('URL backend salvato')),\n 69\t      );\n 70\t    }\n 71\t  }\n 72\t\n 73\t  void _broadcastStreamTimeout() {\n 74\t    PreferencesService.instance.setStreamLoadingTimeout(_streamTimeout);\n 75\t  }\n 76\t\n 77\t  @override\n 78\t  void dispose() {\n 79\t    _apiUrlController.dispose();\n 80\t    super.dispose();\n 81\t  }\n 82\t\n 83\t  Future<void> _launchUrl(String url) async {\n 84\t    final uri = Uri.parse(url);\n 85\t    if (await canLaunchUrl(uri)) {\n 86\t      await launchUrl(uri, mode: LaunchMode.externalApplication);\n 87\t    }\n 88\t  }\n 89\t\n 90\t  @override\n 91\t  Widget build(BuildContext context) {\n 92\t    final themeManager = Provider.of<ThemeManager>(context);\n 93\t\n 94\t    return Scaffold(\n 95\t      backgroundColor: Colors.transparent,\n 96\t      appBar: AppBar(\n 97\t        title: const Text('Impostazioni'),\n 98\t        backgroundColor: Colors.transparent,\n 99\t        elevation: 0,\n100\t        actions: [\n101\t          IconButton(\n102\t            icon: const Icon(Icons.home, color: AppTheme.iconOnDark),\n103\t            onPressed: () => AppManager().weRadioAppState!.changeScreen(ScreenName.HOME_SCREEN),\n104\t            tooltip: 'Torna alla Home',\n105\t          ),\n106\t        ],\n107\t      ),\n108\t      body: ListView(\n109\t        padding: const EdgeInsets.symmetric(horizontal: 16),\n110\t        children: [\n111\t          _buildSectionTitle('Connessione al Backend'),\n112\t          if (kDebugMode)\n113\t            Card(\n114\t              color: const Color(0xFF1E1E1E),\n115\t              shape: RoundedRectangleBorder(\n116\t                borderRadius: BorderRadius.circular(12),\n117\t              ),\n118\t              child: Padding(\n119\t                padding: const EdgeInsets.all(16),\n120\t                child: Column(\n121\t                  crossAxisAlignment: CrossAxisAlignment.start,\n122\t                  children: [\n123\t                    Text(\n124\t                      'URL Backend',\n125\t                      style: TextStyle(\n126\t                        color: Colors.white.withValues(alpha: 0.6),\n127\t                        fontSize: 13,\n128\t                      ),\n129\t                    ),\n130\t                    const SizedBox(height: 8),\n131\t                    TextField(\n132\t                      controller: _apiUrlController,\n133\t                      style: const TextStyle(color: Colors.white),\n134\t                      decoration: InputDecoration(\n135\t                        hintText: AppConstants.apiBaseUrl,\n136\t                        hintStyle: TextStyle(color: Colors.white.withValues(alpha: 0.3)),\n137\t                        filled: true,\n138\t                        fillColor: const Color(0xFF121212),\n139\t                        border: OutlineInputBorder(\n140\t                          borderRadius: BorderRadius.circular(10),\n141\t                          borderSide: BorderSide.none,\n142\t                        ),\n143\t                        suffixIcon: IconButton(\n144\t                          icon: const Icon(Icons.save, color: AppTheme.iconOnDark),\n145\t                          onPressed: () => _saveBackendUrl(_apiUrlController.text),\n146\t                        ),\n147\t                      ),\n148\t                      onSubmitted: _saveBackendUrl,\n149\t                    ),\n150\t                    const SizedBox(height: 12),\n151\t                    Row(\n152\t                      children: [\n153\t                        ElevatedButton.icon(\n154\t                          onPressed: _isCheckingBackend ? null : _checkBackend,\n155\t                          icon: _isCheckingBackend\n156\t                              ? const SizedBox(\n157\t                                  width: 16,\n158\t                                  height: 16,\n159\t                                  child: CircularProgressIndicator(\n160\t                                    strokeWidth: 2,\n161\t                                    color: Colors.white,\n162\t                                  ),\n163\t                                )\n164\t                              : const Icon(Icons.network_check, size: 18, color: AppTheme.iconOnDark),\n165\t                          label: const Text('Testa connessione'),\n166\t                          style: ElevatedButton.styleFrom(\n167\t                            backgroundColor: const Color(0xFF1DB954),\n168\t                            foregroundColor: Colors.white,\n169\t                          ),\n170\t                        ),\n171\t                        if (_backendStatus != null) ...[\n172\t                          const SizedBox(width: 12),\n173\t                          Text(\n174\t                            _backendStatus!,\n175\t                            style: TextStyle(\n176\t                              color: _backendStatus!.contains('non') ? Colors.red : const Color(0xFF1DB954),\n177\t                              fontSize: 13,\n178\t                            ),\n179\t                          ),\n180\t                        ],\n181\t                      ],\n182\t                    ),\n183\t                    const SizedBox(height: 8),\n184\t                    Text(\n185\t                      'Nota: per l\\'emulatore Android usare http://10.0.2.2:5000. '\n186\t                      'Per un dispositivo fisico usare l\\'IP della rete locale.',\n187\t                      style: TextStyle(\n188\t                        color: Colors.white.withValues(alpha: 0.4),\n189\t                        fontSize: 11,\n190\t                      ),\n191\t                    ),\n192\t                  ],\n193\t                ),\n194\t              ),\n195\t            )\n196\t          else\n197\t            Card(\n198\t              color: const Color(0xFF1E1E1E),\n199\t              shape: RoundedRectangleBorder(\n200\t                borderRadius: BorderRadius.circular(12),\n\n[... 273 more lines (total 473 lines). Use read_file(\"lib/screens/settings_screen.dart\", start_line=201) to continue reading.]"}
+
+[INTERNAL: Continue. Either call another tool or give the final answer. Do NOT echo this instruction back to the user.]', 'role': 'user'}]

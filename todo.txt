@@ -1,29 +1,18 @@
 Params:
 
 --interactive
---backend
-ollama
---model
-kimi-k2.7-code:cloud
---ollama-base-url
-https://ollama.com
---ollama-api-key
-"a073b1b2a8784891bf7abce98e236e54.nzVrvrmBbkci1C_MYA-QgE_8"
---ollama-num-ctx
-262144
---temperature
-0.15
---max-tokens
-16384
---tpm-limit
-0
---base-path
-/Users/Gentian/AsPro/Wera/Radios
---task-mode
-task_compliance_auto
+--backend ollama
+--model kimi-k2.7-code:cloud
+--ollama-base-url https://ollama.com
+--ollama-api-key "a073b1b2a8784891bf7abce98e236e54.nzVrvrmBbkci1C_MYA-QgE_8"
+--ollama-num-ctx 262144
+--temperature 0.15
+--max-tokens 16384
+--tpm-limit 0
+--base-path /Users/Gentian/AsPro/Wera/Radios
+--task-mode task_compliance_auto
 --is_debug
---file_name
-/Chats/modifiche.txt
+--file_name /chats/modifiche.txt
 
 
 In bin/common/loop/run_loop.py line 646 there is instruction:    self.conversation_history: List[Dict[str, Any]] = []
@@ -59,9 +48,9 @@ Analyze all and tell me what do you think.
 In addition if applicable make a plan of action. 	   
 
 
-AI:
+Guarda a questo analisi e dimmi cosa ne pensi:
 
-📊 Analisi: il problema attuale
+Analisi: il problema attuale
 Come funziona oggi
 self.conversation_history è una lista piatta (List[Dict[str, Any]]) dove tutto viene mescolato:
 
@@ -289,7 +278,11 @@ Fase di transizione: Si può fare in due step — prima introdurre la classe Con
 Tool results: Considerare se i tool results debbano avere un ruolo proprio ("tool") invece di essere "user". Questo dipende dal provider: OpenAI supporta role: "tool", Ollama no. Per ora manterrei "user" per compatibilità.
 
 Logging: Aggiungere un log in to_messages() che mostra quante system keys sono attive e quanti turni ci sono, così vedi subito se qualcosa si accumula.
+FIne analisi.!!
+ 
+Un esempio concreto su come dovrebbe essere il conversation_history e´  file_prompt, file_history = _read_last_user_turn(debug_chat_path) 
+dove in questo caso file_prompt e´ l´ultimo prompt rilevato e file_history e´ una array di Q/A. 
+Dimmi cosa ne pensi
 
-Vuoi che proceda con l'implementazione del piano?
-
+ 
 

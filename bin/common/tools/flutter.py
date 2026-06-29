@@ -77,6 +77,8 @@ def register(registry) -> None:
                 cmd,
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 timeout=timeout,
                 cwd=str(registry.base_path),
             )

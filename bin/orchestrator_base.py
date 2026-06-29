@@ -270,7 +270,7 @@ def _append_debug_response(chat_path: str, response: str, log_prefix: str = "orc
         return
     os.makedirs(os.path.dirname(chat_path), exist_ok=True)
     with open(chat_path, "a", encoding="utf-8") as fh:
-        fh.write(f"AGENT: {response}\n")
+        fh.write(f"\n\nAGENT:\n {response}\n")
 
 
 __all__ = [

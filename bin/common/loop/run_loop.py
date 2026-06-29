@@ -23,6 +23,11 @@ from ..utils.token_estimator import chars_for_tokens, estimate_messages_tokens
 # isn't throttled by the 12K value sized for 8K Ollama.
 _MAX_TOOL_RESULT_CHARS_FALLBACK = 12_000
 _MAX_TRUNCATION_RETRY = 10
+# After this many consecutive truncation retries on a tool call, the
+# generic "your JSON was cut off" nudge is clearly not working — the
+# model keeps regenerating the same oversized batch. Switch to a
+# stronger directive that tells it to split the batch.
+_MAX_TRUNCATION_BEFORE_SPLIT_NUDGE = 3
 # Idempotent validation tools. Calling these more than twice in a row
 # without intervening edits almost always means the model is stalling
 # rather than making progress — we nudge it to finalize before the
@@ -559,6 +564,25 @@ def _get_truncated_answer_directive(tail: str) -> Dict[str, str]:
 # truncation detector sees an unclosed <tool> tag.
 _TRUNCATED_TOOL_ERROR = " Was CUT OFF before the closing </tool> tag. "
 
+# Stronger directive sent after multiple consecutive truncation retries.
+# The model keeps regenerating the same oversized JSON batch; this nudge
+# tells it to split the work into smaller calls.
+_TRUNCATION_SPLIT_DIRECTIVE = (
+    "[BATCH SIZE WARNING] Your last tool call was CUT OFF by the token "
+    "limit for the THIRD time. You are trying to write too many files or "
+    "too much content in a single call. STOP trying to emit the same "
+    "large batch. Instead, SPLIT your work into SMALLER tool calls:\n"
+    "  - If you are using write_files with many items, write 1-2 files "
+    "    per call instead of 5+.\n"
+    "  - If you are using patch_file with a very long new_content, "
+    "    break the patch into multiple smaller patch_file calls, each "
+    "    changing a smaller block.\n"
+    "  - If a single file's content is very large, use write_file for "
+    "    the first portion and append_file for the rest.\n"
+    "Keep each tool call's JSON under 6000 characters. Emit ONE small "
+    "tool call now. Do NOT repeat the same oversized batch."
+)
+
 
 class Orchestrator:
     def __init__(
@@ -617,9 +641,21 @@ class Orchestrator:
         #   ``_inprogress_task_ids``  every id seen in_progress this request
         #   ``_turn_had_failed_validator`` a code validator failed this turn
         self._planned_task_ids: List[int] = []
+        # Full Task objects from the last <tasks> plan, keyed by id.
+        # Used by _update_current_plan_system_prompt to include task
+        # names and descriptions in the system message, not just bare ids.
+        self._planned_tasks: Dict[int, Any] = {}
         self._active_task_id: Optional[int] = None
         self._inprogress_task_ids: set = set()
         self._turn_had_failed_validator: bool = False
+        # Per-iteration validator-failure flag.  _turn_had_failed_validator
+        # is reset only at the start of run(), so a validator failure in an
+        # early iteration pollutes the terminal-status decision for a much
+        # later text-only final answer.  _iter_had_failed_validator is reset
+        # at the top of every loop iteration and captures failures only for
+        # the *current* iteration, giving _emit_terminal_task_status an
+        # accurate signal.
+        self._iter_had_failed_validator: bool = False
         # Per-request flag: was the incoming prompt a ``<task_action>``
         # envelope (Proceed / Retry / Skip / Abort / Replan)? In that
         # case the plan was already emitted in an earlier turn -- we
@@ -760,6 +796,145 @@ class Orchestrator:
                     content = content.replace(marker, "")
             msg["content"] = content
 
+    # ------------------------------------------------------------------
+    # Task-plan system prompt (Bug 1 fix: prevent plan re-emission)
+    # ------------------------------------------------------------------
+    _PLAN_SYSTEM_MARKER = "[ACTIVE TASK PLAN — DO NOT RE-EMIT]"
+
+    def _remove_plan_system_prompt(self) -> None:
+        """Remove the plan-tracking system message from history.
+
+        Called at the start of each ``run()`` so a stale plan from the
+        previous request does not bleed into the new one.
+        """
+        self.conversation_history = [
+            msg for msg in self.conversation_history
+            if not (
+                msg.get("role") == "system"
+                and (msg.get("content") or "").startswith(self._PLAN_SYSTEM_MARKER)
+            )
+        ]
+
+    def _update_current_plan_system_prompt(self) -> None:
+        """Keep a system message at index 1 that mirrors the active task
+        plan and the status of every task.  The model sees this as a
+        persistent system instruction and does NOT need to re-emit the
+        ``<tasks>`` block on every iteration -- the #1 cause of plan
+        re-emission loops observed in the logs.
+
+        The message is identified by its ``_PLAN_SYSTEM_MARKER`` prefix
+        so we can replace it in-place instead of stacking copies.
+
+        Called after ``parse_tasks()`` and ``parse_task_status()`` have
+        updated ``_planned_tasks``, ``_planned_task_ids``,
+        ``_active_task_id`` and ``_inprogress_task_ids``.
+        """
+        if not self.task_mode.is_task_flow:
+            return
+
+        from . import task_protocol as _tp
+
+        parts: List[str] = [self._PLAN_SYSTEM_MARKER]
+
+        # Strong override of the base system prompt's "PLAN FIRST" rule.
+        # The base prompt says "As the VERY FIRST thing you emit, declare
+        # the complete plan".  Without this override, the model sees the
+        # PLAN FIRST instruction, doesn't realise the plan is already in
+        # history, and re-emits a new plan every iteration.
+        parts.append(
+            "OVERRIDE: The <tasks> plan listed below has ALREADY been "
+            "emitted, accepted, and is tracked by the orchestrator. "
+            "Do NOT emit another <tasks> block. Do NOT re-plan. The "
+            "'PLAN FIRST' instruction in the system prompt does NOT "
+            "apply when a plan is already active — it applied to the "
+            "FIRST iteration only. You are now in the EXECUTION phase. "
+            "Your job is to CONTINUE WORKING on the current task and "
+            "emit <task_status> tags as you progress."
+        )
+
+        if self._planned_task_ids:
+            parts.append("")
+            parts.append("=== ACTIVE PLAN ===")
+            for tid in self._planned_task_ids:
+                task_obj = self._planned_tasks.get(tid)
+                if task_obj:
+                    name = getattr(task_obj, "name", f"Task {tid}")
+                    desc = getattr(task_obj, "description", "")
+                else:
+                    name = f"Task {tid}"
+                    desc = ""
+
+                if tid in self._inprogress_task_ids:
+                    marker = "▶ IN_PROGRESS"
+                elif tid == self._active_task_id:
+                    marker = "▶ ACTIVE"
+                else:
+                    marker = "○ pending"
+
+                line = f"  #{tid} {marker} — {name}"
+                if desc:
+                    # Truncate long descriptions to keep the system
+                    # message compact.
+                    short_desc = desc[:120]
+                    if len(desc) > 120:
+                        short_desc += "..."
+                    line += f"\n       {short_desc}"
+                parts.append(line)
+            parts.append("=== END PLAN ===")
+
+        if self._active_task_id is not None:
+            task_obj = self._planned_tasks.get(self._active_task_id)
+            task_name = getattr(task_obj, "name", f"Task #{self._active_task_id}") if task_obj else f"Task #{self._active_task_id}"
+            parts.append("")
+            parts.append(
+                f"CURRENT TASK: #{self._active_task_id} ({task_name}). "
+                "Continue working on THIS task. When it is complete or "
+                "you cannot proceed, emit "
+                '<task_status>{"id":'
+                f"{self._active_task_id}"
+                ',"status":"done|partial|blocked|failed",'
+                '"note":"<short summary>"}</task_status>. '
+                "The orchestrator will auto-advance to the next task."
+            )
+        elif self._planned_task_ids:
+            parts.append("")
+            parts.append(
+                "No task is currently in_progress. Pick the first "
+                "pending task, emit its <task_status> as in_progress, "
+                "and start working on it."
+            )
+
+        content = "\n".join(parts)
+
+        # Find and replace the existing plan system message (if any),
+        # or insert it right after the base system prompt at index 0.
+        # We identify it by the marker prefix so we never touch the
+        # base system prompt.
+        found = False
+        for i, msg in enumerate(self.conversation_history):
+            if msg.get("role") != "system":
+                continue
+            c = msg.get("content") or ""
+            if c.startswith(self._PLAN_SYSTEM_MARKER):
+                if c == content:
+                    # Already up to date -- nothing to do.
+                    return
+                self.conversation_history[i]["content"] = content
+                found = True
+                break
+
+        if not found:
+            # Insert after the base system prompt (index 0 if present).
+            insert_at = 0
+            if (
+                self.conversation_history
+                and self.conversation_history[0].get("role") == "system"
+            ):
+                insert_at = 1
+            self.conversation_history.insert(
+                insert_at, {"role": "system", "content": content}
+            )
+
     def _recompute_tool_budget(self) -> None:
         """Dynamically scale the tool-result char cap based on free space.
 
@@ -850,6 +1025,14 @@ class Orchestrator:
         # below so the plan-emission check (Fix 6) is in a known state.
         self._plan_emitted_this_request = False
         self._is_task_action_request = False
+        # Bug 1 fix: remove the plan system message from the previous
+        # request so a stale plan does not bleed into the new one.
+        self._remove_plan_system_prompt()
+        # Bug 1 fix: clear the plan state so a new request starts fresh.
+        # When the incoming prompt is a <task_action> continuation, we
+        # keep the existing plan; otherwise this is a brand-new request
+        # and the old plan is irrelevant.
+        _is_continuation = False
         if self.task_mode.is_task_flow:
             from . import task_protocol as _tp
             action_ev = _tp.parse_task_action(user_input or "")
@@ -857,6 +1040,12 @@ class Orchestrator:
                 _tp.log_task_action_received(action_ev)
                 # Continuation of an existing plan: do NOT force a re-plan.
                 self._is_task_action_request = True
+                _is_continuation = True
+        if not _is_continuation:
+            self._planned_task_ids = []
+            self._planned_tasks = {}
+            self._active_task_id = None
+            self._inprogress_task_ids = set()
 
         # Detect a bare confirmation ("Yes", "Proceed", "Do it"). When found
         # AND there's a prior assistant turn to inherit context from, treat
@@ -1018,6 +1207,11 @@ class Orchestrator:
         iteration = 0
         while iteration < self.max_iterations:
             print(f"Iteration: {iteration}", file=sys.stderr)
+
+            # Reset the per-iteration validator-failure flag. A failure in
+            # a previous iteration must not downgrade the terminal status
+            # of the current iteration's final answer.
+            self._iter_had_failed_validator = False
 
             # === PROGRESSIVE PRESSURE FOR READ-ONLY LOOPS ===
             # When the user asked for an action ("implement", "fix", or
@@ -1305,11 +1499,51 @@ class Orchestrator:
 
                 proposed = _tp.parse_tasks(text)
                 if proposed:
+                    # Bug 2 fix: when the model re-emits a new plan, the
+                    # old plan's tasks are abandoned. Close them out so
+                    # the UI checklist doesn't stay frozen on old tasks.
+                    if self._planned_task_ids:
+                        old_ids = set(self._planned_task_ids)
+                        # Tasks that were in_progress get "done" (the
+                        # model moved on, implying the work is adequate
+                        # for the new plan); tasks that were never
+                        # started get "skipped".
+                        for old_tid in self._planned_task_ids:
+                            if old_tid in self._inprogress_task_ids:
+                                _tp.emit_task_status(
+                                    _tp.TaskStatusEvent(
+                                        id=old_tid,
+                                        status=_tp.TaskStatus.DONE,
+                                        note="auto: superseded by re-plan",
+                                    )
+                                )
+                                print(
+                                    f"[orch] auto-closing task #{old_tid} "
+                                    f"(done: superseded by re-plan)",
+                                    file=sys.stderr,
+                                )
+                            else:
+                                _tp.emit_task_status(
+                                    _tp.TaskStatusEvent(
+                                        id=old_tid,
+                                        status=_tp.TaskStatus.SKIPPED,
+                                        note="auto: superseded by re-plan",
+                                    )
+                                )
+                                print(
+                                    f"[orch] auto-closing task #{old_tid} "
+                                    f"(skipped: superseded by re-plan)",
+                                    file=sys.stderr,
+                                )
                     _tp.emit_tasks_proposed(proposed)
                     # Remember the plan's task ids (in order) so the
                     # orchestrator can close them out at end of turn even
                     # if the model never emits a terminal status.
                     self._planned_task_ids = [t.id for t in proposed]
+                    # Bug 1 fix: save full Task objects so the plan
+                    # system prompt can include names + descriptions,
+                    # not just bare numeric ids.
+                    self._planned_tasks = {t.id: t for t in proposed}
                     # Fix 6: any time the model emits a plan, mark
                     # the request as "planned" so the no-plan nudge
                     # below stops firing.
@@ -1336,6 +1570,12 @@ class Orchestrator:
                         _tp.emit_task_status(ev)
                 if status_events:
                     saw_status_this_iter = True
+
+                # Bug 1 fix: mirror the current plan + task state into a
+                # dedicated system message so the model sees it as a
+                # persistent instruction and does NOT re-emit the <tasks>
+                # block on every iteration.
+                self._update_current_plan_system_prompt()
                 text = _tp.strip_task_tags(text)
                 # Reset the no-status counter when we did see a status.
                 if saw_status_this_iter:
@@ -1401,7 +1641,14 @@ class Orchestrator:
             # in a degenerate text loop ("Let me check..." x100). No
             # amount of retries/nudges will fix this -- the model has
             # lost coherence and further iterations only waste time.
-            if _has_repetitive_output(text_clean):
+            # BUT: skip this check if the reply contains a valid tool
+            # call — a batch like patch_files with 5 items has repeated
+            # JSON structure ("path", "old_content", "new_content")
+            # that triggers the detector even though the call is legit.
+            tag_calls_pre_check = _td.parse_all_tag_tool_calls(
+                text_clean, self.tool_registry.definitions
+            )
+            if not tag_calls_pre_check and _has_repetitive_output(text_clean):
                 print(
                     f"[orch] Repetitive output detected at iter {iteration} "
                     f"({len(text_clean)} chars); bailing to recap.",
@@ -1412,10 +1659,10 @@ class Orchestrator:
                 )
 
             # Parse tool calls from the cleaned text to avoid false positives
-            # when a model embeds JSON examples inside its <tool_call> block.
-            tag_calls = _td.parse_all_tag_tool_calls(
-                text_clean, self.tool_registry.definitions
-            )
+            # when a model embeds JSON examples inside its  thinking block.
+            # Reuse the pre-check result from the repetition guard above
+            # to avoid parsing twice.
+            tag_calls = tag_calls_pre_check
 
             # Drain any keys the sanitizer dropped while parsing this
             # batch of calls. If we don't surface this to the model, it
@@ -1574,6 +1821,7 @@ class Orchestrator:
                         # from done to partial (balanced rule).
                         if name in _CODE_VALIDATORS:
                             self._turn_had_failed_validator = True
+                            self._iter_had_failed_validator = True
 
                     # Truncate oversized tool results before they bloat the
                     # conversation history and blow the model's context window.
@@ -1789,12 +2037,32 @@ class Orchestrator:
                         f"(retry {truncation_retries}).",
                         file=sys.stderr,
                     )
-                    # Reuse the malformed-directive helper — a truncated
-                    # tool call is functionally a malformed one, and the
-                    # canonical example set helps the model recover.
-                    self.conversation_history.append(
-                        _get_malformed_directive(_TRUNCATED_TOOL_ERROR)
-                    )
+                    if truncation_retries >= _MAX_TRUNCATION_BEFORE_SPLIT_NUDGE:
+                        # The generic "your JSON was cut off" nudge has
+                        # failed 3+ times — the model keeps regenerating
+                        # the same oversized batch. Switch to the split
+                        # directive that tells it to break the work into
+                        # smaller calls.
+                        print(
+                            f"[orch] {truncation_retries} consecutive "
+                            f"truncations; switching to split-batch "
+                            f"directive.",
+                            file=sys.stderr,
+                        )
+                        self.conversation_history.append(
+                            {
+                                "role": "user",
+                                "content": _TRUNCATION_SPLIT_DIRECTIVE,
+                            }
+                        )
+                    else:
+                        # Reuse the malformed-directive helper — a
+                        # truncated tool call is functionally a malformed
+                        # one, and the canonical example set helps the
+                        # model recover.
+                        self.conversation_history.append(
+                            _get_malformed_directive(_TRUNCATED_TOOL_ERROR)
+                        )
                 else:
                     print(
                         f"[orch] Truncated final answer detected "
@@ -1945,9 +2213,14 @@ class Orchestrator:
         trusting the model's (often missing) ``done`` tag.
 
         Balanced rule (chosen by the user):
-          * a code validator FAILED this turn        -> partial
+          * a code validator FAILED this iteration      -> partial
           * otherwise (writes succeeded, OR the turn
             was read-only and produced a valid answer) -> done
+
+        Uses ``_iter_had_failed_validator`` (per-iteration) instead of
+        ``_turn_had_failed_validator`` (per-request) so that a validator
+        failure in an early iteration does not pollute the terminal
+        status of a much later text-only final answer.
 
         Targets: every task id the model marked ``in_progress`` this
         turn; falling back to the active cursor, then to the first
@@ -1966,7 +2239,7 @@ class Orchestrator:
         if not targets:
             return
 
-        if self._turn_had_failed_validator:
+        if self._iter_had_failed_validator:
             status = _tp.TaskStatus.PARTIAL
             note = "auto: a code validator failed this turn"
         else:
