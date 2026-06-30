@@ -39,20 +39,6 @@ class ModelBackend:
         # the codebase.
         raise NotImplementedError
 
-    @property
-    def context_limit(self) -> int:
-        """Token capacity of the underlying model.
-
-        Backends that know the limit precisely (Ollama via ``num_ctx``)
-        override this. The default delegates to a model-id lookup table
-        so every cloud backend gets a sensible value without duplicated
-        tables. Used by the workflow compactor to decide when to
-        summarize before sending a request.
-        """
-        from bin.multi_mode.core.context_limits import lookup_context_limit
-
-        return lookup_context_limit(getattr(self, "model_id", ""))
-
 
 class RateLimitedBackend(ModelBackend):
     """Decorator that gates calls to an inner backend with a TokenBucket.

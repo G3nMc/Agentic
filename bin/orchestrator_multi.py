@@ -552,19 +552,17 @@ def _run_interactive_loop(args, path_filter=None, db_connections=None) -> None:
                             # like "There was a misunderstanding...".
                             executor_orch.reset()
                             if last_exec_summary:
-                                executor_orch.conversation_history.append({
-                                    "role": "system",
-                                    "content": (
-                                        "[PREVIOUS EXECUTION CONTEXT]\n"
-                                        "The following is a summary of changes "
-                                        "made in the immediately preceding "
-                                        "execution. The user may be asking for "
-                                        "a correction or continuation. Do NOT "
-                                        "redo work that is already done unless "
-                                        "the user explicitly asks.\n\n"
-                                        + last_exec_summary
-                                    ),
-                                })
+                                executor_orch.conversation_history.set_system_prompt(
+                                    "prev_execution",
+                                    "[PREVIOUS EXECUTION CONTEXT]\n"
+                                    "The following is a summary of changes "
+                                    "made in the immediately preceding "
+                                    "execution. The user may be asking for "
+                                    "a correction or continuation. Do NOT "
+                                    "redo work that is already done unless "
+                                    "the user explicitly asks.\n\n"
+                                    + last_exec_summary,
+                                )
                                 print(
                                     f"[orch_multi] Injected previous execution "
                                     f"summary ({len(last_exec_summary)} chars).",

@@ -22,7 +22,6 @@ import time
 from typing import Any, Dict, List, Optional, Tuple
 
 import requests
-
 from bin.common.backends.backend_base import ModelBackend
 from bin.common.backends.http_client import (
     HttpError,
@@ -52,11 +51,11 @@ class OllamaBackend(ModelBackend):
     # ------------------------------------------------------------------
 
     def __init__(
-        self,
-        model_id: str,
-        base_url: str = "",
-        api_key: str = "",
-        num_ctx: int = DEFAULT_NUM_CTX,
+            self,
+            model_id: str,
+            base_url: str = "",
+            api_key: str = "",
+            num_ctx: int = DEFAULT_NUM_CTX,
     ):
         if not model_id:
             raise RuntimeError("OllamaBackend requires a model_id.")
@@ -125,20 +124,51 @@ class OllamaBackend(ModelBackend):
 
         Ollama thinking models accept either a boolean or one of
         ``low`` / ``medium`` / ``high`` / ``max``. GPT-OSS ignores
-        booleans and requires a level. To keep behavior predictable:
+        booleans and requires a level.
 
-        * thinking=False  -> ``False`` (explicitly disable trace).
+        * thinking=False  -> ``None`` (omit the field; many cloud models
+          silently fail when ``think: false`` is sent explicitly).
         * thinking=True   -> use ``effort`` if provided, else ``True``.
         * effort values are normalised to the supported level set.
         """
         if not thinking:
-            return False
+            return None
         if effort:
             level = str(effort).lower()
             if level in {"minimal", "low", "medium", "high", "max"}:
                 # "minimal" is not a documented Ollama level; collapse it to low.
                 return "low" if level == "minimal" else level
         return True
+
+    @staticmethod
+    def _is_thinking_capable_model(model_id: str) -> bool:
+        """Heuristic: some models are known to require/expect a think level."""
+        m = (model_id or "").lower()
+        return any(k in m for k in (
+            "gpt-oss", "deepseek-r1", "deepseek-v3.1", "qwen3", "qwq",
+            "kimi", "k2.7",
+        ))
+
+    def _maybe_add_think(
+            self, payload: Dict[str, Any], thinking: bool, effort: Optional[str]
+    ) -> None:
+        """Add ``think`` to the payload only when it is safe to do so.
+
+        For non-thinking-capable models we omit the field unless the user
+        explicitly asked for it.  This avoids sending ``think: false`` to
+        cloud endpoints that silently reject it.
+        """
+        if self._is_thinking_capable_model(self.model_id):
+            think_value = self._map_thinking_to_think(thinking, effort)
+            if think_value is not None:
+                payload["think"] = think_value
+            return
+
+        # Non-thinking-capable models: only send ``think`` when thinking=True.
+        if thinking:
+            think_value = self._map_thinking_to_think(thinking, effort)
+            if think_value is not None:
+                payload["think"] = think_value
 
     def _auth_headers(self) -> Dict[str, str]:
         if self.api_key:
@@ -167,7 +197,7 @@ class OllamaBackend(ModelBackend):
 
     @staticmethod
     def _build_prompt_and_system(
-        messages: List[Dict[str, Any]],
+            messages: List[Dict[str, Any]],
     ) -> Tuple[str, str]:
         """Render OpenAI-style chat messages into the prompt + system
         pair expected by ``/api/generate``.
@@ -201,14 +231,14 @@ class OllamaBackend(ModelBackend):
     # ------------------------------------------------------------------
 
     def chat(
-        self,
-        messages: List[Dict[str, Any]],
-        max_tokens: int,
-        temperature: float,
-        tools: Optional[List[Dict[str, Any]]] = None,
-        stop: Optional[List[str]] = None,
-        thinking: bool = False,
-        effort: Optional[str] = None,
+            self,
+            messages: List[Dict[str, Any]],
+            max_tokens: int,
+            temperature: float,
+            tools: Optional[List[Dict[str, Any]]] = None,
+            stop: Optional[List[str]] = None,
+            thinking: bool = False,
+            effort: Optional[str] = None,
     ) -> Tuple[str, str]:
         # [native-tools-removed] tools=... never forwarded.
         # Ollama supports a `think` field on /api/generate for thinking-capable
@@ -227,10 +257,6 @@ class OllamaBackend(ModelBackend):
             "num_ctx": self.num_ctx
         }
 
-        # if not self._is_cloud_host():
-        #     options["num_ctx"] = self.num_ctx
-
-
         if stop:
             options["stop"] = list(stop)
 
@@ -244,10 +270,8 @@ class OllamaBackend(ModelBackend):
         if system:
             payload["system"] = system
 
-        # Map thinking/effort to Ollama's `think` field.
-        think_value = self._map_thinking_to_think(thinking, effort)
-        if think_value is not None:
-            payload["think"] = think_value
+        # Map thinking/effort to Ollama's `think` field safely.
+        self._maybe_add_think(payload, thinking, effort)
 
         _log(
             f"[Ollama:chat] POST {self.base_url}/api/generate model={self.model_id} "
@@ -263,16 +287,20 @@ class OllamaBackend(ModelBackend):
 
         try:
             for chunk in stream_ndjson(
-                f"{self.base_url}/api/generate",
-                payload,
-                headers=self._auth_headers(),
-                label="Ollama",
-                timeout=(15.0, 600.0),
+                    f"{self.base_url}/api/generate",
+                    payload,
+                    headers=self._auth_headers(),
+                    label="Ollama",
+                    timeout=(15.0, 600.0),
             ):
                 chunk_count += 1
                 piece = chunk.get("response") or ""
+                thinking = chunk.get("thinking") or ""
+                if thinking:
+                    _log(f"[Ollama:streaming] model={self.model_id} thinking={piece} ")
                 if piece:
                     parts.append(piece)
+                    _log(f"[Ollama:streaming] model={self.model_id} piece={piece} ")
                 if chunk.get("done"):
                     finish_reason = chunk.get("done_reason") or "stop"
                     # Best-effort usage accounting.
