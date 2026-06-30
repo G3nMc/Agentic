@@ -9,6 +9,7 @@ import time
 from typing import Any, Dict, List, Optional
 
 from . import history as _history
+from .history import ConversationHistory
 from . import tool_dispatch as _td
 from .tool_detector import ToolIntentDetector
 from ..backends.backend_base import ModelBackend
@@ -679,7 +680,7 @@ class Orchestrator:
         self._model_circuit_breaker = CircuitBreaker(
             name=f"model:{self.model_id}", failure_threshold=5, recovery_timeout=60.0
         )
-        self.conversation_history: List[Dict[str, Any]] = []
+        self.conversation_history = ConversationHistory()
         # Generation knobs. Exposed as CLI flags so the Flutter UI can
         # let users tune them per-backend without editing Python.
         self.temperature = temperature
@@ -754,7 +755,7 @@ class Orchestrator:
     # Session management
     # ------------------------------------------------------------------
     def reset(self) -> None:
-        self.conversation_history = []
+        self.conversation_history.reset_all()
 
     def import_history(self, history: List[Dict[str, Any]]) -> None:
         self._ensure_system_prompt()
@@ -773,29 +774,6 @@ class Orchestrator:
             ),
         )
 
-    def _strip_stale_directives(self) -> None:
-        """Remove the heavy agent directive from OLDER user turns.
-
-        Issue 4 fix: ``_AGENT_DIRECTIVE`` (+ task-flow clause + follow-up
-        preamble) is prepended to each request's user turn and then lives
-        in history forever, stacking ~2KB per request and crowding the
-        context window. Once the model has acted on a turn the directive
-        is dead weight, so we strip the known directive blocks from every
-        existing user message. The current turn is decorated AFTER this
-        runs, so it keeps its directive.
-        """
-        markers = (_TASK_FLOW_TOOL_CLAUSE, _AGENT_DIRECTIVE, _FOLLOWUP_DIRECTIVE)
-        for msg in self.conversation_history:
-            if msg.get("role") != "user":
-                continue
-            content = msg.get("content") or ""
-            if not content:
-                continue
-            for marker in markers:
-                if marker and marker in content:
-                    content = content.replace(marker, "")
-            msg["content"] = content
-
     # ------------------------------------------------------------------
     # Task-plan system prompt (Bug 1 fix: prevent plan re-emission)
     # ------------------------------------------------------------------
@@ -807,13 +785,7 @@ class Orchestrator:
         Called at the start of each ``run()`` so a stale plan from the
         previous request does not bleed into the new one.
         """
-        self.conversation_history = [
-            msg for msg in self.conversation_history
-            if not (
-                msg.get("role") == "system"
-                and (msg.get("content") or "").startswith(self._PLAN_SYSTEM_MARKER)
-            )
-        ]
+        self.conversation_history.remove_system_prompt("plan")
 
     def _update_current_plan_system_prompt(self) -> None:
         """Keep a system message at index 1 that mirrors the active task
@@ -906,34 +878,9 @@ class Orchestrator:
 
         content = "\n".join(parts)
 
-        # Find and replace the existing plan system message (if any),
-        # or insert it right after the base system prompt at index 0.
-        # We identify it by the marker prefix so we never touch the
-        # base system prompt.
-        found = False
-        for i, msg in enumerate(self.conversation_history):
-            if msg.get("role") != "system":
-                continue
-            c = msg.get("content") or ""
-            if c.startswith(self._PLAN_SYSTEM_MARKER):
-                if c == content:
-                    # Already up to date -- nothing to do.
-                    return
-                self.conversation_history[i]["content"] = content
-                found = True
-                break
-
-        if not found:
-            # Insert after the base system prompt (index 0 if present).
-            insert_at = 0
-            if (
-                self.conversation_history
-                and self.conversation_history[0].get("role") == "system"
-            ):
-                insert_at = 1
-            self.conversation_history.insert(
-                insert_at, {"role": "system", "content": content}
-            )
+        # Use the keyed system-prompt API — "plan" key replaces any
+        # previous plan system message without stacking copies.
+        self.conversation_history.set_system_prompt("plan", content)
 
     def _recompute_tool_budget(self) -> None:
         """Dynamically scale the tool-result char cap based on free space.
@@ -947,7 +894,7 @@ class Orchestrator:
         if ctx_tokens <= 0:
             return
         used = estimate_messages_tokens(
-            self.conversation_history,
+            self.conversation_history.to_messages(),
             content_type="code",
             per_message_overhead=10,
         )
@@ -974,22 +921,24 @@ class Orchestrator:
             # dominating the budget.
             per_msg_tokens = max(2_500, ctx_tokens // 5)
             # Use token-budget packing newest-first for accurate accounting.
-            self.conversation_history = _history.trim_history_by_tokens(
+            trimmed = _history.trim_history_by_tokens(
                 self.conversation_history,
                 token_budget=self._history_token_budget,
                 content_type="code",
                 max_msg_tokens=per_msg_tokens,
             )
+            self.conversation_history = ConversationHistory.from_flat(trimmed)
         else:
             # Fallback for backends that don't report context_limit.
             ctx_chars = chars_for_tokens(ctx_tokens, "code") if ctx_tokens > 0 else 0
             per_msg_cap = (ctx_chars // 5) if ctx_chars > 0 else _history.MAX_MSG_CHARS
             per_msg_cap = max(_history.MAX_MSG_CHARS, per_msg_cap)
-            self.conversation_history = _history.trim_history(
+            trimmed = _history.trim_history(
                 self.conversation_history,
                 self.max_history_turns,
                 max_msg_chars=per_msg_cap,
             )
+            self.conversation_history = ConversationHistory.from_flat(trimmed)
 
     # ------------------------------------------------------------------
     # Tool-intent heuristic
@@ -1053,7 +1002,7 @@ class Orchestrator:
         # the model interprets "Yes" as open-ended exploration and burns
         # the whole iteration budget reading files.
         has_prior_assistant = any(
-            m.get("role") == "assistant" for m in self.conversation_history
+            m.get("role") == "assistant" for m in self.conversation_history.turns
         )
         is_followup = _is_short_followup(user_input) and has_prior_assistant
 
@@ -1082,23 +1031,23 @@ class Orchestrator:
         if is_followup and not self.disable_tools:
             use_tools = True
 
-        # Issue 4 fix (context bloat): the heavy _AGENT_DIRECTIVE (~2KB) was
-        # prepended to every prior user turn and persists in history,
-        # stacking once per request and competing with the system prompt.
-        # Strip it from OLDER turns now -- it already did its job (the model
-        # acted on it); only the current turn needs it.
-        self._strip_stale_directives()
+        # ConversationHistory refactor: directives are now keyed system
+        # prompts, not prepended to user turns.  Set the agent directive
+        # (and follow-up preamble when applicable) as system prompts,
+        # then add the clean user turn.
 
         agent_directive = _get_agent_directive(self.task_mode.is_task_flow)
         if use_tools:
-            decorated = agent_directive + user_input
+            self.conversation_history.set_system_prompt("agent_directive", agent_directive)
         else:
-            decorated = user_input
+            self.conversation_history.remove_system_prompt("agent_directive")
 
         if is_followup and use_tools:
-            decorated = agent_directive + _FOLLOWUP_DIRECTIVE + user_input
+            self.conversation_history.set_system_prompt("followup", _FOLLOWUP_DIRECTIVE)
+        else:
+            self.conversation_history.remove_system_prompt("followup")
 
-        self.conversation_history.append({"role": "user", "content": decorated})
+        self.conversation_history.add_user(user_input)
 
         mode = "tool-enabled" if use_tools else "chat"
         print(f"[orch] Request ({mode}): {user_input[:120]!r}", file=sys.stderr)
@@ -1107,7 +1056,7 @@ class Orchestrator:
         if not use_tools:
             try:
                 text, _ = self.backend.chat(
-                    messages=self.conversation_history,
+                    messages=self.conversation_history.to_messages(),
                     max_tokens=self.max_tokens,
                     temperature=self.temperature,
                     tools=None,
@@ -1119,11 +1068,9 @@ class Orchestrator:
                 # with two consecutive user messages, and so the failed
                 # error string never leaks into model context on the next
                 # turn (some models will parrot it back).
-                if (
-                        self.conversation_history
-                        and self.conversation_history[-1].get("role") == "user"
-                ):
-                    self.conversation_history.pop()
+                last = self.conversation_history.last_turn()
+                if last and last.get("role") == "user":
+                    self.conversation_history.pop_turn()
                 return f"Model error: {e}"
             text_clean = _td.clean_history_text(text or "")
             if self._should_escalate_chat_to_tools(user_input, text_clean):
@@ -1131,13 +1078,10 @@ class Orchestrator:
                     "[orch] Chat-mode reply looked tool-related; retrying in tool mode.",
                     file=sys.stderr,
                 )
-                if (
-                        self.conversation_history
-                        and self.conversation_history[-1].get("role") == "user"
-                ):
-                    self.conversation_history[-1]["content"] = (
-                            _AGENT_DIRECTIVE + user_input
-                    )
+                # Set the agent directive as a system prompt (keyed, no duplication).
+                self.conversation_history.set_system_prompt(
+                    "agent_directive", _AGENT_DIRECTIVE
+                )
                 use_tools = True
             elif self._looks_like_cliffhanger(text_clean):
                 # The model said "I'll find and fix..." but didn't
@@ -1150,21 +1094,12 @@ class Orchestrator:
                     "(\"I'll find/fix/inspect...\"); retrying in tool mode.",
                     file=sys.stderr,
                 )
-                if (
-                        self.conversation_history
-                        and self.conversation_history[-1].get("role") == "user"
-                ):
-                    self.conversation_history[-1]["content"] = (
-                            _AGENT_DIRECTIVE + user_input
-                    )
+                self.conversation_history.set_system_prompt(
+                    "agent_directive", _AGENT_DIRECTIVE
+                )
                 use_tools = True
             else:
-                self.conversation_history.append(
-                    {
-                        "role": "assistant",
-                        "content": text_clean,
-                    }
-                )
+                self.conversation_history.add_assistant(text_clean)
                 return _td.clean_final_answer(text or "")
 
         refusal_retries = 0
@@ -1238,13 +1173,13 @@ class Orchestrator:
                     )
                 if iteration >= 20 and self._action_pressure_nudges < 2:
                     self._action_pressure_nudges = 2
-                    self.conversation_history.append(
-                        {"role": "user", "content": _ACTION_FINAL_WARNING_DIRECTIVE}
+                    self.conversation_history.set_system_prompt(
+                        "action_nudge", _ACTION_FINAL_WARNING_DIRECTIVE
                     )
                 elif iteration >= 10 and self._action_pressure_nudges < 1:
                     self._action_pressure_nudges = 1
-                    self.conversation_history.append(
-                        {"role": "user", "content": _ACTION_NUDGE_DIRECTIVE}
+                    self.conversation_history.set_system_prompt(
+                        "action_nudge", _ACTION_NUDGE_DIRECTIVE
                     )
 
             # === DYNAMIC ITERATION LIMIT ===
@@ -1257,7 +1192,7 @@ class Orchestrator:
             if should_check_extension and self.max_iterations < self._max_iteration_cap:
                 # Measure progress: count successful tool calls in recent history
                 recent_history = "".join(
-                    [m.get("content", "") for m in self.conversation_history[-8:]]
+                    [m.get("content", "") for m in self.conversation_history.turns[-8:]]
                 )
                 success_count = recent_history.count('"status": "success"')
                 error_count = recent_history.count('"status": "error"')
@@ -1341,17 +1276,18 @@ class Orchestrator:
             # stays within context. Token-aware trimming is more accurate
             # than raw char counting for code-heavy prompts.
             current_tokens = estimate_messages_tokens(
-                self.conversation_history,
+                self.conversation_history.to_messages(),
                 content_type="code",
                 per_message_overhead=10,
             )
             if current_tokens > self._history_token_budget:
-                self.conversation_history = _history.trim_history_by_tokens(
+                trimmed = _history.trim_history_by_tokens(
                     self.conversation_history,
                     token_budget=self._history_token_budget,
                     content_type="code",
                     max_msg_tokens=max(2_500, self._history_token_budget // 10),
                 )
+                self.conversation_history = ConversationHistory.from_flat(trimmed)
                 print(
                     f"[orch] History over token budget; trimmed to fit "
                     f"~{self._history_token_budget} tokens.",
@@ -1601,21 +1537,17 @@ class Orchestrator:
                         f"plan-first nudge",
                         file=sys.stderr,
                     )
-                    self.conversation_history.append(
-                        {
-                            "role": "user",
-                            "content": (
-                                "[INTERNAL: TASK FLOW PROTOCOL is active "
-                                "but you have not emitted a <tasks> plan "
-                                "yet. Your NEXT reply MUST begin with a "
-                                "<tasks>[{\"id\":1,\"name\":\"...\","
-                                "\"description\":\"...\"}, ...]</tasks> "
-                                "block enumerating every step needed for "
-                                "this request. Do NOT call any tool until "
-                                "the plan has been emitted. Do NOT echo "
-                                "this instruction back to the user.]"
-                            ),
-                        }
+                    self.conversation_history.set_system_prompt(
+                        "plan_first",
+                        "[INTERNAL: TASK FLOW PROTOCOL is active "
+                        "but you have not emitted a <tasks> plan "
+                        "yet. Your NEXT reply MUST begin with a "
+                        "<tasks>[{\"id\":1,\"name\":\"...\","
+                        "\"description\":\"...\"}, ...]</tasks> "
+                        "block enumerating every step needed for "
+                        "this request. Do NOT call any tool until "
+                        "the plan has been emitted. Do NOT echo "
+                        "this instruction back to the user.]"
                     )
                     iteration += 1
                     continue
@@ -1633,9 +1565,7 @@ class Orchestrator:
             # for the final answer so the Flutter UI can render the
             # reasoning section.
             text_clean = _td.clean_history_text(text or "")
-            self.conversation_history.append(
-                {"role": "assistant", "content": text_clean}
-            )
+            self.conversation_history.add_assistant(text_clean)
 
             # Repetition guard: bail immediately when the model is stuck
             # in a degenerate text loop ("Let me check..." x100). No
@@ -1680,8 +1610,9 @@ class Orchestrator:
                         f"  - {tname}: rejected keys {dropped}; "
                         f"the only accepted keys are {kept or '[none — see schema]'}"
                     )
-                self.conversation_history.append(
-                    _get_schema_feedback_directive(drop_lines)
+                self.conversation_history.set_system_prompt(
+                    "schema_feedback",
+                    _get_schema_feedback_directive(drop_lines)["content"],
                 )
 
             if tag_calls:
@@ -1709,22 +1640,18 @@ class Orchestrator:
                             f"corrective nudge",
                             file=sys.stderr,
                         )
-                        self.conversation_history.append(
-                            {
-                                "role": "user",
-                                "content": (
-                                    "[INTERNAL: You have used the tool protocol "
-                                    "for several iterations without emitting a "
-                                    "<task_status>. The UI checklist is frozen "
-                                    "because the orchestrator cannot tell which "
-                                    "task is progressing. Your NEXT reply must "
-                                    "include a <task_status>{\"id\":<int>,"
-                                    "\"status\":\"<value>\",\"note\":\"<short>\"}"
-                                    "</task_status> tag describing the work "
-                                    "completed so far. Do NOT echo this "
-                                    "instruction back to the user.]"
-                                ),
-                            }
+                        self.conversation_history.set_system_prompt(
+                            "status_nudge",
+                            "[INTERNAL: You have used the tool protocol "
+                            "for several iterations without emitting a "
+                            "<task_status>. The UI checklist is frozen "
+                            "because the orchestrator cannot tell which "
+                            "task is progressing. Your NEXT reply must "
+                            "include a <task_status>{\"id\":<int>,"
+                            "\"status\":\"<value>\",\"note\":\"<short>\"}"
+                            "</task_status> tag describing the work "
+                            "completed so far. Do NOT echo this "
+                            "instruction back to the user.]"
                         )
                         self._iters_without_status = 0  # consumed by the nudge
 
@@ -1773,8 +1700,9 @@ class Orchestrator:
                         f"{n}({json.dumps(p, ensure_ascii=False)[:120]})"
                         for n, p, _ in repeat_keys
                     )
-                    self.conversation_history.append(
-                        _get_repeat_call_directive(summary)
+                    self.conversation_history.set_system_prompt(
+                        "repeat_warning",
+                        _get_repeat_call_directive(summary)["content"],
                     )
                     iteration += 1
                     continue
@@ -1841,8 +1769,9 @@ class Orchestrator:
 
                     # On the last two iterations force a final answer — no more tools.
                     is_last_chance = iteration >= self.max_iterations - 2
-                    self.conversation_history.append(
-                        _get_tool_result_followup(name, display_result, is_last_chance)
+                    self.conversation_history.add_turn(
+                        "user",
+                        _get_tool_result_followup(name, display_result, is_last_chance)["content"],
                     )
 
                 # Validation-stall guard: if the model just ran the Nth+
@@ -1852,18 +1781,15 @@ class Orchestrator:
                 # sure" pattern before the repeat-call cap fires.
                 if (
                         consecutive_validations >= _MAX_CONSECUTIVE_VALIDATIONS
-                        and self.conversation_history
-                        and self.conversation_history[-1].get("role") == "user"
                 ):
                     print(
                         f"[orch] {consecutive_validations} clean validations "
                         f"in a row; forcing finalize.",
                         file=sys.stderr,
                     )
-                    self.conversation_history[-1]["content"] = (
-                        _get_validation_complete_directive(consecutive_validations)[
-                            "content"
-                        ]
+                    self.conversation_history.set_system_prompt(
+                        "validation_done",
+                        _get_validation_complete_directive(consecutive_validations)["content"],
                     )
                 iteration += 1
                 continue
@@ -1904,22 +1830,18 @@ class Orchestrator:
                         f"nudge",
                         file=sys.stderr,
                     )
-                    self.conversation_history.append(
-                        {
-                            "role": "user",
-                            "content": (
-                                "[INTERNAL: The <tasks> plan has already "
-                                "been saved by the orchestrator. Do NOT "
-                                "re-emit a new <tasks> block. Your NEXT "
-                                "reply must contain, in this exact order: "
-                                "(1) <task_status>{\"id\":1,"
-                                "\"status\":\"in_progress\",\"note\":\""
-                                "<one line>\"}</task_status>, then "
-                                "(2) the FIRST <tool>{...}</tool> call "
-                                "needed to start task #1. Nothing else. "
-                                "Do NOT echo this instruction back.]"
-                            ),
-                        }
+                    self.conversation_history.set_system_prompt(
+                        "plan_then_start",
+                        "[INTERNAL: The <tasks> plan has already "
+                        "been saved by the orchestrator. Do NOT "
+                        "re-emit a new <tasks> block. Your NEXT "
+                        "reply must contain, in this exact order: "
+                        "(1) <task_status>{\"id\":1,"
+                        "\"status\":\"in_progress\",\"note\":\""
+                        "<one line>\"}</task_status>, then "
+                        "(2) the FIRST <tool>{...}</tool> call "
+                        "needed to start task #1. Nothing else. "
+                        "Do NOT echo this instruction back.]"
                     )
                     # Reset the generic empty-reply counter so the
                     # generic nudge does not also fire on the same iter.
@@ -1927,20 +1849,16 @@ class Orchestrator:
                     iteration += 1
                     continue
                 if self._iters_with_empty_reply >= _MAX_ITERS_WITH_EMPTY_REPLY:
-                    self.conversation_history.append(
-                        {
-                            "role": "user",
-                            "content": (
-                                "[INTERNAL: Your last reply was empty after "
-                                "the orchestrator removed reasoning, task "
-                                "tags, and simulated tool transcripts. Emit "
-                                "ONLY the single <tool>{...}</tool> call OR "
-                                "the user-facing final answer. No preamble, "
-                                "no fake 'User:' / 'Assistant:' lines, no "
-                                "'[INTERNAL: ...]' tags from you. Do NOT "
-                                "echo this instruction back.]"
-                            ),
-                        }
+                    self.conversation_history.set_system_prompt(
+                        "empty_reply",
+                        "[INTERNAL: Your last reply was empty after "
+                        "the orchestrator removed reasoning, task "
+                        "tags, and simulated tool transcripts. Emit "
+                        "ONLY the single <tool>{...}</tool> call OR "
+                        "the user-facing final answer. No preamble, "
+                        "no fake 'User:' / 'Assistant:' lines, no "
+                        "'[INTERNAL: ...]' tags from you. Do NOT "
+                        "echo this instruction back.]"
                     )
                     self._iters_with_empty_reply = 0
                 iteration += 1
@@ -1983,8 +1901,9 @@ class Orchestrator:
                             f"{text_clean[:500]!r}",
                             file=sys.stderr,
                         )
-                        self.conversation_history.append(
-                            _get_malformed_directive(malformed_error)
+                        self.conversation_history.set_system_prompt(
+                            "malformed",
+                            _get_malformed_directive(malformed_error)["content"],
                         )
                         iteration += 1
                         continue
@@ -2049,19 +1968,17 @@ class Orchestrator:
                             f"directive.",
                             file=sys.stderr,
                         )
-                        self.conversation_history.append(
-                            {
-                                "role": "user",
-                                "content": _TRUNCATION_SPLIT_DIRECTIVE,
-                            }
+                        self.conversation_history.set_system_prompt(
+                            "truncation_split", _TRUNCATION_SPLIT_DIRECTIVE
                         )
                     else:
                         # Reuse the malformed-directive helper — a
                         # truncated tool call is functionally a malformed
                         # one, and the canonical example set helps the
                         # model recover.
-                        self.conversation_history.append(
-                            _get_malformed_directive(_TRUNCATED_TOOL_ERROR)
+                        self.conversation_history.set_system_prompt(
+                            "malformed",
+                            _get_malformed_directive(_TRUNCATED_TOOL_ERROR)["content"],
                         )
                 else:
                     print(
@@ -2073,8 +1990,9 @@ class Orchestrator:
                     # ~800 chars of its own output so it can continue
                     # seamlessly instead of starting over.
                     tail = text_clean[-800:] if len(text_clean) > 800 else text_clean
-                    self.conversation_history.append(
-                        _get_truncated_answer_directive(tail)
+                    self.conversation_history.set_system_prompt(
+                        "truncated",
+                        _get_truncated_answer_directive(tail)["content"],
                     )
                 iteration += 1
                 continue
@@ -2086,16 +2004,16 @@ class Orchestrator:
                     f"[orch] Refusal detected (retry {refusal_retries}).",
                     file=sys.stderr,
                 )
-                self.conversation_history.append(
-                    {"role": "user", "content": _REFUSAL_DIRECTIVE}
+                self.conversation_history.set_system_prompt(
+                    "refusal", _REFUSAL_DIRECTIVE
                 )
                 iteration += 1
                 continue
 
             if not text_clean and empty_retries < 1:
                 empty_retries += 1
-                self.conversation_history.append(
-                    {"role": "user", "content": _EMPTY_REPLY_DIRECTIVE}
+                self.conversation_history.set_system_prompt(
+                    "empty_reply", _EMPTY_REPLY_DIRECTIVE
                 )
                 iteration += 1
                 continue
@@ -2117,8 +2035,8 @@ class Orchestrator:
                     f"continue autonomously.",
                     file=sys.stderr,
                 )
-                self.conversation_history.append(
-                    {"role": "user", "content": _CLIFFHANGER_DIRECTIVE}
+                self.conversation_history.set_system_prompt(
+                    "cliffhanger", _CLIFFHANGER_DIRECTIVE
                 )
                 iteration += 1
                 continue
@@ -2143,8 +2061,8 @@ class Orchestrator:
                     f"(single nudge); iteration {iteration}.",
                     file=sys.stderr,
                 )
-                self.conversation_history.append(
-                    {"role": "user", "content": _STEP_REPORT_DIRECTIVE}
+                self.conversation_history.set_system_prompt(
+                    "step_report", _STEP_REPORT_DIRECTIVE
                 )
                 iteration += 1
                 continue
@@ -2186,7 +2104,7 @@ class Orchestrator:
         )
         try:
             with open("session_dump.json", "w", encoding="utf-8") as f:
-                json.dump(self.conversation_history, f, indent=2)
+                json.dump(self.conversation_history.to_messages(), f, indent=2)
         except Exception as e:
             print(f"[orch] Failed to save session: {e}", file=sys.stderr)
 
@@ -2265,12 +2183,12 @@ class Orchestrator:
         """
         # Defensive copy so we don't pollute the live history with the
         # synthesis directive (the next turn shouldn't see it).
-        synth_history = list(self.conversation_history)
-        synth_history.append({"role": "user", "content": _SYNTHESIS_DIRECTIVE})
+        synth_history = self.conversation_history.copy()
+        synth_history.set_system_prompt("synthesis", _SYNTHESIS_DIRECTIVE)
 
         try:
             text, _ = self.backend.chat(
-                messages=synth_history,
+                messages=synth_history.to_messages(),
                 max_tokens=self.max_tokens,
                 temperature=self.temperature,
                 tools=None,
@@ -2414,7 +2332,7 @@ class Orchestrator:
         # 2. Raw recap fallback. Format as readable markdown so the
         # user sees a coherent summary instead of a JSON dump.
         results: List[str] = []
-        for msg in self.conversation_history:
+        for msg in self.conversation_history.turns:
             if msg.get("role") != "user":
                 continue
             content = msg.get("content", "")
@@ -2586,7 +2504,7 @@ class Orchestrator:
                 # different stop sequence -- whichever one the
                 # provider actually respects fires first.
                 result = self.backend.chat(
-                    messages=self.conversation_history,
+                    messages=self.conversation_history.to_messages(),
                     max_tokens=self.max_tokens,
                     temperature=self.temperature,
                     tools=self.tool_registry.definitions,
