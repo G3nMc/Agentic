@@ -8,8 +8,7 @@ No SDK import. Inherits all the heavy lifting from
 
 from __future__ import annotations
 
-from .openai_compat import OpenAICompatBackend
-
+from agent.backends.openai_compat import OpenAICompatBackend
 
 class GroqBackend(OpenAICompatBackend):
     """Groq Cloud OpenAI-compatible chat/completions."""

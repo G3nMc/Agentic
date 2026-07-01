@@ -17,8 +17,8 @@ import sys
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
-from  agent.backends.backend_base import ModelBackend
-from  agent.backends.http_client import (
+from agent.backends.backend_base import ModelBackend
+from agent.backends.http_client import (
     HttpError,
     RateLimitError,
     ServerError,

@@ -11,7 +11,7 @@ from __future__ import annotations
 import re
 
 # import sys
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional, Tuple
 
 from ..utils.rate_limit import TokenBucket, estimate_tokens
 

@@ -238,6 +238,8 @@ class OllamaBackend(ModelBackend):
             "model": self.model_id,
             "prompt": prompt,
             "stream": False,
+            "think": True,
+            "keep_alive": "5m",
             "options": options,
         }
 
@@ -271,7 +273,7 @@ class OllamaBackend(ModelBackend):
                 piece = chunk.get("response") or ""
                 thinking = chunk.get("thinking") or ""
                 if thinking:
-                    _log(f"[Ollama:streaming] model={self.model_id} thinking={piece} ")
+                    _log(f"[Ollama:streaming] model={self.model_id} thinking={thinking} ")
                 if piece:
                     parts.append(piece)
                     _log(f"[Ollama:streaming] model={self.model_id} piece={piece} ")

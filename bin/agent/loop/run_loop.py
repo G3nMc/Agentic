@@ -873,11 +873,9 @@ class Orchestrator:
         ctx_tokens = int(getattr(self.backend, "context_limit", 0) or 0)
         if ctx_tokens <= 0:
             return
-        used = estimate_messages_tokens(
-            self.conversation_history.to_messages(),
-            content_type="code",
-            per_message_overhead=10,
-        )
+
+        used = estimate_messages_tokens(self.conversation_history.to_messages())
+       
         free_tokens = max(0, self._history_token_budget - used)
         # Reserve 15% of free space for the model's reply + safety margin.
         alloc_tokens = int(free_tokens * 0.85)
@@ -1095,6 +1093,19 @@ class Orchestrator:
         repeat_warnings = 0
         _MAX_REPEAT_WARNINGS = 2
         _RECENT_WINDOW = 8
+        # Track whether a write tool (patch_file, write_file, append_file)
+        # has been called since the last idempotent validator run. When
+        # True, a repeated validator call is legitimate (the model fixed
+        # something and is re-checking), not a loop. Reset to False after
+        # each idempotent validator and set to True after each write.
+        _wrote_since_last_validator = False
+        # Track whether any patch_file/write_file/append_file FAILED
+        # since the last read_file/read_files call. When True, a
+        # repeated read of the same file is legitimate — the model
+        # needs fresh content because its patches didn't match (the
+        # previous read was likely truncated, so the model's view of
+        # the file is stale).
+        _failed_writes_since_last_read = False
 
         # Consecutive successful idempotent-validator runs (python_check,
         # flutter_analyze, etc.). Once the model runs two of these clean,
@@ -1627,12 +1638,26 @@ class Orchestrator:
                 # happens again, bail with a recap rather than burn
                 # iterations on the identical call.
                 #
-                # EXCEPTION: if this iteration also had keys sanitized
+                # EXCEPTION 1: if this iteration also had keys sanitized
                 # away from the SAME tool, the duplicate is an artifact
                 # of stripping — the model emitted something different,
                 # we just erased the difference. Don't count it as a
                 # repeat; the schema-feedback message above will steer
                 # the next attempt.
+                #
+                # EXCEPTION 2: idempotent validators (flutter_analyze,
+                # python_check, etc.) called with the same params after
+                # a write tool (patch_file, write_file, append_file) are
+                # legitimate — the model fixed something and is
+                # re-checking. Only flag them as repeats when no write
+                # happened since the last validator call (genuine loop).
+                #
+                # EXCEPTION 3: read_file/read_files re-read of the same
+                # file after a failed patch_file is legitimate — the
+                # model's patches didn't match (likely because the
+                # previous read was truncated), so it needs fresh
+                # content to retry. Only flag as repeat when the read
+                # is genuinely redundant (no failed writes since).
                 repeat_keys: List[tuple] = []
                 for name, params in tag_calls:
                     if name in sanitized_tools:
@@ -1642,6 +1667,30 @@ class Orchestrator:
                         f"{json.dumps(params, sort_keys=True, ensure_ascii=False)}"
                     )
                     if key in recent_calls:
+                        # Exception 2: skip validators that re-ran after a write.
+                        if (
+                            name in _IDEMPOTENT_VALIDATORS
+                            and _wrote_since_last_validator
+                        ):
+                            print(
+                                f"[orch] Validator {name} re-run after a "
+                                f"write — legitimate, not a repeat.",
+                                file=sys.stderr,
+                            )
+                            continue
+                        # Exception 3: skip read_file/read_files re-read
+                        # after failed writes — the model needs fresh
+                        # content because its patches didn't match.
+                        if (
+                            name in ("read_file", "read_files")
+                            and _failed_writes_since_last_read
+                        ):
+                            print(
+                                f"[orch] {name} re-read after failed "
+                                f"writes — legitimate, not a repeat.",
+                                file=sys.stderr,
+                            )
+                            continue
                         repeat_keys.append((name, params, key))
 
                 if repeat_keys:
@@ -1706,8 +1755,22 @@ class Orchestrator:
                         # to be the final answer.
                         if name in _IDEMPOTENT_VALIDATORS:
                             consecutive_validations += 1
+                            # Reset the write-since-validator flag: a
+                            # validator just ran, so the next validator
+                            # call will only be legitimate if another
+                            # write happens first.
+                            _wrote_since_last_validator = False
                         else:
                             consecutive_validations = 0
+                        # Track writes so the repeat-call detector knows
+                        # a subsequent validator re-run is legitimate.
+                        if name in ("write_file", "patch_file", "append_file"):
+                            _wrote_since_last_validator = True
+                        # Reset failed-writes-since-last-read on a
+                        # successful read — the model now has fresh
+                        # content.
+                        if name in ("read_file", "read_files"):
+                            _failed_writes_since_last_read = False
                     else:
                         consecutive_validations = 0
                         # Issue 3 fix: a FAILED code validator this turn
@@ -1716,6 +1779,10 @@ class Orchestrator:
                         if name in _CODE_VALIDATORS:
                             self._turn_had_failed_validator = True
                             self._iter_had_failed_validator = True
+                        # Track failed writes so the repeat-call detector
+                        # knows a subsequent re-read is legitimate.
+                        if name in ("write_file", "patch_file", "append_file"):
+                            _failed_writes_since_last_read = True
 
                     # Truncate oversized tool results before they bloat the
                     # conversation self and blow the model's context window.
