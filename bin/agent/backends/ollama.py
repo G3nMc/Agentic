@@ -22,14 +22,15 @@ import time
 from typing import Any, Dict, List, Optional, Tuple
 
 import requests
-from bin.common.backends.backend_base import ModelBackend
-from bin.common.backends.http_client import (
+
+from agent.backends.backend_base import ModelBackend
+from agent.backends.http_client import (
     HttpError,
     RateLimitError,
     ServerError,
     stream_ndjson,
 )
-from bin.common.utils.text import sanitize_for_agent
+from agent.utils.text import sanitize_for_agent
 
 
 def _log(msg: str) -> None:
@@ -75,7 +76,7 @@ class OllamaBackend(ModelBackend):
         # Raw prompt_eval_count from the most recent /api/generate response.
         # This is the actual number of input tokens the model processed —
         # the real context window used. Exposed so the orchestrator can
-        # dynamically clamp its history budget to match reality when
+        # dynamically clamp its self budget to match reality when
         # --auto-num-ctx is active.
         self.last_prompt_eval_count: int = 0
         _log(
@@ -96,8 +97,8 @@ class OllamaBackend(ModelBackend):
         when this is not overridden, which only knows a fixed catalog
         (Llama / Gemma / Qwen / Claude / GPT-* / ...) and returns 8192
         for unknown models like ``nemotron-3-ultra``. That undersizes
-        the orchestrator's history budget to ~7K tokens on what is
-        actually a 256K context window and triggers spurious history
+        the orchestrator's self budget to ~7K tokens on what is
+        actually a 256K context window and triggers spurious self
         trimming on the very first turn. Returning ``num_ctx`` here
         gives the orchestrator the real number.
         """
@@ -308,7 +309,7 @@ class OllamaBackend(ModelBackend):
                         chunk.get("prompt_eval_count", 0) + chunk.get("eval_count", 0)
                     )
                     # Capture the raw input token count so the orchestrator
-                    # can auto-calibrate its history budget (--auto-num-ctx).
+                    # can auto-calibrate its self budget (--auto-num-ctx).
                     self.last_prompt_eval_count = int(
                         chunk.get("prompt_eval_count", 0)
                     )

@@ -26,6 +26,11 @@ from __future__ import annotations
 
 import sys
 
+from agent.config import AgentConfig, ModelRole
+from agent.config.models import ReasoningLevel, ModelConfig
+from agent.loop.run_loop import Orchestrator
+from agent.tools.registry import ToolRegistry
+
 # Disable .pyc generation
 sys.dont_write_bytecode = True
 
@@ -47,7 +52,7 @@ import subprocess
 
 # Reuse the shared I/O protocol utilities (the agent.utils.io_protocol
 # shim re-exports the same symbols for backwards compatibility).
-from common.utils.io_protocol import (
+from agent.utils.io_protocol import (
     RESPONSE_SENTINEL,
     configure_stdio_utf8,
     read_interactive_request,
@@ -77,6 +82,7 @@ def _load_db_connections(config_path: str):
 
 
 configure_stdio_utf8()
+
 
 # multi_mode imports are deferred to avoid crashing before --install-deps can run.
 # They are imported inside _create_orchestrator().
@@ -117,8 +123,6 @@ def _install_dependencies() -> None:
 
 def build_config_from_args(args):
     """Build AgentConfig from CLI arguments."""
-    from multi_mode.config.agent import AgentConfig
-    from multi_mode.config.models import ModelConfig, ModelRole
 
     config = AgentConfig(enable_summarization=False)
 
@@ -131,7 +135,6 @@ def build_config_from_args(args):
     reasoner_max_tokens = args.max_tokens
     reasoner_context = args.reasoner_context_window
 
-    from multi_mode.config.models import ReasoningLevel
     reasoning_level = ReasoningLevel(args.reasoning_level)
 
     config.models[ModelRole.REASONER] = ModelConfig(
@@ -181,8 +184,6 @@ def build_config_from_args(args):
 def _create_orchestrator(args):
     """Create an Orchestrator instance from CLI args."""
     # Lazy imports to avoid crashing before --install-deps can run.
-    from multi_mode.loop.orchestrator import Orchestrator
-    from multi_mode.tools.registry import ToolRegistry
 
     config = build_config_from_args(args)
 
@@ -342,7 +343,7 @@ def _build_executor_orchestrator(args, summarizer_cfg, path_filter, db_connectio
     try:
         from agent.backends import build_backend
         from agent.loop import Orchestrator as RunLoopOrchestrator
-        from common.policy import SecurityConfig
+        from agent.core.policy import SecurityConfig
     except Exception as ex:  # noqa: BLE001
         print(f"[orch_multi] Executor imports failed: {ex}", file=sys.stderr, flush=True)
         return None
@@ -415,7 +416,7 @@ def _build_executor_orchestrator(args, summarizer_cfg, path_filter, db_connectio
 
 def _run_interactive_loop(args, path_filter=None, db_connections=None) -> None:
     """Interactive loop using the new multi_mode Orchestrator."""
-    from multi_mode.config.models import ModelRole
+
     # Ensure stdout is line-buffered so the Flutter side sees __READY__ immediately.
     if hasattr(sys.stdout, 'reconfigure'):
         sys.stdout.reconfigure(line_buffering=True)
@@ -439,7 +440,7 @@ def _run_interactive_loop(args, path_filter=None, db_connections=None) -> None:
             if req is None:
                 break  # EOF
 
-            history = _normalise_external_history(req.get("history"))
+            history = _normalise_external_history(req.get("self"))
             new_session = req.get("new_session") or bool(history)
 
             # Debug mode: ignore the incoming prompt and read the latest user
@@ -454,7 +455,7 @@ def _run_interactive_loop(args, path_filter=None, db_connections=None) -> None:
                     new_session = False
                     print(
                         f"[orch_multi] Debug: loaded prompt ({len(prompt)} chars) "
-                        f"with {len(history)} history turns from {debug_chat_path}",
+                        f"with {len(history)} self turns from {debug_chat_path}",
                         file=sys.stderr, flush=True,
                     )
 
@@ -480,7 +481,7 @@ def _run_interactive_loop(args, path_filter=None, db_connections=None) -> None:
                 sys.stdout.flush()
                 continue
 
-            # Prepend visible history if provided
+            # Prepend visible self if provided
             full_prompt = _prompt_with_visible_history(prompt, history)
 
             # Context for the (tool-less) planner, assembled in order:
@@ -490,7 +491,7 @@ def _run_interactive_loop(args, path_filter=None, db_connections=None) -> None:
             #      chit-chat like "hi"), so the planner cites real paths.
             context_parts = []
             try:
-                from common.core.project_context import load_project_context
+                from agent.core.project_context import load_project_context
                 app_ctx = load_project_context(args.base_path)
                 if app_ctx:
                     context_parts.append(
@@ -502,7 +503,7 @@ def _run_interactive_loop(args, path_filter=None, db_connections=None) -> None:
                     file=sys.stderr, flush=True,
                 )
             try:
-                from common.loop.tool_detector import ToolIntentDetector
+                from agent.loop.tool_detector import ToolIntentDetector
                 if ToolIntentDetector.needs_tools(prompt):
                     tree = _build_project_tree(args.base_path)
                     if tree:
@@ -529,9 +530,9 @@ def _run_interactive_loop(args, path_filter=None, db_connections=None) -> None:
                 # actually "uses tools". Falls back to the planner answer when
                 # no executor is available or it errors.
                 if (
-                    result.success
-                    and result.final_answer
-                    and _needs_implementation(prompt, result.final_answer)
+                        result.success
+                        and result.final_answer
+                        and _needs_implementation(prompt, result.final_answer)
                 ):
                     summarizer_cfg = orchestrator.config.models.get(ModelRole.SUMMARIZER)
                     if executor_orch is None:
@@ -806,6 +807,7 @@ if __name__ == "__main__":
         main()
     except Exception as e:
         import traceback
+
         traceback.print_exc(file=sys.stderr)
         sys.stderr.flush()
         sys.exit(1)

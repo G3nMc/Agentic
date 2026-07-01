@@ -18,7 +18,7 @@ def check_run_loop_directives():
     print("Checking run_loop.py for task compliance directives...")
     print("=" * 60)
     
-    run_loop_path = "C:/Users/Gentian/AsPro/AI/Agentic/bin/common/loop/run_loop.py"
+    run_loop_path = "/agent/loop/run_loop.py"
     
     with open(run_loop_path, 'r', encoding='utf-8') as f:
         content = f.read()

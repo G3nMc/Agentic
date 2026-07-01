@@ -18,7 +18,7 @@ from ..utils.text import sanitize_for_agent
 
 
 class ModelBackend:
-    """Strategy object that turns a chat history into (content, finish)."""
+    """Strategy object that turns a chat self into (content, finish)."""
 
     def chat(
         self,
@@ -93,7 +93,7 @@ class RateLimitedBackend(ModelBackend):
                 )
 
             print(
-                f"[orch] Auto-trimmed history to fit TPM budget ({estimated}/{limit}).",
+                f"[orch] Auto-trimmed self to fit TPM budget ({estimated}/{limit}).",
                 file=sys.stderr,
                 flush=True,
             )
@@ -156,11 +156,11 @@ class RateLimitedBackend(ModelBackend):
     #             raise RuntimeError(
     #                 f"Single request ({estimated} est. tokens) exceeds the "
     #                 f"TPM limit of {self.bucket.tpm_limit} even after "
-    #                 f"trimming history. Lower max_tokens, raise TPM in "
+    #                 f"trimming self. Lower max_tokens, raise TPM in "
     #                 f"Settings, or pick a model with a larger quota."
     #             )
     #         print(
-    #             f"[orch] Auto-trimmed history to fit TPM budget "
+    #             f"[orch] Auto-trimmed self to fit TPM budget "
     #             f"({estimated}/{limit}).",
     #             file=sys.stderr,
     #             flush=True,

@@ -8,7 +8,7 @@ import os
 import sys
 from typing import Any, Dict, Optional
 
-from bin.common.policy import SecurityConfig
+from agent.core.policy import SecurityConfig
 
 
 def sanitize_params_for_log(params: Dict[str, Any]) -> Dict[str, Any]:

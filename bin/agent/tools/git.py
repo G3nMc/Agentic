@@ -122,7 +122,7 @@ def register(registry) -> None:
                 "type": "function",
                 "function": {
                     "name": "git_log",
-                    "description": "Show recent git commit history.",
+                    "description": "Show recent git commit self.",
                     "parameters": {
                         "type": "object",
                         "properties": {

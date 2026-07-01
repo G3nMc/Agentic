@@ -17,14 +17,14 @@ import sys
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
-from bin.common.backends.backend_base import ModelBackend
-from bin.common.backends.http_client import (
+from  agent.backends.backend_base import ModelBackend
+from  agent.backends.http_client import (
     HttpError,
     RateLimitError,
     ServerError,
     stream_sse,
 )
-from bin.common.utils.text import sanitize_for_agent
+from  agent.utils.text import sanitize_for_agent
 
 
 def _log(msg: str) -> None:

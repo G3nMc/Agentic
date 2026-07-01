@@ -36,6 +36,10 @@ from __future__ import annotations
 
 import sys
 
+from agent.backends.ollama import OllamaBackend
+from agent.loop.run_loop import Orchestrator
+from agent.loop.task_protocol import TaskMode
+
 # Disable .pyc generation EVERYWHERE in this process (including the agent
 # package we're about to import). Has to happen before the first import
 # from the agent package or Python will write __pycache__ for module
@@ -61,16 +65,15 @@ import json
 
 from agent.backends import RateLimitedBackend, build_backend
 from agent.backends.gemini import GeminiBackend
-from agent.backends.ollama import OllamaBackend
-from agent.loop import Orchestrator
-from common.policy import SecurityConfig
-from common.utils.bootstrap import (
+
+from agent.core.policy import SecurityConfig
+from agent.utils.bootstrap import (
     BACKEND_REQUIRED_MODULES,
     check_dependencies,
     import_hf_runtime,
     install_dependencies,
 )
-from common.utils.io_protocol import (
+from agent.utils.io_protocol import (
     RESPONSE_SENTINEL,
     configure_stdio_utf8,
     read_interactive_request,
@@ -170,7 +173,7 @@ def main():
         help="Tokens-per-minute cap for the selected backend. 0 = unlimited "
              "(default). When >0, the orchestrator wraps the backend in a "
              "sliding-window rate limiter that sleeps before oversize calls "
-             "and auto-trims history when a single request exceeds the "
+             "and auto-trims self when a single request exceeds the "
              "budget. Use the free-tier TPM from your provider dashboard "
              "(Groq free: 6000-8000 depending on model).",
     )
@@ -258,10 +261,10 @@ def main():
         action="store_true",
         default=False,
         help=(
-            "Auto-calibrate the history budget from the model's first "
+            "Auto-calibrate the self budget from the model's first "
             "API response. When ON, the orchestrator reads the actual "
             "prompt_eval_count the model reports and clamps the internal "
-            "history token budget to that real value. This prevents "
+            "self token budget to that real value. This prevents "
             "sending more tokens than the cloud model can actually "
             "process, which causes silent truncation and garbled "
             "replies. When OFF (default), the budget stays at 85%% of "
@@ -560,7 +563,7 @@ def _run_interactive_loop(orchestrator: Orchestrator, args=None) -> None:
             req = read_interactive_request(sys.stdin)
             if req is None:
                 break  # EOF
-            history = _normalise_external_history(req.get("history"))
+            history = _normalise_external_history(req.get("self"))
             if req.get("new_session") or history:
                 orchestrator.reset()
                 if history:
@@ -570,9 +573,8 @@ def _run_interactive_loop(orchestrator: Orchestrator, args=None) -> None:
             # AUTO at any time without restarting the subprocess. The
             # request envelope optionally carries a ``task_mode`` field.
             requested_mode = req.get("task_mode")
-            if isinstance(requested_mode, str) and requested_mode.strip():
-                from common.loop.task_protocol import TaskMode as _TM
-                new_mode = _TM.parse(requested_mode)
+            if isinstance(requested_mode, str) and requested_mode.strip(): 
+                new_mode = TaskMode.parse(requested_mode)
                 if new_mode is not orchestrator.task_mode:
                     orchestrator.task_mode = new_mode
                     # System prompt must be re-derived on the next turn
@@ -604,7 +606,7 @@ def _run_interactive_loop(orchestrator: Orchestrator, args=None) -> None:
                     orchestrator.import_history(history)
                     print(
                         f"[orch] Debug: loaded prompt ({len(prompt)} chars) "
-                        f"with {len(history)} history turns from {debug_chat_path}",
+                        f"with {len(history)} self turns from {debug_chat_path}",
                         file=sys.stderr, flush=True,
                     )
 

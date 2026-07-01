@@ -2,21 +2,18 @@
 
 from __future__ import annotations
 
-import json
-import re
-import sys
 import time
-from typing import Any, Dict, List, Optional
 
-from . import history as _history
-from .history import ConversationHistory
-from . import tool_dispatch as _td
-from .tool_detector import ToolIntentDetector
-from ..backends.backend_base import ModelBackend
-from ..policy import SecurityConfig
-from ..tools.registry import ToolRegistry
-from ..utils.circuit_breaker import CircuitBreaker
-from ..utils.token_estimator import chars_for_tokens, estimate_messages_tokens
+from agent.backends import ModelBackend
+from agent.core.policy import SecurityConfig
+from agent.core.project_context import load_project_context
+from agent.loop.history import ConversationHistory
+from agent.loop.task_protocol import *
+from agent.loop.tool_detector import ToolIntentDetector
+from agent.loop.tool_dispatch import *
+from agent.tools.registry import ToolRegistry
+from agent.utils.circuit_breaker import CircuitBreaker
+from agent.utils.token_estimator import chars_for_tokens, estimate_messages_tokens
 
 # Default cap on tool-result chars. Used as a floor when the backend
 # doesn't expose a context_limit; the Orchestrator scales this up at
@@ -70,7 +67,7 @@ _CODE_VALIDATORS = frozenset(
 
 # Task-flow nudges
 _MAX_ITERS_WITHOUT_STATUS = 3  # tool calls without <task_status> emission
-_MAX_ITERS_WITHOUT_PLAN = 1    # compliance iters without <tasks> plan
+_MAX_ITERS_WITHOUT_PLAN = 1  # compliance iters without <tasks> plan
 _MAX_ITERS_WITH_EMPTY_REPLY = 2  # empty cleaned reply (post-strip)
 
 # Bare confirmations / continuations that mean "execute the prior plan", not
@@ -194,7 +191,6 @@ _FOLLOWUP_DIRECTIVE = (
     "plan involves editing files, START EDITING with patch_file..]\n\n "
 )
 
-
 _AGENT_DIRECTIVE = (
     "[You have filesystem tools available. "
     "If this request requires any file access, inspection, editing, execution, or verification, you MUST emit exactly ONE tool call: "
@@ -244,7 +240,6 @@ _AGENT_DIRECTIVE = (
     "Instead, perform the action immediately or give the final answer.]\n\n"
 )
 
-
 # Issue 4 fix (contradictory directives): the base _AGENT_DIRECTIVE tells
 # the model to emit ONLY the tool call with no surrounding text. In
 # task_compliance(_auto) modes that rule directly contradicts the task
@@ -277,7 +272,7 @@ def _get_agent_directive(task_flow: bool) -> str:
 
 # Final synthesis directive injected as a final user turn before the
 # synthesis call. Tells the model to stop tool-using and write the answer
-# (or ask one clarifying question) using only what's already in history.
+# (or ask one clarifying question) using only what's already in self.
 # Coding-aware: explicitly asks for a recap of files modified + validation
 # status, which is what most coding sessions actually want.
 _SYNTHESIS_DIRECTIVE = (
@@ -304,7 +299,6 @@ _SYNTHESIS_DIRECTIVE = (
     "    ONE clarifying question instead."
 )
 
-
 # Pressure-injection: 20+ iterations of reads with zero writes on an
 # action-task. Forces the model to either patch or finalize next turn.
 _ACTION_FINAL_WARNING_DIRECTIVE = (
@@ -315,7 +309,6 @@ _ACTION_FINAL_WARNING_DIRECTIVE = (
     "  2) Your final plain-text answer (no more tool calls).\n "
     "Stop researching. Act or answer."
 )
-
 
 # Pressure-injection: 10+ iterations of reads with zero writes on an
 # action-task. Softer than the final warning above.
@@ -328,7 +321,6 @@ _ACTION_NUDGE_DIRECTIVE = (
     "Avoid reading files unless strictly necessary."
 )
 
-
 # Sent when the model emits a recognizable refusal ("I can't access
 # files...") despite having tool access. Forces a concrete tool call.
 _REFUSAL_DIRECTIVE = (
@@ -340,14 +332,12 @@ _REFUSAL_DIRECTIVE = (
     "the tool call tag."
 )
 
-
 # Sent when the model returns an empty reply.
 _EMPTY_REPLY_DIRECTIVE = (
     "Your reply was empty. Emit a single "
     '<tool>{"tool":"...","parameters":{...}}</tool> '
     "call or the final plain-text answer."
 )
-
 
 # Sent when the model hands work back to the user mid-task ("Would you
 # like me to proceed?", "Now I'll examine X.").
@@ -382,7 +372,6 @@ _CLIFFHANGER_DIRECTIVE = (
     "instead of immediately performing them."
 )
 
-
 # Sent when a final answer follows a file-modifying call but omits the
 # mandatory STEP REPORT block.
 _STEP_REPORT_DIRECTIVE = (
@@ -415,7 +404,6 @@ _TASK_STATUS_FORCE_DIRECTIVE = (
     "Do NOT echo this instruction back to the user."
 )
 
-
 # Sent when the model fails to emit a <tasks> plan in task compliance modes.
 _TASKS_FORCE_DIRECTIVE = (
     "[TASK PLAN REQUIRED] You are in TASK COMPLIANCE mode. "
@@ -424,7 +412,6 @@ _TASKS_FORCE_DIRECTIVE = (
     "Do NOT call any tool until the plan has been emitted. "
     "Do NOT echo this instruction back to the user."
 )
-
 
 # Fallback message returned when the model fails to emit a valid tool
 # call even after retries. Used by both the retry-exhausted and
@@ -605,13 +592,14 @@ class Orchestrator:
         self._writes_this_turn = None
         self._action_pressure_nudges = None
         self._pending_step_report = None
+        self._history = ConversationHistory()
         self.backend = backend
         # Task-flow mode: open / task_compliance / task_compliance_auto.
         # Drives whether the system prompt advertises the <tasks>
         # protocol and whether the loop emits task_status events on
         # stdout. See :mod:`common.loop.task_protocol`.
-        from . import task_protocol as _tp
-        self.task_mode = _tp.TaskMode.parse(task_mode)
+
+        self.task_mode = TaskMode.parse(task_mode)
         # Consecutive iterations the model used a tool but failed to
         # emit a ``<task_status>``. After ``_MAX_ITERS_WITHOUT_STATUS``
         # the loop injects a corrective internal note pushing the
@@ -690,7 +678,7 @@ class Orchestrator:
         # immediately without restarting the orchestrator process.
         self.thinking = thinking
         self.effort = effort
-        # Auto-calibrate history budget: when True, the orchestrator
+        # Auto-calibrate self budget: when True, the orchestrator
         # reads the actual prompt_eval_count from the backend's first
         # API response and clamps _history_token_budget to that real
         # value. This prevents the orchestrator from sending more
@@ -715,7 +703,7 @@ class Orchestrator:
         self._successful_tool_count = 0  # Track progress for dynamic extension
         self._files_modified = set()  # Track unique files touched
 
-        # Derive history/result caps from the backend's actual context window
+        # Derive self/result caps from the backend's actual context window
         # so a 128K cloud model isn't throttled to ~50K by constants sized
         # for 8K Ollama. Tuned for "use as much context as the model offers"
         # — coding sessions specifically benefit from preserving full file
@@ -759,15 +747,13 @@ class Orchestrator:
 
     def import_history(self, history: List[Dict[str, Any]]) -> None:
         self._ensure_system_prompt()
-        _history.import_external_history(self.conversation_history, history)
+        self._history.import_external_history(history)
 
     def _ensure_system_prompt(self) -> None:
         # Load per-project agent context (.agent.md / context.md) when present.
-        from ..core.project_context import load_project_context
 
         project_context = load_project_context(str(self.tool_registry.base_path))
-        _history.ensure_system_prompt(
-            self.conversation_history,
+        self._history.ensure_system_prompt(
             self.tool_registry.get_system_prompt(
                 project_context=project_context,
                 task_mode=self.task_mode.value,
@@ -780,7 +766,7 @@ class Orchestrator:
     _PLAN_SYSTEM_MARKER = "[ACTIVE TASK PLAN — DO NOT RE-EMIT]"
 
     def _remove_plan_system_prompt(self) -> None:
-        """Remove the plan-tracking system message from history.
+        """Remove the plan-tracking system message from self.
 
         Called at the start of each ``run()`` so a stale plan from the
         previous request does not bleed into the new one.
@@ -804,25 +790,20 @@ class Orchestrator:
         if not self.task_mode.is_task_flow:
             return
 
-        from . import task_protocol as _tp
-
-        parts: List[str] = [self._PLAN_SYSTEM_MARKER]
+        parts: List[str] = [self._PLAN_SYSTEM_MARKER, "OVERRIDE: The <tasks> plan listed below has ALREADY been "
+                                                      "emitted, accepted, and is tracked by the orchestrator. "
+                                                      "Do NOT emit another <tasks> block. Do NOT re-plan. The "
+                                                      "'PLAN FIRST' instruction in the system prompt does NOT "
+                                                      "apply when a plan is already active — it applied to the "
+                                                      "FIRST iteration only. You are now in the EXECUTION phase. "
+                                                      "Your job is to CONTINUE WORKING on the current task and "
+                                                      "emit <task_status> tags as you progress."]
 
         # Strong override of the base system prompt's "PLAN FIRST" rule.
         # The base prompt says "As the VERY FIRST thing you emit, declare
         # the complete plan".  Without this override, the model sees the
         # PLAN FIRST instruction, doesn't realise the plan is already in
-        # history, and re-emits a new plan every iteration.
-        parts.append(
-            "OVERRIDE: The <tasks> plan listed below has ALREADY been "
-            "emitted, accepted, and is tracked by the orchestrator. "
-            "Do NOT emit another <tasks> block. Do NOT re-plan. The "
-            "'PLAN FIRST' instruction in the system prompt does NOT "
-            "apply when a plan is already active — it applied to the "
-            "FIRST iteration only. You are now in the EXECUTION phase. "
-            "Your job is to CONTINUE WORKING on the current task and "
-            "emit <task_status> tags as you progress."
-        )
+        # self, and re-emits a new plan every iteration.
 
         if self._planned_task_ids:
             parts.append("")
@@ -885,9 +866,9 @@ class Orchestrator:
     def _recompute_tool_budget(self) -> None:
         """Dynamically scale the tool-result char cap based on free space.
 
-        Called once per iteration before the model call. If history is
+        Called once per iteration before the model call. If self is
         small we let tool results grow up to the init-time ceiling; if
-        history is large we shrink proportionally so the prompt never
+        self is large we shrink proportionally so the prompt never
         exceeds the token budget.
         """
         ctx_tokens = int(getattr(self.backend, "context_limit", 0) or 0)
@@ -922,7 +903,7 @@ class Orchestrator:
             per_msg_tokens = max(2_500, ctx_tokens // 5)
         else:
             # Fallback for backends that don't report context_limit.
-            per_msg_tokens = _history.MAX_MSG_TOKENS
+            per_msg_tokens = self._history.MAX_MSG_TOKENS
         self.conversation_history.trim_turns_to_budget(
             self._history_token_budget,
             content_type="code",
@@ -936,12 +917,12 @@ class Orchestrator:
         """True when a chat-mode response should be retried in tool mode."""
         if ToolIntentDetector.needs_tools(user_input):
             return True
-        if _td.parse_all_tag_tool_calls(model_reply, self.tool_registry.definitions):
+        if parse_all_tag_tool_calls(model_reply, self.tool_registry.definitions):
             return True
-        is_malformed, _ = _td.looks_like_malformed_tool_call(model_reply)
+        is_malformed, _ = looks_like_malformed_tool_call(model_reply)
         if is_malformed:
             return True
-        if _td.looks_like_refusal(model_reply):
+        if looks_like_refusal(model_reply):
             return True
         return False
 
@@ -972,10 +953,10 @@ class Orchestrator:
         # and the old plan is irrelevant.
         _is_continuation = False
         if self.task_mode.is_task_flow:
-            from . import task_protocol as _tp
-            action_ev = _tp.parse_task_action(user_input or "")
+
+            action_ev = parse_task_action(user_input or "")
             if action_ev is not None:
-                _tp.log_task_action_received(action_ev)
+                log_task_action_received(action_ev)
                 # Continuation of an existing plan: do NOT force a re-plan.
                 self._is_task_action_request = True
                 _is_continuation = True
@@ -1061,7 +1042,7 @@ class Orchestrator:
                 if last and last.get("role") == "user":
                     self.conversation_history.pop_turn()
                 return f"Model error: {e}"
-            text_clean = _td.clean_history_text(text or "")
+            text_clean = clean_history_text(text or "")
             if self._should_escalate_chat_to_tools(user_input, text_clean):
                 print(
                     "[orch] Chat-mode reply looked tool-related; retrying in tool mode.",
@@ -1071,7 +1052,7 @@ class Orchestrator:
                 self.conversation_history.set_system_prompt(
                     "agent_directive", _AGENT_DIRECTIVE
                 )
-                use_tools = True
+
             elif self._looks_like_cliffhanger(text_clean):
                 # The model said "I'll find and fix..." but didn't
                 # actually do anything. This is a cliffhanger in chat
@@ -1086,10 +1067,10 @@ class Orchestrator:
                 self.conversation_history.set_system_prompt(
                     "agent_directive", _AGENT_DIRECTIVE
                 )
-                use_tools = True
+
             else:
                 self.conversation_history.add_assistant(text_clean)
-                return _td.clean_final_answer(text or "")
+                return clean_final_answer(text or "")
 
         refusal_retries = 0
         empty_retries = 0
@@ -1123,7 +1104,7 @@ class Orchestrator:
         # repeat-call cap.
         consecutive_validations = 0
 
-        # Total-history char budget. Derived from backend.context_limit at
+        # Total-self char budget. Derived from backend.context_limit at
         # __init__ (see self._history_char_budget); a local alias keeps the
         # in-loop logic readable.
         _HISTORY_CHAR_BUDGET = self._history_char_budget
@@ -1179,7 +1160,7 @@ class Orchestrator:
                     or iteration >= self.max_iterations - 3  # Approaching limit
             )
             if should_check_extension and self.max_iterations < self._max_iteration_cap:
-                # Measure progress: count successful tool calls in recent history
+                # Measure progress: count successful tool calls in recent self
                 recent_history = "".join(
                     [m.get("content", "") for m in self.conversation_history.turns[-8:]]
                 )
@@ -1260,7 +1241,7 @@ class Orchestrator:
                     iteration += 1
                     continue
 
-            # Enforce the token budget: if history has grown past the
+            # Enforce the token budget: if self has grown past the
             # limit, trim older non-system messages so the next model call
             # stays within context. Token-aware trimming is more accurate
             # than raw char counting for code-heavy prompts.
@@ -1283,7 +1264,7 @@ class Orchestrator:
 
             # Recompute the per-tool-result char cap based on how much
             # budget is still free after trimming. This lets large file
-            # bodies pass through untouched when history is small, and
+            # bodies pass through untouched when self is small, and
             # shrinks gracefully as the session grows.
             self._recompute_tool_budget()
 
@@ -1292,11 +1273,11 @@ class Orchestrator:
             except Exception as e:
                 return f"Model error: {e}"
 
-            # --- Auto-calibrate history budget from the first API call ---
+            # --- Auto-calibrate self budget from the first API call ---
             # When --auto-num-ctx is active, read the actual
             # prompt_eval_count the model reported and clamp the
-            # history token budget to that real value. This prevents
-            # the orchestrator from accumulating more history than the
+            # self token budget to that real value. This prevents
+            # the orchestrator from accumulating more self than the
             # cloud model can actually fit in its context window,
             # which causes silent truncation and garbled replies.
             #
@@ -1323,12 +1304,12 @@ class Orchestrator:
                     #  (a) first call (not yet calibrated), OR
                     #  (b) max seen grew by >= 50% since last calibration
                     should_calibrate = (
-                        not self._auto_num_ctx_calibrated
-                        or (
-                            self._max_prompt_eval_seen
-                            >= int(prev_max * 1.5)
-                            and prev_max > 0
-                        )
+                            not self._auto_num_ctx_calibrated
+                            or (
+                                    self._max_prompt_eval_seen
+                                    >= int(prev_max * 1.5)
+                                    and prev_max > 0
+                            )
                     )
                     if should_calibrate:
                         # Use the max seen as the basis — it's the best
@@ -1342,9 +1323,9 @@ class Orchestrator:
                             int(basis * 0.85),
                         )
                         # Floor: 24K tokens. Below this the model can't
-                        # retain enough history for multi-turn coding.
+                        # retain enough self for multi-turn coding.
                         # The system prompt alone is ~5K tokens; 24K
-                        # leaves ~19K for history (~6-8 turns).
+                        # leaves ~19K for self (~6-8 turns).
                         floor = 24_000
                         # Issue 1 fix: the target must NEVER exceed the
                         # context-window-derived budget. For models whose
@@ -1365,8 +1346,8 @@ class Orchestrator:
                             self._history_token_budget = target
                             # Also scale the char budget proportionally.
                             ratio = (
-                                self._history_token_budget
-                                / old_budget
+                                    self._history_token_budget
+                                    / old_budget
                             ) if old_budget > 0 else 1.0
                             self._history_char_budget = max(
                                 72_000,  # floor: ~24K tokens * 3 chars/tok
@@ -1381,7 +1362,7 @@ class Orchestrator:
                             )
                             direction = "down" if target < old_budget else "up"
                             print(
-                                f"[orch] Auto-calibrated history "
+                                f"[orch] Auto-calibrated self "
                                 f"budget {direction} from "
                                 f"max_prompt_eval={basis}: "
                                 f"token_budget "
@@ -1402,7 +1383,7 @@ class Orchestrator:
             # and re-append ``</tool>`` so the parser sees a complete
             # tag. To roll back this behavior, search for
             # ``[stop-sequence-fix]`` across the codebase.
-            if text and _td.looks_like_unclosed_tool(text):
+            if text and looks_like_unclosed_tool(text):
                 text = text + "</tool>"
 
             # Task-flow event extraction: when in task_compliance(_auto)
@@ -1418,25 +1399,24 @@ class Orchestrator:
             # progress and the checklist UI stays frozen.
             saw_status_this_iter = False
             if text and self.task_mode.is_task_flow:
-                from . import task_protocol as _tp
 
-                proposed = _tp.parse_tasks(text)
+                proposed = parse_tasks(text)
                 if proposed:
                     # Bug 2 fix: when the model re-emits a new plan, the
                     # old plan's tasks are abandoned. Close them out so
                     # the UI checklist doesn't stay frozen on old tasks.
                     if self._planned_task_ids:
-                        old_ids = set(self._planned_task_ids)
+
                         # Tasks that were in_progress get "done" (the
                         # model moved on, implying the work is adequate
                         # for the new plan); tasks that were never
                         # started get "skipped".
                         for old_tid in self._planned_task_ids:
                             if old_tid in self._inprogress_task_ids:
-                                _tp.emit_task_status(
-                                    _tp.TaskStatusEvent(
+                                emit_task_status(
+                                    TaskStatusEvent(
                                         id=old_tid,
-                                        status=_tp.TaskStatus.DONE,
+                                        status=TaskStatus.DONE,
                                         note="auto: superseded by re-plan",
                                     )
                                 )
@@ -1446,10 +1426,10 @@ class Orchestrator:
                                     file=sys.stderr,
                                 )
                             else:
-                                _tp.emit_task_status(
-                                    _tp.TaskStatusEvent(
+                                emit_task_status(
+                                    TaskStatusEvent(
                                         id=old_tid,
-                                        status=_tp.TaskStatus.SKIPPED,
+                                        status=TaskStatus.SKIPPED,
                                         note="auto: superseded by re-plan",
                                     )
                                 )
@@ -1458,7 +1438,7 @@ class Orchestrator:
                                     f"(skipped: superseded by re-plan)",
                                     file=sys.stderr,
                                 )
-                    _tp.emit_tasks_proposed(proposed)
+                    emit_tasks_proposed(proposed)
                     # Remember the plan's task ids (in order) so the
                     # orchestrator can close them out at end of turn even
                     # if the model never emits a terminal status.
@@ -1471,7 +1451,7 @@ class Orchestrator:
                     # the request as "planned" so the no-plan nudge
                     # below stops firing.
                     self._plan_emitted_this_request = True
-                status_events = _tp.parse_task_status(text)
+                status_events = parse_task_status(text)
                 # Issue 3 fix: the model's TERMINAL statuses (done /
                 # failed / skipped) are NOT trusted -- the model often
                 # finishes the work but forgets to emit ``done``, so the
@@ -1481,16 +1461,16 @@ class Orchestrator:
                 # the non-terminal statuses and use ``in_progress`` as a
                 # cursor for which task is being worked on.
                 _terminal_statuses = (
-                    _tp.TaskStatus.DONE,
-                    _tp.TaskStatus.FAILED,
-                    _tp.TaskStatus.SKIPPED,
+                    TaskStatus.DONE,
+                    TaskStatus.FAILED,
+                    TaskStatus.SKIPPED,
                 )
                 for ev in status_events:
-                    if ev.status == _tp.TaskStatus.IN_PROGRESS:
+                    if ev.status == TaskStatus.IN_PROGRESS:
                         self._active_task_id = ev.id
                         self._inprogress_task_ids.add(ev.id)
                     if ev.status not in _terminal_statuses:
-                        _tp.emit_task_status(ev)
+                        emit_task_status(ev)
                 if status_events:
                     saw_status_this_iter = True
 
@@ -1499,7 +1479,7 @@ class Orchestrator:
                 # persistent instruction and does NOT re-emit the <tasks>
                 # block on every iteration.
                 self._update_current_plan_system_prompt()
-                text = _tp.strip_task_tags(text)
+                text = strip_task_tags(text)
                 # Reset the no-status counter when we did see a status.
                 if saw_status_this_iter:
                     self._iters_without_status = 0
@@ -1513,10 +1493,10 @@ class Orchestrator:
                 # the panel stays empty and the user has nothing to
                 # confirm.
                 if (
-                    iteration <= _MAX_ITERS_WITHOUT_PLAN
-                    and self.task_mode.is_task_flow
-                    and not self._plan_emitted_this_request
-                    and not self._is_task_action_request
+                        iteration <= _MAX_ITERS_WITHOUT_PLAN
+                        and self.task_mode.is_task_flow
+                        and not self._plan_emitted_this_request
+                        and not self._is_task_action_request
                 ):
                     print(
                         f"[orch] iter {iteration} in {self.task_mode.value} "
@@ -1547,11 +1527,11 @@ class Orchestrator:
             )
 
             # Strip <think> blocks AND chat-template control tokens before
-            # storing in history — they waste context and confuse the tool
+            # storing in self — they waste context and confuse the tool
             # parser. The raw `text` (with thinking intact) is still used
             # for the final answer so the Flutter UI can render the
             # reasoning section.
-            text_clean = _td.clean_history_text(text or "")
+            text_clean = clean_history_text(text or "")
             self.conversation_history.add_assistant(text_clean)
 
             # Repetition guard: bail immediately when the model is stuck
@@ -1562,7 +1542,7 @@ class Orchestrator:
             # call — a batch like patch_files with 5 items has repeated
             # JSON structure ("path", "old_content", "new_content")
             # that triggers the detector even though the call is legit.
-            tag_calls_pre_check = _td.parse_all_tag_tool_calls(
+            tag_calls_pre_check = parse_all_tag_tool_calls(
                 text_clean, self.tool_registry.definitions
             )
             if not tag_calls_pre_check and _has_repetitive_output(text_clean):
@@ -1588,7 +1568,7 @@ class Orchestrator:
             # repeat-call detector will kill the turn. See fs_read.py
             # for the read_file start_line/end_line case that motivated
             # this fix.
-            sanitization_drops = _td.drain_recent_drops()
+            sanitization_drops = drain_recent_drops()
             sanitized_tools = {name for name, _, _ in sanitization_drops}
             if sanitization_drops:
                 drop_lines = []
@@ -1739,7 +1719,7 @@ class Orchestrator:
                             self._iter_had_failed_validator = True
 
                     # Truncate oversized tool results before they bloat the
-                    # conversation history and blow the model's context window.
+                    # conversation self and blow the model's context window.
                     # Head+tail strategy: keep the first and last halves so the
                     # model sees both file headers/imports AND the implementation
                     # at the bottom — the middle is usually less critical.
@@ -1808,8 +1788,8 @@ class Orchestrator:
                 # Fires immediately (no streak) because every wasted
                 # iteration here costs a full round-trip.
                 if (
-                    self.task_mode.is_task_flow
-                    and self._plan_emitted_this_request
+                        self.task_mode.is_task_flow
+                        and self._plan_emitted_this_request
                 ):
                     print(
                         f"[orch] plan was already emitted but reply has no "
@@ -1851,7 +1831,7 @@ class Orchestrator:
                 iteration += 1
                 continue
 
-            is_malformed, malformed_error = _td.looks_like_malformed_tool_call(
+            is_malformed, malformed_error = looks_like_malformed_tool_call(
                 text_clean
             )
             if is_malformed:
@@ -1902,7 +1882,7 @@ class Orchestrator:
                             f"({consecutive_malformed}); bailing.",
                             file=sys.stderr,
                         )
-                        # Skip synthesis — history contains only broken calls,
+                        # Skip synthesis — self contains only broken calls,
                         # not useful work; synthesis would likely fail too.
                         return _MALFORMED_GIVE_UP_MESSAGE
 
@@ -1924,7 +1904,7 @@ class Orchestrator:
             #      off. This is the fix for "parts that are cutted" in long
             #      explanations: the old code always assumed a tool call,
             #      wasting retries on a continuation prompt that made no sense.
-            looks_truncated = finish_reason == "length" or _td.looks_like_unclosed_tool(
+            looks_truncated = finish_reason == "length" or looks_like_unclosed_tool(
                 text_clean
             )
             if looks_truncated and truncation_retries < _MAX_TRUNCATION_RETRY:
@@ -1932,8 +1912,8 @@ class Orchestrator:
                 # Determine whether this is a truncated tool call or a
                 # truncated final answer. A tool call has <tool> tags or
                 # JSON tool syntax; a final answer is plain text.
-                is_tool_truncation = _td.looks_like_unclosed_tool(text_clean) or (
-                    _td.parse_all_tag_tool_calls(
+                is_tool_truncation = looks_like_unclosed_tool(text_clean) or (
+                    parse_all_tag_tool_calls(
                         text_clean, self.tool_registry.definitions
                     )
                 )
@@ -1985,7 +1965,7 @@ class Orchestrator:
                 continue
 
             # No tool call. Classify the response.
-            if _td.looks_like_refusal(text_clean) and refusal_retries < 2:
+            if looks_like_refusal(text_clean) and refusal_retries < 2:
                 refusal_retries += 1
                 print(
                     f"[orch] Refusal detected (retry {refusal_retries}).",
@@ -2036,11 +2016,11 @@ class Orchestrator:
             # model round-trips per write turn ("MANDATORY"); since task
             # status is orchestrator-decided (Issue 3) and the final answer
             # is always synthesised (Issue 2), one nudge is enough.
-            
+
             if (
-                self._pending_step_report
-                and step_report_retries < 1
-                and not self._looks_like_step_report(text_clean)
+                    self._pending_step_report
+                    and step_report_retries < 1
+                    and not self._looks_like_step_report(text_clean)
             ):
                 step_report_retries += 1
                 print(
@@ -2059,14 +2039,14 @@ class Orchestrator:
 
             # Build the user-facing answer.
             # Issue 2 fix (empty replies): clean_final_answer strips more
-            # than the history cleaner (junk HTML tags, task-flow tags,
+            # than the self cleaner (junk HTML tags, task-flow tags,
             # chat-template tokens), so a reply that passed the empty-guard
             # above as ``text_clean`` can still collapse to an empty string
             # here. Returning that shows the user a blank bubble. Instead we
             # fall back to _build_recap_answer (synthesis call, then a
             # tool-result recap) which always yields non-empty text, so the
             # loop never hands back an empty final answer.
-            final_answer = _td.clean_final_answer(text or "")
+            final_answer = clean_final_answer(text or "")
             if final_answer.strip():
                 # Issue 3 fix: a real final answer was produced, so the
                 # orchestrator now closes out the task(s) it worked on,
@@ -2134,8 +2114,6 @@ class Orchestrator:
         """
         if not self.task_mode.is_task_flow:
             return
-        from . import task_protocol as _tp
-
         targets = set(self._inprogress_task_ids)
         if not targets and self._active_task_id is not None:
             targets.add(self._active_task_id)
@@ -2145,15 +2123,15 @@ class Orchestrator:
             return
 
         if self._iter_had_failed_validator:
-            status = _tp.TaskStatus.PARTIAL
+            status = TaskStatus.PARTIAL
             note = "auto: a code validator failed this turn"
         else:
-            status = _tp.TaskStatus.DONE
+            status = TaskStatus.DONE
             note = "auto: completed this turn"
 
         for tid in sorted(targets):
-            _tp.emit_task_status(
-                _tp.TaskStatusEvent(id=tid, status=status, note=note)
+            emit_task_status(
+                TaskStatusEvent(id=tid, status=status, note=note)
             )
             print(
                 f"[orch] terminal task_status (orchestrator-decided): "
@@ -2168,7 +2146,7 @@ class Orchestrator:
         / returns something that still looks like a tool attempt. The
         caller falls back to the raw-result recap when this returns None.
         """
-        # Defensive copy so we don't pollute the live history with the
+        # Defensive copy so we don't pollute the live self with the
         # synthesis directive (the next turn shouldn't see it).
         synth_history = self.conversation_history.copy()
         synth_history.set_system_prompt("synthesis", _SYNTHESIS_DIRECTIVE)
@@ -2187,7 +2165,7 @@ class Orchestrator:
             return None
 
         raw_len = len(text or "")
-        cleaned = _td.clean_final_answer(text or "").strip()
+        cleaned = clean_final_answer(text or "").strip()
         if not cleaned:
             print(
                 f"[orch] Synthesis returned empty text "
@@ -2199,7 +2177,7 @@ class Orchestrator:
         # Reject replies that are still trying to call tools — we asked
         # for plain text, anything else is the same failure mode under
         # a different costume.
-        if _td.parse_all_tag_tool_calls(cleaned, self.tool_registry.definitions):
+        if parse_all_tag_tool_calls(cleaned, self.tool_registry.definitions):
             print(
                 f"[orch] Synthesis reply still contained tool calls "
                 f"(len={len(cleaned)}); falling back to raw recap.",
@@ -2207,7 +2185,7 @@ class Orchestrator:
             )
             return None
 
-        is_malformed, _ = _td.looks_like_malformed_tool_call(cleaned)
+        is_malformed, _ = looks_like_malformed_tool_call(cleaned)
         if is_malformed:
             print(
                 f"[orch] Synthesis reply looks like a malformed tool "
@@ -2265,7 +2243,7 @@ class Orchestrator:
     _STEP_REPORT_MARKER_RE = re.compile(
         r"^\s*[_*]*STEP\s+REPORT[_*]*\s*$",
         re.IGNORECASE | re.MULTILINE,
-        )
+    )
 
     def _looks_like_step_report(self, text: str) -> bool:
         """True when the text contains the mandatory step-report marker."""
@@ -2306,7 +2284,7 @@ class Orchestrator:
 
         Tries hardest to give the user something useful, in this order:
           1. Ask the model for a final synthesis using everything already
-             in history (one non-tool call).
+             in self (one non-tool call).
           2. If that fails, stitch the last ~6 tool results together so
              the user at least sees what was learned.
           3. If no tool results exist either, return a short error.
@@ -2350,7 +2328,7 @@ class Orchestrator:
             + (f" ({reason})" if reason else "")
             + ".**",
             "",
-            ]
+        ]
 
         if not results:
             return "\n".join(prefix_lines) + (
@@ -2380,7 +2358,7 @@ class Orchestrator:
     def _extract_tool_payload(body: str) -> str:
         """Pull the human-readable field out of a JSON tool envelope.
 
-        Tool results land in history as ``{"status": "...", "content":
+        Tool results land in self as ``{"status": "...", "content":
         "...", ...}``. Dumping that JSON verbatim into the recap is
         what made past bailouts unreadable. Try to surface ``content``
         / ``matches`` / ``message`` / ``tree`` directly.

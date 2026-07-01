@@ -49,7 +49,7 @@ def register(registry) -> None:
         offset: int | None = None,
         limit: int | None = None,
     ) -> str:
-        # Hard cap on returned content. Large files dumped into history
+        # Hard cap on returned content. Large files dumped into self
         # bloat every subsequent model call by their full size, slowing
         # the loop and burning tokens. 100 KB is plenty for typical
         # source files; bigger reads get a truncation marker.

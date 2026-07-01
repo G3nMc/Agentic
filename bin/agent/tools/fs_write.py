@@ -226,7 +226,7 @@ def register(registry) -> None:
                 {
                     "status": "error",
                     "message": "items must be a non-empty list of "
-                    "{path, old_content, new_content}",
+                               "{path, old_content, new_content}",
                 }
             )
         results = []
@@ -240,9 +240,9 @@ def register(registry) -> None:
             old_c = entry.get("old_content")
             new_c = entry.get("new_content")
             if (
-                not isinstance(path, str)
-                or not isinstance(old_c, str)
-                or not isinstance(new_c, str)
+                    not isinstance(path, str)
+                    or not isinstance(old_c, str)
+                    or not isinstance(new_c, str)
             ):
                 results.append(
                     {

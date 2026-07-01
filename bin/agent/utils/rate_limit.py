@@ -12,6 +12,8 @@ import sys
 import time
 from typing import Tuple
 
+from agent.utils.token_estimator import estimate_messages_tokens
+
 
 def estimate_tokens(messages, max_tokens: int) -> int:
     """Content-aware prompt-size estimate using token_estimator.
@@ -19,7 +21,6 @@ def estimate_tokens(messages, max_tokens: int) -> int:
     Coding workflows are code-heavy, so we use the code multiplier (3.0
     chars/token) with a 10% safety margin for conservative budgeting.
     """
-    from .token_estimator import estimate_messages_tokens
 
     total = estimate_messages_tokens(
         messages, content_type="code", per_message_overhead=10

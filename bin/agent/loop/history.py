@@ -1,4 +1,4 @@
-"""Conversation-history management — system-prompt insertion + sliding-window cap.
+"""Conversation-self management — system-prompt insertion + sliding-window cap.
 
 Pure functions operating on the message list so the run-loop stays
 focused on iteration logic.
@@ -14,13 +14,15 @@ from __future__ import annotations
 import sys
 from typing import Any, Dict, List, Optional, Iterator
 
+from agent.utils.token_estimator import estimate_tokens, chars_for_tokens
+
 
 # ======================================================================
 # ConversationHistory — keyed system prompts + clean turns
 # ======================================================================
 
 class ConversationHistory:
-    """Conversation history with separated system prompts and clean turns.
+    """Conversation self with separated system prompts and clean turns.
 
     System prompts are keyed by name — setting the same key replaces the
     content (no duplication).  Turns contain only real user/assistant
@@ -109,13 +111,13 @@ class ConversationHistory:
     # ── Trimming (turns only — system is never trimmed) ────────────
 
     def trim_turns_to_budget(
-        self,
-        token_budget: int,
-        *,
-        content_type: str = "code",
-        per_message_overhead: int = 10,
-        max_msg_tokens: Optional[int] = None,
-        reply_reserve_tokens: int = 0,
+            self,
+            token_budget: int,
+            *,
+            content_type: str = "code",
+            per_message_overhead: int = 10,
+            max_msg_tokens: Optional[int] = None,
+            reply_reserve_tokens: int = 0,
     ) -> int:
         """Trim ONLY the conversation turns to fit ``token_budget``.
 
@@ -130,7 +132,6 @@ class ConversationHistory:
         keyed system prompts keep their identity and never duplicate.
         Returns the number of turns dropped.
         """
-        from ..utils.token_estimator import estimate_tokens, chars_for_tokens
 
         sys_text = self.system_text()
         system_tokens = (
@@ -143,7 +144,7 @@ class ConversationHistory:
 
         if max_msg_tokens is None:
             max_msg_tokens = max(
-                MAX_MSG_TOKENS,
+                self.MAX_MSG_TOKENS,
                 max(0, turns_budget) // max(10, len(self._turns) or 1),
             )
 
@@ -158,12 +159,12 @@ class ConversationHistory:
                 self._turns[i] = dict(
                     msg,
                     content=content[:target_chars]
-                    + f"\n[... {overflow} chars truncated from history ...]",
+                            + f"\n[... {overflow} chars truncated from self ...]",
                 )
 
         if turns_budget <= 0:
             print(
-                f"[history] WARNING: system block (~{system_tokens} tok) "
+                f"[self] WARNING: system block (~{system_tokens} tok) "
                 f"meets or exceeds the budget ({token_budget} tok); "
                 "keeping only the most recent turn.",
                 file=sys.stderr,
@@ -175,8 +176,8 @@ class ConversationHistory:
         used = 0
         for msg in reversed(self._turns):
             cost = (
-                estimate_tokens(msg.get("content", ""), content_type=content_type)
-                + per_message_overhead
+                    estimate_tokens(msg.get("content", ""), content_type=content_type)
+                    + per_message_overhead
             )
             if used + cost > turns_budget and len(kept) >= min_keep:
                 break
@@ -186,7 +187,7 @@ class ConversationHistory:
         dropped = len(self._turns) - len(kept)
         if dropped > 0:
             print(
-                f"[history] Trimmed turns: dropped {dropped} old "
+                f"[self] Trimmed turns: dropped {dropped} old "
                 f"(kept {len(kept)} turns, ~{used} tok; "
                 f"system ~{system_tokens} tok).",
                 file=sys.stderr,
@@ -373,211 +374,174 @@ class ConversationHistory:
         flat.sort(key=key, reverse=reverse)
         self._rebuild_from_flat(flat)
 
+    # ======================================================================
+    # Legacy module-level functions (kept for backward compatibility)
+    # ======================================================================
 
-# ======================================================================
-# Legacy module-level functions (kept for backward compatibility)
-# ======================================================================
+    # Default hard cap on individual message length. Used as a fallback when
+    # the caller doesn't pass ``max_msg_chars`` — the Orchestrator now derives
+    # it from ``backend.context_limit`` so a 128K cloud model isn't truncated
+    # at a constant sized for 8K Ollama.
+    # At 8K context: ~10K chars ≈ 2.5K tokens (code-aware).
+    # At 128K context: scaled dynamically by the caller.
+    MAX_MSG_CHARS = 10_000
 
-# Default hard cap on individual message length. Used as a fallback when
-# the caller doesn't pass ``max_msg_chars`` — the Orchestrator now derives
-# it from ``backend.context_limit`` so a 128K cloud model isn't truncated
-# at a constant sized for 8K Ollama.
-# At 8K context: ~10K chars ≈ 2.5K tokens (code-aware).
-# At 128K context: scaled dynamically by the caller.
-MAX_MSG_CHARS = 10_000
+    # Default token cap per message when the caller passes max_msg_tokens.
+    # ~2_500 tokens is safe for 8K Ollama; callers with larger context windows
+    # should pass a higher max_msg_tokens.
+    MAX_MSG_TOKENS = 2_500
 
-# Default token cap per message when the caller passes max_msg_tokens.
-# ~2_500 tokens is safe for 8K Ollama; callers with larger context windows
-# should pass a higher max_msg_tokens.
-MAX_MSG_TOKENS = 2_500
+    def _to_flat(self) -> list[dict[str, str]] | ConversationHistory:
+        """Normalise *self* to a plain list of message dicts.
 
+        Accepts a ``ConversationHistory`` or a plain list.
+        """
+        if isinstance(self, ConversationHistory):
+            return self.to_messages()
+        return self
 
-def _to_flat(history) -> List[Dict[str, Any]]:
-    """Normalise *history* to a plain list of message dicts.
+    def ensure_system_prompt(self, system_prompt: str) -> None:
+        """Insert ``system_prompt`` at index 0 if not already present.
 
-    Accepts a ``ConversationHistory`` or a plain list.
-    """
-    if isinstance(history, ConversationHistory):
-        return history.to_messages()
-    return history
+        Works with both ``ConversationHistory`` and plain lists.
+        """
+        if isinstance(self, ConversationHistory):
+            # Use the keyed API — "base" is the canonical key for the
+            # primary system prompt.
+            if "base" not in self.system_prompts:
+                self.set_system_prompt("base", system_prompt)
+            return
 
+        # Legacy list path.
+        if not self or self[0].get("role") != "system":
+            self.insert(0, {"role": "system", "content": system_prompt})
 
-def ensure_system_prompt(history, system_prompt: str) -> None:
-    """Insert ``system_prompt`` at index 0 if not already present.
+    def trim_history(
+            self,
+            max_turns: int,
+            *,
+            max_msg_chars: int = MAX_MSG_CHARS,
+            max_msg_tokens: Optional[int] = None,
+            content_type: str = "code",
+    ):
+        """Enforce the sliding-window self cap. Always keeps system messages.
 
-    Works with both ``ConversationHistory`` and plain lists.
-    """
-    if isinstance(history, ConversationHistory):
-        # Use the keyed API — "base" is the canonical key for the
-        # primary system prompt.
-        if "base" not in history._system_prompts:
-            history.set_system_prompt("base", system_prompt)
-        return
+        Non-system messages are capped at ``max_turns * 2`` (user + assistant
+        per turn). Older messages are dropped first; then any surviving message
+        whose content exceeds ``max_msg_chars`` (or ``max_msg_tokens`` if
+        provided) is truncated in place so a single large tool result cannot
+        blow the request budget on its own.
 
-    # Legacy list path.
-    if not history or history[0].get("role") != "system":
-        history.insert(0, {"role": "system", "content": system_prompt})
+        Returns a new list — caller assigns it back.
+        """
 
+        flat = self._to_flat()
+        system = [m for m in flat if m.get("role") == "system"]
+        non_system = [m for m in flat if m.get("role") != "system"]
 
-def trim_history(
-    history,
-    max_turns: int,
-    *,
-    max_msg_chars: int = MAX_MSG_CHARS,
-    max_msg_tokens: Optional[int] = None,
-    content_type: str = "code",
-):
-    """Enforce the sliding-window history cap. Always keeps system messages.
+        max_msgs = max_turns * 2
+        if len(non_system) > max_msgs:
+            dropped = len(non_system) - max_msgs
+            non_system = non_system[-max_msgs:]
+            print(
+                f"[orch] History trimmed: dropped {dropped} old messages "
+                f"(keeping last {max_turns} turns).",
+                file=sys.stderr,
+            )
 
-    Non-system messages are capped at ``max_turns * 2`` (user + assistant
-    per turn). Older messages are dropped first; then any surviving message
-    whose content exceeds ``max_msg_chars`` (or ``max_msg_tokens`` if
-    provided) is truncated in place so a single large tool result cannot
-    blow the request budget on its own.
-
-    Returns a new list — caller assigns it back.
-    """
-    from ..utils.token_estimator import estimate_tokens, chars_for_tokens
-
-    flat = _to_flat(history)
-    system = [m for m in flat if m.get("role") == "system"]
-    non_system = [m for m in flat if m.get("role") != "system"]
-
-    max_msgs = max_turns * 2
-    if len(non_system) > max_msgs:
-        dropped = len(non_system) - max_msgs
-        non_system = non_system[-max_msgs:]
-        print(
-            f"[orch] History trimmed: dropped {dropped} old messages "
-            f"(keeping last {max_turns} turns).",
-            file=sys.stderr,
-        )
-
-    # Truncate any individual message that is abnormally large.
-    capped = []
-    for msg in non_system:
-        content = msg.get("content") or ""
-        if max_msg_tokens is not None:
-            msg_tokens = estimate_tokens(content, content_type=content_type)
-            if msg_tokens > max_msg_tokens:
-                target_chars = chars_for_tokens(
-                    max_msg_tokens, content_type=content_type
-                )
-                overflow = len(content) - target_chars
+        # Truncate any individual message that is abnormally large.
+        capped = []
+        for msg in non_system:
+            content = msg.get("content") or ""
+            if max_msg_tokens is not None:
+                msg_tokens = estimate_tokens(content, content_type=content_type)
+                if msg_tokens > max_msg_tokens:
+                    target_chars = chars_for_tokens(
+                        max_msg_tokens, content_type=content_type
+                    )
+                    overflow = len(content) - target_chars
+                    content = (
+                            content[:target_chars]
+                            + f"\n[... {overflow} chars truncated from self ...]"
+                    )
+                    msg = dict(msg, content=content)
+            elif len(content) > max_msg_chars:
+                overflow = len(content) - max_msg_chars
                 content = (
-                    content[:target_chars]
-                    + f"\n[... {overflow} chars truncated from history ...]"
+                        content[:max_msg_chars]
+                        + f"\n[... {overflow} chars truncated from self ...]"
                 )
                 msg = dict(msg, content=content)
-        elif len(content) > max_msg_chars:
-            overflow = len(content) - max_msg_chars
-            content = (
-                content[:max_msg_chars]
-                + f"\n[... {overflow} chars truncated from history ...]"
-            )
-            msg = dict(msg, content=content)
-        capped.append(msg)
+            capped.append(msg)
 
-    return system + capped
+        return system + capped
 
+    def trim_history_by_tokens(
+            self,
+            token_budget: int,
+            *,
+            content_type: str = "code",
+            per_message_overhead: int = 10,
+            max_msg_tokens: Optional[int] = None,
+    ):
+        """Enforce a token budget by packing messages newest-first.
 
-def trim_history_by_tokens(
-    history,
-    token_budget: int,
-    *,
-    content_type: str = "code",
-    per_message_overhead: int = 10,
-    max_msg_tokens: Optional[int] = None,
-):
-    """Enforce a token budget by packing messages newest-first.
+        Always keeps system messages. Non-system messages are included
+        newest-first until the accumulated token estimate exceeds the budget.
+        Any surviving message that exceeds ``max_msg_tokens`` is truncated
+        in place.
 
-    Always keeps system messages. Non-system messages are included
-    newest-first until the accumulated token estimate exceeds the budget.
-    Any surviving message that exceeds ``max_msg_tokens`` is truncated
-    in place.
+        Returns a new list — caller assigns it back.
+        """
 
-    Returns a new list — caller assigns it back.
-    """
-    from ..utils.token_estimator import estimate_tokens, chars_for_tokens
+        flat = self._to_flat()
+        system = [m for m in flat if m.get("role") == "system"]
+        non_system = [m for m in flat if m.get("role") != "system"]
 
-    flat = _to_flat(history)
-    system = [m for m in flat if m.get("role") == "system"]
-    non_system = [m for m in flat if m.get("role") != "system"]
+        if max_msg_tokens is None:
+            # Fair share: budget divided by a reasonable message count, with a floor.
+            max_msg_tokens = max(self.MAX_MSG_TOKENS, token_budget // max(10, len(non_system)))
 
-    if max_msg_tokens is None:
-        # Fair share: budget divided by a reasonable message count, with a floor.
-        max_msg_tokens = max(MAX_MSG_TOKENS, token_budget // max(10, len(non_system)))
+        # Truncate individual messages first.
+        capped = []
+        for msg in non_system:
+            content = msg.get("content") or ""
+            msg_tokens = estimate_tokens(content, content_type=content_type)
+            if msg_tokens > max_msg_tokens:
+                target_chars = chars_for_tokens(max_msg_tokens, content_type=content_type)
+                overflow = len(content) - target_chars
+                content = (
+                        content[:target_chars]
+                        + f"\n[... {overflow} chars truncated from self ...]"
+                )
+                msg = dict(msg, content=content)
+            capped.append(msg)
 
-    # Truncate individual messages first.
-    capped = []
-    for msg in non_system:
-        content = msg.get("content") or ""
-        msg_tokens = estimate_tokens(content, content_type=content_type)
-        if msg_tokens > max_msg_tokens:
-            target_chars = chars_for_tokens(max_msg_tokens, content_type=content_type)
-            overflow = len(content) - target_chars
-            content = (
-                content[:target_chars]
-                + f"\n[... {overflow} chars truncated from history ...]"
-            )
-            msg = dict(msg, content=content)
-        capped.append(msg)
-
-    # Pack newest-first until budget. Always keep at least 1 turn (2 msgs).
-    kept: List[Dict[str, Any]] = []
-    current_tokens = sum(
-        estimate_tokens(m.get("content", ""), content_type=content_type)
-        + per_message_overhead
-        for m in system
-    )
-    min_keep = min(2, len(capped))
-
-    for msg in reversed(capped):
-        msg_tokens = (
-            estimate_tokens(msg.get("content", ""), content_type=content_type)
+        # Pack newest-first until budget. Always keep at least 1 turn (2 msgs).
+        kept: List[Dict[str, Any]] = []
+        current_tokens = sum(
+            estimate_tokens(m.get("content", ""), content_type=content_type)
             + per_message_overhead
+            for m in system
         )
-        if current_tokens + msg_tokens > token_budget and len(kept) >= min_keep:
-            break
-        kept.insert(0, msg)
-        current_tokens += msg_tokens
+        min_keep = min(2, len(capped))
 
-    dropped = len(capped) - len(kept)
-    if dropped > 0:
-        print(
-            f"[orch] History trimmed by tokens: dropped {dropped} old messages "
-            f"(kept {len(kept)} non-system, ~{current_tokens} tokens).",
-            file=sys.stderr,
-        )
+        for msg in reversed(capped):
+            msg_tokens = (
+                    estimate_tokens(msg.get("content", ""), content_type=content_type)
+                    + per_message_overhead
+            )
+            if current_tokens + msg_tokens > token_budget and len(kept) >= min_keep:
+                break
+            kept.insert(0, msg)
+            current_tokens += msg_tokens
 
-    return system + kept
+        dropped = len(capped) - len(kept)
+        if dropped > 0:
+            print(
+                f"[orch] History trimmed by tokens: dropped {dropped} old messages "
+                f"(kept {len(kept)} non-system, ~{current_tokens} tokens).",
+                file=sys.stderr,
+            )
 
-
-def import_external_history(
-    history, external: List[Dict[str, Any]]
-) -> None:
-    """Append a caller-supplied history (filtered + normalised) to *history*.
-
-    Only ``user`` and ``assistant`` roles are accepted. The system
-    prompt is owned exclusively by ``ensure_system_prompt`` and lives at
-    ``history[0]``; admitting external ``system`` turns mid-conversation
-    confuses the model into treating them as topic switches (seen as
-    "I don't understand" / "Can you be more specific" replies).
-
-    Works with both ``ConversationHistory`` and plain lists.
-    """
-    if isinstance(history, ConversationHistory):
-        history.import_external_history(external)
-        return
-
-    # Legacy list path.
-    for msg in external:
-        if not isinstance(msg, dict):
-            continue
-        role = str(msg.get("role") or "").strip().lower()
-        content = str(msg.get("content") or "")
-        if role not in ("user", "assistant"):
-            continue
-        if not content.strip():
-            continue
-        history.append({"role": role, "content": content})
+        return system + kept

@@ -6,7 +6,7 @@ Get a key at https://openrouter.ai/keys.
 
 from __future__ import annotations
 
-from bin.common.backends.openai_compat import OpenAICompatBackend
+from agent.backends.openai_compat import OpenAICompatBackend
 
 
 class OpenRouterBackend(OpenAICompatBackend):

@@ -278,7 +278,7 @@ class ToolIntentDetector:
         re.compile(r"\b(get-content|select-string|findstr|grep|cat|less|head|tail)\b"),
         re.compile(
             r"\b(export|download|save)\b[^.\n]*"
-            r"\b(chat|conversation|history|log)\b[^.\n]*\bjson\b"
+            r"\b(chat|conversation|self|log)\b[^.\n]*\bjson\b"
         ),
         re.compile(
             r"\b(read|open|search|find|list)\s+"
