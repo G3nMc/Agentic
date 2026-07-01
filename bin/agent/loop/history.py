@@ -12,9 +12,10 @@ work during the migration.
 from __future__ import annotations
 
 import sys
-from typing import Any, Dict, List, Optional, Iterator
+from typing import Any, Dict, List, Optional, Iterator, Tuple
 
 from agent.utils.token_estimator import estimate_tokens, chars_for_tokens
+from agent.utils.text import sanitize as _sanitize_text
 
 
 # ======================================================================
@@ -107,6 +108,74 @@ class ConversationHistory:
         """Return the merged system block exactly as emitted by
         ``to_messages`` (empty string when no system prompts are set)."""
         return "\n\n".join(self._system_prompts.values())
+
+    # ── Wire-format builders for backends ──────────────────────────
+
+    def to_prompt(self) -> str:
+        """Render the conversation as a single text prompt for
+        ``/api/generate``-style backends (Ollama).
+
+        System prompts are NOT included here — they are passed
+        separately via :meth:`system_text` so the backend can populate
+        the ``system`` field of the API payload. Only user / assistant /
+        tool turns are rendered into the prompt body, prefixed with
+        the speaker label and terminated by a final ``Assistant:`` cue
+        so the model continues as the assistant.
+        """
+        body: List[str] = []
+        for msg in self._turns:
+            role = (msg.get("role") or "").lower()
+            content = msg.get("content") or ""
+            if not isinstance(content, str):
+                content = str(content)
+            if not content.strip():
+                continue
+            if role == "user":
+                body.append(f"User: {content}")
+            elif role == "assistant":
+                body.append(f"Assistant: {content}")
+            else:
+                body.append(f"[{role}] {content}")
+        body.append("Assistant:")
+        return "\n\n".join(body)
+
+    def to_gemini_contents(self) -> List[Dict[str, Any]]:
+        """Render the conversation turns in Gemini's ``contents`` format.
+
+        Gemini uses ``user`` and ``model`` roles (not ``assistant``).
+        System prompts are handled separately via :meth:`system_text`.
+        Tool / function roles are mapped to ``user`` parts so context
+        isn't lost.
+        """
+        contents: List[Dict[str, Any]] = []
+        for msg in self._turns:
+            role = (msg.get("role") or "").lower()
+            content = msg.get("content") or ""
+            if not isinstance(content, str):
+                content = str(content)
+            if not content.strip():
+                continue
+            gemini_role = "model" if role == "assistant" else "user"
+            contents.append(
+                {"role": gemini_role, "parts": [{"text": content}]}
+            )
+        return contents
+
+    def sanitize(self) -> None:
+        """Sanitize all system prompts and turns in-place.
+
+        Strips null bytes and lone UTF-16 surrogate code points that
+        crash downstream encoders (notably Ollama's Python client).
+        This centralizes sanitization so backends no longer need to
+        call ``sanitize_for_agent()`` individually.
+        """
+        self._system_prompts = {
+            k: _sanitize_text(v) for k, v in self._system_prompts.items()
+        }
+        self._turns = [
+            dict(msg, content=_sanitize_text(msg.get("content") or ""))
+            for msg in self._turns
+        ]
 
     # ── Trimming (turns only — system is never trimmed) ────────────
 

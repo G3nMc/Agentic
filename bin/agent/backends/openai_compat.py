@@ -33,7 +33,6 @@ from .http_client import (
     assemble_openai_chat_stream,
     stream_sse,
 )
-from ..utils.text import sanitize_for_agent
 
 
 # Re-exported for backwards compatibility with callers that imported
@@ -102,7 +101,7 @@ class OpenAICompatBackend(ModelBackend):
 
     def chat(
         self,
-        messages: List[Dict[str, Any]],
+        conversation,
         max_tokens: int,
         temperature: float,
         tools: Optional[List[Dict[str, Any]]] = None,  # ignored on purpose
@@ -115,7 +114,9 @@ class OpenAICompatBackend(ModelBackend):
         # If you need to roll back, search ``[native-tools-removed]``.
         _ = tools
 
-        messages = sanitize_for_agent(messages)
+        # Centralized sanitization in the ConversationHistory.
+        conversation.sanitize()
+        messages = conversation.to_messages()
 
         payload: Dict[str, Any] = {
             "model": self.model_id,

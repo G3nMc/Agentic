@@ -30,7 +30,6 @@ from agent.backends.http_client import (
     ServerError,
     stream_ndjson,
 )
-from agent.utils.text import sanitize_for_agent
 
 
 def _log(msg: str) -> None:
@@ -193,47 +192,12 @@ class OllamaBackend(ModelBackend):
             raise RuntimeError(f"Ollama health check failed at {self.base_url}: {e}") from e
 
     # ------------------------------------------------------------------
-    # Prompt assembly: messages -> single prompt + system string
-    # ------------------------------------------------------------------
-
-    @staticmethod
-    def _build_prompt_and_system(
-            messages: List[Dict[str, Any]],
-    ) -> Tuple[str, str]:
-        """Render OpenAI-style chat messages into the prompt + system
-        pair expected by ``/api/generate``.
-        """
-        system_chunks: List[str] = []
-        body: List[str] = []
-        for msg in messages or []:
-            if not isinstance(msg, dict):
-                continue
-            role = (msg.get("role") or "").lower()
-            content = msg.get("content") or ""
-            if not isinstance(content, str):
-                content = str(content)
-            if not content.strip():
-                continue
-            if role == "system":
-                system_chunks.append(content)
-            elif role == "user":
-                body.append(f"User: {content}")
-            elif role == "assistant":
-                body.append(f"Assistant: {content}")
-            else:
-                # tool, function, etc. -- pass through as user context.
-                body.append(f"[{role}] {content}")
-        # Final cue so the model continues as the assistant.
-        body.append("Assistant:")
-        return "\n\n".join(body), "\n\n".join(system_chunks)
-
-    # ------------------------------------------------------------------
     # ModelBackend.chat
     # ------------------------------------------------------------------
 
     def chat(
             self,
-            messages: List[Dict[str, Any]],
+            conversation,
             max_tokens: int,
             temperature: float,
             tools: Optional[List[Dict[str, Any]]] = None,
@@ -249,8 +213,17 @@ class OllamaBackend(ModelBackend):
         # switch and `effort` string to that field.
         _ = tools
 
-        messages = sanitize_for_agent(messages)
-        prompt, system = self._build_prompt_and_system(messages)
+        # Centralized sanitization: ConversationHistory.sanitize() strips
+        # null bytes and lone surrogates in-place. No per-backend
+        # sanitize_for_agent() call needed.
+        conversation.sanitize()
+
+        # Build the prompt + system from the ConversationHistory directly.
+        # The history object owns the system/turns separation, so there's
+        # no need to re-parse a flat message list.
+        prompt = conversation.to_prompt()
+        system = conversation.system_text()
+        msg_count = len(conversation.turns)
 
         options: Dict[str, Any] = {
             "temperature": temperature,
@@ -276,7 +249,7 @@ class OllamaBackend(ModelBackend):
 
         _log(
             f"[Ollama:chat] POST {self.base_url}/api/generate model={self.model_id} "
-            f"msgs={len(messages)} max_tokens={max_tokens} temperature={temperature} "
+            f"turns={msg_count} max_tokens={max_tokens} temperature={temperature} "
             f"cloud={self._is_cloud_host()} stop={options.get('stop')} "
             f"think={payload.get('think')}"
         )

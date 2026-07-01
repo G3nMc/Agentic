@@ -592,7 +592,6 @@ class Orchestrator:
         self._writes_this_turn = None
         self._action_pressure_nudges = None
         self._pending_step_report = None
-        self._history = ConversationHistory()
         self.backend = backend
         # Task-flow mode: open / task_compliance / task_compliance_auto.
         # Drives whether the system prompt advertises the <tasks>
@@ -747,13 +746,13 @@ class Orchestrator:
 
     def import_history(self, history: List[Dict[str, Any]]) -> None:
         self._ensure_system_prompt()
-        self._history.import_external_history(history)
+        self.conversation_history.import_external_history(history)
 
     def _ensure_system_prompt(self) -> None:
         # Load per-project agent context (.agent.md / context.md) when present.
-
         project_context = load_project_context(str(self.tool_registry.base_path))
-        self._history.ensure_system_prompt(
+        self.conversation_history.set_system_prompt(
+            "base",
             self.tool_registry.get_system_prompt(
                 project_context=project_context,
                 task_mode=self.task_mode.value,
@@ -903,7 +902,7 @@ class Orchestrator:
             per_msg_tokens = max(2_500, ctx_tokens // 5)
         else:
             # Fallback for backends that don't report context_limit.
-            per_msg_tokens = self._history.MAX_MSG_TOKENS
+            per_msg_tokens = ConversationHistory.MAX_MSG_TOKENS
         self.conversation_history.trim_turns_to_budget(
             self._history_token_budget,
             content_type="code",
@@ -1026,7 +1025,7 @@ class Orchestrator:
         if not use_tools:
             try:
                 text, _ = self.backend.chat(
-                    messages=self.conversation_history.to_messages(),
+                    conversation=self.conversation_history,
                     max_tokens=self.max_tokens,
                     temperature=self.temperature,
                     tools=None,
@@ -2153,7 +2152,7 @@ class Orchestrator:
 
         try:
             text, _ = self.backend.chat(
-                messages=synth_history.to_messages(),
+                conversation=synth_history,
                 max_tokens=self.max_tokens,
                 temperature=self.temperature,
                 tools=None,
@@ -2469,7 +2468,7 @@ class Orchestrator:
                 # different stop sequence -- whichever one the
                 # provider actually respects fires first.
                 result = self.backend.chat(
-                    messages=self.conversation_history.to_messages(),
+                    conversation=self.conversation_history,
                     max_tokens=self.max_tokens,
                     temperature=self.temperature,
                     tools=self.tool_registry.definitions,

@@ -24,7 +24,6 @@ from  agent.backends.http_client import (
     ServerError,
     stream_sse,
 )
-from  agent.utils.text import sanitize_for_agent
 
 
 def _log(msg: str) -> None:
@@ -47,47 +46,12 @@ class GeminiBackend(ModelBackend):
         _log(f"[Gemini:init] model={self.model_id} base_url={self.base_url}")
 
     # ------------------------------------------------------------------
-    # Message conversion: OpenAI-style chat -> Gemini contents/system
-    # ------------------------------------------------------------------
-
-    @staticmethod
-    def _to_contents(
-        messages: List[Dict[str, Any]],
-    ) -> Tuple[str, List[Dict[str, Any]]]:
-        """Return ``(system_instruction, contents)``.
-
-        Gemini does NOT have an "assistant" role: it expects ``user`` and
-        ``model``. System prompts are passed separately via
-        ``systemInstruction``. Tool / function roles are mapped to
-        ``user`` parts so context isn't lost.
-        """
-        system_parts: List[str] = []
-        contents: List[Dict[str, Any]] = []
-        for msg in messages or []:
-            if not isinstance(msg, dict):
-                continue
-            role = (msg.get("role") or "").lower()
-            content = msg.get("content") or ""
-            if not isinstance(content, str):
-                content = str(content)
-            if not content.strip():
-                continue
-            if role == "system":
-                system_parts.append(content)
-                continue
-            gemini_role = "model" if role == "assistant" else "user"
-            contents.append(
-                {"role": gemini_role, "parts": [{"text": content}]}
-            )
-        return "\n\n".join(system_parts), contents
-
-    # ------------------------------------------------------------------
     # ModelBackend.chat
     # ------------------------------------------------------------------
 
     def chat(
         self,
-        messages: List[Dict[str, Any]],
+        conversation,
         max_tokens: int,
         temperature: float,
         tools: Optional[List[Dict[str, Any]]] = None,
@@ -98,8 +62,10 @@ class GeminiBackend(ModelBackend):
         # [native-tools-removed] We never forward function declarations.
         _ = tools
 
-        messages = sanitize_for_agent(messages)
-        system_instruction, contents = self._to_contents(messages)
+        # Centralized sanitization in the ConversationHistory.
+        conversation.sanitize()
+        system_instruction = conversation.system_text()
+        contents = conversation.to_gemini_contents()
 
         generation_config: Dict[str, Any] = {
             "temperature": temperature,
