@@ -72,6 +72,11 @@ def register(registry) -> None:
             raw = fp.read_bytes()
             total = len(raw)
             full_text = raw.decode("utf-8", errors="replace")
+            # Normalize CRLF/CR to LF so patch_file (which uses read_text
+            # with universal newlines) can match old_content the model
+            # copies from our output.  Without this, CRLF in the file
+            # makes every patch_file fail with old_content not found.
+            full_text = full_text.replace("\r\n", "\n").replace("\r", "\n")
 
             wants_range = any(
                 v is not None for v in (start_line, end_line, offset, limit)
@@ -369,7 +374,7 @@ def register(registry) -> None:
 
     def read_files(
         paths: list,
-        max_lines_per_file: int | None = 200,
+        max_lines_per_file: int | None = 800,
     ) -> str:
         """Read multiple files in one call. Returns concatenated contents with
         file headers, ideal for loading several related files at once instead
@@ -448,6 +453,9 @@ def register(registry) -> None:
                 raw = fp.read_bytes()
                 total_size = len(raw)
                 full_text = raw.decode("utf-8", errors="replace")
+                # Normalize CRLF/CR to LF (same as read_file) so patch_file
+                # can match old_content the model copies from our output.
+                full_text = full_text.replace("\r\n", "\n").replace("\r", "\n")
             except Exception as exc:
                 results.append(
                     {
@@ -610,7 +618,7 @@ def register(registry) -> None:
                 "type": "function",
                 "function": {
                     "name": "read_files",
-                    "description": "Read multiple files in one call. Returns concatenated contents with file headers, ideal for loading several related files at once instead of making separate read_file calls for each one. Each file is prefixed with a === path === separator. Output is capped at 200 KB total; files beyond the cap are listed by name only. Use max_lines_per_file to limit lines per file (default 200).",
+                    "description": "Read multiple files in one call. Returns concatenated contents with file headers, ideal for loading several related files at once instead of making separate read_file calls for each one. Each file is prefixed with a === path === separator. Output is capped at 200 KB total; files beyond the cap are listed by name only. Use max_lines_per_file to limit lines per file (default 800).",
                     "parameters": {
                         "type": "object",
                         "properties": {

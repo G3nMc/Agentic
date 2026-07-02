@@ -218,8 +218,13 @@ def register(registry) -> None:
         return _summarise_batch(results, "write_files")
 
     def patch_files(items) -> str:
-        """Patch many files in one call. ``items`` is a list of
+        """Patch many files in one call.  ``items`` is a list of
         ``{"path", "old_content", "new_content"}`` dicts.
+
+        Guardrails: max 5 items per call and max 50K total chars of
+        old_content + new_content.  These prevent the model from emitting
+        a single oversized JSON batch that gets truncated by max_tokens,
+        producing a malformed tool call that wastes iterations.
         """
         if not isinstance(items, list) or not items:
             return json.dumps(
@@ -227,6 +232,39 @@ def register(registry) -> None:
                     "status": "error",
                     "message": "items must be a non-empty list of "
                                "{path, old_content, new_content}",
+                }
+            )
+        # Guardrail: too many items in one call → the JSON will be
+        # truncated by max_tokens before the model finishes emitting it.
+        _MAX_PATCH_ITEMS = 5
+        if len(items) > _MAX_PATCH_ITEMS:
+            return json.dumps(
+                {
+                    "status": "error",
+                    "message": (
+                        f"Too many patches in one call ({len(items)}); "
+                        f"maximum is {_MAX_PATCH_ITEMS}. Split into "
+                        f"multiple patch_files calls with fewer items each."
+                    ),
+                }
+            )
+        # Guardrail: total content too large → same truncation risk.
+        _MAX_TOTAL_CONTENT_CHARS = 50_000
+        total_chars = 0
+        for entry in items:
+            if isinstance(entry, dict):
+                total_chars += len(entry.get("old_content", "") or "")
+                total_chars += len(entry.get("new_content", "") or "")
+        if total_chars > _MAX_TOTAL_CONTENT_CHARS:
+            return json.dumps(
+                {
+                    "status": "error",
+                    "message": (
+                        f"Patch content too large ({total_chars:,} chars; "
+                        f"max {_MAX_TOTAL_CONTENT_CHARS:,}). Split into "
+                        f"smaller patch_files calls, or use write_file + "
+                        f"append_file for very large files."
+                    ),
                 }
             )
         results = []

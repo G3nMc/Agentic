@@ -7,6 +7,15 @@ As of the ConversationHistory refactor, system prompts are keyed and
 separated from clean user/assistant turns. The class provides a
 backward-compatible list-like API so existing call sites continue to
 work during the migration.
+
+The class also hosts a :class:`TaskTracker` that keeps the live state
+of the task-flow protocol (planned tasks, statuses, active task id).
+The tracker is updated by the run-loop whenever the model emits
+``<task_status>`` tags, and its state is rendered into a dedicated
+system prompt key (``"task_state"``) so the model always sees the
+current task state — not a stale snapshot from a previous iteration.
+This prevents the model from re-emitting ``task_status`` for a task
+that is already ``done`` (the ``done x5`` loop observed in the logs).
 """
 
 from __future__ import annotations
@@ -16,6 +25,195 @@ from typing import Any, Dict, List, Optional, Iterator, Tuple
 
 from agent.utils.token_estimator import estimate_tokens, chars_for_tokens
 from agent.utils.text import sanitize as _sanitize_text
+
+
+# ======================================================================
+# TaskTracker — live task-flow state hosted by ConversationHistory
+# ======================================================================
+
+
+class TaskTracker:
+    """Live state of the task-flow protocol, hosted inside ConversationHistory.
+
+    The run-loop updates this tracker whenever the model emits
+    ``<tasks>`` (a plan) or ``<task_status>`` (a status update).  The
+    tracker renders its state into a system-prompt key so the model
+    always sees the *current* task state — preventing the degenerate
+    loop where the model re-emits ``task_status`` for a task that is
+    already ``done``.
+
+    The tracker uses the dataclasses/enums from :mod:`task_protocol`
+    so it stays wire-compatible with the JSON envelopes emitted on
+    stdout for the Flutter UI.
+    """
+
+    def __init__(self) -> None:
+        # Ordered list of planned task ids (insertion order).
+        self._task_ids: List[int] = []
+        # Full Task objects keyed by id.
+        self._tasks: Dict[int, Any] = {}
+        # Per-task status (TaskStatus enum).  Defaults to PENDING.
+        self._statuses: Dict[int, Any] = {}
+        # Per-task note (last note emitted by the model).
+        self._notes: Dict[int, str] = {}
+        # The task the model last marked in_progress.
+        self._active_task_id: Optional[int] = None
+        # Every id that has ever been in_progress this request.
+        self._inprogress_ids: set = set()
+
+    # ── Plan management ───────────────────────────────────────────
+
+    def set_plan(self, tasks: List[Any]) -> None:
+        """Replace the current plan with *tasks* (list of Task dataclasses)."""
+        self._task_ids = [t.id for t in tasks]
+        self._tasks = {t.id: t for t in tasks}
+        self._statuses = {t.id: t.status for t in tasks}
+        self._notes = {}
+        self._active_task_id = None
+        self._inprogress_ids = set()
+
+    def clear_plan(self) -> None:
+        """Remove all plan state."""
+        self._task_ids = []
+        self._tasks = {}
+        self._statuses = {}
+        self._notes = {}
+        self._active_task_id = None
+        self._inprogress_ids = set()
+
+    @property
+    def has_plan(self) -> bool:
+        return bool(self._task_ids)
+
+    @property
+    def task_ids(self) -> List[int]:
+        return list(self._task_ids)
+
+    @property
+    def active_task_id(self) -> Optional[int]:
+        return self._active_task_id
+
+    @property
+    def inprogress_ids(self) -> set:
+        return set(self._inprogress_ids)
+
+    # ── Status updates ────────────────────────────────────────────
+
+    def update_status(self, task_id: int, status: Any, note: str = "") -> None:
+        """Update the status of *task_id*.
+
+        If *status* is IN_PROGRESS, the task becomes the active task.
+        Terminal statuses (DONE, FAILED, SKIPPED) do NOT clear the
+        active_task_id — the run-loop decides which task to advance to.
+        """
+        if task_id not in self._tasks:
+            # The model emitted a status for an unplanned task id.
+            # Create a minimal entry so the tracker doesn't lose it.
+            self._tasks[task_id] = None
+            self._task_ids.append(task_id)
+            self._statuses[task_id] = status
+        else:
+            self._statuses[task_id] = status
+        if note:
+            self._notes[task_id] = note
+        if status is not None and hasattr(status, "value"):
+            if status.value == "in_progress":
+                self._active_task_id = task_id
+                self._inprogress_ids.add(task_id)
+
+    def get_status(self, task_id: int) -> Any:
+        return self._statuses.get(task_id)
+
+    def is_done(self, task_id: int) -> bool:
+        s = self._statuses.get(task_id)
+        if s is None:
+            return False
+        return hasattr(s, "value") and s.value in ("done", "skipped", "failed")
+
+    # ── Rendering ────────────────────────────────────────────────
+
+    def render_state_block(self) -> str:
+        """Render the current task state as a text block for the model.
+
+        This is injected as a system-prompt key (``"task_state"``) so
+        the model sees it as a persistent, always-updated instruction.
+
+        The block includes:
+          - The full plan (id, name, description, status)
+          - The current active task
+          - A reminder of the task_status protocol
+
+        Returns an empty string when no plan is active.
+        """
+        if not self._task_ids:
+            return ""
+
+        lines: List[str] = [
+            "=== CURRENT TASK STATE (orchestrator-managed — DO NOT re-emit <tasks>) ===",
+            "The plan below is tracked by the orchestrator. Do NOT re-emit a",
+            "<tasks> block. Continue working on the current task and emit",
+            "<task_status> tags ONLY when the status CHANGES.",
+            "",
+        ]
+
+        for tid in self._task_ids:
+            task_obj = self._tasks.get(tid)
+            name = getattr(task_obj, "name", f"Task {tid}") if task_obj else f"Task {tid}"
+            desc = getattr(task_obj, "description", "") if task_obj else ""
+            status = self._statuses.get(tid)
+            status_str = status.value if status and hasattr(status, "value") else "pending"
+            note = self._notes.get(tid, "")
+
+            marker = "▶" if tid == self._active_task_id else "○"
+            line = f"  #{tid} {marker} [{status_str}] — {name}"
+            if desc:
+                short_desc = desc[:120]
+                if len(desc) > 120:
+                    short_desc += "..."
+                line += f"\n       {short_desc}"
+            if note:
+                line += f"\n       note: {note[:200]}"
+            lines.append(line)
+
+        lines.append("")
+        if self._active_task_id is not None:
+            task_obj = self._tasks.get(self._active_task_id)
+            task_name = getattr(task_obj, "name", f"Task #{self._active_task_id}") if task_obj else f"Task #{self._active_task_id}"
+            lines.append(
+                f"CURRENT TASK: #{self._active_task_id} ({task_name}). "
+                "Continue working on THIS task. Emit "
+                f'<task_status>{{"id":{self._active_task_id},'
+                '"status":"done|partial|blocked|failed",'
+                '"note":"<short summary>"}}</task_status> when it is '
+                "complete. Do NOT re-emit a status that is already shown above."
+            )
+        else:
+            # Find the first pending task.
+            pending = next(
+                (tid for tid in self._task_ids
+                 if not self.is_done(tid)),
+                None,
+            )
+            if pending is not None:
+                task_obj = self._tasks.get(pending)
+                task_name = getattr(task_obj, "name", f"Task #{pending}") if task_obj else f"Task #{pending}"
+                lines.append(
+                    f"NEXT TASK: #{pending} ({task_name}). "
+                    "Emit its <task_status> as in_progress and start working on it."
+                )
+            else:
+                lines.append(
+                    "All tasks are complete. Emit your final answer."
+                )
+
+        lines.append("")
+        lines.append(
+            "IMPORTANT: Do NOT emit <task_status> for a task whose status is "
+            "already shown above as done/partial/blocked/failed. Only emit a "
+            "NEW status when it CHANGES."
+        )
+        lines.append("=== END TASK STATE ===")
+        return "\n".join(lines)
 
 
 # ======================================================================
@@ -44,6 +242,28 @@ class ConversationHistory:
         # Clean conversation turns: only real user/assistant exchanges
         # + tool results (which are part of the working conversation).
         self._turns: List[Dict[str, str]] = []
+
+        # Live task-flow state tracker.  The run-loop updates this
+        # whenever the model emits <tasks> or <task_status>, then
+        # calls sync_task_state() to push the current state into the
+        # "task_state" system-prompt key so the model always sees it.
+        self.task_tracker: TaskTracker = TaskTracker()
+
+    # ── Task-flow state (delegates to TaskTracker) ────────────────
+
+    def sync_task_state(self) -> None:
+        """Render the current task-tracker state into the ``task_state``
+        system-prompt key.
+
+        Call this **before** every model call so the model sees the
+        most recent task state.  When no plan is active, the key is
+        removed so it doesn't clutter the system block.
+        """
+        block = self.task_tracker.render_state_block()
+        if block:
+            self._system_prompts["task_state"] = block
+        else:
+            self._system_prompts.pop("task_state", None)
 
     # ── System prompts (keyed, static) ──────────────────────────────
 
@@ -271,9 +491,10 @@ class ConversationHistory:
         self._turns = []
 
     def reset_all(self) -> None:
-        """Clear everything — system prompts and turns."""
+        """Clear everything — system prompts, turns, and task state."""
         self._system_prompts.clear()
         self._turns = []
+        self.task_tracker.clear_plan()
 
     def import_external_history(self, external: List[Dict[str, Any]]) -> None:
         """Append caller-supplied user/assistant turns.
@@ -422,6 +643,15 @@ class ConversationHistory:
         new = ConversationHistory()
         new._system_prompts = dict(self._system_prompts)
         new._turns = list(self._turns)
+        # Deep-copy the task tracker state so the copy's task state
+        # is independent of the original (the synthesis call uses a
+        # copy and must not mutate the live tracker).
+        new.task_tracker._task_ids = list(self.task_tracker._task_ids)
+        new.task_tracker._tasks = dict(self.task_tracker._tasks)
+        new.task_tracker._statuses = dict(self.task_tracker._statuses)
+        new.task_tracker._notes = dict(self.task_tracker._notes)
+        new.task_tracker._active_task_id = self.task_tracker._active_task_id
+        new.task_tracker._inprogress_ids = set(self.task_tracker._inprogress_ids)
         return new
 
     def clear(self) -> None:

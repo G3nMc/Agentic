@@ -494,8 +494,33 @@ def _get_repeat_call_directive(summary: str) -> Dict[str, str]:
 def _get_tool_result_followup(
         name: str, display_result: str, is_last_chance: bool
 ) -> Dict[str, str]:
-    """Standard follow-up after a tool execution. ``is_last_chance``
-    forces a finalize directive when the iteration budget is almost gone."""
+    """Standard follow-up after a tool execution.  ``is_last_chance``
+    forces a finalize directive when the iteration budget is almost gone.
+
+    When the tool result contains truncation markers (from read_file,
+    read_files, or the head+tail truncation in the loop), an explicit
+    WARNING is appended so the model knows it must re-read the missing
+    section before attempting patch_file — otherwise its old_content
+    won't match and the patch will fail.
+    """
+    # Detect truncation markers in the tool result.
+    truncation_warning = ""
+    _truncation_markers = (
+        "[... more lines",
+        "[OUTPUT TRUNCATED",
+        "[TRUNCATED:",
+        "[... chars truncated from middle",
+    )
+    if any(m in display_result for m in _truncation_markers):
+        truncation_warning = (
+            "\n\n[WARNING: Some file content was TRUNCATED. "
+            "You do NOT have the full file. "
+            "Before calling patch_file, you MUST call read_file with "
+            "start_line/end_line (or read_file with no range) to get the "
+            "complete content. If you patch now with partial content, "
+            "old_content will NOT match and the patch will fail.]"
+        )
+
     if is_last_chance:
         content = (
             f"Tool `{name}` returned:\n{display_result}\n\n"
@@ -509,6 +534,9 @@ def _get_tool_result_followup(
             "[INTERNAL: Continue. Either call another tool or give the final answer. "
             "Do NOT echo this instruction back to the user.]"
         )
+    # Insert the truncation warning before the INTERNAL directive.
+    if truncation_warning:
+        content = content.replace("\n[INTERNAL:", f"{truncation_warning}\n[INTERNAL:")
     return {"role": "user", "content": content}
 
 
@@ -583,7 +611,7 @@ class Orchestrator:
             disable_tools: bool = False,
             path_filter: Optional[Any] = None,
             db_connections: Optional[Dict[str, Dict[str, str]]] = None,
-            task_mode: str = "open",
+            task_mode: str = "task_compliance_auto",  # "open",
             thinking: bool = False,
             effort: Optional[str] = None,
             auto_num_ctx: bool = False,
@@ -624,17 +652,16 @@ class Orchestrator:
         # the UI checklist stays frozen). The model's ``in_progress``
         # emissions are still honoured as a "cursor" telling us which
         # task is being worked on.
+        #
+        # As of the TaskTracker integration, the live task state lives
+        # in ``self.conversation_history.task_tracker``.  The following
+        # fields are kept as *compatibility shims* that delegate to the
+        # tracker so existing call sites continue to work.  They should
+        # NOT be set directly — use the tracker's methods instead.
         #   ``_planned_task_ids``     order of ids from the last <tasks> plan
         #   ``_active_task_id``       last task the model marked in_progress
         #   ``_inprogress_task_ids``  every id seen in_progress this request
         #   ``_turn_had_failed_validator`` a code validator failed this turn
-        self._planned_task_ids: List[int] = []
-        # Full Task objects from the last <tasks> plan, keyed by id.
-        # Used by _update_current_plan_system_prompt to include task
-        # names and descriptions in the system message, not just bare ids.
-        self._planned_tasks: Dict[int, Any] = {}
-        self._active_task_id: Optional[int] = None
-        self._inprogress_task_ids: set = set()
         self._turn_had_failed_validator: bool = False
         # Per-iteration validator-failure flag.  _turn_had_failed_validator
         # is reset only at the start of run(), so a validator failure in an
@@ -672,6 +699,31 @@ class Orchestrator:
         # let users tune them per-backend without editing Python.
         self.temperature = temperature
         self.max_tokens = max_tokens
+        # Thinking-capable models (kimi-k2.7, deepseek-r1, qwen3, gpt-oss,
+        # etc.) consume a large portion of max_tokens for chain-of-thought
+        # reasoning.  With the default 2048 (or even 16384), the thinking
+        # eats the entire budget and the model emits zero visible output
+        # — every iteration produces content_len=0 and the loop stalls.
+        # Bump max_tokens to at least 32768 for these models so the
+        # reasoning has room AND there's leftover budget for the actual
+        # tool call or answer.
+        _THINKING_MODEL_PATTERNS = (
+            "kimi", "k2.7", "deepseek-r1", "deepseek-v3.1", "qwen3",
+            "qwq", "gpt-oss", "reasoning",
+        )
+        _model_lower = (self.model_id or "").lower()
+        if thinking and any(
+            p in _model_lower for p in _THINKING_MODEL_PATTERNS
+        ):
+            if self.max_tokens < 32768:
+                print(
+                    f"[orch] Thinking-capable model '{self.model_id}' "
+                    f"with max_tokens={self.max_tokens} — bumping to "
+                    f"32768 so reasoning doesn't eat the entire output "
+                    f"budget (was producing content_len=0).",
+                    file=sys.stderr,
+                )
+                self.max_tokens = 32768
         # Thinking ON/OFF master switch + Effort level. Updated per-request
         # by the interactive loop so the Flutter UI controls take effect
         # immediately without restarting the orchestrator process.
@@ -718,10 +770,10 @@ class Orchestrator:
             # to the final answer between turns) means at 128K we keep
             # ~64 turns = 128 messages — effectively a full session.
             self.max_history_turns = max(30, ctx_tokens // 2_000)
-            # Single tool result allowed to occupy up to ~20% of the window.
+            # Single tool result allowed to occupy up to ~33% of the window.
             # That fits a typical large source file (e.g. 1700-line Dart
-            # widget ≈ 100K chars) without head+tail truncation.
-            self._max_tool_result_chars = max(40_000, ctx_chars // 5)
+            # widget ~ 100K chars) without head+tail truncation.
+            self._max_tool_result_chars = max(40_000, ctx_chars // 3)
             # Total prompt char budget — 85% of the window. Leaves enough
             # room for system prompt (~5%) + reply budget (~3%) + safety
             # margin. The compactor still catches anything past 75%.
@@ -760,6 +812,63 @@ class Orchestrator:
         )
 
     # ------------------------------------------------------------------
+    # Task-state compatibility shims — delegate to ConversationHistory.task_tracker
+    # ------------------------------------------------------------------
+    # These properties replace the old instance fields (_planned_task_ids,
+    # _planned_tasks, _active_task_id, _inprogress_task_ids) so all
+    # existing code that reads/writes those fields continues to work
+    # without changes.  The canonical state now lives in the tracker,
+    # which also renders the "task_state" system-prompt key.
+    @property
+    def _planned_task_ids(self) -> List[int]:
+        return self.conversation_history.task_tracker.task_ids
+
+    @_planned_task_ids.setter
+    def _planned_task_ids(self, value: List[int]) -> None:
+        # When set to [], clear the plan; when set to a list, update
+        # the tracker's ordered ids.  The full Task objects are set
+        # via the _planned_tasks setter below.
+        if not value:
+            self.conversation_history.task_tracker.clear_plan()
+        else:
+            # Preserve existing tasks if already tracked; otherwise
+            # just set the ids (the full objects come via _planned_tasks).
+            tt = self.conversation_history.task_tracker
+            tt._task_ids = list(value)
+
+    @property
+    def _planned_tasks(self) -> Dict[int, Any]:
+        return self.conversation_history.task_tracker._tasks
+
+    @_planned_tasks.setter
+    def _planned_tasks(self, value: Dict[int, Any]) -> None:
+        tt = self.conversation_history.task_tracker
+        tt._tasks = dict(value)
+        # Also sync ids and statuses from the Task objects.
+        if value:
+            tt._task_ids = list(value.keys())
+            for tid, task_obj in value.items():
+                status = getattr(task_obj, "status", None)
+                if status is not None:
+                    tt._statuses[tid] = status
+
+    @property
+    def _active_task_id(self) -> Optional[int]:
+        return self.conversation_history.task_tracker.active_task_id
+
+    @_active_task_id.setter
+    def _active_task_id(self, value: Optional[int]) -> None:
+        self.conversation_history.task_tracker._active_task_id = value
+
+    @property
+    def _inprogress_task_ids(self) -> set:
+        return self.conversation_history.task_tracker.inprogress_ids
+
+    @_inprogress_task_ids.setter
+    def _inprogress_task_ids(self, value: set) -> None:
+        self.conversation_history.task_tracker._inprogress_ids = set(value) if value else set()
+
+    # ------------------------------------------------------------------
     # Task-plan system prompt (Bug 1 fix: prevent plan re-emission)
     # ------------------------------------------------------------------
     _PLAN_SYSTEM_MARKER = "[ACTIVE TASK PLAN — DO NOT RE-EMIT]"
@@ -771,6 +880,7 @@ class Orchestrator:
         previous request does not bleed into the new one.
         """
         self.conversation_history.remove_system_prompt("plan")
+        self.conversation_history.remove_system_prompt("task_state")
 
     def _update_current_plan_system_prompt(self) -> None:
         """Keep a system message at index 1 that mirrors the active task
@@ -861,6 +971,12 @@ class Orchestrator:
         # Use the keyed system-prompt API — "plan" key replaces any
         # previous plan system message without stacking copies.
         self.conversation_history.set_system_prompt("plan", content)
+        # Also sync the tracker's state block into the "task_state" key.
+        # The "plan" key above is the old-style override block; the
+        # "task_state" key is the tracker's live state.  Both coexist:
+        # the plan block tells the model "don't re-emit <tasks>", while
+        # the task_state block shows the current status of each task.
+        self.conversation_history.sync_task_state()
 
     def _recompute_tool_budget(self) -> None:
         """Dynamically scale the tool-result char cap based on free space.
@@ -875,7 +991,7 @@ class Orchestrator:
             return
 
         used = estimate_messages_tokens(self.conversation_history.to_messages())
-       
+
         free_tokens = max(0, self._history_token_budget - used)
         # Reserve 15% of free space for the model's reply + safety margin.
         alloc_tokens = int(free_tokens * 0.85)
@@ -1457,6 +1573,9 @@ class Orchestrator:
                     # system prompt can include names + descriptions,
                     # not just bare numeric ids.
                     self._planned_tasks = {t.id: t for t in proposed}
+                    # Sync the tracker with the new plan so it has the
+                    # full Task objects (names, descriptions, statuses).
+                    self.conversation_history.task_tracker.set_plan(proposed)
                     # Fix 6: any time the model emits a plan, mark
                     # the request as "planned" so the no-plan nudge
                     # below stops firing.
@@ -1476,6 +1595,13 @@ class Orchestrator:
                     TaskStatus.SKIPPED,
                 )
                 for ev in status_events:
+                    # Update the tracker with every status event
+                    # (including terminal ones — the tracker needs to
+                    # know a task is done so it can tell the model NOT
+                    # to re-emit that status).
+                    self.conversation_history.task_tracker.update_status(
+                        ev.id, ev.status, ev.note,
+                    )
                     if ev.status == TaskStatus.IN_PROGRESS:
                         self._active_task_id = ev.id
                         self._inprogress_task_ids.add(ev.id)
@@ -1669,8 +1795,8 @@ class Orchestrator:
                     if key in recent_calls:
                         # Exception 2: skip validators that re-ran after a write.
                         if (
-                            name in _IDEMPOTENT_VALIDATORS
-                            and _wrote_since_last_validator
+                                name in _IDEMPOTENT_VALIDATORS
+                                and _wrote_since_last_validator
                         ):
                             print(
                                 f"[orch] Validator {name} re-run after a "
@@ -1682,8 +1808,8 @@ class Orchestrator:
                         # after failed writes — the model needs fresh
                         # content because its patches didn't match.
                         if (
-                            name in ("read_file", "read_files")
-                            and _failed_writes_since_last_read
+                                name in ("read_file", "read_files")
+                                and _failed_writes_since_last_read
                         ):
                             print(
                                 f"[orch] {name} re-read after failed "
@@ -2488,6 +2614,11 @@ class Orchestrator:
 
         Retries on 429 / 5xx with exponential backoff (1s, 2s, 4s, 8s, 16s).
         """
+        # Sync the task-tracker state into the "task_state" system-prompt
+        # key BEFORE every model call so the model always sees the most
+        # recent task state.  This prevents the degenerate loop where the
+        # model re-emits <task_status> for a task that is already done.
+        self.conversation_history.sync_task_state()
         # Model circuit breaker: fast-fail when the backend is consistently broken.
         if not self._model_circuit_breaker.allow_request():
             raise RuntimeError(
