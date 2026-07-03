@@ -409,6 +409,15 @@ def looks_like_malformed_tool_call(text: str) -> Tuple[bool, str | None]:
         )
 
     if re.search(r'\{\s*["\']tool["\']', text) and not text.rstrip().endswith("}"):
+        # Don't false-positive on <tool>...</tool> wrapped calls — the
+        # outer text ends with </tool>, not "}", but the JSON inside the
+        # tags may be perfectly valid. Extract the JSON body and check
+        # whether IT is unclosed instead.
+        tag_match = re.search(r'<tool[^>]*>(.*?)</tool>', text, re.DOTALL | re.IGNORECASE)
+        if tag_match:
+            inner = tag_match.group(1).strip()
+            if inner.endswith("}"):
+                return False, None  # JSON inside tags is closed
         return True, (
             f"Malformed tool call: Unclosed JSON object. The tool call starts with '{{' but does not end with '}}'. "
             f"{correct_format}"
@@ -1001,7 +1010,16 @@ def _normalize_alternative_tool_keys(data: Dict[str, Any]) -> Dict[str, Any]:
     }
     for key, value in data.items():
         if key not in skip_keys:
-            result[key] = value
+            # If the model put tool parameters at the top level (e.g.
+            # {"tool":"read_files","paths":[...]} with no "parameters"
+            # wrapper), fold them into result["parameters"] so the
+            # dispatcher sees them. Without this, paths/files/etc.
+            # become orphan top-level keys and the tool gets called
+            # with an empty parameters dict.
+            if isinstance(result.get("parameters"), dict):
+                result["parameters"][key] = value
+            else:
+                result["parameters"] = {key: value}
 
     return result
 
@@ -1110,6 +1128,19 @@ def _is_explicit_tool_dict(data: Any) -> bool:
         return True
 
     if has_tool and keys <= {"tool", "name", "type"}:
+        return True
+
+    # Fallback: {"tool":"read_files","paths":[...]} — the model put the
+    # tool's parameters at the top level instead of nesting them under
+    # "parameters". Recognize this as a valid tool dict so the parser
+    # can normalize it (the params get folded into "parameters" by
+    # _normalize_alternative_tool_keys). Without this, the parser
+    # returns [] and the malformed-detector false-positives on the
+    # "Unclosed JSON" check, wasting all retries.
+    _structural_keys = {"tool", "name", "type", "parameters", "params",
+                        "arguments", "args", "input", "function",
+                        "function_call"}
+    if has_tool and (keys - _structural_keys):
         return True
 
     return False
