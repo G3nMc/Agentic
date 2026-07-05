@@ -396,8 +396,9 @@ def looks_like_malformed_tool_call(text: str) -> Tuple[bool, str | None]:
         return False, None
 
     correct_format = (
-        'Correct format: {"tool":"tool_name","parameters":{"key":"value"}} '
-        'or <tool>{"tool":"tool_name","parameters":{...}}</tool>'
+        'UNIQUE CORRECT TOOL CALL FORMAT : <tool>{"tool":"tool_name","parameters":{...}}</tool> '
+        'or <tool>{"tool":"tool_name","parameters":{"key":"value"}}</tool>' 
+        'or {"tool":"tool_name","parameters":{"key":"value"}}  '
     )
 
     # Require JSON key position context ({  or ,) to avoid false positives
