@@ -563,11 +563,17 @@ def _run_interactive_loop(orchestrator: Orchestrator, args=None) -> None:
             req = read_interactive_request(sys.stdin)
             if req is None:
                 break  # EOF
-            history = _normalise_external_history(req.get("self"))
-            if req.get("new_session") or history:
+            history = _normalise_external_history(req.get("history"))
+            if req.get("new_session"):
                 orchestrator.reset()
                 if history:
                     orchestrator.import_history(history)
+            elif history:
+                # User wants us to use this history. 
+                # To avoid duplicating turns that the orchestrator already has,
+                # we reset and import the external history as the authoritative state.
+                orchestrator.reset()
+                orchestrator.import_history(history)
             # Per-request task-mode override: the Flutter dropdown can
             # change between OPEN / TASK COMPLIANCE / TASK COMPLIANCE
             # AUTO at any time without restarting the subprocess. The

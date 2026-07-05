@@ -440,7 +440,7 @@ def _run_interactive_loop(args, path_filter=None, db_connections=None) -> None:
             if req is None:
                 break  # EOF
 
-            history = _normalise_external_history(req.get("self"))
+            history = _normalise_external_history(req.get("history"))
             new_session = req.get("new_session") or bool(history)
 
             # Debug mode: ignore the incoming prompt and read the latest user

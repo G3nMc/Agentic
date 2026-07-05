@@ -225,6 +225,9 @@ class OllamaBackend(ModelBackend):
         system = conversation.system_text()
         msg_count = len(conversation.turns)
 
+        _log(f"prompt={prompt} ")
+        _log(f"system={system} ")
+
         options: Dict[str, Any] = {
             "temperature": temperature,
             "num_predict": max_tokens,

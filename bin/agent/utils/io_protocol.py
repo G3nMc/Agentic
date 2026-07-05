@@ -4,7 +4,7 @@ The Flutter side spawns the orchestrator as a subprocess and communicates
 via pipes:
 
   - One JSON object per line written to stdin:
-      {"prompt": "...", "new_session": true|false, "self": [...]}
+      {"prompt": "...", "new_session": true|false, "history": [...]}\n
   - The response text on stdout, followed by a single line containing
     exactly ``__RESPONSE_END__``.
   - Diagnostics on stderr.
@@ -68,17 +68,17 @@ def read_interactive_request(stream) -> Optional[Dict[str, Any]]:
         return None
     line = line.strip()
     if not line:
-        return {"prompt": "", "new_session": False, "self": [], "thinking": False, "effort": None}
+        return {"prompt": "", "new_session": False, "history": [], "thinking": False, "effort": None}
     if line.startswith("{"):
         try:
             obj = json.loads(line)
             if isinstance(obj, dict):
                 obj.setdefault("prompt", "")
                 obj.setdefault("new_session", False)
-                obj.setdefault("self", [])
+                obj.setdefault("history", [])
                 obj.setdefault("thinking", False)
                 obj.setdefault("effort", None)
                 return obj
         except json.JSONDecodeError:
             pass
-    return {"prompt": line, "new_session": False, "self": [], "thinking": False, "effort": None}
+    return {"prompt": "", "new_session": False, "history": [], "thinking": False, "effort": None}
