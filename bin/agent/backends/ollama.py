@@ -18,11 +18,9 @@ tags in the system prompt and model reply), so we never pass
 from __future__ import annotations
 
 import sys
-import time
 from typing import Any, Dict, List, Optional, Tuple
 
 import requests
-
 from agent.backends.backend_base import ModelBackend
 from agent.backends.http_client import (
     HttpError,
@@ -225,8 +223,8 @@ class OllamaBackend(ModelBackend):
         system = conversation.system_text()
         msg_count = len(conversation.turns)
 
-        _log(f"prompt={prompt} ")
-        _log(f"system={system} ")
+        # _log(f"prompt={prompt} ")
+        # _log(f"system={system} ")
 
         options: Dict[str, Any] = {
             "temperature": temperature,
@@ -242,7 +240,7 @@ class OllamaBackend(ModelBackend):
             "prompt": prompt,
             "stream": False,
             "think": True,
-            "keep_alive": "5m",
+            "keep_alive": "15m",
             "options": options,
         }
 
@@ -253,16 +251,17 @@ class OllamaBackend(ModelBackend):
         self._maybe_add_think(payload, thinking, effort)
 
         _log(
-            f"[Ollama:chat] POST {self.base_url}/api/generate model={self.model_id} "
+            f"[Ollama:generate] POST {self.base_url}/api/generate model={self.model_id} "
             f"turns={msg_count} max_tokens={max_tokens} temperature={temperature} "
             f"cloud={self._is_cloud_host()} stop={options.get('stop')} "
             f"think={payload.get('think')}"
         )
 
+        # chunk_count = 0
+        # last_heartbeat = time.time()
+
         parts: List[str] = []
         finish_reason = "stop"
-        chunk_count = 0
-        last_heartbeat = time.time()
 
         try:
             for chunk in stream_ndjson(
@@ -272,14 +271,13 @@ class OllamaBackend(ModelBackend):
                     label="Ollama",
                     timeout=(15.0, 600.0),
             ):
-                chunk_count += 1
+                # chunk_count += 1
                 piece = chunk.get("response") or ""
                 thinking = chunk.get("thinking") or ""
                 if thinking:
-                    _log(f"[Ollama:streaming] model={self.model_id} thinking={thinking} ")
+                    _log(f"[Ollama:streaming] \nmodel={self.model_id} \nthinking={thinking}  \npiece={piece} ")
                 if piece:
                     parts.append(piece)
-                    _log(f"[Ollama:streaming] model={self.model_id} piece={piece} ")
                 if chunk.get("done"):
                     finish_reason = chunk.get("done_reason") or "stop"
                     # Best-effort usage accounting.
@@ -291,21 +289,21 @@ class OllamaBackend(ModelBackend):
                     self.last_prompt_eval_count = int(
                         chunk.get("prompt_eval_count", 0)
                     )
-                now = time.time()
-                if now - last_heartbeat >= 5.0:
-                    _log(
-                        f"[Ollama:streaming] model={self.model_id} "
-                        f"chunks={chunk_count} chars={sum(len(p) for p in parts)}"
-                    )
-                    last_heartbeat = now
+                # now = time.time()
+                # if now - last_heartbeat >= 5.0:
+                #     _log(
+                #         f"[Ollama:streaming] model={self.model_id} "
+                #         f"chunks={chunk_count} chars={sum(len(p) for p in parts)}"
+                #     )
+                #     last_heartbeat = now
+
         except RateLimitError as e:
             raise RuntimeError(f"Ollama rate limit: {e}") from e
         except (ServerError, HttpError) as e:
             raise RuntimeError(f"Ollama HTTP error: {e}") from e
 
         content = "".join(parts)
-        _log(
-            f"[Ollama:done] model={self.model_id} content_len={len(content)} "
-            f"finish_reason={finish_reason!r} chunks={chunk_count}"
-        )
+
+        _log(f"[Ollama:done]  finish_reason={finish_reason!r}")
+
         return content, finish_reason
