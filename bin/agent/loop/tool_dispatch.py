@@ -418,7 +418,16 @@ def looks_like_malformed_tool_call(text: str) -> Tuple[bool, str | None]:
         if tag_match:
             inner = tag_match.group(1).strip()
             if inner.endswith("}"):
-                return False, None  # JSON inside tags is closed
+                # Braces are balanced, but the content might still be
+                # broken (e.g. double-escaped backslashes causing a
+                # premature string close).  Verify with json.loads before
+                # declaring it valid.
+                try:
+                    json.loads(inner)
+                except json.JSONDecodeError:
+                    pass  # Fall through to the catch-all below.
+                else:
+                    return False, None  # JSON inside tags is valid
         return True, (
             f"Malformed tool call: Unclosed JSON object. The tool call starts with '{{' but does not end with '}}'. "
             f"{correct_format}"
@@ -441,6 +450,26 @@ def looks_like_malformed_tool_call(text: str) -> Tuple[bool, str | None]:
         return True, (
             f"Malformed tool call: Invalid syntax after 'parameters' key. Use ':' not '>'. {correct_format}"
         )
+
+    # Catch-all: the text looks like a tool call (has {"tool":...), didn't
+    # parse, and none of the specific patterns above matched.  Try a bare
+    # json.loads on every JSON object extract_json_objects can find — if
+    # any fail, report the parse error so the orchestrator can nudge the
+    # model instead of silently returning raw JSON to the user.
+    #
+    # This catches double-escaped backslashes (\\\" breaking the string),
+    # premature quote closure, and other content-level JSON errors that
+    # the syntactic patterns above don't cover.
+    for obj in extract_json_objects(text):
+        try:
+            json.loads(obj)
+        except json.JSONDecodeError as e:
+            return True, (
+                f"Malformed tool call: JSON parse error at position {e.pos}: {e.msg}. "
+                f"The JSON between the braces is not valid — check for double-escaped "
+                f"backslashes or unescaped quotes inside string values. "
+                f"{correct_format}"
+            )
 
     return False, None
 
