@@ -63,10 +63,8 @@ class ToolRegistry:
         "Filesystem": {
             "read_files",
             "patch_file",
-            "patch_files",
             "read_file",
             "write_file",
-            "write_files",
             "append_file",
             "delete_file",
             "delete_files",
@@ -110,12 +108,10 @@ class ToolRegistry:
             "read_file": 20.0,
             "read_files": 60.0,
             "write_file": 20.0,
-            "write_files": 60.0,
             "append_file": 20.0,
             "delete_file": 10.0,
             "delete_files": 30.0,
             "patch_file": 25.0,
-            "patch_files": 90.0,
             "move_file": 20.0,
             "create_directory": 10.0,
             "create_directories": 20.0,
@@ -563,7 +559,7 @@ class ToolRegistry:
               <tool>{"tool":"list_files","parameters":{"path":"."}}</tool>  User: Tool `list_files` returned: {...}
               (the two spaces between </tool> and User: are still a violation)
 
-            If you need multiple files or writes in the same turn, use BATCH tools (read_files, write_files, patch_files, create_directories, delete_files). Do NOT chain individual tool calls.
+            If you need multiple files or writes in the same turn, use BATCH tools (read_files, create_directories, delete_files). Do NOT chain individual tool calls.
 
             ITERATION BUDGET
             Each tool call consumes one full round-trip with the cloud backend (20-90s + tokens).
@@ -572,19 +568,13 @@ class ToolRegistry:
             If your plan touches 5+ files total, you MUST plan the sequence with batch tools from the start.
             The batch tool returns status: "partial" if some sub-ops failed. The results array lists failed paths so you can retry only those, still in batch form.
 
-            CORRECT (5 files in 1 iteration):
-              <tool>{"tool":"write_files","parameters":{"items":[{"path":"lib/a.dart","content":"..."},{"path":"lib/b.dart","content":"..."},{"path":"lib/c.dart","content":"..."},{"path":"lib/d.dart","content":"..."},{"path":"lib/e.dart","content":"..."}]}}</tool>
-
-            WRONG (5 files in 5 iterations):
-              <tool>{"tool":"write_file","parameters":{"path":"lib/a.dart","content":"..."}}</tool>
-              <tool>{"tool":"write_file","parameters":{"path":"lib/b.dart","content":"..."}}</tool>
-              ... (and so on)
-
             CORRECT (3 directories in 1 iteration):
               <tool>{"tool":"create_directories","parameters":{"paths":["lib/a","lib/b","lib/c"]}}</tool>
 
             CORRECT (3 regex searches in 1 walk):
               <tool>{"tool":"search_in_files","parameters":{"patterns":["TODO","FIXME","XXX"],"file_glob":"*.dart"}}</tool>
+
+            For multi-file writes or patches, call write_file / patch_file once per file. Do NOT try to batch them into a single oversized JSON call — that risks truncation and malformed tool calls.
 
             PRIMARY CONSTRAINT: TOOL CALL FORMAT
             When a tool is needed, output ONLY this exact format. No deviation.
@@ -983,7 +973,7 @@ class ToolRegistry:
     #           <tool>{"tool":"list_files","parameters":{"path":"."}}</tool>  User: Tool `list_files` returned: {...}
     #           (the two spaces between </tool> and User: are still a violation)
     #
-    #         If you need multiple files or writes in the same turn, use BATCH tools (read_files, write_files, patch_files, create_directories, delete_files). Do NOT chain individual tool calls.
+    #         If you need multiple files or writes in the same turn, use BATCH tools (read_files, create_directories, delete_files). Do NOT chain individual tool calls.
     #
     #         ITERATION BUDGET
     #         Each tool call consumes one full round-trip with the cloud backend (20-90s + tokens).
@@ -992,19 +982,13 @@ class ToolRegistry:
     #         If your plan touches 5+ files total, you MUST plan the sequence with batch tools from the start.
     #         The batch tool returns status: "partial" if some sub-ops failed. The results array lists failed paths so you can retry only those, still in batch form.
     #
-    #         CORRECT (5 files in 1 iteration):
-    #           <tool>{"tool":"write_files","parameters":{"items":[{"path":"lib/a.dart","content":"..."},{"path":"lib/b.dart","content":"..."},{"path":"lib/c.dart","content":"..."},{"path":"lib/d.dart","content":"..."},{"path":"lib/e.dart","content":"..."}]}}</tool>
-    #
-    #         WRONG (5 files in 5 iterations):
-    #           <tool>{"tool":"write_file","parameters":{"path":"lib/a.dart","content":"..."}}</tool>
-    #           <tool>{"tool":"write_file","parameters":{"path":"lib/b.dart","content":"..."}}</tool>
-    #           ... (and so on)
-    #
     #         CORRECT (3 directories in 1 iteration):
     #           <tool>{"tool":"create_directories","parameters":{"paths":["lib/a","lib/b","lib/c"]}}</tool>
     #
     #         CORRECT (3 regex searches in 1 walk):
     #           <tool>{"tool":"search_in_files","parameters":{"patterns":["TODO","FIXME","XXX"],"file_glob":"*.dart"}}</tool>
+    #
+    #         For multi-file writes or patches, call write_file / patch_file once per file. Do NOT try to batch them into a single oversized JSON call — that risks truncation and malformed tool calls.
     #
     #         PRIMARY CONSTRAINT: TOOL CALL FORMAT
     #         When a tool is needed, output ONLY this exact format. No deviation.

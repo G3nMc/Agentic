@@ -154,6 +154,42 @@ def _is_short_followup(text: str) -> bool:
     )
 
 
+def _canonicalize_tool_key(name: str, params: dict) -> str:
+    """Build a canonical ``(name::params)`` key for the repeat-call detector.
+
+    For most tools this is just the tool name + sorted JSON of the params.
+    For ``run_command`` the ``command`` string is normalised so that
+    cosmetic differences (trailing ``2>&1``, ``2>&1`` with/without a
+    space, surrounding quotes, trailing ``| head -N`` / ``| tail -N``,
+    ``cd <dir> &&`` prefixes) don't prevent a genuine repeat from being
+    detected — but also don't cause two *semantically different* commands
+    to be collapsed into one key.
+    """
+    import shlex as _shlex
+
+    if name == "run_command" and isinstance(params.get("command"), str):
+        cmd = params["command"].strip()
+        # Strip ``2>&1`` anywhere in the command — it redirects stderr to
+        # stdout, which doesn't change what command is being run.
+        cmd = re.sub(r"\s*2>&1\s*", " ", cmd)
+        # Strip ``> /dev/null`` redirections.
+        cmd = re.sub(r"\s*>\s*/dev/null\s*", " ", cmd)
+        # Strip trailing ``| head -N`` / ``| tail -N`` — common re-run variants
+        # where the model just wants to see fewer/more lines of the same output.
+        cmd = re.sub(r"\s*\|\s*(?:head|tail)\s+-?\d+\s*$", "", cmd)
+        # Strip a leading ``cd <dir> &&`` prefix so the same command run
+        # from different cwd is treated as the same call.
+        m = re.match(r"^cd\s+\S+\s*&&\s*", cmd)
+        if m:
+            cmd = cmd[m.end():]
+        # Collapse repeated whitespace (left behind by the substitutions above).
+        cmd = re.sub(r"\s+", " ", cmd).strip()
+        normalised = {**params, "command": cmd}
+        return f"{name}::{json.dumps(normalised, sort_keys=True, ensure_ascii=False)}"
+
+    return f"{name}::{json.dumps(params, sort_keys=True, ensure_ascii=False)}"
+
+
 def _has_repetitive_output(text: str) -> bool:
     """True when the model's text contains a phrase repeated excessively.
 
@@ -585,18 +621,16 @@ _TRUNCATED_TOOL_ERROR = " Was CUT OFF before the closing </tool> tag. "
 # tells it to split the work into smaller calls.
 _TRUNCATION_SPLIT_DIRECTIVE = (
     "[BATCH SIZE WARNING] Your last tool call was CUT OFF by the token "
-    "limit for the THIRD time. You are trying to write too many files or "
-    "too much content in a single call. STOP trying to emit the same "
-    "large batch. Instead, SPLIT your work into SMALLER tool calls:\n"
-    "  - If you are using write_files with many items, write 1-2 files "
-    "    per call instead of 5+.\n"
+    "limit for the THIRD time. You are trying to write too much content "
+    "in a single call. STOP trying to emit the same large content. "
+    "Instead, SPLIT your work into SMALLER tool calls:\n"
     "  - If you are using patch_file with a very long new_content, "
-    "    break the patch into multiple smaller patch_file calls, each "
-    "    changing a smaller block.\n"
+    "break the patch into multiple smaller patch_file calls, each "
+    "changing a smaller block.\n"
     "  - If a single file's content is very large, use write_file for "
-    "    the first portion and append_file for the rest.\n"
+    "the first portion and append_file for the rest.\n"
     "Keep each tool call's JSON under 6000 characters. Emit ONE small "
-    "tool call now. Do NOT repeat the same oversized batch."
+    "tool call now. Do NOT repeat the same oversized content."
 )
 
 
@@ -1207,7 +1241,7 @@ class Orchestrator:
         # with a synthesized recap of the tool results so far.
         recent_calls: List[str] = []
         repeat_warnings = 0
-        _MAX_REPEAT_WARNINGS = 2
+        _MAX_REPEAT_WARNINGS = 3
         _RECENT_WINDOW = 8
         # Track whether a write tool (patch_file, write_file, append_file)
         # has been called since the last idempotent validator run. When
@@ -1675,9 +1709,9 @@ class Orchestrator:
             # amount of retries/nudges will fix this -- the model has
             # lost coherence and further iterations only waste time.
             # BUT: skip this check if the reply contains a valid tool
-            # call — a batch like patch_files with 5 items has repeated
-            # JSON structure ("path", "old_content", "new_content")
-            # that triggers the detector even though the call is legit.
+            # call — a batch tool like create_directories with 5 paths
+            # has repeated JSON structure that triggers the detector
+            # even though the call is legit.
             tag_calls_pre_check = parse_all_tag_tool_calls(
                 text_clean, self.tool_registry.definitions
             )
@@ -1788,10 +1822,7 @@ class Orchestrator:
                 for name, params in tag_calls:
                     if name in sanitized_tools:
                         continue
-                    key = (
-                        f"{name}::"
-                        f"{json.dumps(params, sort_keys=True, ensure_ascii=False)}"
-                    )
+                    key = _canonicalize_tool_key(name, params)
                     if key in recent_calls:
                         # Exception 2: skip validators that re-ran after a write.
                         if (
@@ -1849,10 +1880,7 @@ class Orchestrator:
                     continue
 
                 for name, params in tag_calls:
-                    key = (
-                        f"{name}::"
-                        f"{json.dumps(params, sort_keys=True, ensure_ascii=False)}"
-                    )
+                    key = _canonicalize_tool_key(name, params)
                     recent_calls.append(key)
                     if len(recent_calls) > _RECENT_WINDOW:
                         recent_calls = recent_calls[-_RECENT_WINDOW:]
@@ -2034,7 +2062,7 @@ class Orchestrator:
                 # path below, which gives 10 retries with tail context
                 # instead of only 2 malformed retries with generic feedback.
                 # This fixes models like glm-5.2 that generate massive
-                # patch_files calls and get cut off mid-JSON.
+                # patch_file calls and get cut off mid-JSON.
                 if "Unclosed JSON" in malformed_error and len(text_clean) > 2000:
                     print(
                         f"[orch] Malformed call looks like truncation "
@@ -2344,9 +2372,16 @@ class Orchestrator:
         synth_history.set_system_prompt("synthesis", _SYNTHESIS_DIRECTIVE)
 
         try:
+            # Disable thinking for the synthesis call: this is a plain-text
+            # summary request, not a reasoning task. On thinking-capable models
+            # (glm-5.2, qwen3, deepseek-r1, etc.) the chain-of-thought eats the
+            # entire max_tokens budget and the model emits zero visible output,
+            # causing the synthesis to fail and fall back to the raw recap.
+            # Also bump max_tokens so the model has room to write a real answer.
+            synth_max_tokens = max(self.max_tokens, 4096)
             text, _ = self.backend.chat(
                 conversation=synth_history,
-                max_tokens=self.max_tokens,
+                max_tokens=synth_max_tokens,
                 temperature=self.temperature,
                 tools=None,
                 thinking=self.thinking,

@@ -1391,7 +1391,7 @@ def parse_all_tag_tool_calls(
     prompt). Executing those hallucinated calls causes runaway loops.
     The agent dispatches one real tool per iteration; if multiple
     operations are needed the model is expected to use the BATCH tools
-    (``read_files`` / ``write_files`` / ``patch_files`` / ...).
+    (``read_files`` / ``create_directories`` / ``delete_files`` / ...).
     """
     if not response:
         return []

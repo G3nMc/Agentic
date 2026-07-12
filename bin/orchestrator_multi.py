@@ -394,7 +394,9 @@ def _build_executor_orchestrator(args, summarizer_cfg, path_filter, db_connectio
     # Remove batch/multi-file tools that produce huge JSON payloads
     # exceeding max_tokens and causing truncation spirals. The model
     # must use patch_file (singular) one file at a time instead.
-    _oversized_tools = ("patch_files", "write_files", "delete_files")
+    # Note: write_files and patch_files were fully removed from the
+    # tool registry in fs_write.py — they no longer exist to unregister.
+    _oversized_tools = ("delete_files",)
     for tool_name in _oversized_tools:
         try:
             executor.tool_registry.unregister(tool_name)
