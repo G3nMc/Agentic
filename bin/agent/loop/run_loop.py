@@ -1712,18 +1712,38 @@ class Orchestrator:
             # call — a batch tool like create_directories with 5 paths
             # has repeated JSON structure that triggers the detector
             # even though the call is legit.
+            #
+            # ALSO skip if the reply looks like a malformed tool call
+            # (bare JSON with "tool":"..." that failed to parse). A
+            # large write_file/patch_file payload with repeated code
+            # patterns (e.g. a screenshot test file with 8 identical
+            # _takeScreenshot() calls) will trip the repetition
+            # detector even though the reply is a broken tool call, not
+            # a degenerate text loop. Route it to the malformed-tool
+            # path below instead of bailing with "repetitive text."
             tag_calls_pre_check = parse_all_tag_tool_calls(
                 text_clean, self.tool_registry.definitions
             )
             if not tag_calls_pre_check and _has_repetitive_output(text_clean):
-                print(
-                    f"[orch] Repetitive output detected at iter {iteration} "
-                    f"({len(text_clean)} chars); bailing to recap.",
-                    file=sys.stderr,
-                )
-                return self._build_recap_answer(
-                    reason="model stuck in repetitive text loop"
-                )
+                is_malformed_pre, _ = looks_like_malformed_tool_call(text_clean)
+                if is_malformed_pre:
+                    print(
+                        f"[orch] Repetitive output detected at iter {iteration} "
+                        f"({len(text_clean)} chars) but reply looks like a "
+                        f"malformed tool call; routing to malformed path "
+                        f"instead of bailing.",
+                        file=sys.stderr,
+                    )
+                    # Fall through to the malformed-tool-call check below.
+                else:
+                    print(
+                        f"[orch] Repetitive output detected at iter {iteration} "
+                        f"({len(text_clean)} chars); bailing to recap.",
+                        file=sys.stderr,
+                    )
+                    return self._build_recap_answer(
+                        reason="model stuck in repetitive text loop"
+                    )
 
             # Parse tool calls from the cleaned text to avoid false positives
             # when a model embeds JSON examples inside its  thinking block.

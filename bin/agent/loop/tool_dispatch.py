@@ -308,6 +308,13 @@ def looks_like_unclosed_tool(text: str) -> bool:
     if re.search(r'["\']tool["\']\s*:\s*', text) and text.count("{") > text.count("}"):
         return True
 
+    # Catch truncated array-wrapped tool calls: models sometimes emit
+    # [{"tool":"write_file",...}] and get cut off mid-string. If the
+    # reply mentions "tool" and brackets are unbalanced, it's a
+    # truncated tool call regardless of the brace count.
+    if re.search(r'["\']tool["\']\s*:\s*', text) and text.count("[") > text.count("]"):
+        return True
+
     return False
 
 
@@ -457,7 +464,7 @@ def looks_like_malformed_tool_call(text: str) -> Tuple[bool, str | None]:
     # any fail, report the parse error so the orchestrator can nudge the
     # model instead of silently returning raw JSON to the user.
     #
-    # This catches double-escaped backslashes (\\\" breaking the string),
+    # This catches double-escaped backslashes (\\\\\\\" breaking the string),
     # premature quote closure, and other content-level JSON errors that
     # the syntactic patterns above don't cover.
     for obj in extract_json_objects(text):
@@ -470,6 +477,35 @@ def looks_like_malformed_tool_call(text: str) -> Tuple[bool, str | None]:
                 f"backslashes or unescaped quotes inside string values. "
                 f"{correct_format}"
             )
+
+    # Final safety net: if we reached here, _looks_like_tool_attempt(text)
+    # was True (checked at the top) and parse_all_tag_tool_calls(text)
+    # returned nothing (also checked at the top), but none of the specific
+    # syntax patterns or the extract_json_objects catch-all above fired.
+    # This happens when the JSON is so truncated that the brace-walker in
+    # extract_json_objects can't even extract a complete object — e.g. the
+    # model opened {"tool":"write_file","parameters":{"content":"... but
+    # ran out of tokens mid-string, leaving an unclosed string literal that
+    # swallows the closing braces. The trailing bytes may happen to end
+    # with "}" (from an outer array wrapper like [{...}]}) which fooled
+    # the rstrip().endswith("}") check at line 412 above.
+    #
+    # Without this guard the raw JSON is returned verbatim to the user as
+    # a "final answer." Treat any reply that starts with a JSON opener and
+    # contains a "tool":"name" key as a malformed tool call so the
+    # orchestrator can nudge/retry instead of leaking the broken JSON.
+    stripped = text.lstrip()
+    if stripped[:1] in ("{", "[") and re.search(
+        r'["\']tool["\']\s*:\s*["\']\w+["\']', stripped
+    ):
+        return True, (
+            f"Malformed tool call: The reply looks like a JSON tool call "
+            f"but could not be parsed — it is likely truncated or has "
+            f"unbalanced braces/brackets (e.g. an unclosed string literal "
+            f"swallowing the closing braces). Re-emit the tool call in "
+            f"full, or split the payload if it is too large. "
+            f"{correct_format}"
+        )
 
     return False, None
 
