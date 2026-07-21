@@ -2639,8 +2639,8 @@ class Orchestrator:
             # context. 1500 chars (~3x the old 600) is enough for a
             # useful snippet of a file/search result without dumping
             # the whole 100 KB.
-            if len(pretty_body) > 10000:
-                pretty_body = pretty_body[:10000].rstrip() + "\n… (truncated)"
+            if len(pretty_body) > 4000:
+                pretty_body = pretty_body[:4000].rstrip() + "\n… (truncated)"
 
             results.append(f"### {header}\n\n```\n{pretty_body}\n```")
 
