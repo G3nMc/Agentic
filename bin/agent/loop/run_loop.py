@@ -1066,6 +1066,14 @@ class Orchestrator:
             return True
         if parse_all_tag_tool_calls(model_reply, self.tool_registry.definitions):
             return True
+        # Task-flow protocol tags in chat mode: the model is trying to use
+        # the <tasks>/<task_status> protocol but chat mode doesn't advertise
+        # it. Escalate to tool mode so the protocol is active and the plan
+        # can actually execute instead of being stripped to an empty reply.
+        if parse_tasks(model_reply):
+            return True
+        if parse_task_status(model_reply):
+            return True
         is_malformed, _ = looks_like_malformed_tool_call(model_reply)
         if is_malformed:
             return True
@@ -1217,7 +1225,22 @@ class Orchestrator:
 
             else:
                 self.conversation_history.add_assistant(text_clean)
-                return clean_final_answer(text or "")
+                final = clean_final_answer(text or "")
+                if final.strip():
+                    return final
+                # Defense-in-depth: the model emitted only protocol tags
+                # (<tasks>, <task_status>) or thinking that were stripped to
+                # empty. Don't return an empty string to the frontend — fall
+                # back to synthesis so the user gets something useful.
+                print(
+                    "[orch] Chat-mode reply empty after cleaning; "
+                    "model emitted only protocol/thinking tags.",
+                    file=sys.stderr,
+                )
+                return self._build_recap_answer(
+                    reason="chat-mode reply was empty after stripping "
+                           "task/protocol tags"
+                )
 
         refusal_retries = 0
         empty_retries = 0
@@ -1845,12 +1868,31 @@ class Orchestrator:
                     key = _canonicalize_tool_key(name, params)
                     if key in recent_calls:
                         # Exception 2: skip validators that re-ran after a write.
+                        # This applies to both _IDEMPOTENT_VALIDATORS and
+                        # run_command (which is often used as a custom
+                        # validator — e.g. `python count_chars.py` after
+                        # a patch_file). Without this, a write→verify→write→verify
+                        # cycle trips the repeat-call cap after 3 iterations
+                        # even though the model is making real progress.
                         if (
                                 name in _IDEMPOTENT_VALIDATORS
                                 and _wrote_since_last_validator
                         ):
                             print(
                                 f"[orch] Validator {name} re-run after a "
+                                f"write — legitimate, not a repeat.",
+                                file=sys.stderr,
+                            )
+                            continue
+                        # Exception 2b: run_command used as a custom validator
+                        # (e.g. `python script.py`) re-run after a write is
+                        # also legitimate — the model is verifying its changes.
+                        if (
+                                name == "run_command"
+                                and _wrote_since_last_validator
+                        ):
+                            print(
+                                f"[orch] run_command re-run after a "
                                 f"write — legitimate, not a repeat.",
                                 file=sys.stderr,
                             )
@@ -1933,6 +1975,12 @@ class Orchestrator:
                             # validator just ran, so the next validator
                             # call will only be legitimate if another
                             # write happens first.
+                            _wrote_since_last_validator = False
+                        elif name == "run_command":
+                            # run_command used as a custom validator (e.g.
+                            # `python count_chars.py`) — reset the flag so
+                            # the next identical run_command without an
+                            # intervening write IS counted as a repeat.
                             _wrote_since_last_validator = False
                         else:
                             consecutive_validations = 0
@@ -2031,12 +2079,31 @@ class Orchestrator:
                         self.task_mode.is_task_flow
                         and self._plan_emitted_this_request
                 ):
+                    self._plan_then_start_nudges = getattr(
+                        self, "_plan_then_start_nudges", 0
+                    ) + 1
                     print(
                         f"[orch] plan was already emitted but reply has no "
                         f"task_status + tool -- injecting plan-then-start "
-                        f"nudge",
+                        f"nudge (attempt {self._plan_then_start_nudges})",
                         file=sys.stderr,
                     )
+                    # After 3 plan-then-start nudges the model is stuck in
+                    # a loop (emit plan → get nudge → emit plan again).
+                    # Stop nudging and force a synthesis so the user gets
+                    # something useful instead of burning all iterations.
+                    if self._plan_then_start_nudges >= 3:
+                        print(
+                            f"[orch] plan-then-start nudge cap reached "
+                            f"({self._plan_then_start_nudges}); forcing "
+                            f"synthesis/recap.",
+                            file=sys.stderr,
+                        )
+                        self._emit_terminal_task_status()
+                        return self._build_recap_answer(
+                            reason="model stuck in plan-then-start loop "
+                                   f"({self._plan_then_start_nudges} attempts)"
+                        )
                     self.conversation_history.set_system_prompt(
                         "plan_then_start",
                         "[INTERNAL: The <tasks> plan has already "
@@ -2050,9 +2117,10 @@ class Orchestrator:
                         "needed to start task #1. Nothing else. "
                         "Do NOT echo this instruction back.]"
                     )
-                    # Reset the generic empty-reply counter so the
-                    # generic nudge does not also fire on the same iter.
-                    self._iters_with_empty_reply = 0
+                    # Don't reset the generic empty-reply counter —
+                    # let it accumulate so the generic nudge can also
+                    # fire as a second-tier escalation if the model
+                    # keeps producing empty replies.
                     iteration += 1
                     continue
                 if self._iters_with_empty_reply >= _MAX_ITERS_WITH_EMPTY_REPLY:
@@ -2404,6 +2472,12 @@ class Orchestrator:
                 max_tokens=synth_max_tokens,
                 temperature=self.temperature,
                 tools=None,
+                stop=[
+                    "</tool>",
+                    "\nUser:",
+                    "\nAssistant:",
+                    "\n[INTERNAL:",
+                ],
                 thinking=self.thinking,
                 effort=self.effort,
             )
@@ -2565,8 +2639,8 @@ class Orchestrator:
             # context. 1500 chars (~3x the old 600) is enough for a
             # useful snippet of a file/search result without dumping
             # the whole 100 KB.
-            if len(pretty_body) > 1500:
-                pretty_body = pretty_body[:1500].rstrip() + "\n… (truncated)"
+            if len(pretty_body) > 10000:
+                pretty_body = pretty_body[:10000].rstrip() + "\n… (truncated)"
 
             results.append(f"### {header}\n\n```\n{pretty_body}\n```")
 
