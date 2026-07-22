@@ -2457,6 +2457,15 @@ class Orchestrator:
         # Defensive copy so we don't pollute the live self with the
         # synthesis directive (the next turn shouldn't see it).
         synth_history = self.conversation_history.copy()
+        # CRITICAL: clear ALL prior system prompts (base, plan, agent_directive,
+        # etc.) before setting the synthesis-only directive.  The "base" prompt
+        # contains the full tool schema and tool-use instructions; if it stays,
+        # the model still sees tool definitions and emits <tool> tags in its
+        # synthesis reply, which parse_all_tag_tool_calls detects → returns None
+        # → falls back to the raw recap.  The conversation turns (user messages,
+        # tool results) are preserved in synth_history._turns, so the model can
+        # still summarize what happened — it just can't call more tools.
+        synth_history.clear_system_prompts()
         synth_history.set_system_prompt("synthesis", _SYNTHESIS_DIRECTIVE)
 
         try:
@@ -2473,6 +2482,7 @@ class Orchestrator:
                 temperature=self.temperature,
                 tools=None,
                 stop=[
+                    "<tool",
                     "</tool>",
                     "\nUser:",
                     "\nAssistant:",
@@ -2486,7 +2496,27 @@ class Orchestrator:
             return None
 
         raw_len = len(text or "")
-        cleaned = clean_final_answer(text or "").strip()
+        # Strip any trailing tool-call attempt before cleaning. Even with
+        # tool definitions cleared from the system prompt, the conversation
+        # turns contain prior <tool>...</tool> exchanges, and some models
+        # (glm-5.2 especially) pattern-match on those and append a tool
+        # call after the synthesis text. The stop sequence "<tool" should
+        # catch this at the API level, but double-defend here: if the
+        # model wrote a good synthesis and then tacked on a <tool> tag,
+        # salvage the synthesis before rejecting the whole reply.
+        text = text or ""
+        tool_idx = text.find("<tool")
+        if tool_idx > 0:
+            salvaged = text[:tool_idx].strip()
+            if salvaged and len(salvaged) >= 20:
+                print(
+                    f"[orch] Synthesis had trailing tool call at "
+                    f"offset {tool_idx}; salvaging {len(salvaged)} chars "
+                    f"of synthesis text.",
+                    file=sys.stderr,
+                )
+                text = salvaged
+        cleaned = clean_final_answer(text).strip()
         if not cleaned:
             print(
                 f"[orch] Synthesis returned empty text "
