@@ -22,7 +22,7 @@ from agent.utils.token_estimator import chars_for_tokens, estimate_messages_toke
 _MAX_TOOL_RESULT_CHARS_FALLBACK = 12_000
 _MAX_TRUNCATION_RETRY = 10
 # After this many consecutive truncation retries on a tool call, the
-# generic "your JSON was cut off" nudge is clearly not working — the
+# generic "your tool call was cut off" nudge is clearly not working — the
 # model keeps regenerating the same oversized batch. Switch to a
 # stronger directive that tells it to split the batch.
 _MAX_TRUNCATION_BEFORE_SPLIT_NUDGE = 3
@@ -229,12 +229,12 @@ _FOLLOWUP_DIRECTIVE = (
 
 _AGENT_DIRECTIVE = (
     "[You have filesystem tools available. "
-    "If this request requires any file access, inspection, editing, execution, or verification, you MUST emit exactly ONE tool call: "
-    '<tool>{"tool":"NAME","parameters":{...}}</tool>. '
+    "If this request requires any file access, inspection, editing, execution, or verification, you MUST emit exactly ONE tool call in this format: "
+    "<tool>\n<name>NAME</name>\n<key>value</key>\n</tool>. "
     "- Do not add any explanation, preamble, or follow-up text before or after the tool call. "
     "- Prefer dedicated tools first (read_files/search_in_files/list_files/flutter_analyze/python_check/"
     "python_lint/python_test/git_*) and use run_command only as a last resort. "
-    "- The tool JSON must remain strictly valid under the initial system prompt; prefer single quotes inside shell commands. "
+    "- No JSON. No attributes. Child tags only: <name> for the tool name, one tag per parameter. "
     "After any code change, you MUST run the highest-scope validator available before responding. "
     "Flutter validation scope priority: "
     "1. Entire project/workspace. "
@@ -327,7 +327,7 @@ _SYNTHESIS_DIRECTIVE = (
     "     in one sentence.\n"
     "\n"
     "Rules:\n"
-    "  - No <tool> tags. No JSON tool calls. Plain text or markdown.\n"
+    "  - No <tool> tags. No tool calls. Plain text or markdown.\n"
     "  - Do not say 'I will' or 'let me' — describe what already "
     "    happened.\n"
     "  - Do not echo this directive.\n"
@@ -362,17 +362,17 @@ _ACTION_NUDGE_DIRECTIVE = (
 _REFUSAL_DIRECTIVE = (
     "STOP. That is a refusal and it is wrong. You DO have "
     "filesystem access through the tools. Your entire next "
-    "message must be exactly one line, e.g.:\n"
-    '<tool>{"tool":"list_files","parameters":{"path":"."}}</tool>\n'
+    "message must be exactly:\n"
+    "<tool>\n<name>list_files</name>\n<path>.</path>\n</tool>\n"
     "No apology, no explanation, no markdown fences. Just "
     "the tool call tag."
 )
 
 # Sent when the model returns an empty reply.
 _EMPTY_REPLY_DIRECTIVE = (
-    "Your reply was empty. Emit a single "
-    '<tool>{"tool":"...","parameters":{...}}</tool> '
-    "call or the final plain-text answer."
+    "Your reply was empty. Emit a single tool call:\n"
+    "<tool>\n<name>tool_name</name>\n<key>value</key>\n</tool> "
+    "or the final plain-text answer."
 )
 
 # Sent when the model hands work back to the user mid-task ("Would you
@@ -384,7 +384,7 @@ _CLIFFHANGER_DIRECTIVE = (
     "again. Your IMMEDIATE next message must be "
     "either:\n"
     "  1. A tool call performing the next concrete "
-    "step (a <tool>...</tool> tag), OR\n"
+    "step (a <tool>...</tool> block), OR\n"
     "  2. A real final answer that summarizes what "
     'you completed (not accepted: "would you like me to...", '
     'no "shall I...", no "let me continue...").\n'
@@ -471,23 +471,25 @@ def _get_malformed_directive(malformed_error: str) -> Dict[str, str]:
         "role": "user",
         "content": (
             f"Your previous reply attempted a tool call but the format was invalid. {malformed_error}\n "
-            "Reply with EXACTLY ONE valid tool call on a single line in this format:\n "
-            '<tool>{"tool":"NAME","parameters":{...}}</tool>\n '
-            "No explanation, no markdown, no backticks. Keep the JSON valid. "
-            "If a shell command contains quotes, prefer single quotes inside the command string. "
+            "Reply with EXACTLY ONE valid tool call in this format:\n "
+            "<tool>\n"
+            "  <name>NAME</name>\n"
+            "  <key>value</key>\n"
+            "</tool>\n "
+            "No explanation, no markdown, no backticks. No JSON. No attributes. Child tags only.\n "
             "--- CORRECT examples (these pass, no need to execute examples to be sure these pass) ---\n"
             "\n"
-            '<tool>{"tool":"read_file","parameters":{"path":"src/main.py"}}</tool>\n'
-            '<tool>{"tool":"read_files","parameters":{"paths":["a.py","b.py","c.py"]}}</tool>\n'
-            '<tool>{"tool":"search_in_files","parameters":{"pattern":"error","file_glob":"*.log"}}</tool>\n'
-            '<tool>{"tool":"write_file","parameters":{"path":"out.txt","content":"hello"}}</tool>\n'
-            '<tool>{"tool":"patch_file","parameters":{"path":"src/main.py","old_content":"old","new_content":"new"}}</tool>\n'
-            '<tool>{"tool":"delete_file","parameters":{"path":"obsolete.py"}}</tool>\n'
-            '<tool>{"tool":"list_files","parameters":{"path":"lib"}}</tool>\n'
-            '<tool>{"tool":"flutter_analyze","parameters":{}}</tool>\n'
-            '<tool>{"tool":"python_check","parameters":{}}</tool>\n'
-            '<tool>{"tool":"run_command","parameters":{"command":"git status"}}</tool>\n'
-            '<tool>{"tool":"git_commit","parameters":{"message":"fix: resolve null check"}}</tool>\n'
+            "<tool>\n  <name>read_file</name>\n  <path>src/main.py</path>\n</tool>\n"
+            "<tool>\n  <name>read_files</name>\n  <paths>[\"a.py\",\"b.py\",\"c.py\"]</paths>\n</tool>\n"
+            "<tool>\n  <name>search_in_files</name>\n  <pattern>error</pattern>\n  <file_glob>*.log</file_glob>\n</tool>\n"
+            "<tool>\n  <name>write_file</name>\n  <path>out.txt</path>\n  <content>hello world</content>\n</tool>\n"
+            "<tool>\n  <name>patch_file</name>\n  <path>src/main.py</path>\n  <old_content>old</old_content>\n  <new_content>new</new_content>\n</tool>\n"
+            "<tool>\n  <name>delete_file</name>\n  <path>obsolete.py</path>\n</tool>\n"
+            "<tool>\n  <name>list_files</name>\n  <path>lib</path>\n</tool>\n"
+            "<tool>\n  <name>flutter_analyze</name>\n</tool>\n"
+            "<tool>\n  <name>python_check</name>\n</tool>\n"
+            "<tool>\n  <name>run_command</name>\n  <command>git status</command>\n</tool>\n"
+            "<tool>\n  <name>git_commit</name>\n  <message>fix: resolve null check</message>\n</tool>\n"
         ),
     }
 
@@ -617,7 +619,7 @@ def _get_truncated_answer_directive(tail: str) -> Dict[str, str]:
 _TRUNCATED_TOOL_ERROR = " Was CUT OFF before the closing </tool> tag. "
 
 # Stronger directive sent after multiple consecutive truncation retries.
-# The model keeps regenerating the same oversized JSON batch; this nudge
+# The model keeps regenerating the same oversized batch; this nudge
 # tells it to split the work into smaller calls.
 _TRUNCATION_SPLIT_DIRECTIVE = (
     "[BATCH SIZE WARNING] Your last tool call was CUT OFF by the token "
@@ -629,7 +631,7 @@ _TRUNCATION_SPLIT_DIRECTIVE = (
     "changing a smaller block.\n"
     "  - If a single file's content is very large, use write_file for "
     "the first portion and append_file for the rest.\n"
-    "Keep each tool call's JSON under 6000 characters. Emit ONE small "
+    "Keep each tool call's content under 6000 characters. Emit ONE small "
     "tool call now. Do NOT repeat the same oversized content."
 )
 
@@ -1561,7 +1563,7 @@ class Orchestrator:
 
             # [stop-sequence-fix] If we requested generation to stop at
             # ``</tool>`` (see _call_model), some APIs strip the stop
-            # token from the reply -- leaving an unclosed ``<tool>{...``
+            # token from the reply -- leaving an unclosed ``<tool>...
             # that the parser would treat as malformed. Detect that here
             # and re-append ``</tool>`` so the parser sees a complete
             # tag. To roll back this behavior, search for
@@ -2113,7 +2115,8 @@ class Orchestrator:
                         "(1) <task_status>{\"id\":1,"
                         "\"status\":\"in_progress\",\"note\":\""
                         "<one line>\"}</task_status>, then "
-                        "(2) the FIRST <tool>{...}</tool> call "
+                        "(2) the FIRST <tool> call (with <name>, "
+                        "child tags for parameters) "
                         "needed to start task #1. Nothing else. "
                         "Do NOT echo this instruction back.]"
                     )
@@ -2129,7 +2132,8 @@ class Orchestrator:
                         "[INTERNAL: Your last reply was empty after "
                         "the orchestrator removed reasoning, task "
                         "tags, and simulated tool transcripts. Emit "
-                        "ONLY the single <tool>{...}</tool> call OR "
+                        "ONLY the single <tool>...</tool> call (with "
+                        "<name> and parameter child tags) OR "
                         "the user-facing final answer. No preamble, "
                         "no fake 'User:' / 'Assistant:' lines, no "
                         "'[INTERNAL: ...]' tags from you. Do NOT "
@@ -2151,7 +2155,7 @@ class Orchestrator:
                 # instead of only 2 malformed retries with generic feedback.
                 # This fixes models like glm-5.2 that generate massive
                 # patch_file calls and get cut off mid-JSON.
-                if "Unclosed JSON" in malformed_error and len(text_clean) > 2000:
+                if "Unclosed" in malformed_error and len(text_clean) > 2000:
                     print(
                         f"[orch] Malformed call looks like truncation "
                         f"(unclosed JSON, {len(text_clean)} chars); "
@@ -2205,7 +2209,7 @@ class Orchestrator:
 
             # --- Truncation detection ---
             # The reply was cut off by max_tokens. Two shapes:
-            #   1. A tool call was truncated (<tool> or JSON opened but not
+            #   1. A tool call was truncated (<tool> opened but not
             #      closed) — retry with a tool-call-specific nudge.
             #   2. A final answer was truncated (plain text, no tool syntax)
             #      — retry asking the model to continue from where it left
@@ -2218,8 +2222,8 @@ class Orchestrator:
             if looks_truncated and truncation_retries < _MAX_TRUNCATION_RETRY:
                 truncation_retries += 1
                 # Determine whether this is a truncated tool call or a
-                # truncated final answer. A tool call has <tool> tags or
-                # JSON tool syntax; a final answer is plain text.
+                # truncated final answer. A tool call has <tool> tags;
+                # a final answer is plain text.
                 is_tool_truncation = looks_like_unclosed_tool(text_clean) or (
                     parse_all_tag_tool_calls(
                         text_clean, self.tool_registry.definitions
@@ -2768,7 +2772,7 @@ class Orchestrator:
 
         Returns `(content, finish_reason)`. `finish_reason == "length"` means
         the model hit `max_tokens` and the reply is truncated — the caller
-        must handle that, because a half-written `<tool>...` JSON is worse
+        must handle that, because a half-written `<tool>...` is worse
         than no tool call at all.
 
         Retries on 429 / 5xx with exponential backoff (1s, 2s, 4s, 8s, 16s).

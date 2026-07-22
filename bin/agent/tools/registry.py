@@ -11,11 +11,12 @@ from typing import Any, Callable, Dict, List, Literal, Optional, Tuple, TypeVar
 
 T = TypeVar("T")
 
-# Exact format the system prompt mandates: <tool>{...}</tool>
+# Exact format the system prompt mandates: <tool>...</tool> with child tags.
 # Anchored start/end so any surrounding text causes an immediate miss.
+# Matches both the new XML child-tag format and the legacy JSON-in-tags format.
 _STRICT_TOOL_RE = re.compile(
-    r"^\s*<tool>\s*(\{.*?\})\s*</tool>\s*$",
-    re.DOTALL,
+    r"^\s*<tool>\s*(.*?)\s*</tool>\s*$",
+    re.DOTALL | re.IGNORECASE,
 )
 
 # Lightweight heuristic: does the text contain ANY tool-like marker?
@@ -217,7 +218,7 @@ class ToolRegistry:
     # ------------------------------------------------------------------
 
     def strict_parse_tool_call(self, text: str) -> Optional[Tuple[str, Dict[str, Any]]]:
-        """Parse ONLY the exact mandated format: <tool>{JSON}</tool>.
+        """Parse ONLY the exact mandated format: <tool>...</tool>.
 
         Returns (tool_name, parameters) if the response is a well-formed,
         known tool call; None otherwise.
@@ -230,8 +231,19 @@ class ToolRegistry:
         if not m:
             return None
 
+        body = m.group(1)
+
+        # PRIMARY: try XML child-tag parser
+        from agent.loop.tool_dispatch import _parse_xml_tool_call
+        xml_result = _parse_xml_tool_call(body, self.definitions)
+        if xml_result is not None:
+            name, params = xml_result
+            if name in self.tools:
+                return name, params
+
+        # FALLBACK: try legacy JSON-in-tags parser
         try:
-            data = json.loads(m.group(1))
+            data = json.loads(body)
         except json.JSONDecodeError:
             return None
 
@@ -444,7 +456,10 @@ class ToolRegistry:
     CORRECT (plan + start, single reply):
     <tasks>[{"id":1,"name":"Read pubspec","description":"...","depends_on":[]}, {"id":2,"name":"Patch dep","description":"...","depends_on":[1]}]</tasks>
     <task_status>{"id":1,"status":"in_progress","note":"reading pubspec.yaml to locate the record dep"}</task_status>
-    <tool>{"tool":"read_file","parameters":{"path":"pubspec.yaml"}}</tool>
+    <tool>
+    <name>read_file</name>
+    <path>pubspec.yaml</path>
+    </tool>
 
     WRONG (plan only -- model stalls):
     <tasks>[{"id":1,...}, {"id":2,...}]</tasks>
@@ -475,7 +490,10 @@ class ToolRegistry:
     Summarize what was accomplished and surface any caveats -- this is what the user reads in the chat bubble.
 
     WRONG (no plan, jumps straight into a tool):
-    <tool>{"tool":"read_file",...}</tool>
+    <tool>
+    <name>read_file</name>
+    <path>...</path>
+    </tool>
 
     WRONG (raw status update outside a tag):
     Task 1 is done.
@@ -513,7 +531,10 @@ class ToolRegistry:
 
             CORRECT (short reasoning, tool call):
               thinking: The user wants X. I should check Y first. 
-              response: <tool>{"tool":"read_file","parameters":{"path":"y.dart"}}</tool>
+              response: <tool>
+              <name>read_file</name>
+              <path>y.dart</path>
+            </tool>
 
             CORRECT (reasoning wrapped, final answer clean):
               thinking: Now I have everything. Time to synthesize. 
@@ -521,7 +542,10 @@ class ToolRegistry:
 
             WRONG (reasoning leaks before the tool call):
               We need to read this file.
-              <tool>{"tool":"read_file","parameters":{"path":"y.dart"}}</tool>
+              <tool>
+              <name>read_file</name>
+              <path>y.dart</path>
+            </tool>
 
             WRONG (reasoning leaks before the final answer):
               Let me think about this. We need to check X. Proceed.
@@ -542,21 +566,36 @@ class ToolRegistry:
             The character immediately following </tool> in your reply MUST be end-of-stream. Not a space. Not a newline. Nothing.
 
             CORRECT (one tool call, then STOP):
-              <tool>{"tool":"read_file","parameters":{"path":"a.py"}}</tool>
+              <tool>
+              <name>read_file</name>
+              <path>a.py</path>
+            </tool>
               (end of reply, nothing follows)
 
             WRONG (model hallucinates the user reply + a follow-up tool):
-              <tool>{"tool":"read_file","parameters":{"path":"a.py"}}</tool>
-              User: Tool `read_file` returned: {"status":"success","content":"..."}
+              <tool>
+              <name>read_file</name>
+              <path>a.py</path>
+            </tool>
+              User: Tool `read_file` returned: ...
               Assistant: Now I will also read b.py.
-              <tool>{"tool":"read_file","parameters":{"path":"b.py"}}</tool>
+              <tool>
+              <name>read_file</name>
+              <path>b.py</path>
+            </tool>
 
             WRONG (model invents an INTERNAL instruction):
-              <tool>{"tool":"list_files","parameters":{"path":"."}}</tool>
+              <tool>
+              <name>list_files</name>
+              <path>.</path>
+            </tool>
               [INTERNAL: Continue with the next step.]
 
             WRONG (model uses spaces to bypass the newline-prefixed stop):
-              <tool>{"tool":"list_files","parameters":{"path":"."}}</tool>  User: Tool `list_files` returned: {...}
+              <tool>
+              <name>list_files</name>
+              <path>.</path>
+            </tool>  User: Tool `list_files` returned: {...}
               (the two spaces between </tool> and User: are still a violation)
 
             If you need multiple files or writes in the same turn, use BATCH tools (read_files, create_directories, delete_files). Do NOT chain individual tool calls.
@@ -569,62 +608,105 @@ class ToolRegistry:
             The batch tool returns status: "partial" if some sub-ops failed. The results array lists failed paths so you can retry only those, still in batch form.
 
             CORRECT (3 directories in 1 iteration):
-              <tool>{"tool":"create_directories","parameters":{"paths":["lib/a","lib/b","lib/c"]}}</tool>
+              <tool>
+              <name>create_directories</name>
+              <paths>["lib/a","lib/b","lib/c"]</paths>
+            </tool>
 
             CORRECT (3 regex searches in 1 walk):
-              <tool>{"tool":"search_in_files","parameters":{"patterns":["TODO","FIXME","XXX"],"file_glob":"*.dart"}}</tool>
+              <tool>
+              <name>search_in_files</name>
+              <patterns>["TODO","FIXME","XXX"]</patterns>
+              <file_glob>*.dart</file_glob>
+            </tool>
 
-            For multi-file writes or patches, call write_file / patch_file once per file. Do NOT try to batch them into a single oversized JSON call — that risks truncation and malformed tool calls.
+            For multi-file writes or patches, call write_file / patch_file once per file. Do NOT try to batch them into a single oversized call — that risks truncation and malformed tool calls.
 
             PRIMARY CONSTRAINT: TOOL CALL FORMAT
             When a tool is needed, output ONLY this exact format. No deviation.
 
             The ENTIRE response must be exactly:
-              <tool>{"tool":"NAME","parameters":{...}}</tool>
+              <tool>
+              <name>NAME</name>
+              <key>value</key>
+              ...
+            </tool>
 
-            This is the ONLY format accepted by the strict parser. Any deviation is an immediate rejection.
+            This is the ONLY format accepted by the parser. Any deviation is an immediate rejection.
+            NO attributes. NO JSON. Child tags only — the tag name is the parameter name, the tag body is the value.
 
             CORRECT examples:
-              <tool>{"tool":"read_file","parameters":{"path":"src/main.py"}}</tool>
-              <tool>{"tool":"read_files","parameters":{"paths":["a.py","b.py","c.py"]}}</tool>
-              <tool>{"tool":"search_in_files","parameters":{"pattern":"error","file_glob":"*.log"}}</tool>
-              <tool>{"tool":"write_file","parameters":{"path":"out.txt","content":"hello"}}</tool>
+              <tool>
+              <name>read_file</name>
+              <path>src/main.py</path>
+            </tool>
+
+              <tool>
+              <name>read_files</name>
+              <paths>["a.py","b.py","c.py"]</paths>
+            </tool>
+
+              <tool>
+              <name>search_in_files</name>
+              <pattern>error</pattern>
+              <file_glob>*.log</file_glob>
+            </tool>
+
+              <tool>
+              <name>write_file</name>
+              <path>out.txt</path>
+              <content>hello world</content>
+            </tool>
+
+              <tool>
+              <name>patch_file</name>
+              <path>src/main.py</path>
+              <old_content>Hello</old_content>
+              <new_content>Ciao</new_content>
+            </tool>
+
+              <tool>
+              <name>flutter_analyze</name>
+            </tool>
+
+              <tool>
+              <name>git_commit</name>
+              <message>fix: resolve null check</message>
+            </tool>
 
             Key rules:
               - Response starts with <tool> and ends with </tool>. Nothing before or after.
-              - Inside the tags: a single JSON object with exactly two top-level keys: "tool" and "parameters".
-              - "tool" is a string: the exact tool name.
-              - "parameters" is a JSON object (even if empty: {}).
-              - All strings use double quotes. No trailing commas. No comments inside JSON.
-              - Any literal " inside a string value MUST be escaped as \\", and any literal \\ MUST be escaped as \\\\ (Windows paths are the most common trigger). Quote an argument only when it truly needs it; an unquoted value has nothing to escape.
-              - On shells without single-quote support (e.g. Windows cmd.exe), escaped double quotes are the only quoting option — there is no single-quote fallback.
-              - JSON is compact; no pretty-printing needed.
-              - Validate JSON between <tool> and </tool> before emitting it.
+              - Inside <tool>: a <name> child tag whose body is the exact tool name, followed by one child tag per parameter.
+              - NO attributes on any tag. Use child tags only.
+              - The tag body IS the value — no escaping, no JSON, no double-quote wrangling.
+              - For list/integer/boolean values, write the JSON literal directly in the tag body (e.g. <paths>["a.py","b.py"]</paths>).
+              - For empty parameters (no parameters needed), omit all child tags except <name>.
+              - The < character is the only special character: if a value contains a literal <, write it as &lt; and > as &gt;. No other escaping is needed.
+              - Do NOT wrap the whole call in markdown code fences.
 
             INVALID examples:
-              #1: Bare JSON without <tool> wrapper.
-              {"tool":"read_file","parameters":{"path":"file.txt"}}
-              #2: Text before the tool call.
-              "I will now read the file..." <tool>{"tool":"read_file","parameters":{"path":"file.txt"}}</tool>
-              #3: Text after the tool call.
-              <tool>{"tool":"read_file","parameters":{"path":"file.txt"}}</tool> This will show the contents.
-              #4: Single quotes in JSON.
-              <tool>{'tool':'read_file','parameters':{'path':'file.txt'}}</tool>
-              #5: Unescaped inner double quotes in a string value.
-              <tool>{"tool":"write_file","parameters":{"path":"out.txt","content":"say "hi" now"}}</tool>
-              #6: Unescaped backslashes in a Windows path.
-              <tool>{"tool":"run_command","parameters":{"command":"dir /s /b "%LOCALAPPDATA%\\Pub\\Cache\\file.dart""}}</tool>
+              #1: JSON inside <tool> wrapper (WRONG — use child tags, not JSON).
+              <tool>{"tool":"read_file","parameters":{"path":"file.txt"}}</tool>
+              #2: Attributes on the tool tag (WRONG — no attributes allowed).
+              <tool name="read_file"><path>file.txt</path></tool>
+              #3: Text before the tool call.
+              "I will now read the file..." <tool><name>read_file</name><path>file.txt</path></tool>
+              #4: Text after the tool call.
+              <tool><name>read_file</name><path>file.txt</path></tool> This will show the contents.
+              #5: Missing <name> child.
+              <tool><path>file.txt</path></tool>
+              #6: Unescaped < in a value.
+              <tool><name>write_file</name><path>out.txt</path><content>if x < 5 { ... }</content></tool>
+              (correct: <content>if x &lt; 5 { ... }</content>)
 
             MANDATORY CHECKLIST before emitting a tool call:
               [ ] Response starts with exactly '<tool>' (no leading spaces)?
               [ ] Response ends with exactly '</tool>' (no trailing spaces or newlines)?
               [ ] Nothing else in the response besides the <tool>...</tool> block?
-              [ ] Content between tags is valid JSON (double quotes, no trailing commas)?
-              [ ] Any inner " is escaped as \\", and any inner \\ is escaped as \\\\?
-              [ ] JSON has exactly two top-level keys: "tool" and "parameters"?
-              [ ] "tool" is a string matching an available tool name exactly?
-              [ ] "parameters" is a JSON object ({} if no parameters needed)?
-              [ ] All parameter values are the correct type?
+              [ ] There is a <name>...</name> child with the exact tool name?
+              [ ] NO attributes on any tag? (all params are child tags)?
+              [ ] Any literal < in a value is written as &lt;?
+              [ ] All parameter tag names match the tool's schema?
               [ ] This is the ONLY tool call in the response?
             If any checkbox is unchecked, the parser will reject the call. Get it right the first time.
 
@@ -750,75 +832,74 @@ class ToolRegistry:
                 - Never use loops solely to obtain a value that can be retrieved directly.
                 - Prefer built-in shell commands whenever possible.
 
-                QUOTING AND ESCAPING (JSON SAFETY)
-                - The "command" value is a JSON string. Every literal " MUST be escaped as \\", and every literal \\ MUST be escaped as \\\\. These are two independent rules; a command can violate either or both at once.
-                - Quote an argument only when it actually needs it (a space or shell-special character is present). An unquoted value has nothing to escape.
-                - POSIX shells (bash/sh): if quoting is needed, prefer single quotes ('like this') — they require no JSON escaping.
-                - Windows cmd.exe: single quotes are literal characters, not a quoting mechanism. If quoting is needed, " is the only option, and it MUST be escaped as \\" in the JSON string.
-                - Windows paths use \\ as a separator. Escape every one as \\\\, whether or not the argument is quoted.
-                - Never emit a raw, unescaped " or a lone \\ inside a JSON string value.
+                QUOTING AND ESCAPING (XML SAFETY)
+                    - The command value is the body of a <command>...</command> XML tag. No JSON escaping is needed.
+                    - The ONLY special characters in XML are < and >. Write < as &lt; and > as &gt; if they appear in the command.
+                    - Quotes (single and double) do NOT need escaping inside XML tag bodies.
+                    - Backslashes do NOT need escaping inside XML tag bodies.
+                    - Quote an argument only when it actually needs it (a space or shell-special character is present). An unquoted value has nothing to escape.
+                    - POSIX shells (bash/sh): if quoting is needed, prefer single quotes ('like this').
+                    - Windows cmd.exe: single quotes are literal characters, not a quoting mechanism. If quoting is needed, use \".
+                    - Windows paths use \\ as a separator — no doubling needed inside XML tag bodies.
 
-                EXAMPLES
-                Goal: read an environment variable.
+                    EXAMPLES
+                    Goal: read an environment variable.
 
-                CORRECT:
-                  echo %LOCALAPPDATA%
+                    CORRECT:
+                      echo %LOCALAPPDATA%
 
-                WRONG:
-                  for /f "tokens=2*" %a in ('%LOCALAPPDATA%') do echo %LOCALAPPDATA%
+                    WRONG:
+                      for /f \"tokens=2*\" %a in ('%LOCALAPPDATA%') do echo %LOCALAPPDATA%
 
-                Goal: print the current directory.
+                    Goal: print the current directory.
 
-                CORRECT:
-                  cd
+                    CORRECT:
+                      cd
 
-                WRONG:
-                  for /f ... ('cd') ...
+                    WRONG:
+                      for /f ... ('cd') ...
 
-                Goal: find a file by name (POSIX shell).
+                    Goal: find a file by name (POSIX shell).
 
-                CORRECT:
-                  <tool>{"tool":"run_command","parameters":{"command":"find Radios/.dart_tool -name 'package_config.json' | head -1"}}</tool>
+                    CORRECT:
+                      <tool>
+                      <name>run_command</name>
+                      <command>find Radios/.dart_tool -name 'package_config.json' | head -1</command>
+                    </tool>
 
-                CORRECT (double quotes unavoidable):
-                  <tool>{"tool":"run_command","parameters":{"command":"find Radios/.dart_tool -name \\"package_config.json\\" | head -1"}}</tool>
+                    CORRECT (double quotes unavoidable):
+                      <tool>
+                      <name>run_command</name>
+                      <command>find Radios/.dart_tool -name \"package_config.json\" | head -1</command>
+                    </tool>
 
-                WRONG (unescaped inner quotes break the JSON):
-                  <tool>{"tool":"run_command","parameters":{"command":"find Radios/.dart_tool -name "package_config.json" | head -1"}}</tool>
+                    Goal: locate a file under a Windows path (cmd.exe).
 
-                Goal: locate a file under a Windows path (cmd.exe).
+                    CORRECT:
+                      <tool>
+                      <name>run_command</name>
+                      <command>dir /s /b %LOCALAPPDATA%\\Pub\\Cache\\hosted\\pub.dev\\sqflite_common-2.5.11\\lib\\src\\database_mixin.dart</command>
+                    </tool>
 
-                CORRECT (no spaces in the path -> skip quotes, escape backslashes):
-                  <tool>{"tool":"run_command","parameters":{"command":"dir /s /b %LOCALAPPDATA%\\\\Pub\\\\Cache\\\\hosted\\\\pub.dev\\\\sqflite_common-2.5.11\\\\lib\\\\src\\\\database_mixin.dart"}}</tool>
+                    SELF-VALIDATION
+                    Before emitting a run_command tool call, internally verify:
 
-                CORRECT (quoting needed -> escape both " and \\):
-                  <tool>{"tool":"run_command","parameters":{"command":"dir /s /b \\"%LOCALAPPDATA%\\\\Pub\\\\Cache\\\\hosted\\\\pub.dev\\\\sqflite_common-2.5.11\\\\lib\\\\src\\\\database_mixin.dart\\""}}</tool>
+                    1. What is the user's objective?
+                    2. Is there a simpler command?
+                    3. Am I executing a real program?
+                    4. Am I accidentally executing a path or variable?
+                    5. Does every token contribute to the result?
+                    6. Would this command succeed in a clean shell session?
+                    7. Is quoting actually necessary here? If so, does this shell support single quotes, or must \" be used?
 
-                WRONG (unescaped quotes and unescaped backslashes both break the JSON):
-                  <tool>{"tool":"run_command","parameters":{"command":"dir /s /b "%LOCALAPPDATA%\\Pub\\Cache\\hosted\\pub.dev\\sqflite_common-2.5.11\\lib\\src\\database_mixin.dart""}}</tool>
+                    If any answer is \"no\" or \"unknown\", regenerate the command before emitting it.
 
-                SELF-VALIDATION
-                Before emitting a run_command tool call, internally verify:
-
-                1. What is the user's objective?
-                2. Is there a simpler command?
-                3. Am I executing a real program?
-                4. Am I accidentally executing a path or variable?
-                5. Does every token contribute to the result?
-                6. Would this command succeed in a clean shell session?
-                7. Is quoting actually necessary here? If so, does this shell support single quotes, or must " be used and escaped as \\"?
-                8. Is every literal \\ in the command escaped as \\\\?
-
-                If any answer is "no" or "unknown", regenerate the command before emitting it.
-
-                Reject commands containing:
-                - unused loop variables;
-                - dead code;
-                - unnecessary parsing;
-                - unnecessary shell constructs;
-                - unescaped double quotes inside a JSON string value;
-                - unescaped backslashes inside a JSON string value;
-                - commands whose behavior cannot be fully explained.
+                    Reject commands containing:
+                    - unused loop variables;
+                    - dead code;
+                    - unnecessary parsing;
+                    - unnecessary shell constructs;
+                    - commands whose behavior cannot be fully explained.
 
             DECISION LOGIC (in order)
             1. Is a tool needed? -> YES: call it immediately (use read_files for multiple reads; never chain read_file calls). -> NO: answer directly.

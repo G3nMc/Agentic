@@ -2,6 +2,27 @@
 
 All functions here are stateless and module-level so they can be called
 from the run loop without dragging the Orchestrator class along.
+
+PRIMARY FORMAT (XML, no attributes):
+    <tool>
+      <name>read_file</name>
+      <path>src/main.py</path>
+    </tool>
+
+    <tool>
+      <name>write_file</name>
+      <path>out.txt</path>
+      <content>hello world</content>
+    </tool>
+
+The parser extracts child tags inside <tool>...</tool> as key/value pairs.
+The first <name>...</name> child is the tool name; all other children are
+parameters.  Values are taken verbatim (no JSON escaping, no attribute
+parsing) — the tag body IS the value.
+
+Legacy JSON-in-tags calls (<tool>{"tool":"...","parameters":{...}}</tool>)
+and bare JSON are kept as a fallback for backward compatibility with older
+conversation history.
 """
 
 from __future__ import annotations
@@ -13,6 +34,110 @@ import sys
 from typing import Any, Dict, List, Optional, Tuple
 
 from agent.loop.task_protocol import strip_task_tags
+
+# ---------------------------------------------------------------------------
+# PRIMARY PARSER — pure XML child-tag format (no attributes)
+# ---------------------------------------------------------------------------
+#
+#   <tool>
+#     <name>read_file</name>
+#     <path>src/main.py</path>
+#   </tool>
+#
+# The tool name comes from the <name> child. Every other child tag is a
+# parameter whose value is the literal text between the open/close tags.
+# No attributes, no JSON, no escaping. The body IS the value.
+
+_TOOL_BLOCK_RE = re.compile(
+    r"<tool\b[^>]*>(.*?)</tool\s*>",
+    re.DOTALL | re.IGNORECASE,
+)
+
+# Match <name>...</name> as the first child inside <tool>
+_XML_NAME_RE = re.compile(
+    r"<name\b[^>]*>(.*?)</name\s*>",
+    re.DOTALL | re.IGNORECASE,
+)
+
+# Match any child tag: <tagname>value</tagname>
+# We exclude <name> since it's the tool name, not a parameter.
+_XML_CHILD_TAG_RE = re.compile(
+    r"<(\w+)\s*>(.*?)</\1\s*>",
+    re.DOTALL | re.IGNORECASE,
+)
+
+
+def _parse_xml_tool_call(block_body: str, tool_defs=None) -> Optional[Tuple[str, Dict[str, Any]]]:
+    """Parse one <tool> block body (the inner XML) into (name, params).
+
+    The body looks like:
+        <name>read_file</name>
+        <path>src/main.py</path>
+
+    No attributes. No JSON. Tag body is the literal value.
+    """
+    if not block_body or not block_body.strip():
+        return None
+
+    # Extract tool name
+    name_match = _XML_NAME_RE.search(block_body)
+    if not name_match:
+        return None
+
+    tool_name = name_match.group(1).strip()
+    if not tool_name:
+        return None
+
+    # Extract all child tags as parameters (skip <name>)
+    params: Dict[str, Any] = {}
+    for m in _XML_CHILD_TAG_RE.finditer(block_body):
+        tag_name = m.group(1).lower()
+        if tag_name == "name":
+            continue
+        value = m.group(2)
+        # Try to parse as JSON for complex types (lists, ints, bools);
+        # if it fails, keep the raw string. This handles <paths>["a.py","b.py"]</paths>
+        # while keeping <content>hello "world"</content> as a literal string.
+        parsed_value = _maybe_parse_scalar(value)
+        params[tag_name] = parsed_value
+
+    if not tool_name:
+        return None
+
+    # Sanitize params using the tool schema (drop unknown keys)
+    if tool_defs:
+        params = _sanitize_params(params, tool_name, tool_defs)
+
+    return tool_name, params
+
+
+def parse_xml_tool_calls(
+    response: str, tool_defs=None
+) -> List[Tuple[str, Dict[str, Any]]]:
+    """Parse XML-format tool calls from the model reply.
+
+    Primary format (no attributes):
+        <tool>
+          <name>read_file</name>
+          <path>src/main.py</path>
+        </tool>
+
+    Returns a list but stops at the FIRST successfully-parsed call
+    (same semantics as parse_all_tag_tool_calls).
+    """
+    if not response:
+        return []
+
+    # Strip markdown code blocks first (same as the JSON path)
+    cleaned = _CODE_BLOCK_RE.sub("", response)
+
+    for m in _TOOL_BLOCK_RE.finditer(cleaned):
+        body = m.group(1)
+        result = _parse_xml_tool_call(body, tool_defs)
+        if result is not None:
+            return [result]
+
+    return []
 
 # ---------------------------------------------------------------------------
 # Output-cleaning regexes
@@ -286,6 +411,8 @@ def looks_like_unclosed_tool(text: str) -> bool:
     if not text:
         return False
 
+    # PRIMARY: check for unclosed <tool>...</tool> XML blocks.
+    # This covers both the new XML format and the legacy JSON-in-tags format.
     opens = _count_exact_tag(text, "tool")
     closes = len(re.findall(r"</\s*tool\s*>", text, re.IGNORECASE))
     if opens > closes:
@@ -365,13 +492,14 @@ def _looks_like_tool_attempt(text: str) -> bool:
     if not text:
         return False
 
-    # Check for explicit tool tags or JSON structures.
-    # Require <tool> (not just any tool-family tag) — smaller models
-    # sometimes echo <tool_call> or <function_call> from other prompt
-    # styles without actually intending a tool invocation.
+    # Check for explicit tool tags (XML format or legacy JSON-in-tags).
     if re.search(r"<\s*tool\s*>", text, re.IGNORECASE):
         return True
     if re.search(r"</\s*tool\s*>", text, re.IGNORECASE):
+        return True
+
+    # XML child-tag indicators: <name>...</name> inside a <tool> context
+    if re.search(r"<\s*name\s*>.*</\s*name\s*>", text, re.IGNORECASE | re.DOTALL):
         return True
 
     # Only match "tool": "name" when it looks like a JSON object start —
@@ -391,21 +519,80 @@ def _looks_like_tool_attempt(text: str) -> bool:
     return False
 
 
+def parse_all_tag_tool_calls_legacy_json(
+        response: str, tool_defs=None
+) -> List[Tuple[str, Dict[str, Any]]]:
+    """Legacy JSON-only parser — used as a fallback when the primary
+    XML parser fails, and by ``looks_like_malformed_tool_call`` to check
+    whether a reply is a valid legacy JSON tool call (so we don't
+    false-positive on JSON-in-tags that the fallback can still parse).
+    """
+    if not response:
+        return []
+    candidates = _gather_candidates(response, tool_defs)
+    for raw in candidates:
+        for cleaned in json_variants(raw):
+            parsed = _maybe_parse_jsonish(cleaned)
+            if not isinstance(parsed, dict):
+                continue
+            normalized = _normalize_tool_spec(parsed, tool_defs)
+            if not normalized:
+                continue
+            name, params = normalized
+            return [(name, params)]
+    return []
+
+
 def looks_like_malformed_tool_call(text: str) -> Tuple[bool, str | None]:
-    """Detect output that appears to be a tool call but is malformed."""
+    """Detect output that appears to be a tool call but is malformed.
+
+    Checks both the primary XML format and the legacy JSON format.
+    """
     if not text:
         return False, None
 
+    # ---- PRIMARY: XML child-tag format check ----
+    # If there's a <tool> tag but the XML parser can't extract a valid
+    # call from it, it's malformed.
+    if re.search(r"<\s*tool\s*>", text, re.IGNORECASE):
+        if not parse_xml_tool_calls(text):
+            # Don't false-positive on legacy JSON-in-tags that the
+            # fallback parser can still handle.
+            if not parse_all_tag_tool_calls_legacy_json(text):
+                return True, (
+                    "Malformed XML tool call: the <tool> block could not be parsed. "
+                    "Ensure there is a <name>...</name> child and all parameter "
+                    "tags are properly opened and closed.\n"
+                    "UNIQUE CORRECT TOOL CALL FORMAT:\n"
+                    "<tool>\n"
+                    "  <name>tool_name</name>\n"
+                    "  <key>value</key>\n"
+                    "</tool>\n"
+                    "Example:\n"
+                    "<tool>\n"
+                    "  <name>read_file</name>\n"
+                    "  <path>src/main.py</path>\n"
+                    "</tool>"
+                )
+
+    # ---- FALLBACK: legacy JSON format check ----
     if not _looks_like_tool_attempt(text):
         return False, None
 
-    if parse_all_tag_tool_calls(text):
+    if parse_all_tag_tool_calls_legacy_json(text):
         return False, None
 
     correct_format = (
-        'UNIQUE CORRECT TOOL CALL FORMAT : <tool>{"tool":"tool_name","parameters":{...}}</tool> '
-        'or <tool>{"tool":"tool_name","parameters":{"key":"value"}}</tool>' 
-        'or {"tool":"tool_name","parameters":{"key":"value"}}  '
+        "UNIQUE CORRECT TOOL CALL FORMAT:\n"
+        "<tool>\n"
+        "  <name>tool_name</name>\n"
+        "  <key>value</key>\n"
+        "</tool>\n"
+        "Example:\n"
+        "<tool>\n"
+        "  <name>read_file</name>\n"
+        "  <path>src/main.py</path>\n"
+        "</tool>"
     )
 
     # Require JSON key position context ({  or ,) to avoid false positives
@@ -1420,6 +1607,15 @@ def parse_all_tag_tool_calls(
 ) -> List[Tuple[str, Dict[str, Any]]]:
     """Parse tool invocations out of the model reply.
 
+    PRIMARY path: XML child-tag format (no attributes):
+        <tool>
+          <name>read_file</name>
+          <path>src/main.py</path>
+        </tool>
+
+    FALLBACK: legacy JSON-in-tags format:
+        <tool>{"tool":"read_file","parameters":{"path":"src/main.py"}}</tool>
+
     Returns a list (kept for API compatibility) but stops at the FIRST
     successfully-parsed call. This is intentional hardening: some
     models hallucinate a chain of fake ``<tool>...</tool>`` tags after
@@ -1432,6 +1628,12 @@ def parse_all_tag_tool_calls(
     if not response:
         return []
 
+    # ---- PRIMARY: XML child-tag parser ----
+    xml_calls = parse_xml_tool_calls(response, tool_defs)
+    if xml_calls:
+        return xml_calls
+
+    # ---- FALLBACK: legacy JSON-in-tags parser ----
     candidates = _gather_candidates(response, tool_defs)
 
     for raw in candidates:
