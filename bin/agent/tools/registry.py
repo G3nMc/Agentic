@@ -440,36 +440,77 @@ class ToolRegistry:
     1) PLAN FIRST -- NON-NEGOTIABLE.
     The very first output of the first iteration must be a complete plan inside one <tasks>...</tasks> block -- no tool call may precede it.
     A reply missing it is rejected and re-emitted with a corrective nudge, costing a full iteration.
-    Exception: a <task_action>{...}</task_action> prompt means an existing plan is already running, so no re-plan is needed.
+    Exception: a <task_action>...</task_action> prompt means an existing plan is already running, so no re-plan is needed.
 
-    Use compact JSON, max 12 tasks (plan only the next 12 if more are needed, then re-plan later).
-    Each task needs:
-    {"id": <int>, "name": "<short title>", "description": "<what to do>", "success_criteria": "<how you know it is done>", "depends_on": [<int>, ...]}
+    The plan format is XML child tags -- NO attributes, NO JSON, exactly like the tool-calling protocol.
+    Max 12 tasks (plan only the next 12 if more are needed, then re-plan later).
+    Each task is a <task>...</task> child of <tasks> with these child tags:
+      <id>1</id>
+      <name>short title</name>
+      <description>what to do</description>
+      <success_criteria>how you know it is done</success_criteria>
+      <depends_on>1,2</depends_on>   (optional; comma-separated or separate tags)
 
     CORRECT:
-    <tasks>[{"id":1,"name":"Locate temperature setter","description":"Find where the slider writes the value","success_criteria":"File and line identified","depends_on":[]},{"id":2,"name":"Forward to backend","description":"...","depends_on":[1]}]</tasks>
+    <tasks>
+      <task>
+        <id>1</id>
+        <name>Locate temperature setter</name>
+        <description>Find where the slider writes the value</description>
+        <success_criteria>File and line identified</success_criteria>
+        <depends_on></depends_on>
+      </task>
+      <task>
+        <id>2</id>
+        <name>Forward to backend</name>
+        <description>...</description>
+        <success_criteria>...</success_criteria>
+        <depends_on>1</depends_on>
+      </task>
+    </tasks>
 
     2) PLAN AND START IN THE SAME REPLY -- NON-NEGOTIABLE.
     Right after </tasks>, in that same reply, emit <task_status> for task #1 plus the first <tool> call -- never stop at the plan alone.
     A <tasks>-only reply is treated as a stall and costs a corrective-nudge iteration; re-emitting the plan again does not fix it, it is a second stall.
 
     CORRECT (plan + start, single reply):
-    <tasks>[{"id":1,"name":"Read pubspec","description":"...","depends_on":[]}, {"id":2,"name":"Patch dep","description":"...","depends_on":[1]}]</tasks>
-    <task_status>{"id":1,"status":"in_progress","note":"reading pubspec.yaml to locate the record dep"}</task_status>
+    <tasks>
+      <task>
+        <id>1</id>
+        <name>Read pubspec</name>
+        <description>...</description>
+        <depends_on></depends_on>
+      </task>
+      <task>
+        <id>2</id>
+        <name>Patch dep</name>
+        <description>...</description>
+        <depends_on>1</depends_on>
+      </task>
+    </tasks>
+    <task_status>
+      <id>1</id>
+      <status>in_progress</status>
+      <note>reading pubspec.yaml to locate the record dep</note>
+    </task_status>
     <tool>
-    <name>read_file</name>
-    <path>pubspec.yaml</path>
+      <name>read_file</name>
+      <path>pubspec.yaml</path>
     </tool>
 
     WRONG (plan only -- model stalls):
-    <tasks>[{"id":1,...}, {"id":2,...}]</tasks>
+    <tasks>...</tasks>
     (no task_status, no tool -- wastes the next iteration on a corrective nudge.)
 
     3) WORK ONE TASK AT A TIME.
     Use the normal <tool> protocol for reads/writes -- do not jump ahead.
 
     4) REPORT STATUS -- after finishing or failing a task, emit exactly one <task_status> tag:
-    <task_status>{"id":<int>,"status":"<value>","note":"<one line summary>"}</task_status>
+    <task_status>
+      <id>1</id>
+      <status>done</status>
+      <note>one line summary</note>
+    </task_status>
     Every iteration that produces work output must include one; skipping it freezes the UI checklist and triggers a corrective reminder next turn.
 
     Valid status values:
@@ -491,16 +532,16 @@ class ToolRegistry:
 
     WRONG (no plan, jumps straight into a tool):
     <tool>
-    <name>read_file</name>
-    <path>...</path>
+      <name>read_file</name>
+      <path>...</path>
     </tool>
 
     WRONG (raw status update outside a tag):
     Task 1 is done.
 
     WRONG (mixing reasoning with the tag):
-    Let me think... <task_status>{"id":1,"status":"done"}</task_status>
-    (reasoning belongs inside <think>...</think>; the tag must be the only top-level structured item in the reply, alongside at most one <tool> call.)
+    Let me think... <task_status><id>1</id><status>done</status></task_status>
+    (reasoning belongs inside <thinking>...</thinking>; the tag must be the only top-level structured item in the reply, alongside at most one <tool> call.)
     """
 
         return body.replace("__PROCEED_HINT__", proceed_hint).split("\n")

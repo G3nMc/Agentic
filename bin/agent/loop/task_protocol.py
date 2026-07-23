@@ -1,26 +1,54 @@
 """Task-flow protocol shared by single-agent and multi-agent orchestrators.
 
 The protocol is purely text-based and provider-agnostic: the model emits
-three kinds of tags inside its reply, the orchestrator extracts them
-and rewrites them as structured JSON envelopes on stdout (between
-``{"response": ...}`` and ``__RESPONSE_END__``) so the Flutter client
+three kinds of XML tags inside its reply, the orchestrator extracts them
+and rewrites them as structured XML envelopes on stdout (between
+the final response envelope and ``__RESPONSE_END__``) so the Flutter client
 can intercept them without parsing prose.
+
+FORMAT — pure XML child tags, NO attributes, NO JSON.
+Same convention as the tool-calling protocol (<tool><name>...</name>...</tool>).
+The tag body IS the value — no JSON escaping, no attribute parsing.
 
 Tags
 ----
-``<tasks>[{...}, ...]</tasks>``
-    Emitted ONCE at the start of a multi-step request. Each entry is a
-    JSON object with fields ``id`` (int), ``name`` (str), ``description``
-    (str), optional ``success_criteria`` (str), optional ``depends_on``
-    (list[int]).
+``<tasks>`` containing one or more ``<task>`` children:
+    Emitted ONCE at the start of a multi-step request.
 
-``<task_status>{"id": N, "status": "..."}</task_status>``
-    Emitted by the model after every task or partial step. ``status``
-    is one of :class:`TaskStatus` values.
+    <tasks>
+      <task>
+        <id>1</id>
+        <name>short title</name>
+        <description>what to do</description>
+        <success_criteria>how you know it is done</success_criteria>
+        <depends_on>2</depends_on>
+      </task>
+    </tasks>
 
-``<task_action>{"id": N, "action": "..."}</task_action>``
+    ``depends_on`` is optional and may be repeated or comma-separated
+    (e.g. ``<depends_on>1,3</depends_on>`` or two separate tags).
+
+``<task_status>``
+    Emitted by the model after every task or partial step.
+
+    <task_status>
+      <id>1</id>
+      <status>in_progress</status>
+      <note>short summary</note>
+    </task_status>
+
+    ``status`` is one of :class:`TaskStatus` values.
+    ``note`` is optional.
+
+``<task_action>``
     Emitted by the *client* (e.g. the Flutter UI's Proceed button)
     addressed to the orchestrator. Carries a :class:`TaskAction` value.
+
+    <task_action>
+      <id>1</id>
+      <action>proceed</action>
+    </task_action>
+
     Sent inline as the next user prompt so the existing send/response
     cycle does not need a new channel.
 
@@ -35,12 +63,11 @@ Modes (selected from the UI dropdown)
 
 from __future__ import annotations
 
-import json
 import re
 import sys
 from dataclasses import dataclass, field, asdict
 from enum import Enum
-from typing import Any, Dict, List, Optional
+from typing import Any, List, Optional
 
 
 # ---------------------------------------------------------------------------
@@ -151,13 +178,18 @@ class TaskActionEvent:
 
 
 # ---------------------------------------------------------------------------
-# Regex parsers
+# XML child-tag parsers (no attributes, no JSON — same convention as
+# tool_dispatch.py's _parse_xml_tool_call)
 # ---------------------------------------------------------------------------
 
-
-# Tolerant: accepts <tasks>...</tasks> with arbitrary whitespace inside.
-_TASKS_TAG_RE = re.compile(
+# Outer block regexes — match <tag>...</tag> with tolerant whitespace.
+_TASKS_BLOCK_RE = re.compile(
     r"<\s*tasks\s*>(?P<body>.*?)<\s*/\s*tasks\s*>",
+    re.DOTALL | re.IGNORECASE,
+)
+
+_TASK_BLOCK_RE = re.compile(
+    r"<\s*task\s*>(?P<body>.*?)<\s*/\s*task\s*>",
     re.DOTALL | re.IGNORECASE,
 )
 
@@ -171,110 +203,193 @@ _TASK_ACTION_TAG_RE = re.compile(
     re.DOTALL | re.IGNORECASE,
 )
 
+# Match any child tag: <tagname>value</tagname>
+# Same pattern as tool_dispatch.py's _XML_CHILD_TAG_RE.
+_XML_CHILD_TAG_RE = re.compile(
+    r"<(\w+)\s*>(.*?)</\1\s*>",
+    re.DOTALL | re.IGNORECASE,
+)
 
-def _parse_json_body(body: str) -> Optional[Any]:
-    """Best-effort JSON parse. Returns None on failure (no exception)."""
+
+def _extract_child_tags(body: str) -> Dict[str, str]:
+    """Extract all child tags from *body* as a {tagname: value} dict.
+
+    If the same tag appears multiple times (e.g. multiple <depends_on>),
+    only the last occurrence is kept.  For list-valued fields the caller
+    should use :func:`_extract_child_tags_multi` instead.
+    """
+    out: Dict[str, str] = {}
     if not body:
+        return out
+    for m in _XML_CHILD_TAG_RE.finditer(body):
+        tag_name = m.group(1).lower()
+        out[tag_name] = m.group(2)
+    return out
+
+
+def _extract_child_tags_multi(body: str) -> Dict[str, List[str]]:
+    """Like :func:`_extract_child_tags` but collects repeated tags into lists."""
+    out: Dict[str, List[str]] = {}
+    if not body:
+        return out
+    for m in _XML_CHILD_TAG_RE.finditer(body):
+        tag_name = m.group(1).lower()
+        out.setdefault(tag_name, []).append(m.group(2))
+    return out
+
+
+def _parse_int(value: Optional[str]) -> Optional[int]:
+    """Best-effort int parse. Returns None on failure."""
+    if value is None:
         return None
     try:
-        return json.loads(body)
-    except (ValueError, json.JSONDecodeError):
+        return int(str(value).strip())
+    except (TypeError, ValueError):
         return None
+
+
+def _parse_int_list(values: List[str]) -> List[int]:
+    """Parse a list of strings into ints, tolerating comma-separated values.
+
+    Handles both:
+      <depends_on>1</depends_on><depends_on>2</depends_on>
+      <depends_on>1,2</depends_on>
+    """
+    out: List[int] = []
+    for v in values:
+        if not v:
+            continue
+        for part in v.split(","):
+            part = part.strip()
+            if not part:
+                continue
+            try:
+                out.append(int(part))
+            except (TypeError, ValueError):
+                continue
+    return out
 
 
 def parse_tasks(text: str) -> List[Task]:
     """Return every well-formed task in a ``<tasks>...</tasks>`` block.
 
-    Multiple blocks in the same reply are merged. A block whose JSON is
-    malformed is silently skipped (the orchestrator just won't see those
-    tasks and the model will be nudged to re-emit on the next turn).
+    Multiple <tasks> blocks in the same reply are merged.
+    Each block must contain one or more <task> children with child tags
+    for the task fields.  A malformed block is silently skipped (the
+    orchestrator just won't see those tasks and the model will be
+    nudged to re-emit on the next turn).
+
+    Expected format::
+
+        <tasks>
+          <task>
+            <id>1</id>
+            <name>short title</name>
+            <description>what to do</description>
+            <success_criteria>done when...</success_criteria>
+            <depends_on>2</depends_on>
+          </task>
+        </tasks>
     """
     out: List[Task] = []
     if not text:
         return out
-    for m in _TASKS_TAG_RE.finditer(text):
-        body = (m.group("body") or "").strip()
-        if not body:
+    for m in _TASKS_BLOCK_RE.finditer(text):
+        block_body = m.group("body") or ""
+        if not block_body.strip():
             continue
-        parsed = _parse_json_body(body)
-        if not isinstance(parsed, list):
-            continue
-        for entry in parsed:
-            if not isinstance(entry, dict):
+        for tm in _TASK_BLOCK_RE.finditer(block_body):
+            task_body = tm.group("body") or ""
+            if not task_body.strip():
                 continue
-            try:
-                tid = int(entry.get("id"))
-            except (TypeError, ValueError):
+            # Use multi-extraction for depends_on (may be repeated or comma-separated).
+            multi = _extract_child_tags_multi(task_body)
+            # Use single-extraction for scalar fields.
+            single = _extract_child_tags(task_body)
+
+            tid = _parse_int(single.get("id"))
+            if tid is None:
                 continue
-            name = str(entry.get("name") or "").strip()
+            name = (single.get("name") or "").strip()
             if not name:
                 continue
-            depends_raw = entry.get("depends_on") or []
-            depends_on: List[int] = []
-            if isinstance(depends_raw, list):
-                for d in depends_raw:
-                    try:
-                        depends_on.append(int(d))
-                    except (TypeError, ValueError):
-                        continue
+
+            depends_on = _parse_int_list(multi.get("depends_on", []))
+
+            status_str = (single.get("status") or "").strip()
+
             out.append(
                 Task(
                     id=tid,
                     name=name,
-                    description=str(entry.get("description") or "").strip(),
-                    success_criteria=str(entry.get("success_criteria") or "").strip(),
+                    description=(single.get("description") or "").strip(),
+                    success_criteria=(single.get("success_criteria") or "").strip(),
                     depends_on=depends_on,
-                    status=TaskStatus.parse(entry.get("status")),
+                    status=TaskStatus.parse(status_str),
                 )
             )
     return out
 
 
 def parse_task_status(text: str) -> List[TaskStatusEvent]:
-    """Return every ``<task_status>{...}</task_status>`` event in ``text``."""
+    """Return every ``<task_status>...</task_status>`` event in *text*.
+
+    Expected format::
+
+        <task_status>
+          <id>1</id>
+          <status>in_progress</status>
+          <note>short summary</note>
+        </task_status>
+    """
     out: List[TaskStatusEvent] = []
     if not text:
         return out
     for m in _TASK_STATUS_TAG_RE.finditer(text):
-        body = (m.group("body") or "").strip()
-        parsed = _parse_json_body(body)
-        if not isinstance(parsed, dict):
+        body = m.group("body") or ""
+        if not body.strip():
             continue
-        try:
-            tid = int(parsed.get("id"))
-        except (TypeError, ValueError):
+        tags = _extract_child_tags(body)
+        tid = _parse_int(tags.get("id"))
+        if tid is None:
             continue
         out.append(
             TaskStatusEvent(
                 id=tid,
-                status=TaskStatus.parse(parsed.get("status")),
-                note=str(parsed.get("note") or "").strip(),
-                description=str(parsed.get("description") or "").strip(),
+                status=TaskStatus.parse(tags.get("status")),
+                note=(tags.get("note") or "").strip(),
+                description=(tags.get("description") or "").strip(),
             )
         )
     return out
 
 
 def parse_task_action(text: str) -> Optional[TaskActionEvent]:
-    """Return the FIRST ``<task_action>{...}</task_action>`` event found.
+    """Return the FIRST ``<task_action>...</task_action>`` event found.
 
     Used to interpret the next user prompt when the UI sends a Proceed /
     Retry / Abort / Replan / Skip command in compliance (non-auto) mode.
+
+    Expected format::
+
+        <task_action>
+          <id>1</id>
+          <action>proceed</action>
+        </task_action>
     """
     if not text:
         return None
     m = _TASK_ACTION_TAG_RE.search(text)
     if not m:
         return None
-    body = (m.group("body") or "").strip()
-    parsed = _parse_json_body(body)
-    if not isinstance(parsed, dict):
+    body = m.group("body") or ""
+    if not body.strip():
         return None
-    try:
-        tid = int(parsed.get("id"))
-    except (TypeError, ValueError):
+    tags = _extract_child_tags(body)
+    tid = _parse_int(tags.get("id"))
+    if tid is None:
         return None
-    action = TaskAction.parse(parsed.get("action"))
+    action = TaskAction.parse(tags.get("action"))
     if action is None:
         return None
     return TaskActionEvent(id=tid, action=action)
@@ -286,23 +401,33 @@ def parse_task_action(text: str) -> Optional[TaskActionEvent]:
 
 
 def strip_task_tags(text: str) -> str:
-    """Remove any task-protocol tag from ``text``.
+    """Remove any task-protocol tag from *text*.
 
     The orchestrator re-emits the same information as structured JSON
     envelopes on stdout, so the model-visible reply (and what the user
     eventually sees in the chat bubble) should not carry the raw tags.
+
+    Strips: <tasks>...</tasks>, <task>...</task>, <task_status>...</task_status>,
+    <task_action>...</task_action>.
     """
     if not text:
         return text
-    cleaned = _TASKS_TAG_RE.sub("", text)
+    cleaned = _TASKS_BLOCK_RE.sub("", text)
     cleaned = _TASK_STATUS_TAG_RE.sub("", cleaned)
     cleaned = _TASK_ACTION_TAG_RE.sub("", cleaned)
+    # Also strip any orphan <task>...</task> blocks that might remain
+    # after the <tasks> wrapper was removed.
+    cleaned = _TASK_BLOCK_RE.sub("", cleaned)
     return re.sub(r"\n{3,}", "\n\n", cleaned).strip()
 
 
 # ---------------------------------------------------------------------------
-# JSON envelope emitter
+# XML envelope emitter (stdout → Flutter UI)
 # ---------------------------------------------------------------------------
+# NOTE: These emit XML on stdout for the Flutter client, using the same
+# child-tag convention as the model-facing protocol.  This is INTERNAL
+# orchestrator→UI communication; the model never sees or produces these
+# envelopes.
 
 
 def _log(msg: str) -> None:
@@ -315,46 +440,68 @@ def _log(msg: str) -> None:
 _MAX_ENVELOPE_LOG = 1200
 
 
-def emit_event(event: str, payload: Dict[str, Any], stream=None) -> None:
-    """Print a single ``{"event": "...", ...}`` JSON line on stdout.
+def _escape_xml(value: Any) -> str:
+    """Escape a string for use as XML text content."""
+    s = str(value)
+    s = s.replace("&", "&amp;")
+    s = s.replace("<", "&lt;")
+    s = s.replace(">", "&gt;")
+    # Quotes are not required to be escaped in text content, but do it
+    # anyway for symmetry and safety if a value later ends up in an attribute.
+    s = s.replace('"', "&quot;")
+    return s
 
-    The Flutter ``OrchestratorManager._onStdoutLine`` recognises these
-    envelopes by the presence of the ``event`` key and routes them to
-    the task stream (instead of treating them as the final response
-    envelope, which carries ``response`` instead).
 
-    The same payload is also mirrored on stderr (prefixed with
-    ``[task-envelope]``) so the Flutter orchestrator log panel shows
-    the raw JSON that flowed to the UI. Over-long payloads
-    (``tasks_proposed`` with many entries) are truncated so a single
-    envelope cannot blow out the log buffer.
-    """
-    out = {"event": event, **payload}
-    serialized = json.dumps(out, ensure_ascii=False)
-    target = stream if stream is not None else sys.stdout
-    target.write(serialized + "\n")
-    target.flush()
-    log_payload = serialized
-    if len(log_payload) > _MAX_ENVELOPE_LOG:
-        log_payload = log_payload[:_MAX_ENVELOPE_LOG] + "...(truncated)"
-    _log(f"[task-envelope] {log_payload}")
+def _child(tag: str, value: Any) -> str:
+    """Render ``<tag>value</tag>`` with XML-escaped text."""
+    return f"<{tag}>{_escape_xml(value)}</{tag}>"
+
+
+def _task_to_xml(task: Task) -> str:
+    """Render a Task as XML child tags (single-line, no extra whitespace)."""
+    lines = [
+        _child("id", task.id),
+        _child("name", task.name),
+        _child("description", task.description),
+        _child("success_criteria", task.success_criteria),
+        _child("depends_on", ",".join(str(d) for d in task.depends_on)),
+        _child("status", task.status.value),
+    ]
+    return "<task>" + "".join(lines) + "</task>"
 
 
 def emit_tasks_proposed(tasks: List[Task], stream=None) -> None:
-    emit_event(
-        "tasks_proposed",
-        {"tasks": [t.to_dict() for t in tasks]},
-        stream=stream,
-    )
+    task_xml = "".join(_task_to_xml(t) for t in tasks)
+    out = f"<event>{_child('type', 'tasks_proposed')}<tasks>{task_xml}</tasks></event>"
+    target = stream if stream is not None else sys.stdout
+    target.write(out + "\n")
+    target.flush()
     _log(f"[task] proposed plan with {len(tasks)} task(s)")
     for t in tasks:
         _log(f"[task]   #{t.id} {t.name}")
 
 
 def emit_task_status(event: TaskStatusEvent, stream=None) -> None:
-    emit_event("task_status", event.to_dict(), stream=stream)
+    body = "".join(
+        line
+        for line in [
+            _child("type", "task_status"),
+            _child("id", event.id),
+            _child("status", event.status.value),
+            _child("note", event.note),
+            _child("description", event.description),
+        ]
+    )
+    out = f"<event>{body}</event>"
+    target = stream if stream is not None else sys.stdout
+    target.write(out + "\n")
+    target.flush()
     note = f": {event.note}" if event.note else ""
     _log(f"[task] #{event.id} -> {event.status.value}{note}")
+
+
+# Backwards-compatible alias kept for callers that imported the old name.
+emit_event = emit_task_status
 
 
 def log_task_action_received(event: TaskActionEvent) -> None:

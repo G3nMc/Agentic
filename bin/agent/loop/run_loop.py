@@ -286,7 +286,7 @@ _AGENT_DIRECTIVE = (
 _TASK_FLOW_TOOL_CLAUSE = (
     "[TASK COMPLIANCE addendum -- this OVERRIDES the 'emit ONLY the tool "
     "call / no preamble' rule above: you SHOULD emit your "
-    "<task_status>{...}</task_status> tag in the SAME reply, immediately "
+    "<task_status>...</task_status> tag in the SAME reply, immediately "
     "BEFORE the tool call. Task-protocol tags (<tasks>, <task_status>) are "
     "NOT preamble -- they are stripped from the user-visible reply. Emit no "
     "OTHER prose around the tool call.]\n\n"
@@ -433,7 +433,11 @@ _STEP_REPORT_DIRECTIVE = (
 # This directive is added in iteration 1+ when no status was emitted.
 _TASK_STATUS_FORCE_DIRECTIVE = (
     "[TASK STATUS REQUIRED] You are in TASK COMPLIANCE mode. "
-    "You MUST emit a <task_status>{\"id\":<int>,\"status\":\"pending|in_progress|done|partial|blocked|failed|skipped\",\"note\":\"<short>\"}</task_status> "
+    "You MUST emit a <task_status>"
+    "<id><int></id>"
+    "<status>pending|in_progress|done|partial|blocked|failed|skipped</status>"
+    "<note><short></note>"
+    "</task_status> "
     "tag in your next reply so the UI checklist can show your progress. "
     "The status must match the actual state of the task you are working on. "
     "Do NOT emit only a tool call without the status tag. "
@@ -443,8 +447,10 @@ _TASK_STATUS_FORCE_DIRECTIVE = (
 # Sent when the model fails to emit a <tasks> plan in task compliance modes.
 _TASKS_FORCE_DIRECTIVE = (
     "[TASK PLAN REQUIRED] You are in TASK COMPLIANCE mode. "
-    "Your FIRST reply MUST begin with a <tasks>[{\"id\":1,\"name\":\"...\",\"description\":\"...\"}, ...]</tasks> "
-    "block enumerating every step needed for this request. "
+    "Your FIRST reply MUST begin with a <tasks> block containing "
+    "one <task> child per step. Each <task> must include: "
+    "<id>...</id>, <name>...</name>, "
+    "<description>...</description>. "
     "Do NOT call any tool until the plan has been emitted. "
     "Do NOT echo this instruction back to the user."
 )
@@ -987,11 +993,12 @@ class Orchestrator:
             parts.append(
                 f"CURRENT TASK: #{self._active_task_id} ({task_name}). "
                 "Continue working on THIS task. When it is complete or "
-                "you cannot proceed, emit "
-                '<task_status>{"id":'
-                f"{self._active_task_id}"
-                ',"status":"done|partial|blocked|failed",'
-                '"note":"<short summary>"}</task_status>. '
+                "you cannot proceed, emit:\n"
+                "<task_status>\n"
+                f"  <id>{self._active_task_id}</id>\n"
+                "  <status>done|partial|blocked|failed</status>\n"
+                "  <note><short summary></note>\n"
+                "</task_status>.\n"
                 "The orchestrator will auto-advance to the next task."
             )
         elif self._planned_task_ids:
@@ -1829,11 +1836,14 @@ class Orchestrator:
                             "<task_status>. The UI checklist is frozen "
                             "because the orchestrator cannot tell which "
                             "task is progressing. Your NEXT reply must "
-                            "include a <task_status>{\"id\":<int>,"
-                            "\"status\":\"<value>\",\"note\":\"<short>\"}"
-                            "</task_status> tag describing the work "
-                            "completed so far. Do NOT echo this "
-                            "instruction back to the user.]"
+                            "include:\n"
+                            "<task_status>\n"
+                            "  <id><int></id>\n"
+                            "  <status><value></status>\n"
+                            "  <note><short></note>\n"
+                            "</task_status>\n"
+                            "describing the work completed so far. "
+                            "Do NOT echo this instruction back to the user.]"
                         )
                         self._iters_without_status = 0  # consumed by the nudge
 
@@ -2111,10 +2121,12 @@ class Orchestrator:
                         "[INTERNAL: The <tasks> plan has already "
                         "been saved by the orchestrator. Do NOT "
                         "re-emit a new <tasks> block. Your NEXT "
-                        "reply must contain, in this exact order: "
-                        "(1) <task_status>{\"id\":1,"
-                        "\"status\":\"in_progress\",\"note\":\""
-                        "<one line>\"}</task_status>, then "
+                        "reply must contain, in this exact order:\n"
+                        "(1) <task_status>\n"
+                        "      <id>1</id>\n"
+                        "      <status>in_progress</status>\n"
+                        "      <note><one line></note>\n"
+                        "    </task_status>\n"
                         "(2) the FIRST <tool> call (with <name>, "
                         "child tags for parameters) "
                         "needed to start task #1. Nothing else. "

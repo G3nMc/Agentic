@@ -2,8 +2,8 @@ import 'dart:convert';
 
 /// One unit of work in a TASK COMPLIANCE conversation.
 ///
-/// Mirrors the dataclass in ``bin/common/loop/task_protocol.py`` so the
-/// JSON envelopes the orchestrator emits on stdout can be deserialised
+/// Mirrors the dataclass in ``bin/agent/loop/task_protocol.py`` so the
+/// XML envelopes the orchestrator emits on stdout can be deserialised
 /// without extra mapping logic.
 class ConversationTask {
   /// Sequence ID assigned by the model inside ``<tasks>`` (1, 2, 3, ...).
@@ -64,29 +64,6 @@ class ConversationTask {
       iterationsUsed: (map['iterations_used'] as int?) ?? 0,
       createdAt: (map['created_at'] as int?) ?? 0,
       updatedAt: (map['updated_at'] as int?) ?? 0,
-    );
-  }
-
-  /// Build from the Python ``tasks_proposed`` event payload.
-  factory ConversationTask.fromProposed({
-    required Map<String, Object?> raw,
-    required String conversationId,
-    required int now,
-  }) {
-    final dependsRaw = raw['depends_on'];
-    final List<int> deps = (dependsRaw is List)
-        ? dependsRaw.whereType<int>().toList(growable: false)
-        : const <int>[];
-    return ConversationTask(
-      taskId: (raw['id'] as int?) ?? 0,
-      conversationId: conversationId,
-      name: (raw['name'] as String?) ?? '',
-      description: (raw['description'] as String?) ?? '',
-      successCriteria: (raw['success_criteria'] as String?) ?? '',
-      dependsOn: deps,
-      status: TaskStatusX.parse(raw['status'] as String?),
-      createdAt: now,
-      updatedAt: now,
     );
   }
 
@@ -193,7 +170,7 @@ extension TaskStatusX on TaskStatus {
   }
 }
 
-/// Mirror of ``common.loop.task_protocol.TaskAction``. Only used when
+/// Mirror of ``agent.loop.task_protocol.TaskAction``. Only used when
 /// the dropdown is in TASK COMPLIANCE (non-auto) mode and the user
 /// clicks one of the action buttons in the checklist panel.
 enum TaskAction { proceed, retry, skip, abort, replan }
@@ -215,8 +192,8 @@ extension TaskActionX on TaskAction {
   }
 
   /// Render the wire format the orchestrator expects as the next user
-  /// prompt: ``<task_action>{"id":N,"action":"proceed"}</task_action>``.
+  /// prompt: ``<task_action><id>N</id><action>proceed</action></task_action>``.
   String toEnvelope(int taskId) {
-    return '<task_action>{"id":$taskId,"action":"$value"}</task_action>';
+    return '<task_action><id>$taskId</id><action>$value</action></task_action>';
   }
 }

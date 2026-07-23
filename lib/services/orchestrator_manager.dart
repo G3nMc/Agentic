@@ -265,6 +265,14 @@ class OrchestratorManager {
   static String? _deriveStatus(String line) {
     final l = line.toLowerCase();
 
+    // â”€â”€ Task-flow progress (show in typing indicator) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    if (l.contains('[task]') && l.contains('-> in_progress')) {
+      final note = _extractAfter(line, ': ');
+      if (note != null && note.isNotEmpty) return note;
+      return 'Working on task...';
+    }
+    if (l.contains('[task] proposed plan')) return 'Planning...';
+
     // â”€â”€ Tool calls â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     if (l.contains('[orch] -> tool ')) {
       final tool = _extractAfter(line, '[orch] -> tool ');
@@ -961,10 +969,11 @@ class OrchestratorManager {
     // envelope (sent by the TaskChecklistPanel buttons), inject a
     // synthetic log line so the orchestrator log panel shows the
     // user-driven action alongside the model-driven [task] lines.
-    // Pattern: ``<task_action>{"id":N,"action":"<value>"}</task_action>``.
+    // Pattern: ``<task_action><id>N</id><action>value</action></task_action>``.
     final taskActionMatch = RegExp(
-      r'<\s*task_action\s*>\s*(\{[^<]*\})\s*<\s*/\s*task_action\s*>',
+      r'<\s*task_action\s*>\s*(.*?)<\s*/\s*task_action\s*>',
       caseSensitive: false,
+      dotAll: true,
     ).firstMatch(prompt);
     if (taskActionMatch != null) {
       final body = taskActionMatch.group(1) ?? '';
@@ -1046,13 +1055,14 @@ class OrchestratorManager {
       return;
     }
 
-    // Task-flow event interception: lines that parse as a JSON object
-    // carrying an ``event`` key (e.g. ``{"event":"tasks_proposed",...}``
-    // or ``{"event":"task_status",...}``) are NOT the response envelope
-    // -- they are intermediate structured events emitted by Python while
-    // running in TASK COMPLIANCE mode. Route them to ``taskStream`` and
-    // mirror to SQLite via TaskRepository. The line is then dropped
-    // from ``_activeLines`` so it never reaches the response extractor.
+    // Task-flow event interception: lines that parse as an XML envelope
+    // carrying a ``type`` child (e.g. ``<event><type>tasks_proposed</type>...</event>``
+    // or ``<event><type>task_status</type>...</event>``) are NOT the
+    // response envelope -- they are intermediate structured events emitted
+    // by Python while running in TASK COMPLIANCE mode. Route them to
+    // ``taskStream`` and mirror to SQLite via TaskRepository. The line is
+    // then dropped from ``_activeLines`` so it never reaches the response
+    // extractor.
     final maybeEvent = _tryParseTaskEvent(line);
     if (maybeEvent) {
       return;
@@ -1061,21 +1071,38 @@ class OrchestratorManager {
     _activeLines.add(line);
   }
 
-  /// Attempt to parse ``line`` as a task-flow event. Returns ``true``
+  /// Attempt to parse ``line`` as a task-flow XML envelope. Returns ``true``
   /// when the line was an event (and was therefore consumed); ``false``
   /// otherwise so the caller falls back to the normal response buffer.
   bool _tryParseTaskEvent(String line) {
     final trimmed = line.trim();
-    if (trimmed.length < 2 || trimmed[0] != '{') return false;
-    Object? decoded;
-    try {
-      decoded = jsonDecode(trimmed);
-    } catch (_) {
-      return false;
+    if (!trimmed.startsWith('<event>')) return false;
+
+    // Extract the direct children of the <event> wrapper; we must not
+    // match nested <task> tags at the same level or the outer <event>
+    // tag itself would overwrite every key.
+    final eventMatch = RegExp(
+      r'<\s*event\s*>\s*(.*?)\s*<\s*/\s*event\s*>',
+      caseSensitive: false,
+      dotAll: true,
+    ).firstMatch(trimmed);
+    if (eventMatch == null) return false;
+    final eventBody = eventMatch.group(1)!;
+
+    // Same convention as the Python side: <tag>value</tag>, no attributes.
+    final childTagRe = RegExp(
+      r'<\s*(\w+)\s*>\s*(.*?)\s*<\s*/\s*\1\s*>',
+      caseSensitive: false,
+      dotAll: true,
+    );
+    final tags = <String, String>{};
+    for (final m in childTagRe.allMatches(eventBody)) {
+      tags[m.group(1)!.toLowerCase()] = m.group(2)!;
     }
-    if (decoded is! Map) return false;
-    final event = decoded['event'];
-    if (event is! String) return false;
+
+    final eventType = tags['type'];
+    if (eventType == null) return false;
+
     final convId = _currentConversationId;
     if (convId == null || convId.isEmpty) {
       // Without a conversation context we can't persist or attach the
@@ -1083,18 +1110,49 @@ class OrchestratorManager {
       // the response buffer but skip the broadcast.
       return true;
     }
+
     final now = DateTime.now().millisecondsSinceEpoch;
-    if (event == 'tasks_proposed') {
-      final rawList = decoded['tasks'];
-      if (rawList is! List) return true;
+
+    if (eventType == 'tasks_proposed') {
+      // The payload is nested inside <tasks>...</tasks>.
       final tasks = <ConversationTask>[];
-      for (final entry in rawList) {
-        if (entry is Map) {
+      final tasksMatch = RegExp(
+        r'<\s*tasks\s*>(.*?)<\s*/\s*tasks\s*>',
+        caseSensitive: false,
+        dotAll: true,
+      ).firstMatch(trimmed);
+      if (tasksMatch != null) {
+        final taskBlock = tasksMatch.group(1)!;
+        final taskRe = RegExp(
+          r'<\s*task\s*>(.*?)<\s*/\s*task\s*>',
+          caseSensitive: false,
+          dotAll: true,
+        );
+        for (final tm in taskRe.allMatches(taskBlock)) {
+          final taskTags = <String, String>{};
+          for (final m in childTagRe.allMatches(tm.group(1)!)) {
+            taskTags[m.group(1)!.toLowerCase()] = m.group(2)!;
+          }
+          if (taskTags['id'] == null || taskTags['name'] == null) continue;
+          final deps = <int>[];
+          final dependsRaw = taskTags['depends_on'];
+          if (dependsRaw != null && dependsRaw.trim().isNotEmpty) {
+            for (final part in dependsRaw.split(',')) {
+              final n = int.tryParse(part.trim());
+              if (n != null) deps.add(n);
+            }
+          }
           tasks.add(
-            ConversationTask.fromProposed(
-              raw: entry.cast<String, Object?>(),
+            ConversationTask(
+              taskId: int.tryParse(taskTags['id']!) ?? 0,
               conversationId: convId,
-              now: now,
+              name: taskTags['name']!,
+              description: taskTags['description'] ?? '',
+              successCriteria: taskTags['success_criteria'] ?? '',
+              dependsOn: deps,
+              status: TaskStatusX.parse(taskTags['status']),
+              createdAt: now,
+              updatedAt: now,
             ),
           );
         }
@@ -1106,13 +1164,14 @@ class OrchestratorManager {
       );
       return true;
     }
-    if (event == 'task_status') {
-      final id = decoded['id'];
-      final statusRaw = decoded['status'];
-      final note = (decoded['note'] as String?) ?? '';
-      final description = (decoded['description'] as String?) ?? '';
-      if (id is! int || statusRaw is! String) return true;
+
+    if (eventType == 'task_status') {
+      final id = int.tryParse(tags['id'] ?? '');
+      final statusRaw = tags['status'];
+      if (id == null || statusRaw == null) return true;
       final status = TaskStatusX.parse(statusRaw);
+      final note = tags['note'] ?? '';
+      final description = tags['description'] ?? '';
       TaskRepository.instance.applyStatusUpdate(
         conversationId: convId,
         taskId: id,
@@ -1131,6 +1190,7 @@ class OrchestratorManager {
       );
       return true;
     }
+
     // Unknown event types are silently consumed -- forwards
     // compatibility with future protocol extensions.
     return true;

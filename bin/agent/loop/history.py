@@ -181,10 +181,12 @@ class TaskTracker:
             task_name = getattr(task_obj, "name", f"Task #{self._active_task_id}") if task_obj else f"Task #{self._active_task_id}"
             lines.append(
                 f"CURRENT TASK: #{self._active_task_id} ({task_name}). "
-                "Continue working on THIS task. Emit "
-                f'<task_status>{{"id":{self._active_task_id},'
-                '"status":"done|partial|blocked|failed",'
-                '"note":"<short summary>"}}</task_status> when it is '
+                "Continue working on THIS task. Emit:\n"
+                "<task_status>\n"
+                f"  <id>{self._active_task_id}</id>\n"
+                "  <status>done|partial|blocked|failed</status>\n"
+                "  <note><short summary></note>\n"
+                "</task_status> when it is "
                 "complete. Do NOT re-emit a status that is already shown above."
             )
         else:
