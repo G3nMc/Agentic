@@ -1,3 +1,8 @@
+<img width="1920" height="1050" alt="chat_agentic" src="https://github.com/user-attachments/assets/25663366-4b24-4087-b676-ed43e4414a3e" />
+<img width="1920" height="1047" alt="installer_agentic" src="https://github.com/user-attachments/assets/7a7c001f-0f23-47a7-8453-376cd2e45a77" />
+<img width="1920" height="1047" alt="orch_agentic" src="https://github.com/user-attachments/assets/f62bd7c8-a157-4090-aaef-ddb489a0e77d" />
+
+
 # 🤖 Agentic
 
 **Multi-backend LLM chat and orchestrator workbench.**
