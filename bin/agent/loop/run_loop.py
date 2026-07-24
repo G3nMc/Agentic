@@ -1594,58 +1594,86 @@ class Orchestrator:
 
                 proposed = parse_tasks(text)
                 if proposed:
-                    # Bug 2 fix: when the model re-emits a new plan, the
-                    # old plan's tasks are abandoned. Close them out so
-                    # the UI checklist doesn't stay frozen on old tasks.
-                    if self._planned_task_ids:
+                    # Guard: if a plan was already emitted for this
+                    # request and the incoming prompt is NOT a
+                    # <task_action> replan directive, the model is
+                    # re-emitting <tasks> instead of executing it. This
+                    # is the #1 cause of the plan-then-start loop: the
+                    # orchestrator accepts the re-emitted plan, swaps
+                    # out the old tasks, and the model thinks re-planning
+                    # is normal.  Discard the re-emitted plan so the
+                    # existing plan survives and the nudge path below
+                    # (plan_then_start) fires to force execution.
+                    if (
+                        self._plan_emitted_this_request
+                        and not self._is_task_action_request
+                        and self._planned_task_ids
+                    ):
+                        print(
+                            f"[orch] model re-emitted <tasks> plan but a "
+                            f"plan is already active (ids={self._planned_task_ids}); "
+                            f"discarding re-emission to prevent loop.",
+                            file=sys.stderr,
+                        )
+                        # Strip the <tasks> block from text so the
+                        # downstream code sees only the remaining
+                        # content (if any) and does not parse it as a
+                        # new plan.
+                        text = strip_task_tags(text)
+                    else:
+                        # Bug 2 fix: when the model emits a NEW plan
+                        # (legitimate re-plan or first plan), close out
+                        # old tasks so the UI checklist doesn't stay
+                        # frozen.
+                        if self._planned_task_ids:
 
-                        # Tasks that were in_progress get "done" (the
-                        # model moved on, implying the work is adequate
-                        # for the new plan); tasks that were never
-                        # started get "skipped".
-                        for old_tid in self._planned_task_ids:
-                            if old_tid in self._inprogress_task_ids:
-                                emit_task_status(
-                                    TaskStatusEvent(
-                                        id=old_tid,
-                                        status=TaskStatus.DONE,
-                                        note="auto: superseded by re-plan",
+                            # Tasks that were in_progress get "done" (the
+                            # model moved on, implying the work is adequate
+                            # for the new plan); tasks that were never
+                            # started get "skipped".
+                            for old_tid in self._planned_task_ids:
+                                if old_tid in self._inprogress_task_ids:
+                                    emit_task_status(
+                                        TaskStatusEvent(
+                                            id=old_tid,
+                                            status=TaskStatus.DONE,
+                                            note="auto: superseded by re-plan",
+                                        )
                                     )
-                                )
-                                print(
-                                    f"[orch] auto-closing task #{old_tid} "
-                                    f"(done: superseded by re-plan)",
-                                    file=sys.stderr,
-                                )
-                            else:
-                                emit_task_status(
-                                    TaskStatusEvent(
-                                        id=old_tid,
-                                        status=TaskStatus.SKIPPED,
-                                        note="auto: superseded by re-plan",
+                                    print(
+                                        f"[orch] auto-closing task #{old_tid} "
+                                        f"(done: superseded by re-plan)",
+                                        file=sys.stderr,
                                     )
-                                )
-                                print(
-                                    f"[orch] auto-closing task #{old_tid} "
-                                    f"(skipped: superseded by re-plan)",
-                                    file=sys.stderr,
-                                )
-                    emit_tasks_proposed(proposed)
-                    # Remember the plan's task ids (in order) so the
-                    # orchestrator can close them out at end of turn even
-                    # if the model never emits a terminal status.
-                    self._planned_task_ids = [t.id for t in proposed]
-                    # Bug 1 fix: save full Task objects so the plan
-                    # system prompt can include names + descriptions,
-                    # not just bare numeric ids.
-                    self._planned_tasks = {t.id: t for t in proposed}
-                    # Sync the tracker with the new plan so it has the
-                    # full Task objects (names, descriptions, statuses).
-                    self.conversation_history.task_tracker.set_plan(proposed)
-                    # Fix 6: any time the model emits a plan, mark
-                    # the request as "planned" so the no-plan nudge
-                    # below stops firing.
-                    self._plan_emitted_this_request = True
+                                else:
+                                    emit_task_status(
+                                        TaskStatusEvent(
+                                            id=old_tid,
+                                            status=TaskStatus.SKIPPED,
+                                            note="auto: superseded by re-plan",
+                                        )
+                                    )
+                                    print(
+                                        f"[orch] auto-closing task #{old_tid} "
+                                        f"(skipped: superseded by re-plan)",
+                                        file=sys.stderr,
+                                    )
+                        emit_tasks_proposed(proposed)
+                        # Remember the plan's task ids (in order) so the
+                        # orchestrator can close them out at end of turn even
+                        # if the model never emits a terminal status.
+                        self._planned_task_ids = [t.id for t in proposed]
+                        # Bug 1 fix: save full Task objects so the plan
+                        # system prompt can include names + descriptions,
+                        # not just bare numeric ids.
+                        self._planned_tasks = {t.id: t for t in proposed}
+                        # Sync the tracker with the new plan so it has the
+                        # full Task objects (names, descriptions, statuses).
+                        self.conversation_history.task_tracker.set_plan(proposed)
+                        # Fix 6: any time the model emits a plan, mark
+                        # the request as "planned" so the no-plan nudge
+                        # below stops firing.
+                        self._plan_emitted_this_request = True
                 status_events = parse_task_status(text)
                 # Issue 3 fix: the model's TERMINAL statuses (done /
                 # failed / skipped) are NOT trusted -- the model often
@@ -2504,8 +2532,19 @@ class Orchestrator:
                     "\nAssistant:",
                     "\n[INTERNAL:",
                 ],
-                thinking=self.thinking,
-                effort=self.effort,
+                # CRITICAL: force thinking=False and effort=None for the
+                # synthesis call.  The comment above has said "Disable
+                # thinking" since this code was written, but the actual
+                # arguments were passing self.thinking / self.effort —
+                # which can be True / non-None on thinking-capable models
+                # (glm-5.2, qwen3, deepseek-r1).  With thinking enabled
+                # the chain-of-thought consumes the entire max_tokens
+                # budget, the model emits zero visible output, and
+                # _attempt_synthesis returns None → the user gets the
+                # raw recap ("I couldn't compose a single synthesized
+                # answer") instead of a real summary.
+                thinking=False,
+                effort=None,
             )
         except Exception as e:  # noqa: BLE001
             print(f"[orch] Synthesis call failed: {e}", file=sys.stderr)

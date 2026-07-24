@@ -31,6 +31,7 @@ import ast
 import json
 import re
 import sys
+from html import unescape as _html_unescape
 from typing import Any, Dict, List, Optional, Tuple
 
 from agent.loop.task_protocol import strip_task_tags
@@ -95,6 +96,15 @@ def _parse_xml_tool_call(block_body: str, tool_defs=None) -> Optional[Tuple[str,
         if tag_name == "name":
             continue
         value = m.group(2)
+        # Unescape HTML entities. Models frequently HTML-escape special
+        # characters inside tool parameters because the tool-call format
+        # is XML-like: & → &amp;, < → &lt;, > → &gt;, " → &quot;, etc.
+        # Without unescaping, these literal entities end up in the
+        # written files (e.g. "if (a &amp;&amp; b)" instead of "if (a && b)").
+        # html.unescape handles named (&amp; &lt; &gt; &quot; &apos;),
+        # decimal (&#39;), and hex (&#x27;) entities.
+        if "&" in value:
+            value = _html_unescape(value)
         # Try to parse as JSON for complex types (lists, ints, bools);
         # if it fails, keep the raw string. This handles <paths>["a.py","b.py"]</paths>
         # while keeping <content>hello "world"</content> as a literal string.

@@ -437,9 +437,10 @@ class ToolRegistry:
     This conversation runs in structured task-flow mode for requests needing 3+ distinct steps (e.g. implement / refactor / fix multiple / build).
     Trivial single-step requests fall through to the normal tool protocol, with no task tags.
 
-    1) PLAN FIRST -- NON-NEGOTIABLE.
-    The very first output of the first iteration must be a complete plan inside one <tasks>...</tasks> block -- no tool call may precede it.
-    A reply missing it is rejected and re-emitted with a corrective nudge, costing a full iteration.
+    1) PLAN AND START IN ONE REPLY -- NON-NEGOTIABLE.
+    The very first output of the first iteration must be a complete plan inside one <tasks>...</tasks> block, IMMEDIATELY followed by <task_status> for task #1 and the first <tool> call -- all three in the SAME reply.
+    The plan must come first (nothing precedes it), but it must NOT be the only thing in the reply. A <tasks>-only reply is a stall, not a valid first iteration.
+    A reply missing the plan is rejected and re-emitted with a corrective nudge, costing a full iteration.
     Exception: a <task_action>...</task_action> prompt means an existing plan is already running, so no re-plan is needed.
 
     The plan format is XML child tags -- NO attributes, NO JSON, exactly like the tool-calling protocol.
@@ -469,9 +470,9 @@ class ToolRegistry:
       </task>
     </tasks>
 
-    2) PLAN AND START IN THE SAME REPLY -- NON-NEGOTIABLE.
-    Right after </tasks>, in that same reply, emit <task_status> for task #1 plus the first <tool> call -- never stop at the plan alone.
-    A <tasks>-only reply is treated as a stall and costs a corrective-nudge iteration; re-emitting the plan again does not fix it, it is a second stall.
+    2) NEVER EMIT THE PLAN ALONE.
+    The plan must always be followed by <task_status> for task #1 and the first <tool> call in the SAME reply.
+    A <tasks>-only reply is a stall. Re-emitting the plan again does not fix it — it is a second stall that forces the orchestrator to bail to a raw recap.
 
     CORRECT (plan + start, single reply):
     <tasks>
@@ -719,10 +720,10 @@ class ToolRegistry:
               - Response starts with <tool> and ends with </tool>. Nothing before or after.
               - Inside <tool>: a <name> child tag whose body is the exact tool name, followed by one child tag per parameter.
               - NO attributes on any tag. Use child tags only.
-              - The tag body IS the value — no escaping, no JSON, no double-quote wrangling.
+              - The tag body IS the value — write code and text verbatim. Do NOT escape characters: write && not &amp;&amp;, write " not &quot;, write ' not &#39;, write => not =&gt;.
+              - The ONLY exception is < — if a value contains a literal <, write it as &lt; to avoid confusing the XML parser. The orchestrator unescapes all entities back automatically.
               - For list/integer/boolean values, write the JSON literal directly in the tag body (e.g. <paths>["a.py","b.py"]</paths>).
               - For empty parameters (no parameters needed), omit all child tags except <name>.
-              - The < character is the only special character: if a value contains a literal <, write it as &lt; and > as &gt;. No other escaping is needed.
               - Do NOT wrap the whole call in markdown code fences.
 
             INVALID examples:
@@ -736,9 +737,9 @@ class ToolRegistry:
               <tool><name>read_file</name><path>file.txt</path></tool> This will show the contents.
               #5: Missing <name> child.
               <tool><path>file.txt</path></tool>
-              #6: Unescaped < in a value.
-              <tool><name>write_file</name><path>out.txt</path><content>if x < 5 { ... }</content></tool>
-              (correct: <content>if x &lt; 5 { ... }</content>)
+              #6: HTML-escaped characters in a value (WRONG — write code verbatim, except < as &lt;).
+              <tool><name>write_file</name><path>out.dart</path><content>String get a =&gt; b();</content></tool>
+              (correct: <content>String get a => b();</content>)
 
             MANDATORY CHECKLIST before emitting a tool call:
               [ ] Response starts with exactly '<tool>' (no leading spaces)?
@@ -746,7 +747,6 @@ class ToolRegistry:
               [ ] Nothing else in the response besides the <tool>...</tool> block?
               [ ] There is a <name>...</name> child with the exact tool name?
               [ ] NO attributes on any tag? (all params are child tags)?
-              [ ] Any literal < in a value is written as &lt;?
               [ ] All parameter tag names match the tool's schema?
               [ ] This is the ONLY tool call in the response?
             If any checkbox is unchecked, the parser will reject the call. Get it right the first time.
