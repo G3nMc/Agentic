@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import time
+import json
 
 from agent.backends import ModelBackend
 from agent.core.policy import SecurityConfig
@@ -11,6 +12,7 @@ from agent.loop.history import ConversationHistory
 from agent.loop.task_protocol import *
 from agent.loop.tool_detector import ToolIntentDetector
 from agent.loop.tool_dispatch import *
+from agent.loop.tool_dispatch import _looks_like_tool_attempt
 from agent.tools.registry import ToolRegistry
 from agent.utils.circuit_breaker import CircuitBreaker
 from agent.utils.token_estimator import chars_for_tokens, estimate_messages_tokens
@@ -228,6 +230,9 @@ _FOLLOWUP_DIRECTIVE = (
 )
 
 _AGENT_DIRECTIVE = (
+    "[- Begin every coding task by exploring the project structure: list the top-level files, locate the relevant entry point / page / module mentioned by the user, and understand the current implementation before making any change. "
+    "State this explicitly as the first step: 'I'll start by exploring the project structure to locate the relevant files and understand the current implementation.' "
+    "Only after you have enough context should you emit the first concrete tool call.]\n"
     "[You have filesystem tools available. "
     "If this request requires any file access, inspection, editing, execution, or verification, you MUST emit exactly ONE tool call in this format: "
     "<tool>\n<name>NAME</name>\n<key>value</key>\n</tool>. "
@@ -2492,121 +2497,175 @@ class Orchestrator:
             )
 
     def _attempt_synthesis(self) -> Optional[str]:
-        """Make one last non-tool model call asking for a final answer.
+        """Make one last model call asking for a final answer.
+
+        If the model still needs to run one last validation tool during
+        this phase, we execute it and then ask again.  This prevents the
+        common failure where the model emits ``flutter_analyze`` as the
+        "final answer" because the main loop bailed before validating.
 
         Returns the cleaned text on success, or None when the call fails
         / returns something that still looks like a tool attempt. The
         caller falls back to the raw-result recap when this returns None.
         """
+        MAX_SYNTH_TOOL_CALLS = 3
+        synth_tool_count = 0
+
         # Defensive copy so we don't pollute the live self with the
         # synthesis directive (the next turn shouldn't see it).
         synth_history = self.conversation_history.copy()
         # CRITICAL: clear ALL prior system prompts (base, plan, agent_directive,
         # etc.) before setting the synthesis-only directive.  The "base" prompt
         # contains the full tool schema and tool-use instructions; if it stays,
-        # the model still sees tool definitions and emits <tool> tags in its
-        # synthesis reply, which parse_all_tag_tool_calls detects → returns None
-        # → falls back to the raw recap.  The conversation turns (user messages,
-        # tool results) are preserved in synth_history._turns, so the model can
-        # still summarize what happened — it just can't call more tools.
+        # the model still sees tool definitions and emits <tool> tags.
         synth_history.clear_system_prompts()
         synth_history.set_system_prompt("synthesis", _SYNTHESIS_DIRECTIVE)
 
-        try:
-            # Disable thinking for the synthesis call: this is a plain-text
-            # summary request, not a reasoning task. On thinking-capable models
-            # (glm-5.2, qwen3, deepseek-r1, etc.) the chain-of-thought eats the
-            # entire max_tokens budget and the model emits zero visible output,
-            # causing the synthesis to fail and fall back to the raw recap.
-            # Also bump max_tokens so the model has room to write a real answer.
-            synth_max_tokens = max(self.max_tokens, 4096)
-            text, _ = self.backend.chat(
-                conversation=synth_history,
-                max_tokens=synth_max_tokens,
-                temperature=self.temperature,
-                tools=None,
-                stop=[
-                    "<tool",
-                    "</tool>",
-                    "\nUser:",
-                    "\nAssistant:",
-                    "\n[INTERNAL:",
-                ],
-                # CRITICAL: force thinking=False and effort=None for the
-                # synthesis call.  The comment above has said "Disable
-                # thinking" since this code was written, but the actual
-                # arguments were passing self.thinking / self.effort —
-                # which can be True / non-None on thinking-capable models
-                # (glm-5.2, qwen3, deepseek-r1).  With thinking enabled
-                # the chain-of-thought consumes the entire max_tokens
-                # budget, the model emits zero visible output, and
-                # _attempt_synthesis returns None → the user gets the
-                # raw recap ("I couldn't compose a single synthesized
-                # answer") instead of a real summary.
-                thinking=False,
-                effort=None,
-            )
-        except Exception as e:  # noqa: BLE001
-            print(f"[orch] Synthesis call failed: {e}", file=sys.stderr)
-            return None
+        while synth_tool_count < MAX_SYNTH_TOOL_CALLS:
+            try:
+                synth_max_tokens = max(self.max_tokens, 8192)
+                text, _ = self.backend.chat(
+                    conversation=synth_history,
+                    max_tokens=synth_max_tokens,
+                    temperature=self.temperature,
+                    tools=None,
+                    stop=[
+                        "<tool",
+                        "</tool>",
+                        "\nUser:",
+                        "\nAssistant:",
+                        "\n[INTERNAL:",
+                    ],
+                    thinking=self.thinking,
+                    effort=self.effort,
+                )
+            except Exception as e:  # noqa: BLE001
+                print(f"[orch] Synthesis call failed: {e}", file=sys.stderr)
+                return None
 
-        raw_len = len(text or "")
-        # Strip any trailing tool-call attempt before cleaning. Even with
-        # tool definitions cleared from the system prompt, the conversation
-        # turns contain prior <tool>...</tool> exchanges, and some models
-        # (glm-5.2 especially) pattern-match on those and append a tool
-        # call after the synthesis text. The stop sequence "<tool" should
-        # catch this at the API level, but double-defend here: if the
-        # model wrote a good synthesis and then tacked on a <tool> tag,
-        # salvage the synthesis before rejecting the whole reply.
-        text = text or ""
-        tool_idx = text.find("<tool")
-        if tool_idx > 0:
-            salvaged = text[:tool_idx].strip()
-            if salvaged and len(salvaged) >= 20:
+            text = text or ""
+
+            # --- 1. If the model asks for a tool during synthesis, execute it ---
+            tool_calls = parse_all_tag_tool_calls(text, self.tool_registry.definitions)
+            if tool_calls:
+                for name, params in tool_calls:
+                    print(
+                        f"[orch] Synthesis phase: model requested tool {name}({params}); executing.",
+                        file=sys.stderr,
+                    )
+                    try:
+                        result = self.tool_registry.execute(name, params)
+                    except Exception as e:  # noqa: BLE001
+                        result = json.dumps(
+                            {"status": "error", "message": f"Tool execution failed: {e}"}
+                        )
+
+                    # Bound the result so the synthesis history doesn't explode.
+                    display_result = result
+                    if len(display_result) > 6000:
+                        display_result = (
+                            display_result[:3000]
+                            + "\n[... result truncated in synthesis ...]\n"
+                            + display_result[-3000:]
+                        )
+
+                    # Add the model's tool request and the tool result to the
+                    # synthesis history, then loop around for the final answer.
+                    synth_history.add_assistant(text)
+                    followup = _get_tool_result_followup(
+                        name, display_result, is_last_chance=True
+                    )
+                    synth_history.add_user(followup["content"])
+                    synth_tool_count += 1
+
+                    # After the first tool, switch to a stricter directive so the
+                    # model knows this is its last chance to write text.
+                    if synth_tool_count == 1:
+                        synth_history.set_system_prompt(
+                            "synthesis",
+                            (
+                                _SYNTHESIS_DIRECTIVE
+                                + "\n\n[CRITICAL: You already requested and ran a validation tool. "
+                                "The result is above. Write the FINAL plain-text answer NOW. "
+                                "NO MORE TOOLS. NO <tool> TAGS.]"
+                            ),
+                        )
+
+                # Loop around to give the model a chance to write the answer.
+                continue
+
+            # --- 2. No tool call (or max reached): clean and validate text ---
+            raw_len = len(text)
+            # Strip any trailing tool-call attempt before cleaning.
+            tool_idx = text.find("<tool")
+            if tool_idx > 0:
+                salvaged = text[:tool_idx].strip()
+                if salvaged and len(salvaged) >= 20:
+                    print(
+                        f"[orch] Synthesis had trailing tool call at "
+                        f"offset {tool_idx}; salvaging {len(salvaged)} chars "
+                        f"of synthesis text.",
+                        file=sys.stderr,
+                    )
+                    text = salvaged
+
+            # Defense-in-depth: check for tool calls on the RAW text before
+            # clean_final_answer strips the <tool> wrapper.
+            if parse_all_tag_tool_calls(text, self.tool_registry.definitions):
                 print(
-                    f"[orch] Synthesis had trailing tool call at "
-                    f"offset {tool_idx}; salvaging {len(salvaged)} chars "
-                    f"of synthesis text.",
+                    f"[orch] Synthesis raw reply contained tool calls "
+                    f"(len={len(text)}); falling back to raw recap.",
                     file=sys.stderr,
                 )
-                text = salvaged
-        cleaned = clean_final_answer(text).strip()
-        if not cleaned:
+                return None
+
+            cleaned = clean_final_answer(text).strip()
+            if not cleaned:
+                print(
+                    f"[orch] Synthesis returned empty text "
+                    f"(raw_len={raw_len}); falling back to raw recap.",
+                    file=sys.stderr,
+                )
+                return None
+
+            if parse_all_tag_tool_calls(cleaned, self.tool_registry.definitions):
+                print(
+                    f"[orch] Synthesis reply still contained tool calls "
+                    f"(len={len(cleaned)}); falling back to raw recap.",
+                    file=sys.stderr,
+                )
+                return None
+
+            if _looks_like_tool_attempt(cleaned) and len(cleaned) < 200:
+                print(
+                    f"[orch] Synthesis reply looks like orphaned tool-call "
+                    f"fragments after cleaning (len={len(cleaned)}); "
+                    f"falling back to raw recap.",
+                    file=sys.stderr,
+                )
+                return None
+
+            # NOTE: looks_like_malformed_tool_call is intentionally skipped here.
+            # A synthesis summary naturally mentions prior tools by name and may
+            # quote JSON tool results; that heuristic then false-positives and
+            # throws away a perfectly good final answer (see the 4367-char summary
+            # that cited flutter_analyze and was rejected).  The checks above
+            # already catch real tool calls and short orphaned fragments.
+
             print(
-                f"[orch] Synthesis returned empty text "
-                f"(raw_len={raw_len}); falling back to raw recap.",
+                f"[orch] Synthesis succeeded (raw_len={raw_len}, "
+                f"clean_len={len(cleaned)}).",
                 file=sys.stderr,
             )
-            return None
+            return cleaned
 
-        # Reject replies that are still trying to call tools — we asked
-        # for plain text, anything else is the same failure mode under
-        # a different costume.
-        if parse_all_tag_tool_calls(cleaned, self.tool_registry.definitions):
-            print(
-                f"[orch] Synthesis reply still contained tool calls "
-                f"(len={len(cleaned)}); falling back to raw recap.",
-                file=sys.stderr,
-            )
-            return None
-
-        is_malformed, _ = looks_like_malformed_tool_call(cleaned)
-        if is_malformed:
-            print(
-                f"[orch] Synthesis reply looks like a malformed tool "
-                f"call (len={len(cleaned)}); falling back to raw recap.",
-                file=sys.stderr,
-            )
-            return None
-
+        # Max synthesis tool calls reached without producing text.
         print(
-            f"[orch] Synthesis succeeded (raw_len={raw_len}, "
-            f"clean_len={len(cleaned)}).",
+            f"[orch] Synthesis hit max tool-call allowance "
+            f"({MAX_SYNTH_TOOL_CALLS}); falling back to raw recap.",
             file=sys.stderr,
         )
-        return cleaned
-
+        return None
     # Cliffhanger phrases the model uses to hand work back to the user
     # mid-task. Match generously — the model paraphrases. We accept some
     # false positives because the cost is just one extra iteration; the

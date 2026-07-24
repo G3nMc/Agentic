@@ -150,23 +150,27 @@ class OllamaBackend(ModelBackend):
     def _maybe_add_think(
             self, payload: Dict[str, Any], thinking: bool, effort: Optional[str]
     ) -> None:
-        """Add ``think`` to the payload only when it is safe to do so.
+        """Set Ollama's ``think`` field so it always matches the caller's
+        ``thinking`` parameter.
 
-        For non-thinking-capable models we omit the field unless the user
-        explicitly asked for it.  This avoids sending ``think: false`` to
-        cloud endpoints that silently reject it.
+        ``thinking=True``  -> add ``think`` to the payload.
+        ``thinking=False`` -> remove ``think`` from the payload so a stale
+        or model-side default cannot turn thinking back on.
+
+        This used to omit the field for ``thinking=False`` to avoid cloud
+        endpoints that reject ``think: false``.  That is wrong: leaving
+        the key out lets a hardcoded default (or a model-side default)
+        enable thinking even when the caller explicitly asked for a
+        plain-text call.  The synthesis path in particular passes
+        ``thinking=False`` and must not run chain-of-thought.
         """
-        if self._is_thinking_capable_model(self.model_id):
-            think_value = self._map_thinking_to_think(thinking, effort)
-            if think_value is not None:
-                payload["think"] = think_value
+        if not thinking:
+            payload.pop("think", None)
             return
 
-        # Non-thinking-capable models: only send ``think`` when thinking=True.
-        if thinking:
-            think_value = self._map_thinking_to_think(thinking, effort)
-            if think_value is not None:
-                payload["think"] = think_value
+        think_value = self._map_thinking_to_think(thinking, effort)
+        if think_value is not None:
+            payload["think"] = think_value
 
     def _auth_headers(self) -> Dict[str, str]:
         if self.api_key:
@@ -239,7 +243,6 @@ class OllamaBackend(ModelBackend):
             "model": self.model_id,
             "prompt": prompt,
             "stream": False,
-            "think": True,
             "keep_alive": "15m",
             "options": options,
         }
@@ -248,6 +251,13 @@ class OllamaBackend(ModelBackend):
             payload["system"] = system
 
         # Map thinking/effort to Ollama's `think` field safely.
+        # Do NOT hardcode "think": True in the payload above — that
+        # would survive _maybe_add_think when thinking=False (the
+        # synthesis path), because _maybe_add_think only OVERWRITES
+        # the key when think_value is not None, never removes it.
+        # The hardcoded True caused the synthesis call to run with
+        # thinking enabled, which ate the token budget on CoT and
+        # produced a fragmentary tool call as the "final answer."
         self._maybe_add_think(payload, thinking, effort)
 
         _log(

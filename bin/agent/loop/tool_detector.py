@@ -232,6 +232,14 @@ class ToolIntentDetector:
             "clone",
             "clones",
             "cloned",
+            "make",
+            "makes",
+            "made",
+            "fix",
+            "fixes",
+            "fixed",
+            "set",
+            "sets",
         )
     )
 
@@ -280,6 +288,35 @@ class ToolIntentDetector:
             r"\b(export|download|save)\b[^.\n]*"
             r"\b(chat|conversation|self|log)\b[^.\n]*\bjson\b"
         ),
+        # UI redesign / re-layout requests. The user describes a desired
+        # visual organisation ("I want the home page boxes to be ... as
+        # follows") without saying "edit file", but concrete changes to
+        # source files are required to implement them.
+        re.compile(
+            r"\b(redesign|rearrange|reorganize|relayout|reshape|restyle)\s+"
+            r"(the\s+|my\s+|this\s+)?"
+            r"(home\s*page|page|screen|widget|panel|view|dashboard|"
+            r"cards?|boxes?|tiles?|layout|ui|interface)\b"
+        ),
+        # "I want the home page boxes to be ... as follows" — the UI element
+        # can appear before or after the intent words, and the description
+        # can span multiple lines.
+        re.compile(
+            r"\b(want|want\s+to|need|make)\s+[^.]{0,150}?"
+            r"\b(home\s*page|page|screen|widget|panel|view|dashboard|"
+            r"cards?|boxes?|tiles?|layout|ui|interface|component)s?\b"
+            r"[^.]{0,150}?\b(as\s+follows|like\s+this|to\s+be|with|"
+            r"organized|arranged|displayed|shown|rendered)\b"
+        ),
+        re.compile(
+            r"\b(home\s*page|page|screen|widget|panel|view|dashboard|"
+            r"cards?|boxes?|tiles?|layout|ui|interface|component)s?\b"
+            r"[^.]{0,150}?"
+            r"\b(want|want\s+to|need|make|should\s+be)\b"
+            r"[^.]{0,150}?"
+            r"\b(as\s+follows|like\s+this|to\s+be|with|organized|"
+            r"arranged|displayed|shown|rendered)\b"
+        ),
         re.compile(
             r"\b(read|open|search|find|list)\s+"
             r"(the\s+|a\s+|all\s+|every\s+|this\s+)?"
@@ -321,8 +358,27 @@ class ToolIntentDetector:
         re.compile(
             r"\b(there'?s|there\s+is|there\s+are)\s+(a\s+|an\s+|some\s+)?(bug|issue|problem|error|glitch)s?\b"
         ),
+        re.compile(r"\b(bug|issue|problem|error|crash|glitch)\s+(in|on|with)\s+(the\s+|a\s+|my\s+)?(home\s*page|page|screen|widget|panel|view|dashboard|app|ui|component|button|dialog|menu|list|card|box|boxes|tile)s?\b"),
+        re.compile(r"\b(home\s*page|page|screen|widget|panel|view|dashboard|app|ui|component|button|dialog|menu|list|card|box|boxes|tile)s?\b[^.\n]{0,40}?\b(bug|issue|problem|error|crash|glitch)\b"),
         re.compile(
-            r"\b(fix|debug|investigate|diagnose)\s+(the|this|a|an)?\s*(bug|issue|problem|error|crash|glitch)\b"
+            r"\b(fix|debug|investigate|diagnose|change|update|modify)\s+("
+            r"the\s+|this\s+|a\s+|an\s+|my\s+)?"
+            r"(home\s*page|page|screen|widget|panel|view|dashboard|app|ui|"
+            r"component|button|dialog|menu|list|card|box|boxes|tile|"
+            r"appbar|app\s*bar|navigation\s*bar|bottom\s*sheet|drawer|"
+            r"tab|toolbar|icon|text|color|theme|style|font|padding|margin|"
+            r"size|height|width|layout)\b"
+        ),
+        re.compile(
+            r"\b(change|update|modify|adjust|set)\s+(the\s+|this\s+|my\s+)?"
+            r"(color|theme|style|font|padding|margin|size|height|width|"
+            r"layout|background|foreground|icon|logo|image|text|title)\s+"
+            r"(of\s+|for\s+)?"
+            r"(the\s+|this\s+|my\s+)?"
+            r"(home\s*page|page|screen|widget|panel|view|dashboard|app|ui|"
+            r"component|button|dialog|menu|list|card|box|boxes|tile|"
+            r"appbar|app\s*bar|navigation\s*bar|bottom\s*sheet|drawer|"
+            r"tab|toolbar|icon|text)\b"
         ),
         re.compile(r"\bcrash(es|ing|ed)?\b"),
         re.compile(r"\bfails?\s+(to|with|when)\b"),
@@ -351,8 +407,12 @@ class ToolIntentDetector:
     _UI_FEATURE_PATTERNS: Tuple[Pattern, ...] = (
         re.compile(
             r"\b(view|page|screen|widget|panel|tab|button|dialog|menu|"
-            r"sidebar|window|component|form|input|field|list|card|toolbar|"
-            r"modal|drawer|navbar|header|footer|tooltip|popup)s?\b"
+            r"sidebar|window|component|form|input|field|list|card|box|boxes|"
+            r"toolbar|modal|drawer|navbar|header|footer|tooltip|popup|"
+            r"tile|grid|row|column|scroll|scrollable|listview|list-view|"
+            r"appbar|app\s*bar|navigation\s*bar|bottom\s*sheet|"
+            r"background|foreground|color|theme|style|font|padding|margin|"
+            r"size|height|width|radius|border|shadow|alignment|gradient)s?\b"
         ),
         re.compile(r"\bchat\b"),
         re.compile(r"\bui\b"),
@@ -386,6 +446,7 @@ class ToolIntentDetector:
         )
         weak_markers_present = any(p.search(t) for p in cls._WEAK_FILE_MARKER_PATTERNS)
         file_markers_present = strong_markers_present or weak_markers_present
+        ui_present = any(p.search(t) for p in cls._UI_FEATURE_PATTERNS)
 
         # 2. Tool-talk negatives — chat *unless* a strong file marker
         #    is also present (in which case the user really wants the
@@ -402,11 +463,14 @@ class ToolIntentDetector:
         # 4. Problem reports + UI/feature word → tools.
         problem_present = any(p.search(t) for p in cls._PROBLEM_REPORT_PATTERNS)
         if problem_present:
-            ui_present = any(p.search(t) for p in cls._UI_FEATURE_PATTERNS)
             if ui_present or file_markers_present:
                 return True
 
-        # 5. Fallback: action verb + file marker, or git term + either.
+        # 5. Fallback: action verb + file marker, or git term + either,
+        #    or action verb + UI feature word.  Concrete changes to UI
+        #    elements ("make the button blue", "update the home screen layout")
+        #    almost always require editing source files even when the user
+        #    never mentions a path or extension.
         action_verbs_present = any(p.search(t) for p in cls._ACTION_VERB_PATTERNS)
         git_markers_present = any(p.search(t) for p in cls._GIT_MARKER_PATTERNS)
 
@@ -414,6 +478,9 @@ class ToolIntentDetector:
             return True
 
         if file_markers_present and action_verbs_present:
+            return True
+
+        if ui_present and action_verbs_present:
             return True
 
         return False

@@ -36,6 +36,43 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from agent.loop.task_protocol import strip_task_tags
 
+
+def _sanitize_xml_value(value: str) -> str:
+    """Decode HTML entities inside an XML tag body.
+
+    Models often emit ``&lt;``, ``&gt;``, ``&amp;``, ``&quot;``,
+    ``&apos;``, ``&#60;``, ``&#x3C;``, etc. inside tool parameters
+    because the tool-call format is XML-like.  This helper turns those
+    entities back into the real characters so that code such as
+    ``a &gt; b`` becomes ``a > b`` before it is written to a file or
+    executed as a command.
+
+    Double-escaped entities (e.g. ``&amp;gt;``) are decoded iteratively
+    up to a small limit, because models sometimes escape the ``&``
+    character itself when trying to escape ``<``/``>``.
+
+    The function always runs; the presence of ``&`` is only an
+    optimisation, not a guard, because callers must never forget to
+    sanitize a tag value.
+    """
+    if not isinstance(value, str):
+        return value
+    if "&" not in value:
+        return value
+
+    # Iterative unescape to handle double-encoded entities such as
+    # &amp;gt; (&gt; after one round, > after two).  Cap the iterations so an
+    # intentionally pathological string cannot loop forever.
+    for _ in range(3):
+        new_value = _html_unescape(value)
+        if new_value == value:
+            break
+        value = new_value
+        if "&" not in value:
+            break
+    return value
+
+
 # ---------------------------------------------------------------------------
 # PRIMARY PARSER — pure XML child-tag format (no attributes)
 # ---------------------------------------------------------------------------
@@ -95,16 +132,7 @@ def _parse_xml_tool_call(block_body: str, tool_defs=None) -> Optional[Tuple[str,
         tag_name = m.group(1).lower()
         if tag_name == "name":
             continue
-        value = m.group(2)
-        # Unescape HTML entities. Models frequently HTML-escape special
-        # characters inside tool parameters because the tool-call format
-        # is XML-like: & → &amp;, < → &lt;, > → &gt;, " → &quot;, etc.
-        # Without unescaping, these literal entities end up in the
-        # written files (e.g. "if (a &amp;&amp; b)" instead of "if (a && b)").
-        # html.unescape handles named (&amp; &lt; &gt; &quot; &apos;),
-        # decimal (&#39;), and hex (&#x27;) entities.
-        if "&" in value:
-            value = _html_unescape(value)
+        value = _sanitize_xml_value(m.group(2))
         # Try to parse as JSON for complex types (lists, ints, bools);
         # if it fails, keep the raw string. This handles <paths>["a.py","b.py"]</paths>
         # while keeping <content>hello "world"</content> as a literal string.
