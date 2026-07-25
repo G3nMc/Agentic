@@ -141,6 +141,11 @@ class OrchestratorManager {
   /// runs in OPEN mode.
   Stream<OrchestratorTaskEvent> get taskStream => _taskController.stream;
 
+  /// The underlying stream controller for task-flow events. Exposed so
+  /// the UI can inject synthetic events (e.g. clearing the plan when
+  /// the user sends a new prompt) without going through the Python side.
+  StreamController<OrchestratorTaskEvent> get taskController => _taskController;
+
   /// Conversation id currently being processed. Set by
   /// [_sendPromptInternal] just before writing to stdin so the
   /// dispatcher can attach it to incoming task events (Python doesn't

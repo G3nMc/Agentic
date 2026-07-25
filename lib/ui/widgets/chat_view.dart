@@ -22,6 +22,7 @@ import '../../data/repositories/dev_filters_repository.dart';
 import '../../data/repositories/local_server_config_repository.dart';
 import '../../data/repositories/message_repository.dart';
 import '../../data/repositories/settings_repository.dart';
+import '../../data/repositories/task_repository.dart';
 import '../../services/chat_processing_service.dart';
 import '../../services/context_summary_service.dart';
 import '../../services/huggingface_service.dart';
@@ -704,6 +705,16 @@ class _ChatViewState extends StateManager<ChatView> with WidgetsBindingObserver 
     // A new user turn resets the task status bubble; a fresh one will be
     // created if the orchestrator reports task progress during this turn.
     _removeStatusBubble();
+
+    // A new user prompt means the previous task plan is stale — clear it
+    // from the DB and broadcast an empty plan so the checklist panel resets
+    // immediately, without waiting for the orchestrator's next reply.
+    if (_taskMode != 'open') {
+      await TaskRepository.instance.deleteByConversation(conv.id);
+      OrchestratorManager.instance.taskController.add(
+        OrchestratorTasksProposed(conversationId: conv.id, tasks: const []),
+      );
+    }
 
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _scrollToBottom();

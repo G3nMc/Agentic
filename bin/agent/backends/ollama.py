@@ -243,7 +243,7 @@ class OllamaBackend(ModelBackend):
             "model": self.model_id,
             "prompt": prompt,
             "stream": False,
-            "keep_alive": "15m",
+            "keep_alive": "20m",
             "options": options,
         }
 
