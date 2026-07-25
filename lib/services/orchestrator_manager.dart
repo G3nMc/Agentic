@@ -1071,6 +1071,19 @@ class OrchestratorManager {
     _activeLines.add(line);
   }
 
+  /// Reverse the XML character-reference escaping applied by Python's
+  /// ``_escape_xml`` so the Flutter side sees the original text (newlines,
+  /// ampersands, angle brackets) as the model intended.
+  static String _unescapeXml(String value) {
+    return value
+        .replaceAll('&#10;', '\n')
+        .replaceAll('&#13;', '\r')
+        .replaceAll('&quot;', '"')
+        .replaceAll('&gt;', '>')
+        .replaceAll('&lt;', '<')
+        .replaceAll('&amp;', '&');
+  }
+
   /// Attempt to parse ``line`` as a task-flow XML envelope. Returns ``true``
   /// when the line was an event (and was therefore consumed); ``false``
   /// otherwise so the caller falls back to the normal response buffer.
@@ -1097,7 +1110,7 @@ class OrchestratorManager {
     );
     final tags = <String, String>{};
     for (final m in childTagRe.allMatches(eventBody)) {
-      tags[m.group(1)!.toLowerCase()] = m.group(2)!;
+      tags[m.group(1)!.toLowerCase()] = _unescapeXml(m.group(2)!);
     }
 
     final eventType = tags['type'];

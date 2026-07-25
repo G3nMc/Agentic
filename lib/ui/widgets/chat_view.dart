@@ -1222,6 +1222,17 @@ class _ChatViewState extends StateManager<ChatView> with WidgetsBindingObserver 
                 taskMode: _taskMode,
                 onAction: _onTaskAction,
               ),
+            // Live activity strip: shows spinning indicator + current
+            // orchestrator activity label when the orchestrator is running.
+            // Visible both during _sending and while the orchestrator is
+            // actively working on tasks (even between sends in auto mode).
+            if (_taskMode != 'open' && _conversation != null)
+              _OrchestratorActivityStrip(
+                visible: _sending ||
+                    (_activeBackend != null &&
+                        _isOrchestratorBackend(_activeBackend!) &&
+                        OrchestratorManager.instance.isRunning),
+              ),
             ChatInput(
               enabled: !_sending,
               sending: _sending,
@@ -2510,6 +2521,108 @@ class _ChatViewState extends StateManager<ChatView> with WidgetsBindingObserver 
     _scrollController.dispose();
     _inputController.dispose();
     super.dispose();
+  }
+}
+
+/// Compact activity strip shown above the chat input when the orchestrator
+/// is running. Displays a spinning indicator + a live status label derived
+/// from [OrchestratorManager.statusStream] so the user sees what the model is
+/// doing in real time (e.g. "Reading file...", "Analyzing Dart code...").
+///
+/// Unlike [_TypingIndicator] (which lives inside the scrollable message list
+/// and only appears while [_ChatViewState._sending] is true), this strip is
+/// a fixed-height bar that stays visible as long as the orchestrator process
+/// is running — even between sends in task_compliance_auto mode, when the
+/// orchestrator progresses through tasks autonomously.
+class _OrchestratorActivityStrip extends StatefulWidget {
+  const _OrchestratorActivityStrip({required this.visible});
+
+  final bool visible;
+
+  @override
+  State<_OrchestratorActivityStrip> createState() =>
+      _OrchestratorActivityStripState();
+}
+
+class _OrchestratorActivityStripState extends State<_OrchestratorActivityStrip>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _spin;
+  StreamSubscription<String>? _statusSub;
+  String _label = 'Working...';
+
+  @override
+  void initState() {
+    super.initState();
+    _spin = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 1200),
+    )..repeat();
+
+    // Seed from last known status so a late-mounted strip shows the current
+    // activity instead of the generic fallback.
+    final last = OrchestratorManager.instance.lastStatus;
+    if (last != null && last.isNotEmpty) _label = last;
+
+    _statusSub = OrchestratorManager.instance.statusStream.listen((status) {
+      if (!mounted) return;
+      setState(() => _label = status);
+    });
+  }
+
+  @override
+  void dispose() {
+    _statusSub?.cancel();
+    _spin.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (!widget.visible) return const SizedBox.shrink();
+
+    return Container(
+      height: 28,
+      padding: const EdgeInsets.symmetric(horizontal: 16),
+      decoration: const BoxDecoration(
+        color: AppTheme.bgPrimary,
+        border: Border(
+          top: BorderSide(color: AppTheme.border, width: 0.5),
+        ),
+      ),
+      child: Row(
+        children: [
+          SizedBox(
+            width: 14,
+            height: 14,
+            child: AnimatedBuilder(
+              animation: _spin,
+              builder: (_, __) {
+                return Transform.rotate(
+                  angle: _spin.value * 2 * 3.14159265,
+                  child: const Icon(
+                    Icons.sync,
+                    size: 14,
+                    color: AppTheme.accentSecondary,
+                  ),
+                );
+              },
+            ),
+          ),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              _label,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(
+                color: AppTheme.accentSecondary,
+                fontSize: 12,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
   }
 }
 

@@ -441,7 +441,14 @@ _MAX_ENVELOPE_LOG = 1200
 
 
 def _escape_xml(value: Any) -> str:
-    """Escape a string for use as XML text content."""
+    """Escape a string for use as XML text content.
+
+    Also escapes newlines (\\n, \\r) as XML character references so the
+    entire envelope stays on a single line.  The Flutter side reads
+    stdout line-by-line via ``LineSplitter``; a literal newline inside
+    an ``<event>`` envelope would split it across multiple lines and
+    cause ``_tryParseTaskEvent`` to miss the event entirely.
+    """
     s = str(value)
     s = s.replace("&", "&amp;")
     s = s.replace("<", "&lt;")
@@ -449,6 +456,10 @@ def _escape_xml(value: Any) -> str:
     # Quotes are not required to be escaped in text content, but do it
     # anyway for symmetry and safety if a value later ends up in an attribute.
     s = s.replace('"', "&quot;")
+    # Newlines MUST be escaped so the XML envelope stays on one line.
+    # Order matters: escape \r before \n so \r\n becomes &#13;&#10;.
+    s = s.replace("\r", "&#13;")
+    s = s.replace("\n", "&#10;")
     return s
 
 
