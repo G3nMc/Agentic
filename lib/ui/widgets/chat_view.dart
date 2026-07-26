@@ -1237,13 +1237,13 @@ class _ChatViewState extends StateManager<ChatView> with WidgetsBindingObserver 
             // orchestrator activity label when the orchestrator is running.
             // Visible both during _sending and while the orchestrator is
             // actively working on tasks (even between sends in auto mode).
-            if (_taskMode != 'open' && _conversation != null)
-              _OrchestratorActivityStrip(
-                visible: _sending ||
-                    (_activeBackend != null &&
-                        _isOrchestratorBackend(_activeBackend!) &&
-                        OrchestratorManager.instance.isRunning),
-              ),
+            // if (_taskMode != 'open' && _conversation != null)
+            //   _OrchestratorActivityStrip(
+            //     visible: _sending ||
+            //         (_activeBackend != null &&
+            //             _isOrchestratorBackend(_activeBackend!) &&
+            //             OrchestratorManager.instance.isRunning),
+            //   ),
             ChatInput(
               enabled: !_sending,
               sending: _sending,
