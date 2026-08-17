@@ -262,7 +262,8 @@ class OllamaBackend(ModelBackend):
 
         _log(
             f"[Ollama:generate] POST {self.base_url}/api/generate model={self.model_id} "
-            f"turns={msg_count} max_tokens={max_tokens} temperature={temperature} "
+            f"turns={msg_count} max_tokens={max_tokens} num_ctx={self.num_ctx} "
+            f"temperature={temperature} "
             f"cloud={self._is_cloud_host()} stop={options.get('stop')} "
             f"think={payload.get('think')}"
         )

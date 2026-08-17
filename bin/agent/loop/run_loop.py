@@ -748,12 +748,10 @@ class Orchestrator:
         self.max_tokens = max_tokens
         # Thinking-capable models (kimi-k2.7, deepseek-r1, qwen3, gpt-oss,
         # etc.) consume a large portion of max_tokens for chain-of-thought
-        # reasoning.  With the default 2048 (or even 16384), the thinking
-        # eats the entire budget and the model emits zero visible output
-        # — every iteration produces content_len=0 and the loop stalls.
-        # Bump max_tokens to at least 32768 for these models so the
-        # reasoning has room AND there's leftover budget for the actual
-        # tool call or answer.
+        # reasoning.  With a very low max_tokens (e.g. 2048), the thinking
+        # eats the entire budget and the model emits zero visible output.
+        # Only bump if the value is dangerously low (< 4096) — otherwise
+        # respect the user's explicit UI setting, even if it's below 32768.
         _THINKING_MODEL_PATTERNS = (
             "kimi", "k2.7", "deepseek-r1", "deepseek-v3.1", "qwen3",
             "qwq", "gpt-oss", "reasoning",
@@ -762,15 +760,16 @@ class Orchestrator:
         if thinking and any(
             p in _model_lower for p in _THINKING_MODEL_PATTERNS
         ):
-            if self.max_tokens < 32768:
+            if self.max_tokens < 4096:
                 print(
                     f"[orch] Thinking-capable model '{self.model_id}' "
                     f"with max_tokens={self.max_tokens} — bumping to "
-                    f"32768 so reasoning doesn't eat the entire output "
-                    f"budget (was producing content_len=0).",
+                    f"4096 (minimum for thinking to not eat the entire "
+                    f"output budget). The UI setting takes precedence "
+                    f"for any value >= 4096.",
                     file=sys.stderr,
                 )
-                self.max_tokens = 32768
+                self.max_tokens = 4096
         # Thinking ON/OFF master switch + Effort level. Updated per-request
         # by the interactive loop so the Flutter UI controls take effect
         # immediately without restarting the orchestrator process.

@@ -1861,6 +1861,7 @@ class _ChatViewState extends StateManager<ChatView> with WidgetsBindingObserver 
           ollamaAutoNumCtx = await settings.getOllamaAutoNumCtx();
           ollamaApiKey = await settings.getOllamaApiKey();
           temperature = await settings.getOllamaTemperature();
+          maxTokens = await settings.getOllamaNumPredict();
           final savedOllamaModel = await settings.getOllamaModel();
           modelId = convModelId.isNotEmpty ? convModelId : savedOllamaModel;
           if ((modelId ?? '').isEmpty) {

@@ -692,8 +692,10 @@ def main():
     parser.add_argument(
         "--max-tokens",
         type=int,
-        default=4096,
-        help="Max tokens per model call.",
+        default=32768,
+        help="Max tokens per model call. FALLBACK only — the Flutter UI "
+             "passes this explicitly from the per-role Workflow Agents "
+             "settings. Default 32768 for thinking models.",
     )
     parser.add_argument(
         "--max-iterations",

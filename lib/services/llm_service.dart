@@ -162,6 +162,10 @@ class LlmService {
 
         final settings = BackendSettingsRepository.instance;
         final ollamaApiKey = await settings.getOllamaApiKey() ?? '';
+        final ollamaMaxTokens = await settings.getOllamaNumPredict();
+        final ollamaNumCtx = await settings.getOllamaNumCtx();
+        final ollamaAutoNumCtx = await settings.getOllamaAutoNumCtx();
+        final ollamaBaseUrl = await settings.getOllamaBaseUrl();
 
         if (OrchestratorManager.instance.isRunning) {
           final currentBackend = OrchestratorManager.instance.currentBackend;
@@ -178,8 +182,11 @@ class LlmService {
             modelId: resolvedOllamaModel,
             backend: OrchestratorBackend.ollama,
             ollamaBaseUrl: ollamaBaseUrl,
+            ollamaNumCtx: ollamaNumCtx,
+            ollamaAutoNumCtx: ollamaAutoNumCtx,
             ollamaApiKey: ollamaApiKey,
             temperature: temperature,
+            maxTokens: ollamaMaxTokens,
           );
           if (!started) {
             final stderr = OrchestratorManager.instance.stderrLog;

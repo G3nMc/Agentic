@@ -161,10 +161,13 @@ def main():
     parser.add_argument(
         "--max-tokens",
         type=int,
-        default=8192 * 2,
-        help="Hard cap on generated tokens per model call. Covers any tool "
-             "call + typical file writes. Raising past ~4096 on a 3B model "
-             "(phi3) can push a single iteration over a minute.",
+        default=32768,
+        help="Hard cap on generated tokens per model call (num_predict). "
+             "This is only a FALLBACK used when the Flutter UI does not pass "
+             "an explicit value via --max-tokens. The UI setting in "
+             "Settings → Model Settings always takes precedence. "
+             "Default 32768 gives thinking-capable models enough room for "
+             "chain-of-thought + visible output.",
     )
     parser.add_argument(
         "--tpm-limit",
