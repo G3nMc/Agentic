@@ -830,8 +830,8 @@ class Orchestrator:
         else:
             self.max_history_turns = 6
             self._max_tool_result_chars = _MAX_TOOL_RESULT_CHARS_FALLBACK
-            self._history_char_budget = 200_000
-            self._history_token_budget = 50_000
+            self._history_char_budget = 500_000
+            self._history_token_budget = 250_000
         # Preserve the init-time ceiling so dynamic recomputation never
         # grows past it (it only shrinks when free space is tight).
         self._init_max_tool_result_chars = self._max_tool_result_chars

@@ -37,6 +37,7 @@ class BackendSettingsRepository {
   static const String _kOpenRouterModel = "openrouter_model";
   static const String _kOpenRouterTemperature = "openrouter_temperature";
   static const String _kOpenRouterMaxTokens = "openrouter_max_tokens";
+  static const String _kOpenRouterContextLimit = "openrouter_context_limit";
   static const String _kOpenRouterTpmLimit = "openrouter_tpm_limit";
 
   static const String _kGithubApiKey = "github_api_key";
@@ -322,6 +323,20 @@ class BackendSettingsRepository {
   }
   Future<void> setOpenRouterMaxTokens(int v) =>
       _writeString(_kOpenRouterMaxTokens, v.toString());
+
+  /// Context window budget used by the OpenRouter orchestrator for history
+  /// trimming. The provider still enforces its own model limit.
+  Future<int> getOpenRouterContextLimit() async {
+    final v = await _readString(_kOpenRouterContextLimit);
+    return int.tryParse(v ?? '') ?? 128000;
+  }
+
+  Future<void> setOpenRouterContextLimit(int v) {
+    if (v <= 0) {
+      throw ArgumentError.value(v, 'v', 'must be greater than zero');
+    }
+    return _writeString(_kOpenRouterContextLimit, v.toString());
+  }
 
   Future<int> getOpenRouterTpmLimit() async {
     final v = await _readString(_kOpenRouterTpmLimit);

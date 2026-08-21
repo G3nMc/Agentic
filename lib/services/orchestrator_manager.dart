@@ -12,6 +12,7 @@ import '../data/repositories/database_connections_repository.dart';
 import '../data/repositories/dev_filters_repository.dart';
 import '../data/repositories/settings_repository.dart';
 import '../data/repositories/task_repository.dart';
+import 'openrouter_service.dart';
 
 /// Structured event emitted by the Python orchestrator while running
 /// in TASK COMPLIANCE mode. Two concrete shapes:
@@ -586,6 +587,7 @@ class OrchestratorManager {
     String? groqApiKey,
     String? geminiApiKey,
     String? openRouterApiKey,
+    int? openRouterContextLimit,
     String? githubApiKey,
     int? tpmLimit,
     bool disableTools = false,
@@ -610,6 +612,7 @@ class OrchestratorManager {
       groqApiKey: groqApiKey,
       geminiApiKey: geminiApiKey,
       openRouterApiKey: openRouterApiKey,
+      openRouterContextLimit: openRouterContextLimit,
       githubApiKey: githubApiKey,
       tpmLimit: tpmLimit,
       disableTools: disableTools,
@@ -633,6 +636,7 @@ class OrchestratorManager {
     String? groqApiKey,
     String? geminiApiKey,
     String? openRouterApiKey,
+    int? openRouterContextLimit,
     String? githubApiKey,
     int? tpmLimit,
     bool disableTools = false,
@@ -653,6 +657,20 @@ class OrchestratorManager {
       }
       if (ollamaApiKey == null || ollamaApiKey.isEmpty) {
         ollamaApiKey = await backendSettings.getOllamaApiKey();
+      }
+    }
+
+    if (backend == OrchestratorBackend.openrouter) {
+      if (openRouterApiKey == null || openRouterApiKey.isEmpty) {
+        openRouterApiKey = await backendSettings.getOpenRouterApiKey();
+      }
+      if (openRouterContextLimit == null &&
+          openRouterApiKey != null &&
+          openRouterApiKey.isNotEmpty &&
+          modelId != null &&
+          modelId.isNotEmpty) {
+        openRouterContextLimit = await OpenRouterService.instance
+            .fetchContextLimit(openRouterApiKey, modelId);
       }
     }
 
@@ -723,9 +741,18 @@ class OrchestratorManager {
 
         final rProvider = _toProviderString(reasonerCfg.backend);
         final sProvider = _toProviderString(summarizerCfg.backend);
+        final effectiveOpenRouterContextLimit =
+            openRouterContextLimit ??
+            await backendSettings.getOpenRouterContextLimit();
 
         args.addAll(['--reasoner-provider', rProvider]);
         args.addAll(['--reasoner-model', reasonerCfg.model]);
+        if (rProvider == 'openrouter') {
+          args.addAll([
+            '--reasoner-context-window',
+            effectiveOpenRouterContextLimit.toString(),
+          ]);
+        }
         args.addAll(['--temperature', reasonerCfg.temperature.toString()]);
         args.addAll(['--max-tokens', reasonerCfg.maxTokens.toString()]);
         final rKey = _apiKeyForProvider(rProvider,
@@ -792,6 +819,12 @@ class OrchestratorManager {
             break;
           case OrchestratorBackend.openrouter:
             if (openRouterApiKey != null && openRouterApiKey.isNotEmpty) args.addAll(['--openrouter-api-key', openRouterApiKey]);
+            if (openRouterContextLimit != null) {
+              args.addAll([
+                '--openrouter-context-limit',
+                openRouterContextLimit.toString(),
+              ]);
+            }
             break;
           case OrchestratorBackend.github:
             if (githubApiKey != null && githubApiKey.isNotEmpty) args.addAll(['--github-api-key', githubApiKey]);

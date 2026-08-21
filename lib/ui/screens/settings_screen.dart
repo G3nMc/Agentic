@@ -194,8 +194,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
   String? _openRouterSelectedModel;
   bool _openRouterLoadingModels = false;
   double _openRouterTemperature = BackendSettingsRepository.defaultOpenRouterTemperature;
+  int _openRouterContextLimit = 128000;
   final TextEditingController _openRouterMaxTokensController = TextEditingController();
+  final TextEditingController _openRouterContextLimitController = TextEditingController();
   Timer? _openRouterMaxTokensSaveTimer;
+  Timer? _openRouterContextLimitSaveTimer;
   final TextEditingController _openRouterTpmLimitController = TextEditingController();
   Timer? _openRouterTpmLimitSaveTimer;
   final ScrollController _openRouterCatalogScrollController = ScrollController();
@@ -319,9 +322,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
     _geminiTpmLimitController.dispose();
     _openRouterApiKeySaveTimer?.cancel();
     _openRouterMaxTokensSaveTimer?.cancel();
+    _openRouterContextLimitSaveTimer?.cancel();
     _openRouterTpmLimitSaveTimer?.cancel();
     _openRouterApiKeyController.dispose();
     _openRouterMaxTokensController.dispose();
+    _openRouterContextLimitController.dispose();
     _openRouterTpmLimitController.dispose();
     _openRouterCatalogScrollController.dispose();
     _githubApiKeySaveTimer?.cancel();
@@ -464,6 +469,16 @@ class _SettingsScreenState extends State<SettingsScreen> {
       final v = int.tryParse(value.trim());
       if (v != null && v > 0) {
         await BackendSettingsRepository.instance.setOpenRouterMaxTokens(v);
+      }
+    });
+  }
+
+  void _scheduleOpenRouterContextLimitSave(String value) {
+    _openRouterContextLimitSaveTimer?.cancel();
+    _openRouterContextLimitSaveTimer = Timer(const Duration(milliseconds: 600), () async {
+      final v = int.tryParse(value.trim());
+      if (v != null && v > 0) {
+        await BackendSettingsRepository.instance.setOpenRouterContextLimit(v);
       }
     });
   }
@@ -1119,6 +1134,22 @@ class _SettingsScreenState extends State<SettingsScreen> {
             helperText: 'Reply-length cap only — OpenRouter uses `max_tokens`. The provider manages the full context '
                 'window itself; you are billed per emitted output token, so larger values do not pre-charge.',
             onChanged: _scheduleOpenRouterMaxTokensSave,
+          ),
+          const SizedBox(height: 12),
+          TokenCountPicker(
+            controller: _openRouterContextLimitController,
+            presets: TokenCountPicker.numCtxPresets,
+            labelText: 'Context window limit',
+            hintText: '128000',
+            helperText: 'Budget used by the orchestrator for prompt and history trimming. '
+                'Set it below the model maximum to reserve room for the reply and tool calls.',
+            onChanged: (value) {
+              final parsed = int.tryParse(value.trim());
+              if (parsed != null && parsed > 0) {
+                setState(() => _openRouterContextLimit = parsed);
+                _scheduleOpenRouterContextLimitSave(value);
+              }
+            },
           ),
           const SizedBox(height: 16),
           TextField(
@@ -2467,6 +2498,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     final openRouterModel = await BackendSettingsRepository.instance.getOpenRouterModel();
     final openRouterTemperature = await BackendSettingsRepository.instance.getOpenRouterTemperature();
     final openRouterMaxTokens = await BackendSettingsRepository.instance.getOpenRouterMaxTokens();
+    final openRouterContextLimit = await BackendSettingsRepository.instance.getOpenRouterContextLimit();
     final openRouterTpmLimit = await BackendSettingsRepository.instance.getOpenRouterTpmLimit();
     final githubApiKey = await BackendSettingsRepository.instance.getGithubApiKey();
     final githubModel = await BackendSettingsRepository.instance.getGithubModel();
@@ -2516,7 +2548,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
       _openRouterApiKeyController.text = openRouterApiKey ?? '';
       _openRouterSelectedModel = openRouterModel;
       _openRouterTemperature = openRouterTemperature;
+      _openRouterContextLimit = openRouterContextLimit;
       _openRouterMaxTokensController.text = openRouterMaxTokens.toString();
+      _openRouterContextLimitController.text = openRouterContextLimit.toString();
       _openRouterTpmLimitController.text = openRouterTpmLimit.toString();
       _githubApiKeyController.text = githubApiKey ?? '';
       _githubSelectedModel =

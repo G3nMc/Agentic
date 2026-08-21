@@ -82,6 +82,27 @@ class OpenRouterService {
     return m.supportedParameters.any((p) => p.toLowerCase() == 'tools');
   }
 
+  /// Resolve the selected model's context window from OpenRouter's catalog.
+  ///
+  /// Returns null when the catalog is unavailable or the model does not
+  /// advertise a positive context length, allowing the Python backend to use
+  /// its conservative default.
+  Future<int?> fetchContextLimit(String apiKey, String modelId) async {
+    final normalizedModelId = modelId.trim();
+    if (apiKey.trim().isEmpty || normalizedModelId.isEmpty) return null;
+
+    final catalog = await listCatalog(apiKey);
+    for (final model in catalog) {
+      if (model.id == normalizedModelId) {
+        final contextLength = model.contextLength;
+        return contextLength != null && contextLength > 0
+            ? contextLength
+            : null;
+      }
+    }
+    return null;
+  }
+
   /// Send a chat-completions request and return the assistant reply.
   Future<String> sendChat({
     required String apiKey,

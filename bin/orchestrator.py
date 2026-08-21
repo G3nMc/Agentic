@@ -199,6 +199,14 @@ def main():
              "Get one free at https://openrouter.ai/keys.",
     )
     parser.add_argument(
+        "--openrouter-context-limit",
+        type=int,
+        default=128000,
+        help="Context window for the selected OpenRouter model. Defaults to "
+             "128000; pass the model catalog's context_length so the "
+             "orchestrator trims history against the actual window.",
+    )
+    parser.add_argument(
         "--github-api-key",
         default="",
         help="GitHub fine-grained PAT with `models:read` scope (required when "
@@ -498,9 +506,16 @@ def _build_backend_for_args(args):
             )
             sys.exit(2)
         backend = build_backend(
-            "openrouter", api_key=openrouter_key, model_id=args.model
+            "openrouter",
+            api_key=openrouter_key,
+            model_id=args.model,
+            context_limit=args.openrouter_context_limit,
         )
-        print(f"[orch] Using OpenRouter backend, model={args.model}", file=sys.stderr)
+        print(
+            f"[orch] Using OpenRouter backend, model={args.model} "
+            f"(context_limit={args.openrouter_context_limit})",
+            file=sys.stderr,
+        )
         return backend
 
     if args.backend == "github":
