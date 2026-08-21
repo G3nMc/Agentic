@@ -123,7 +123,7 @@ class OpenAICompatBackend(ModelBackend):
             "messages": messages,
             "max_tokens": max_tokens,
             "temperature": temperature,
-            "stream": True,
+            "stream": False,
         }
         if stop:
             payload["stop"] = list(stop)[:4]

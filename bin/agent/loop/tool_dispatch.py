@@ -117,6 +117,11 @@ def _parse_xml_tool_call(block_body: str, tool_defs=None) -> Optional[Tuple[str,
     if not block_body or not block_body.strip():
         return None
 
+    # Clean typical model artifacts: leading/trailing whitespace, tabs, and 
+    # carriage returns that might interfere with regex or parsing.
+    block_body = block_body.replace('\r', '').strip()
+    block_body = block_body.replace('\r', '').strip()
+
     # Extract tool name
     name_match = _XML_NAME_RE.search(block_body)
     if not name_match:
@@ -132,7 +137,13 @@ def _parse_xml_tool_call(block_body: str, tool_defs=None) -> Optional[Tuple[str,
         tag_name = m.group(1).lower()
         if tag_name == "name":
             continue
-        value = _sanitize_xml_value(m.group(2))
+        
+        # Clean the value: remove trailing/leading whitespace and 
+        # specific noise characters (like trailing newlines/tabs) 
+        # that models often leave inside the tag.
+        raw_value = m.group(2)
+        value = _sanitize_xml_value(raw_value).strip()
+        
         # Try to parse as JSON for complex types (lists, ints, bools);
         # if it fails, keep the raw string. This handles <paths>["a.py","b.py"]</paths>
         # while keeping <content>hello "world"</content> as a literal string.
@@ -601,6 +612,7 @@ def looks_like_malformed_tool_call(text: str) -> Tuple[bool, str | None]:
                     "Malformed XML tool call: the <tool> block could not be parsed. "
                     "Ensure there is a <name>...</name> child and all parameter "
                     "tags are properly opened and closed.\n"
+                    "XML Attributes are FORBIDDEN. PERIOD.\n"
                     "UNIQUE CORRECT TOOL CALL FORMAT:\n"
                     "<tool>\n"
                     "  <name>tool_name</name>\n"
@@ -621,6 +633,7 @@ def looks_like_malformed_tool_call(text: str) -> Tuple[bool, str | None]:
         return False, None
 
     correct_format = (
+        "XML Attributes are FORBIDDEN. PERIOD.\n"
         "UNIQUE CORRECT TOOL CALL FORMAT:\n"
         "<tool>\n"
         "  <name>tool_name</name>\n"
