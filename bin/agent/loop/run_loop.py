@@ -2622,6 +2622,7 @@ class Orchestrator:
             if not cleaned:
                 print(
                     f"[orch] Synthesis returned empty text "
+                    f" text= {text} "
                     f"(raw_len={raw_len}); falling back to raw recap.",
                     file=sys.stderr,
                 )

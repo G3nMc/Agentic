@@ -120,7 +120,13 @@ def _parse_xml_tool_call(block_body: str, tool_defs=None) -> Optional[Tuple[str,
     # Clean typical model artifacts: leading/trailing whitespace, tabs, and 
     # carriage returns that might interfere with regex or parsing.
     block_body = block_body.replace('\r', '').strip()
-    block_body = block_body.replace('\r', '').strip()
+
+    # FIX: Some models wrap the content inside <tool> tags with markdown code fences
+    # e.g., <tool> ```html <name>tool_name</name>... </tool> ```
+    # We strip these fences and any language identifiers (like 'html', 'xml') 
+    # so the XML parser can find the tags.
+    block_body = re.sub(r"```[a-zA-Z]*\s*", "", block_body)
+    block_body = block_body.replace("```", "").strip()
 
     # Extract tool name
     name_match = _XML_NAME_RE.search(block_body)

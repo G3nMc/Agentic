@@ -668,50 +668,51 @@ class ToolRegistry:
             When a tool is needed, output ONLY this exact format. No deviation.
 
             The ENTIRE response must be exactly:
-              <tool>
+            <tool>
               <name>NAME</name>
               <key>value</key>
               ...
             </tool>
 
             This is the ONLY format accepted by the parser. Any deviation is an immediate rejection.
-            NO attributes. NO JSON. Child tags only — the tag name is the parameter name, the tag body is the value.
-
+            NO JSON. Child tags only — the tag name is the parameter name, the tag body is the value.
+            NO XML Attributes are allowed. IS FORBIDDEN including XML Attributes in XML Tags 
             CORRECT examples:
-              <tool>
+            
+            <tool>
               <name>read_file</name>
               <path>src/main.py</path>
             </tool>
 
-              <tool>
+            <tool>
               <name>read_files</name>
               <paths>["a.py","b.py","c.py"]</paths>
             </tool>
 
-              <tool>
+            <tool>
               <name>search_in_files</name>
               <pattern>error</pattern>
               <file_glob>*.log</file_glob>
             </tool>
 
-              <tool>
+            <tool>
               <name>write_file</name>
               <path>out.txt</path>
               <content>hello world</content>
             </tool>
 
-              <tool>
+            <tool>
               <name>patch_file</name>
               <path>src/main.py</path>
               <old_content>Hello</old_content>
               <new_content>Ciao</new_content>
             </tool>
 
-              <tool>
+            <tool>
               <name>flutter_analyze</name>
             </tool>
 
-              <tool>
+            <tool>
               <name>git_commit</name>
               <message>fix: resolve null check</message>
             </tool>

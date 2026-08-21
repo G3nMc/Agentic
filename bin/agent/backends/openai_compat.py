@@ -34,7 +34,6 @@ from .http_client import (
     stream_sse,
 )
 
-
 # Re-exported for backwards compatibility with callers that imported
 # these names from this module (``agent.backends.__init__`` still
 # does). ``ToolsNotSupportedError`` is now obsolete -- we never send
@@ -61,11 +60,11 @@ class OpenAICompatBackend(ModelBackend):
     DEFAULT_BASE_URL: str = ""
 
     def __init__(
-        self,
-        api_key: str,
-        model_id: str,
-        base_url: str = "",
-        label: str = "",
+            self,
+            api_key: str,
+            model_id: str,
+            base_url: str = "",
+            label: str = "",
     ):
         if not api_key:
             raise RuntimeError(f"{self.__class__.__name__} requires an API key.")
@@ -100,14 +99,14 @@ class OpenAICompatBackend(ModelBackend):
     # ------------------------------------------------------------------
 
     def chat(
-        self,
-        conversation,
-        max_tokens: int,
-        temperature: float,
-        tools: Optional[List[Dict[str, Any]]] = None,  # ignored on purpose
-        stop: Optional[List[str]] = None,
-        thinking: bool = False,
-        effort: Optional[str] = None,
+            self,
+            conversation,
+            max_tokens: int,
+            temperature: float,
+            tools: Optional[List[Dict[str, Any]]] = None,  # ignored on purpose
+            stop: Optional[List[str]] = None,
+            thinking: bool = False,
+            effort: Optional[str] = None,
     ) -> Tuple[str, str]:
         # [native-tools-removed] We never forward ``tools`` to the API.
         # The agent uses text protocol exclusively (<tool>...</tool>).
@@ -123,8 +122,9 @@ class OpenAICompatBackend(ModelBackend):
             "messages": messages,
             "max_tokens": max_tokens,
             "temperature": temperature,
-            "stream": False,
+            "stream": True,
         }
+
         if stop:
             payload["stop"] = list(stop)[:4]
         # Thinking + Effort: when thinking is ON, map effort to
@@ -136,8 +136,8 @@ class OpenAICompatBackend(ModelBackend):
             payload["reasoning_effort"] = effort_str
 
         _log(
-            f"[{self._label}:chat] model={self.model_id} "
-            f"msgs={len(messages)} max_tokens={max_tokens} "
+            f"[{self._label}:chat] model={self.model_id} payload={payload}"
+            f"messages={messages} max_tokens={max_tokens} "
             f"temperature={temperature} stop={payload.get('stop')}"
         )
 

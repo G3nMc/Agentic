@@ -203,6 +203,7 @@ class _OrchestratorLogPanelState extends State<OrchestratorLogPanel> {
                       return false;
                     },
                     child: SelectionArea(
+
                       child: ListView.builder(
                         controller: _scroll,
                         padding: const EdgeInsets.fromLTRB(10, 10, 10, 6),
@@ -211,6 +212,7 @@ class _OrchestratorLogPanelState extends State<OrchestratorLogPanel> {
                           final line = _lines[i];
                           return Text(
                             line,
+                            softWrap: false,
                             style: TextStyle(
                               fontSize: 11,
                               fontFamily: 'monospace',
