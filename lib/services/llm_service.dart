@@ -369,7 +369,7 @@ class LlmService {
         final orModel = resolveOpenRouterModel(modelId, orSavedModel);
         final orTemperature = await orSettings.getOpenRouterTemperature();
         final orMaxTokens = await orSettings.getOpenRouterMaxTokens();
-        final orContextLimit = await orSettings.getOpenRouterContextLimit();\n// Removed
+        final orContextLimit = await orSettings.getOpenRouterContextLimit();// Removed
         final orTpmLimit = await orSettings.getOpenRouterTpmLimit();
 
         if (OrchestratorManager.instance.isRunning) {
