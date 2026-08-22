@@ -235,7 +235,7 @@ _AGENT_DIRECTIVE = (
     "Only after you have enough context should you emit the first concrete tool call.]\n"
     "[You have filesystem tools available. "
     "If this request requires any file access, inspection, editing, execution, or verification, you MUST emit exactly ONE tool call in this format: "
-    "<tool>\n<name>NAME</name>\n<key>value</key>\n</tool>. "
+    "<tool><name>NAME</name><key>value</key></tool>. "
     "- Do not add any explanation, preamble, or follow-up text before or after the tool call. "
     "- Prefer dedicated tools first (read_files/search_in_files/list_files/flutter_analyze/python_check/"
     "python_lint/python_test/git_*) and use run_command only as a last resort. "
@@ -368,7 +368,7 @@ _REFUSAL_DIRECTIVE = (
     "STOP. That is a refusal and it is wrong. You DO have "
     "filesystem access through the tools. Your entire next "
     "message must be exactly:\n"
-    "<tool>\n<name>list_files</name>\n<path>.</path>\n</tool>\n"
+    "<tool><name>list_files</name><path>.</path></tool>"
     "No apology, no explanation, no markdown fences. Just "
     "the tool call tag."
 )
@@ -376,7 +376,7 @@ _REFUSAL_DIRECTIVE = (
 # Sent when the model returns an empty reply.
 _EMPTY_REPLY_DIRECTIVE = (
     "Your reply was empty. Emit a single tool call:\n"
-    "<tool>\n<name>tool_name</name>\n<key>value</key>\n</tool> "
+    "<tool><name>tool_name</name><key>value</key></tool> "
     "or the final plain-text answer."
 )
 
@@ -482,6 +482,17 @@ def _get_malformed_directive(malformed_error: str) -> Dict[str, str]:
         "role": "user",
         "content": (
             f"Your previous reply attempted a tool call but the format was invalid. {malformed_error}\n "
+            "RULES for XML Tags:\n"
+            "Including content BETWEEN TWO DIFFERENT XML TAGS IS FORBIDDEN:\n"
+            "FORBIDDEN EXMAPLE:\n"
+            "<tool>  ```html <name>search_in_files</name> .....\n"
+            "<tool> ```code <name>search_in_files</name> .....\n"
+            "<tool> ``` <name>search_in_files</name> .....\n"
+            "<tool>code<name>search_in_files</name> .....\n"
+            "CORRECT TAG FORMAT:\n"
+            "<tool><name>search_in_files</name> .....\n"
+            "<tool><name>read_file</name> .....\n"
+            "<tool><name>patch_file</name> .....\n"
             "Reply with EXACTLY ONE valid tool call in this format:\n "
             "<tool>\n"
             "  <name>NAME</name>\n"
@@ -490,17 +501,17 @@ def _get_malformed_directive(malformed_error: str) -> Dict[str, str]:
             "No explanation, no markdown, no backticks. No JSON. No attributes. Child tags only.\n "
             "--- CORRECT examples (these pass, no need to execute examples to be sure these pass) ---\n"
             "\n"
-            "<tool>\n  <name>read_file</name>\n  <path>src/main.py</path>\n</tool>\n"
-            "<tool>\n  <name>read_files</name>\n  <paths>[\"a.py\",\"b.py\",\"c.py\"]</paths>\n</tool>\n"
-            "<tool>\n  <name>search_in_files</name>\n  <pattern>error</pattern>\n  <file_glob>*.log</file_glob>\n</tool>\n"
-            "<tool>\n  <name>write_file</name>\n  <path>out.txt</path>\n  <content>hello world</content>\n</tool>\n"
-            "<tool>\n  <name>patch_file</name>\n  <path>src/main.py</path>\n  <old_content>old</old_content>\n  <new_content>new</new_content>\n</tool>\n"
-            "<tool>\n  <name>delete_file</name>\n  <path>obsolete.py</path>\n</tool>\n"
-            "<tool>\n  <name>list_files</name>\n  <path>lib</path>\n</tool>\n"
-            "<tool>\n  <name>flutter_analyze</name>\n</tool>\n"
-            "<tool>\n  <name>python_check</name>\n</tool>\n"
-            "<tool>\n  <name>run_command</name>\n  <command>git status</command>\n</tool>\n"
-            "<tool>\n  <name>git_commit</name>\n  <message>fix: resolve null check</message>\n</tool>\n"
+            "<tool><name>read_file</name><path>src/main.py</path>\n</tool>\n"
+            "<tool><name>read_files</name><paths>[\"a.py\",\"b.py\",\"c.py\"]</paths>\n</tool>\n"
+            "<tool><name>search_in_files</name><pattern>error</pattern><file_glob>*.log</file_glob>\n</tool>\n"
+            "<tool><name>write_file</name><path>out.txt</path><content>hello world</content>\n</tool>\n"
+            "<tool><name>patch_file</name><path>src/main.py</path><old_content>old</old_content><new_content>new</new_content>\n</tool>\n"
+            "<tool><name>delete_file</name><path>obsolete.py</path>\n</tool>\n"
+            "<tool><name>list_files</name><path>lib</path>\n</tool>\n"
+            "<tool><name>flutter_analyze</name>\n</tool>\n"
+            "<tool><name>python_check</name>\n</tool>\n"
+            "<tool><name>run_command</name><command>git status</command>\n</tool>\n"
+            "<tool><name>git_commit</name><message>fix: resolve null check</message>\n</tool>\n"
         ),
     }
 
@@ -2529,7 +2540,7 @@ class Orchestrator:
                     temperature=self.temperature,
                     tools=None,
                     stop=[
-                        "<tool",
+                        # "<tool",
                         "</tool>",
                         "\nUser:",
                         "\nAssistant:",

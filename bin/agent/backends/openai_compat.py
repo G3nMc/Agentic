@@ -40,17 +40,25 @@ from .http_client import (
 # native tools -- but keeping the symbol avoids breaking imports.
 __all__ = [
     "OpenAICompatBackend",
-    "RateLimitError",
-    "ToolsNotSupportedError",
+    "RateLimitError"
 ]
 
+import re
 
-class ToolsNotSupportedError(Exception):
-    """DEPRECATED. Kept so existing imports continue to resolve."""
+def _clean_protocol_content(content: str) -> str:
+    if not content:
+        return ""
+
+    # Remove Markdown code fences used around protocol blocks.
+    content = re.sub(r"```(?:html|xml|text)?\s*", "", content, flags=re.IGNORECASE)
+    content = re.sub(r"\s*```", "", content)
+
+    return content.strip()
 
 
 def _log(msg: str) -> None:
     print(msg, file=sys.stderr, flush=True)
+
 
 
 class OpenAICompatBackend(ModelBackend):
@@ -58,6 +66,7 @@ class OpenAICompatBackend(ModelBackend):
 
     # Subclasses MUST set DEFAULT_BASE_URL.
     DEFAULT_BASE_URL: str = ""
+    last_prompt_eval_count = 0
 
     def __init__(
             self,
@@ -98,72 +107,133 @@ class OpenAICompatBackend(ModelBackend):
     # ModelBackend.chat
     # ------------------------------------------------------------------
 
+
+
     def chat(
             self,
             conversation,
             max_tokens: int,
             temperature: float,
-            tools: Optional[List[Dict[str, Any]]] = None,  # ignored on purpose
+            tools: Optional[List[Dict[str, Any]]] = None,
             stop: Optional[List[str]] = None,
             thinking: bool = False,
             effort: Optional[str] = None,
+            stream: bool = False,
     ) -> Tuple[str, str]:
-        # [native-tools-removed] We never forward ``tools`` to the API.
-        # The agent uses text protocol exclusively (<tool>...</tool>).
-        # If you need to roll back, search ``[native-tools-removed]``.
+        # OpenRouter uses the OpenAI chat-completions format.
+        # Native tools are intentionally not forwarded; the agent uses text protocol.
         _ = tools
 
-        # Centralized sanitization in the ConversationHistory.
         conversation.sanitize()
         messages = conversation.to_messages()
+        msg_count = len(conversation.turns)
 
         payload: Dict[str, Any] = {
             "model": self.model_id,
             "messages": messages,
-            "max_tokens": max_tokens,
+            "max_completion_tokens": max_tokens,
             "temperature": temperature,
-            "stream": True,
+            "stop": list(stop) if stop else None,
+            "stream": stream,
         }
 
-        if stop:
-            payload["stop"] = list(stop)[:4]
-        # Thinking + Effort: when thinking is ON, map effort to
-        # OpenAI reasoning_effort ("max" -> "high", OpenAI's highest).
         if thinking and effort:
             effort_str = str(effort).lower()
-            if effort_str == "max":
-                effort_str = "high"
             payload["reasoning_effort"] = effort_str
 
         _log(
-            f"[{self._label}:chat] model={self.model_id} payload={payload}"
-            f"messages={messages} max_tokens={max_tokens} "
-            f"temperature={temperature} stop={payload.get('stop')}"
+            f"[{self._label}:chat] model={self.model_id} "
+            f"stream={stream} turns={msg_count} max_tokens={max_tokens} "
+            f"temperature={temperature} stop={payload.get('stop')} "
+            f"reasoning_effort={payload.get('reasoning_effort')}"
         )
 
         try:
-            chunks = stream_sse(
-                self._endpoint(),
-                payload,
-                headers=self._auth_headers(),
-                label=self._label,
-            )
-            content, finish_reason = assemble_openai_chat_stream(chunks, label=self._label)
+            if stream:
+                chunks = stream_sse(
+                    self._endpoint(),
+                    payload,
+                    headers=self._auth_headers(),
+                    label=self._label,
+                )
+
+                content, finish_reason = assemble_openai_chat_stream(
+                    chunks,
+                    label=self._label,
+                )
+
+                content = _clean_protocol_content(content)
+
+                _log(
+                    f"[{self._label}:done] stream={stream} "
+                    f"content_len={len(content)} "
+                    f"finish_reason={finish_reason!r}"
+                )
+
+            else:
+                import requests
+
+                response = requests.post(
+                    self._endpoint(),
+                    json=payload,
+                    headers=self._auth_headers(),
+                    timeout=(15.0, 600.0),
+                )
+
+                if response.status_code == 429:
+                    raise RateLimitError(
+                        f"HTTP 429: {response.text[:1000]}"
+                    )
+
+                if response.status_code >= 400:
+                    raise HttpError(
+                        f"HTTP {response.status_code}: {response.text[:2000]}"
+                    )
+
+                data = response.json()
+
+                choices = data.get("choices") or []
+                if not choices:
+                    raise RuntimeError(
+                        f"{self._label}: OpenRouter returned no choices: {data}"
+                    )
+
+                choice = choices[0] or {}
+                message = choice.get("message") or {}
+
+                content = message.get("content") or ""
+                content = _clean_protocol_content(content)
+
+                finish_reason = choice.get("finish_reason") or "stop"
+
+                usage = data.get("usage") or {}
+
+                self.last_prompt_eval_count = int(
+                    usage.get("prompt_tokens", 0) or 0
+                )
+
+                self.last_usage_tokens = int(
+                    usage.get("total_tokens", 0) or 0
+                )
+
+                _log(
+                    f"[{self._label}:non-stream] "
+                    f"content_len={len(content)} "
+                    f"finish_reason={finish_reason!r} "
+                    f"prompt_tokens={usage.get('prompt_tokens')} "
+                    f"completion_tokens={usage.get('completion_tokens')} "
+                    f"total_tokens={usage.get('total_tokens')}"
+                )
+
         except RateLimitError as e:
             raise RuntimeError(f"{self._label} rate limit: {e}") from e
         except (ServerError, HttpError) as e:
             raise RuntimeError(f"{self._label} HTTP error: {e}") from e
+        except ValueError as e:
+            raise RuntimeError(
+                f"{self._label} invalid JSON response: {e}"
+            ) from e
 
-        _log(
-            f"[{self._label}:done] content_len={len(content)} "
-            f"finish_reason={finish_reason!r}"
-        )
         return content, finish_reason
 
-    # ------------------------------------------------------------------
-    # Health check (used by orchestrator.py startup probe for some backends)
-    # ------------------------------------------------------------------
 
-    def health_check(self) -> None:
-        """Best-effort connectivity check. Default is a no-op."""
-        return None

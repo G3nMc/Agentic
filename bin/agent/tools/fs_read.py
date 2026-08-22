@@ -26,15 +26,22 @@ def register(registry) -> None:
         try:
             target = registry.resolve_path(path)
             items = []
+            if not target.is_dir():
+                return json.dumps({"status": "error", "message": f"Path is not a directory: {path}"})
+            
             for p in target.iterdir():
-                if p.is_dir():
-                    if not pf.is_dir_allowed(p):
-                        continue
-                    items.append(p.name + "/")
-                else:
-                    if not pf.is_file_allowed(p):
-                        continue
-                    items.append(p.name)
+                try:
+                    if p.is_dir():
+                        if not pf.is_dir_allowed(p):
+                            continue
+                        items.append(p.name + "/")
+                    else:
+                        if not pf.is_file_allowed(p):
+                            continue
+                        items.append(p.name)
+                except Exception as e:
+                    print(f"[tool:list_files] Error processing item {p}: {e}", file=sys.stderr)
+                    continue
             items.sort()
             return json.dumps(
                 {"status": "success", "files": items, "count": len(items)}

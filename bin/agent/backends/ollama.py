@@ -233,22 +233,24 @@ class OllamaBackend(ModelBackend):
         options: Dict[str, Any] = {
             "temperature": temperature,
             "num_predict": max_tokens,
-            "num_ctx": self.num_ctx
+            "num_ctx": self.num_ctx,
+            "stop" : list(stop) if stop else None
         }
 
-        if stop:
-            options["stop"] = list(stop)
+        # if stop:
+        #     options["stop"] = list(stop)
 
         payload: Dict[str, Any] = {
             "model": self.model_id,
             "prompt": prompt,
-            "stream": False,
             "keep_alive": "20m",
             "options": options,
+            "system": system if system else None,
+            "stream": False,
         }
 
-        if system:
-            payload["system"] = system
+        # if system:
+        #     payload["system"] = system
 
         # Map thinking/effort to Ollama's `think` field safely.
         # Do NOT hardcode "think": True in the payload above — that
@@ -285,6 +287,7 @@ class OllamaBackend(ModelBackend):
                 # chunk_count += 1
                 piece = chunk.get("response") or ""
                 thinking = chunk.get("thinking") or ""
+
                 if thinking:
                     _log(f"[Ollama:streaming] \nmodel={self.model_id} \nthinking={thinking}  \npiece={piece} ")
                 if piece:

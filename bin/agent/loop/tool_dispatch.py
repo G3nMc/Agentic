@@ -119,7 +119,7 @@ def _parse_xml_tool_call(block_body: str, tool_defs=None) -> Optional[Tuple[str,
 
     # Clean typical model artifacts: leading/trailing whitespace, tabs, and 
     # carriage returns that might interfere with regex or parsing.
-    block_body = block_body.replace('\r', '').strip()
+    block_body = block_body.replace('\n', '').replace('\r', '').strip()
 
     # FIX: Some models wrap the content inside <tool> tags with markdown code fences
     # e.g., <tool> ```html <name>tool_name</name>... </tool> ```
@@ -137,19 +137,19 @@ def _parse_xml_tool_call(block_body: str, tool_defs=None) -> Optional[Tuple[str,
     if not tool_name:
         return None
 
-    # Extract all child tags as parameters (skip <name>)
     params: Dict[str, Any] = {}
     for m in _XML_CHILD_TAG_RE.finditer(block_body):
         tag_name = m.group(1).lower()
+
         if tag_name == "name":
             continue
-        
+
         # Clean the value: remove trailing/leading whitespace and 
         # specific noise characters (like trailing newlines/tabs) 
         # that models often leave inside the tag.
         raw_value = m.group(2)
         value = _sanitize_xml_value(raw_value).strip()
-        
+
         # Try to parse as JSON for complex types (lists, ints, bools);
         # if it fails, keep the raw string. This handles <paths>["a.py","b.py"]</paths>
         # while keeping <content>hello "world"</content> as a literal string.
@@ -159,7 +159,6 @@ def _parse_xml_tool_call(block_body: str, tool_defs=None) -> Optional[Tuple[str,
     if not tool_name:
         return None
 
-    # Sanitize params using the tool schema (drop unknown keys)
     if tool_defs:
         params = _sanitize_params(params, tool_name, tool_defs)
 
@@ -167,32 +166,86 @@ def _parse_xml_tool_call(block_body: str, tool_defs=None) -> Optional[Tuple[str,
 
 
 def parse_xml_tool_calls(
-    response: str, tool_defs=None
+        response: str, tool_defs=None
 ) -> List[Tuple[str, Dict[str, Any]]]:
     """Parse XML-format tool calls from the model reply.
 
-    Primary format (no attributes):
+    Supports both complete:
         <tool>
           <name>read_file</name>
           <path>src/main.py</path>
         </tool>
 
-    Returns a list but stops at the FIRST successfully-parsed call
-    (same semantics as parse_all_tag_tool_calls).
+    and truncated:
+        <tool>
+          <name>read_file</name>
+          <path>src/main.py</path>
+
+    Returns the first successfully parsed call.
     """
-    if not response:
+    if not response or not response.strip():
         return []
 
-    # Strip markdown code blocks first (same as the JSON path)
+    # Clean typical model artifacts: leading/trailing whitespace, tabs, and
+    # carriage returns that might interfere with regex or parsing.
+    response = response.replace('\n', '').replace('\r', '').strip()
+
+    # response = """We need to read file with line numbers.<tool>
+    #             <name>read_file</name>
+    #             <path>lib/common/session_changer.dart</path>"""
+
     cleaned = _CODE_BLOCK_RE.sub("", response)
 
+    # Complete <tool>...</tool> blocks.
     for m in _TOOL_BLOCK_RE.finditer(cleaned):
         body = m.group(1)
         result = _parse_xml_tool_call(body, tool_defs)
         if result is not None:
             return [result]
 
+    # Handle an incomplete <tool> block without </tool>.
+    start = cleaned.find("<tool>")
+    if start != -1:
+        body = cleaned[start + len("<tool>"):]
+
+        result = _parse_xml_tool_call(body, tool_defs)
+        if result is not None:
+            return [result]
+
     return []
+
+
+# def parse_xml_tool_calls(
+#         response: str, tool_defs=None
+# ) -> List[Tuple[str, Dict[str, Any]]]:
+#     """Parse XML-format tool calls from the model reply.
+#
+#     Primary format (no attributes):
+#         <tool>
+#           <name>read_file</name>
+#           <path>src/main.py</path>
+#         </tool>
+#
+#     Returns a list but stops at the FIRST successfully-parsed call
+#     (same semantics as parse_all_tag_tool_calls).
+#     """
+#     if not response:
+#         return []
+#
+#     response= """We need to read file with line numbers.<tool>
+#                 <name>read_file</name>
+#                 <path>lib/common/session_changer.dart</path>"""
+#     # Strip markdown code blocks first (same as the JSON path)
+#     cleaned = _CODE_BLOCK_RE.sub("", response)
+#
+#     for m in _TOOL_BLOCK_RE.finditer(cleaned):
+#         body = m.group(1)
+#         result = _parse_xml_tool_call(body, tool_defs)
+#         if result is not None:
+#             return [result]
+#
+#     return []
+
 
 # ---------------------------------------------------------------------------
 # Output-cleaning regexes
@@ -619,6 +672,17 @@ def looks_like_malformed_tool_call(text: str) -> Tuple[bool, str | None]:
                     "Ensure there is a <name>...</name> child and all parameter "
                     "tags are properly opened and closed.\n"
                     "XML Attributes are FORBIDDEN. PERIOD.\n"
+                    "RULES for XML Tags:\n"
+                    "Including content BETWEEN TWO DIFFERENT XML TAGS IS FORBIDDEN:\n"
+                    "FORBIDDEN EXMAPLE:\n"
+                    "<tool>  ```html <name>search_in_files</name> .....\n"
+                    "<tool> ```code <name>search_in_files</name> .....\n"
+                    "<tool> ``` <name>search_in_files</name> .....\n"
+                    "<tool>code<name>search_in_files</name> .....\n"
+                    "CORRECT TAG FORMAT:\n"
+                    "<tool><name>search_in_files</name> .....\n"
+                    "<tool><name>read_file</name> .....\n"
+                    "<tool><name>patch_file</name> .....\n"
                     "UNIQUE CORRECT TOOL CALL FORMAT:\n"
                     "<tool>\n"
                     "  <name>tool_name</name>\n"
@@ -740,7 +804,7 @@ def looks_like_malformed_tool_call(text: str) -> Tuple[bool, str | None]:
     # orchestrator can nudge/retry instead of leaking the broken JSON.
     stripped = text.lstrip()
     if stripped[:1] in ("{", "[") and re.search(
-        r'["\']tool["\']\s*:\s*["\']\w+["\']', stripped
+            r'["\']tool["\']\s*:\s*["\']\w+["\']', stripped
     ):
         return True, (
             f"Malformed tool call: The reply looks like a JSON tool call "

@@ -14,14 +14,13 @@ import sys as _sys
 _sys.dont_write_bytecode = True
 
 from agent.backends.backend_base import ModelBackend, RateLimitedBackend
-from agent.backends.openai_compat import OpenAICompatBackend, RateLimitError, ToolsNotSupportedError
+from agent.backends.openai_compat import OpenAICompatBackend, RateLimitError
 
 __all__ = [
     "ModelBackend",
     "RateLimitedBackend",
     "OpenAICompatBackend",
     "RateLimitError",
-    "ToolsNotSupportedError",
     "build_backend",
 ]
 

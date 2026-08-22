@@ -573,7 +573,8 @@ class ToolRegistry:
 
             CORRECT (short reasoning, tool call):
               thinking: The user wants X. I should check Y first. 
-              response: <tool>
+              response: 
+            <tool>
               <name>read_file</name>
               <path>y.dart</path>
             </tool>
@@ -584,7 +585,7 @@ class ToolRegistry:
 
             WRONG (reasoning leaks before the tool call):
               We need to read this file.
-              <tool>
+            <tool>
               <name>read_file</name>
               <path>y.dart</path>
             </tool>
@@ -608,14 +609,14 @@ class ToolRegistry:
             The character immediately following </tool> in your reply MUST be end-of-stream. Not a space. Not a newline. Nothing.
 
             CORRECT (one tool call, then STOP):
-              <tool>
+            <tool>
               <name>read_file</name>
               <path>a.py</path>
             </tool>
               (end of reply, nothing follows)
 
             WRONG (model hallucinates the user reply + a follow-up tool):
-              <tool>
+            <tool>
               <name>read_file</name>
               <path>a.py</path>
             </tool>
@@ -627,14 +628,14 @@ class ToolRegistry:
             </tool>
 
             WRONG (model invents an INTERNAL instruction):
-              <tool>
+            <tool>
               <name>list_files</name>
               <path>.</path>
             </tool>
               [INTERNAL: Continue with the next step.]
 
             WRONG (model uses spaces to bypass the newline-prefixed stop):
-              <tool>
+            <tool>
               <name>list_files</name>
               <path>.</path>
             </tool>  User: Tool `list_files` returned: {...}
@@ -650,13 +651,13 @@ class ToolRegistry:
             The batch tool returns status: "partial" if some sub-ops failed. The results array lists failed paths so you can retry only those, still in batch form.
 
             CORRECT (3 directories in 1 iteration):
-              <tool>
+            <tool>
               <name>create_directories</name>
               <paths>["lib/a","lib/b","lib/c"]</paths>
             </tool>
 
             CORRECT (3 regex searches in 1 walk):
-              <tool>
+            <tool>
               <name>search_in_files</name>
               <patterns>["TODO","FIXME","XXX"]</patterns>
               <file_glob>*.dart</file_glob>
