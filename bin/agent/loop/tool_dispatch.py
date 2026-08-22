@@ -104,6 +104,166 @@ _XML_CHILD_TAG_RE = re.compile(
     re.DOTALL | re.IGNORECASE,
 )
 
+import re
+
+
+import re
+
+
+def _clean_dirty_tool_tag(tag: str) -> str:
+    """Normalize malformed XML-like tool tags, including broken closing tags."""
+
+    if not tag:
+        return tag
+
+    known_tags = {
+        "name",
+        "path",
+        "content",
+        "line",
+        "start_line",
+        "end_line",
+        "pattern",
+        "query",
+        "file",
+        "directory",
+        "filename",
+        "command",
+        "input",
+        "value",
+        "text",
+        "url",
+    }
+
+    # Remove markdown fences if the model wrapped the tool in one.
+    tag = re.sub(r"```(?:[a-zA-Z0-9_+\-]+)?\s*", "", tag)
+    tag = re.sub(r"\s*```", "", tag)
+
+    # Fix malformed tags such as:
+    # <name=read_file>
+    # <name = read_file>
+    # <name="read_file">
+    # <name='read_file'>
+    # <path=Client/lib/presentation>
+    # <line=42>
+    #
+    # Also fixes the form seen in the log:
+    # <name=list_files_recursive</name>
+    # <path=Client/lib/presentation
+    #
+    # The latter is handled separately below because the closing tag is
+    # effectively being used as part of the malformed opening tag.
+    malformed_equal_re = re.compile(
+        r"<([a-zA-Z_][a-zA-Z0-9_-]*)\s*=\s*"
+        r"(?:\"([^\"]*)\"|'([^']*)'|([^<>]*?))"
+        r"\s*>"
+    )
+
+    def replace_equal(match: re.Match) -> str:
+        name = match.group(1)
+
+        if name.lower() not in known_tags:
+            return match.group(0)
+
+        value = (
+            match.group(2)
+            if match.group(2) is not None
+            else match.group(3)
+            if match.group(3) is not None
+            else match.group(4)
+        )
+
+        value = value.strip()
+
+        return f"<{name}>{value}</{name}>"
+
+    previous = None
+    while previous != tag:
+        previous = tag
+        tag = malformed_equal_re.sub(replace_equal, tag)
+
+    # Fix malformed form from the log:
+    # <name=list_files_recursive</name>
+    # -> <name>list_files_recursive</name>
+    #
+    # Also:
+    # <path=Client/lib/presentation</path>
+    # -> <path>Client/lib/presentation</path>
+    malformed_equal_with_close_re = re.compile(
+        r"<([a-zA-Z_][a-zA-Z0-9_-]*)\s*=\s*"
+        r"([^<>]*?)"
+        r"</\1\s*>",
+        re.DOTALL | re.IGNORECASE,
+        )
+
+    def replace_equal_with_close(match: re.Match) -> str:
+        name = match.group(1)
+
+        if name.lower() not in known_tags:
+            return match.group(0)
+
+        value = match.group(2).strip()
+
+        return f"<{name}>{value}</{name}>"
+
+    previous = None
+    while previous != tag:
+        previous = tag
+        tag = malformed_equal_with_close_re.sub(
+            replace_equal_with_close,
+            tag,
+        )
+
+    # Fix a very common truncation seen in the log:
+    #
+    # <path>Client/lib/presentation </tool>
+    #
+    # -> <path>Client/lib/presentation</path></tool>
+    #
+    # This is intentionally restricted to known parameter tags so that
+    # </tool> is not accidentally treated as content for arbitrary XML.
+    for name in known_tags:
+        pattern = re.compile(
+            rf"<{re.escape(name)}>\s*(.*?)\s*</tool>",
+            re.DOTALL | re.IGNORECASE,
+            )
+
+        def repair_missing_close(match: re.Match, name=name) -> str:
+            value = match.group(1).strip()
+
+            # Do not rewrite an already valid parameter.
+            if f"</{name}>" in value.lower():
+                return match.group(0)
+
+            return f"<{name}>{value}</{name}></tool>"
+
+        tag = pattern.sub(repair_missing_close, tag)
+
+    # Remove duplicate closing </tool> tags:
+    # </tool></tool> -> </tool>
+    # </tool> </tool> -> </tool>
+    tag = re.sub(
+        r"(?:\s*</tool>\s*){2,}",
+        "</tool>",
+        tag,
+        flags=re.IGNORECASE,
+    )
+
+    # Normalize whitespace around important values.
+    for name in known_tags:
+        pattern = re.compile(
+            rf"<{re.escape(name)}>\s*(.*?)\s*</{re.escape(name)}>",
+            re.DOTALL | re.IGNORECASE,
+            )
+
+        def strip_value(match: re.Match, name=name) -> str:
+            return f"<{name}>{match.group(1).strip()}</{name}>"
+
+        tag = pattern.sub(strip_value, tag)
+
+    return tag.strip()
+
+
 
 def _parse_xml_tool_call(block_body: str, tool_defs=None) -> Optional[Tuple[str, Dict[str, Any]]]:
     """Parse one <tool> block body (the inner XML) into (name, params).
@@ -127,6 +287,9 @@ def _parse_xml_tool_call(block_body: str, tool_defs=None) -> Optional[Tuple[str,
     # so the XML parser can find the tags.
     block_body = re.sub(r"```[a-zA-Z]*\s*", "", block_body)
     block_body = block_body.replace("```", "").strip()
+
+    #For stupid models that hallucinates continuosly
+    block_body = _clean_dirty_tool_tag(block_body)
 
     # Extract tool name
     name_match = _XML_NAME_RE.search(block_body)
@@ -672,9 +835,11 @@ def looks_like_malformed_tool_call(text: str) -> Tuple[bool, str | None]:
                     "Ensure there is a <name>...</name> child and all parameter "
                     "tags are properly opened and closed.\n"
                     "XML Attributes are FORBIDDEN. PERIOD.\n"
+                    "WRONG example: <name=list_files_recursive</name>. '<name=' IS Malformed XML.\n"
+                    "WRONG example: <path=client/lib</path> As you can see '<path=' IS Malformed XML.\n"
                     "RULES for XML Tags:\n"
                     "Including content BETWEEN TWO DIFFERENT XML TAGS IS FORBIDDEN:\n"
-                    "FORBIDDEN EXMAPLE:\n"
+                    "WRONG EXMAPLES:\n"
                     "<tool>  ```html <name>search_in_files</name> .....\n"
                     "<tool> ```code <name>search_in_files</name> .....\n"
                     "<tool> ``` <name>search_in_files</name> .....\n"
@@ -704,6 +869,19 @@ def looks_like_malformed_tool_call(text: str) -> Tuple[bool, str | None]:
 
     correct_format = (
         "XML Attributes are FORBIDDEN. PERIOD.\n"
+        "WRONG example: <name=list_files_recursive</name>. '<name=' IS Malformed XML.\n"
+        "WRONG example: <path=client/lib</path> As you can see '<path=' IS Malformed XML.\n"
+        "RULES for XML Tags:\n"
+        "Including content BETWEEN TWO DIFFERENT XML TAGS IS FORBIDDEN:\n"
+        "WRONG EXMAPLES:\n"
+        "<tool>  ```html <name>search_in_files</name> .....\n"
+        "<tool> ```code <name>search_in_files</name> .....\n"
+        "<tool> ``` <name>search_in_files</name> .....\n"
+        "<tool>code<name>search_in_files</name> .....\n"
+        "CORRECT TAG FORMAT:\n"
+        "<tool><name>search_in_files</name> .....\n"
+        "<tool><name>read_file</name> .....\n"
+        "<tool><name>patch_file</name> .....\n"
         "UNIQUE CORRECT TOOL CALL FORMAT:\n"
         "<tool>\n"
         "  <name>tool_name</name>\n"

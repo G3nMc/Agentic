@@ -622,7 +622,7 @@ class ToolRegistry:
             </tool>
               User: Tool `read_file` returned: ...
               Assistant: Now I will also read b.py.
-              <tool>
+            <tool>
               <name>read_file</name>
               <path>b.py</path>
             </tool>
@@ -677,7 +677,9 @@ class ToolRegistry:
 
             This is the ONLY format accepted by the parser. Any deviation is an immediate rejection.
             NO JSON. Child tags only — the tag name is the parameter name, the tag body is the value.
-            NO XML Attributes are allowed. IS FORBIDDEN including XML Attributes in XML Tags 
+            NO XML Attributes are allowed. 
+            Including XML Attributes in XML Tags IS FORBIDDEN  
+            
             CORRECT examples:
             
             <tool>
