@@ -356,7 +356,9 @@ class _ChatViewState extends StateManager<ChatView> with WidgetsBindingObserver 
               continue;
             }
             // Also check that the file's parent directory is visible.
-            final parentRel = relPath.contains(Platform.pathSeparator) ? relPath.substring(0, relPath.lastIndexOf(Platform.pathSeparator)) : '';
+            final parentRel = relPath.contains(Platform.pathSeparator)
+                ? relPath.substring(0, relPath.lastIndexOf(Platform.pathSeparator))
+                : '';
             if (parentRel.isNotEmpty && !_filterAllowsDir(parentRel, includeDirs, excludeDirs, dirWhitelist)) {
               continue;
             }
@@ -623,7 +625,9 @@ class _ChatViewState extends StateManager<ChatView> with WidgetsBindingObserver 
         });
         return;
       }
-    } else if (backend == LlmBackend.ollama || backend == LlmBackend.ollamaPython || backend == LlmBackend.ollamaOrchestrator) {
+    } else if (backend == LlmBackend.ollama ||
+        backend == LlmBackend.ollamaPython ||
+        backend == LlmBackend.ollamaOrchestrator) {
       final resolvedModel = (conv.modelId != null && conv.modelId!.trim().isNotEmpty) ? conv.modelId! : ollamaModel;
 
       if (resolvedModel == null || resolvedModel.trim().isEmpty) {
@@ -659,12 +663,17 @@ class _ChatViewState extends StateManager<ChatView> with WidgetsBindingObserver 
     }
 
     final modelId = switch (backend) {
-      LlmBackend.ollama || LlmBackend.ollamaPython || LlmBackend.ollamaOrchestrator => (conv.modelId != null && conv.modelId!.trim().isNotEmpty) ? conv.modelId! : (ollamaModel ?? ''),
+      LlmBackend.ollama ||
+      LlmBackend.ollamaPython ||
+      LlmBackend.ollamaOrchestrator =>
+        (conv.modelId != null && conv.modelId!.trim().isNotEmpty) ? conv.modelId! : (ollamaModel ?? ''),
       LlmBackend.openRouter => resolveOpenRouterModel(
           conv.modelId ?? '',
           openRouterModel ?? '',
         ),
-      LlmBackend.geminiOrchestrator => (conv.modelId != null && conv.modelId!.startsWith('gemini')) ? conv.modelId! : (geminiModel ?? BackendSettingsRepository.defaultGeminiModel),
+      LlmBackend.geminiOrchestrator => (conv.modelId != null && conv.modelId!.startsWith('gemini'))
+          ? conv.modelId!
+          : (geminiModel ?? BackendSettingsRepository.defaultGeminiModel),
       _ => conv.modelId ?? '',
     };
 
@@ -756,7 +765,9 @@ class _ChatViewState extends StateManager<ChatView> with WidgetsBindingObserver 
         ollamaPythonBridgeUrl: ollamaPythonBridgeUrl,
       );
 
-      final historyForRequest = _isOrchestratorBackend(backend) ? history : (prepared.historyToSend.isNotEmpty ? prepared.historyToSend : history);
+      final historyForRequest = _isOrchestratorBackend(backend)
+          ? history
+          : (prepared.historyToSend.isNotEmpty ? prepared.historyToSend : history);
       // Determine temperature based on backend settings.
       double temperature = 0.2;
       switch (backend) {
@@ -1848,6 +1859,7 @@ class _ChatViewState extends StateManager<ChatView> with WidgetsBindingObserver 
       String? groqApiKey;
       String? geminiApiKey;
       String? openRouterApiKey;
+      int? openRouterContextLimit;
       String? githubApiKey;
       double? temperature;
       int? maxTokens;
@@ -1874,7 +1886,9 @@ class _ChatViewState extends StateManager<ChatView> with WidgetsBindingObserver 
         case OrchestratorBackend.groq:
           groqApiKey = await settings.getGroqApiKey() ?? '';
           final savedGroqModel = await settings.getGroqModel() ?? '';
-          modelId = (convModelId.isNotEmpty && !convModelId.contains(':')) ? convModelId : (savedGroqModel.isNotEmpty ? savedGroqModel : convModelId);
+          modelId = (convModelId.isNotEmpty && !convModelId.contains(':'))
+              ? convModelId
+              : (savedGroqModel.isNotEmpty ? savedGroqModel : convModelId);
           temperature = await settings.getGroqTemperature();
           maxTokens = await settings.getGroqMaxTokens();
           tpmLimit = await settings.getGroqTpmLimit();
@@ -1904,6 +1918,7 @@ class _ChatViewState extends StateManager<ChatView> with WidgetsBindingObserver 
           final savedOpenRouterModel = await settings.getOpenRouterModel() ?? '';
           modelId = resolveOpenRouterModel(convModelId, savedOpenRouterModel);
           temperature = await settings.getOpenRouterTemperature();
+          openRouterContextLimit = await settings.getOpenRouterContextLimit();
           maxTokens = await settings.getOpenRouterMaxTokens();
           tpmLimit = await settings.getOpenRouterTpmLimit();
           if (openRouterApiKey.isEmpty) {
@@ -1993,6 +2008,7 @@ class _ChatViewState extends StateManager<ChatView> with WidgetsBindingObserver 
         groqApiKey: groqApiKey,
         geminiApiKey: geminiApiKey,
         openRouterApiKey: openRouterApiKey,
+        openRouterContextLimit: openRouterContextLimit,
         githubApiKey: githubApiKey,
         temperature: temperature,
         maxTokens: maxTokens,
@@ -2321,9 +2337,7 @@ class _ChatViewState extends StateManager<ChatView> with WidgetsBindingObserver 
 
     final statusText = event.note.isNotEmpty
         ? event.note
-        : (event.description.isNotEmpty
-            ? event.description
-            : 'Task #${event.taskId}');
+        : (event.description.isNotEmpty ? event.description : 'Task #${event.taskId}');
     final text = 'Working on: $statusText';
 
     final existingId = _statusMessageId;
@@ -2552,12 +2566,10 @@ class _OrchestratorActivityStrip extends StatefulWidget {
   final bool visible;
 
   @override
-  State<_OrchestratorActivityStrip> createState() =>
-      _OrchestratorActivityStripState();
+  State<_OrchestratorActivityStrip> createState() => _OrchestratorActivityStripState();
 }
 
-class _OrchestratorActivityStripState extends State<_OrchestratorActivityStrip>
-    with SingleTickerProviderStateMixin {
+class _OrchestratorActivityStripState extends State<_OrchestratorActivityStrip> with SingleTickerProviderStateMixin {
   late final AnimationController _spin;
   StreamSubscription<String>? _statusSub;
   String _label = 'Working...';

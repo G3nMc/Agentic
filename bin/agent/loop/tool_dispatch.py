@@ -265,7 +265,7 @@ def _clean_dirty_tool_tag(tag: str) -> str:
 
 
 
-def _parse_xml_tool_call(block_body: str, tool_defs=None) -> Optional[Tuple[str, Dict[str, Any]]]:
+def parse_tool_call(block_body: str, tool_defs=None) -> Optional[Tuple[str, Dict[str, Any]]]:
     """Parse one <tool> block body (the inner XML) into (name, params).
 
     The body looks like:
@@ -362,7 +362,7 @@ def parse_xml_tool_calls(
     # Complete <tool>...</tool> blocks.
     for m in _TOOL_BLOCK_RE.finditer(cleaned):
         body = m.group(1)
-        result = _parse_xml_tool_call(body, tool_defs)
+        result = parse_tool_call(body, tool_defs)
         if result is not None:
             return [result]
 
@@ -371,7 +371,7 @@ def parse_xml_tool_calls(
     if start != -1:
         body = cleaned[start + len("<tool>"):]
 
-        result = _parse_xml_tool_call(body, tool_defs)
+        result = parse_tool_call(body, tool_defs)
         if result is not None:
             return [result]
 

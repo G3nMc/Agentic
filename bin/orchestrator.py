@@ -377,6 +377,11 @@ def main():
 
     # Backend-specific dependency checks keep the startup error focused on
     # the backend the user actually selected.
+    print(
+        f"[orch] args: {args}",
+        file=sys.stderr,
+    )
+
     if args.backend == "huggingface" and not args.model:
         args.model = "meta-llama/Llama-3.1-70B-Instruct"
     if args.backend == "gemini" and not args.model:
