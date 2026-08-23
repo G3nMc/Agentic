@@ -1,4 +1,3 @@
-
 """The Orchestrator — runs the model / tool-call / model loop for one request.
 
 Design
@@ -17,13 +16,11 @@ Design
 from __future__ import annotations
 
 import json
-import os
 import re
 import sys
 import time
 from collections import Counter, deque
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import Any, Deque, Dict, FrozenSet, List, Optional, Sequence, Set, Tuple
 
 from agent.backends import ModelBackend
@@ -43,6 +40,9 @@ from agent.loop.task_protocol import (
     strip_task_tags,
 )
 from agent.loop.tool_detector import ToolIntentDetector
+# NOTE: private import. Ask tool_dispatch to export this as
+# ``looks_like_tool_attempt``; kept aliased so only this line changes.
+from agent.loop.tool_dispatch import _looks_like_tool_attempt as looks_like_tool_attempt
 from agent.loop.tool_dispatch import (
     clean_final_answer,
     clean_history_text,
@@ -52,15 +52,11 @@ from agent.loop.tool_dispatch import (
     looks_like_unclosed_tool,
     parse_all_tag_tool_calls,
 )
-# NOTE: private import. Ask tool_dispatch to export this as
-# ``looks_like_tool_attempt``; kept aliased so only this line changes.
-from agent.loop.tool_dispatch import _looks_like_tool_attempt as looks_like_tool_attempt
 from agent.tools.registry import ToolRegistry
 from agent.utils.circuit_breaker import CircuitBreaker
 from agent.utils.token_estimator import chars_for_tokens, estimate_messages_tokens
 
 __all__ = ["Orchestrator"]
-
 
 # ======================================================================
 # TUNING CONSTANTS
@@ -137,6 +133,7 @@ _EXTENSION_SUPPRESS_SUCCESSES = 6
 # hallucinating a fake transcript after the real call; the missing closing tag
 # is repaired by the caller.
 _TOOL_STOP_SEQUENCES: Tuple[str, ...] = (
+    "<tool",
     "</tool>",
     "\nUser:",
     "\nAssistant:",
@@ -145,7 +142,7 @@ _TOOL_STOP_SEQUENCES: Tuple[str, ...] = (
 
 # During synthesis we genuinely want to forbid tool calls, so ``<tool>`` is a
 # legitimate stop string here.
-_SYNTH_STOP_SEQUENCES: Tuple[str, ...] = ("<tool>",) + _TOOL_STOP_SEQUENCES
+_SYNTH_STOP_SEQUENCES: Tuple[str, ...] = _TOOL_STOP_SEQUENCES
 
 _TRUNCATION_MARKERS: Tuple[str, ...] = (
     "[... more lines",
@@ -165,7 +162,6 @@ _THINKING_MODEL_PATTERNS: Tuple[str, ...] = (
     "reasoning",
 )
 _MIN_THINKING_MAX_TOKENS = 4096
-
 
 # ======================================================================
 # TEXT HEURISTICS
@@ -501,7 +497,6 @@ _FABRICATION_RE = re.compile(
 
 # One complete <tool>...</tool> block, non-greedy.
 _TOOL_BLOCK_RE = re.compile(r"<tool\b.*?</tool\s*>", re.DOTALL | re.IGNORECASE)
-
 
 
 def _directive_agent(task_flow: bool) -> str:
@@ -2300,7 +2295,6 @@ class Orchestrator:
             f"{attempts} attempts. Last error: {last_exc}. Try again shortly, "
             f"switch to a less-busy model, or check quota / daemon health."
         )
-
 
 #::::::::::::::::::::::::::::::::::::::::::::::::::::::::OLD
 
