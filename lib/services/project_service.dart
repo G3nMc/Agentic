@@ -51,13 +51,13 @@ class ProjectService {
   /// The active project path exposed to the orchestrator.
   ///
   /// Always returned as Linux-style path.
-  String get currentPath => windowsToLinuxPath(_currentPath ?? Directory.current.path);
+  String get currentPath => _currentPath ?? Directory.current.path;
 
   /// The active project key exposed as Linux-style path.
-  String? get activeProjectKey => _currentPath == null ? null : windowsToLinuxPath(_currentPath!);
+  String? get activeProjectKey => _currentPath;
 
   /// Project folders exposed as Linux-style paths.
-  List<String> get projectFolders => List.unmodifiable(_projectFolders.map(windowsToLinuxPath));
+  List<String> get projectFolders => List.unmodifiable(_projectFolders);
 
   /// True when a folder has been explicitly selected.
   bool get hasExplicitFolder => _currentPath != null;
@@ -68,7 +68,7 @@ class ProjectService {
 
     _loaded = true;
 
-    SettingsRepository.projectKeyProvider = () => _currentPath == null ? null : windowsToLinuxPath(_currentPath!);
+    SettingsRepository.projectKeyProvider = () => _currentPath;
 
     final savedProjectsRaw = await SettingsRepository.instance.get(_projectsSettingsKey);
 
@@ -110,10 +110,7 @@ class ProjectService {
 
     final preferred = last == null ? null : normalisePath(last);
 
-    if (preferred != null &&
-        preferred.isNotEmpty &&
-        projects.contains(preferred) &&
-        Directory(preferred).existsSync()) {
+    if (preferred != null && preferred.isNotEmpty && projects.contains(preferred) && Directory(preferred).existsSync()) {
       _currentPath = preferred;
     } else if (projects.isNotEmpty) {
       _currentPath = projects.first;
@@ -262,10 +259,10 @@ class ProjectService {
   }
 
   void _updateNotifiers() {
-    currentPathNotifier.value = _currentPath == null ? null : windowsToLinuxPath(_currentPath!);
+    currentPathNotifier.value = _currentPath;
 
     projectFoldersNotifier.value = List.unmodifiable(
-      _projectFolders.map(windowsToLinuxPath),
+      _projectFolders,
     );
   }
 

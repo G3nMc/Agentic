@@ -194,7 +194,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   String? _openRouterSelectedModel;
   bool _openRouterLoadingModels = false;
   double _openRouterTemperature = BackendSettingsRepository.defaultOpenRouterTemperature;
-  int _openRouterContextLimit = 128000;
+
   final TextEditingController _openRouterMaxTokensController = TextEditingController();
   final TextEditingController _openRouterContextLimitController = TextEditingController();
   Timer? _openRouterMaxTokensSaveTimer;
@@ -532,8 +532,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
       models = [selected, ...models];
     }
 
-    final String? nextSelected =
-        models.isEmpty ? null : (models.contains(_openRouterSelectedModel) ? _openRouterSelectedModel : models.first);
+    final String? nextSelected = models.isEmpty ? null : (models.contains(_openRouterSelectedModel) ? _openRouterSelectedModel : models.first);
 
     if (!mounted) return;
     setState(() {
@@ -651,9 +650,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
               IconButton(
                 icon: const Icon(Icons.refresh, size: 18),
                 tooltip: 'Refresh model list',
-                onPressed: _groqApiKeyController.text.trim().isNotEmpty
-                    ? () => _refreshGroqModels(_groqApiKeyController.text.trim())
-                    : null,
+                onPressed: _groqApiKeyController.text.trim().isNotEmpty ? () => _refreshGroqModels(_groqApiKeyController.text.trim()) : null,
               ),
             ],
           ),
@@ -721,8 +718,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
             presets: TokenCountPicker.maxTokensPresets,
             labelText: 'Max completion tokens',
             hintText: '4096',
-            helperText:
-                'Reply-length cap only. Groq bills per emitted output token, so raising this just allows longer '
+            helperText: 'Reply-length cap only. Groq bills per emitted output token, so raising this just allows longer '
                 'answers — it does not pre-charge you. Groq models support 8K–32K output depending on the model.',
             onChanged: _scheduleGroqMaxTokensSave,
           ),
@@ -987,9 +983,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   Widget _openRouterControlPanel() {
     final modelOptions = _openRouterModelOptions();
-    final selectedModel = modelOptions.contains(_openRouterSelectedModel)
-        ? _openRouterSelectedModel
-        : (modelOptions.isEmpty ? null : modelOptions.first);
+    final selectedModel = modelOptions.contains(_openRouterSelectedModel) ? _openRouterSelectedModel : (modelOptions.isEmpty ? null : modelOptions.first);
 
     return _section(
       title: 'OpenRouter',
@@ -1009,9 +1003,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     ? const LinearProgressIndicator()
                     : modelOptions.isEmpty
                         ? Text(
-                            _openRouterApiKeyController.text.trim().isEmpty
-                                ? 'Save an API key to load the model catalog.'
-                                : 'No models available — refresh to retry.',
+                            _openRouterApiKeyController.text.trim().isEmpty ? 'Save an API key to load the model catalog.' : 'No models available — refresh to retry.',
                             style: TextStyle(fontSize: 12, color: Colors.grey[600]),
                           )
                         : DropdownButton<String>(
@@ -1146,7 +1138,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
             onChanged: (value) {
               final parsed = int.tryParse(value.trim());
               if (parsed != null && parsed > 0) {
-                setState(() => _openRouterContextLimit = parsed);
                 _scheduleOpenRouterContextLimitSave(value);
               }
             },
@@ -1158,8 +1149,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
             decoration: const InputDecoration(
               labelText: 'TPM limit (0 = unlimited)',
               hintText: '0',
-              helperText:
-                  'Tokens-per-minute cap applied by the orchestrator. Set to stay under the provider/free-tier limit.',
+              helperText: 'Tokens-per-minute cap applied by the orchestrator. Set to stay under the provider/free-tier limit.',
               suffixText: 'TPM',
             ),
             onChanged: _scheduleOpenRouterTpmLimitSave,
@@ -1227,14 +1217,12 @@ class _SettingsScreenState extends State<SettingsScreen> {
         const SizedBox(width: 8),
         const Expanded(
           flex: _kOrColFlexCtx,
-          child:
-              Text('Context', style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold), textAlign: TextAlign.right),
+          child: Text('Context', style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold), textAlign: TextAlign.right),
         ),
         const SizedBox(width: 8),
         const Expanded(
           flex: _kOrColFlexMaxOut,
-          child:
-              Text('Max out', style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold), textAlign: TextAlign.right),
+          child: Text('Max out', style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold), textAlign: TextAlign.right),
         ),
         const SizedBox(width: 8),
         Expanded(
@@ -1254,8 +1242,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
         const SizedBox(width: 8),
         const SizedBox(
           width: _kOrColWidthTools,
-          child:
-              Text('Tools', style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold), textAlign: TextAlign.center),
+          child: Text('Tools', style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold), textAlign: TextAlign.center),
         ),
         const SizedBox(width: 8),
         const SizedBox(
@@ -1574,8 +1561,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                         value: selectedModel,
                         items: modelOptions.map(
                           (m) {
-                            final cat = _githubCatalog.firstWhere((c) => c.id == m,
-                                orElse: () => GithubModel.fromJson(const {}));
+                            final cat = _githubCatalog.firstWhere((c) => c.id == m, orElse: () => GithubModel.fromJson(const {}));
                             final tools = GithubModelsService.supportsToolCalling(cat);
                             return DropdownMenuItem<String>(
                               value: m,
@@ -1583,8 +1569,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                                 mainAxisSize: MainAxisSize.min,
                                 children: [
                                   Flexible(
-                                    child:
-                                        Text(m, style: const TextStyle(fontSize: 13), overflow: TextOverflow.ellipsis),
+                                    child: Text(m, style: const TextStyle(fontSize: 13), overflow: TextOverflow.ellipsis),
                                   ),
                                   if (!tools && cat.id.isNotEmpty) ...[
                                     const SizedBox(width: 4),
@@ -1608,8 +1593,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                           }
                           // Auto-toggle plain-chat mode for non-tool models so
                           // the orchestrator skips the tool loop on next start.
-                          final cat =
-                              _githubCatalog.firstWhere((c) => c.id == v, orElse: () => GithubModel.fromJson(const {}));
+                          final cat = _githubCatalog.firstWhere((c) => c.id == v, orElse: () => GithubModel.fromJson(const {}));
                           final disable = cat.id.isNotEmpty && !GithubModelsService.supportsToolCalling(cat);
                           await BackendSettingsRepository.instance.setGithubDisableTools(disable);
                         },
@@ -1689,8 +1673,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
             presets: TokenCountPicker.maxTokensPresets,
             labelText: 'Max completion tokens',
             hintText: '4096',
-            helperText:
-                'Reply-length cap only — GitHub Models uses `max_tokens`. The full context window is managed by '
+            helperText: 'Reply-length cap only — GitHub Models uses `max_tokens`. The full context window is managed by '
                 'the provider. Bigger values just allow longer answers; you are metered per emitted output token.',
             onChanged: _scheduleGithubMaxTokensSave,
           ),
@@ -1959,9 +1942,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                           width: _kGithubColWidthTools,
                           child: Center(
                             child: Icon(
-                              GithubModelsService.supportsToolCalling(m)
-                                  ? Icons.check_circle
-                                  : Icons.remove_circle_outline,
+                              GithubModelsService.supportsToolCalling(m) ? Icons.check_circle : Icons.remove_circle_outline,
                               size: 16,
                               color: GithubModelsService.supportsToolCalling(m) ? Colors.green : Colors.grey,
                             ),
@@ -2205,8 +2186,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
             decoration: const InputDecoration(
               labelText: 'TPM limit (0 = unlimited)',
               hintText: '0',
-              helperText:
-                  'Tokens-per-minute cap applied by the orchestrator. Set to stay under the provider/free-tier limit.',
+              helperText: 'Tokens-per-minute cap applied by the orchestrator. Set to stay under the provider/free-tier limit.',
               suffixText: 'TPM',
             ),
             onChanged: _scheduleGeminiTpmLimitSave,
@@ -2450,9 +2430,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
         SnackBar(content: Text('Failed to set env var: $errorMsg')),
       );
     } else {
-      final where = Platform.isWindows
-          ? 'user environment (restart apps to pick it up)'
-          : '~/.zshrc / ~/.bashrc (re-open terminal to pick it up)';
+      final where = Platform.isWindows ? 'user environment (restart apps to pick it up)' : '~/.zshrc / ~/.bashrc (re-open terminal to pick it up)';
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('OLLAMA_API_KEY saved to $where')),
       );
@@ -2539,22 +2517,18 @@ class _SettingsScreenState extends State<SettingsScreen> {
       _groqTpmLimitController.text = groqTpmLimit.toString();
       _geminiApiKeyController.text = geminiApiKey ?? '';
       _geminiModels = geminiModels;
-      _geminiSelectedModel = (geminiModel == null || geminiModel.trim().isEmpty)
-          ? BackendSettingsRepository.defaultGeminiModel
-          : geminiModel.trim();
+      _geminiSelectedModel = (geminiModel == null || geminiModel.trim().isEmpty) ? BackendSettingsRepository.defaultGeminiModel : geminiModel.trim();
       _geminiTemperature = geminiTemperature;
       _geminiMaxTokensController.text = geminiMaxTokens.toString();
       _geminiTpmLimitController.text = geminiTpmLimit.toString();
       _openRouterApiKeyController.text = openRouterApiKey ?? '';
       _openRouterSelectedModel = openRouterModel;
       _openRouterTemperature = openRouterTemperature;
-      _openRouterContextLimit = openRouterContextLimit;
       _openRouterMaxTokensController.text = openRouterMaxTokens.toString();
       _openRouterContextLimitController.text = openRouterContextLimit.toString();
       _openRouterTpmLimitController.text = openRouterTpmLimit.toString();
       _githubApiKeyController.text = githubApiKey ?? '';
-      _githubSelectedModel =
-          (githubModel == null || githubModel.isEmpty) ? GithubModelsService.fallbackModels.first : githubModel;
+      _githubSelectedModel = (githubModel == null || githubModel.isEmpty) ? GithubModelsService.fallbackModels.first : githubModel;
       _githubTemperature = githubTemperature;
       _githubMaxTokensController.text = githubMaxTokens.toString();
       _githubTpmLimitController.text = githubTpmLimit.toString();
@@ -2568,9 +2542,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
       _loading = false;
     });
 
-    if (backend == LlmBackend.ollama ||
-        backend == LlmBackend.ollamaPython ||
-        backend == LlmBackend.ollamaOrchestrator) {
+    if (backend == LlmBackend.ollama || backend == LlmBackend.ollamaPython || backend == LlmBackend.ollamaOrchestrator) {
       // ignore: unawaited_futures
       _refreshOllamaStatus();
     }
@@ -2755,8 +2727,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   Future<void> _startOrchestrator() async {
     if (_orchestratorBusy) return;
-    if (OrchestratorManager.instance.isRunning &&
-        OrchestratorManager.instance.currentBackend == OrchestratorBackend.huggingface) {
+    if (OrchestratorManager.instance.isRunning && OrchestratorManager.instance.currentBackend == OrchestratorBackend.huggingface) {
       return;
     }
 
@@ -2770,8 +2741,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     // Persist it in case the user hasn't pressed Save.
     await AgentCredentialsRepository.instance.saveCredentials(AgentCredentials(hfToken: token));
 
-    if (OrchestratorManager.instance.isRunning &&
-        OrchestratorManager.instance.currentBackend != OrchestratorBackend.huggingface) {
+    if (OrchestratorManager.instance.isRunning && OrchestratorManager.instance.currentBackend != OrchestratorBackend.huggingface) {
       await OrchestratorManager.instance.stop();
     }
 
@@ -2823,8 +2793,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     }
     final model = _groqSelectedModel ?? GroqService.fallbackModels.first;
 
-    if (OrchestratorManager.instance.isRunning &&
-        OrchestratorManager.instance.currentBackend != OrchestratorBackend.groq) {
+    if (OrchestratorManager.instance.isRunning && OrchestratorManager.instance.currentBackend != OrchestratorBackend.groq) {
       await OrchestratorManager.instance.stop();
     }
 
@@ -2835,8 +2804,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     _appendLog('Starting Groq orchestrator (model: $model)…');
 
     final temperature = _groqTemperature;
-    final maxTokens =
-        int.tryParse(_groqMaxTokensController.text.trim()) ?? BackendSettingsRepository.defaultGroqMaxTokens;
+    final maxTokens = int.tryParse(_groqMaxTokensController.text.trim()) ?? BackendSettingsRepository.defaultGroqMaxTokens;
 
     final started = await OrchestratorManager.instance.start(
       backend: OrchestratorBackend.groq,
@@ -2872,12 +2840,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
       );
       return;
     }
-    final model = (_geminiSelectedModel != null && _geminiSelectedModel!.trim().isNotEmpty)
-        ? _geminiSelectedModel!.trim()
-        : BackendSettingsRepository.defaultGeminiModel;
+    final model = (_geminiSelectedModel != null && _geminiSelectedModel!.trim().isNotEmpty) ? _geminiSelectedModel!.trim() : BackendSettingsRepository.defaultGeminiModel;
 
-    if (OrchestratorManager.instance.isRunning &&
-        OrchestratorManager.instance.currentBackend != OrchestratorBackend.gemini) {
+    if (OrchestratorManager.instance.isRunning && OrchestratorManager.instance.currentBackend != OrchestratorBackend.gemini) {
       await OrchestratorManager.instance.stop();
     }
 
@@ -2892,8 +2857,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
       modelId: model,
       geminiApiKey: apiKey,
       temperature: _geminiTemperature,
-      maxTokens:
-          int.tryParse(_geminiMaxTokensController.text.trim()) ?? BackendSettingsRepository.defaultGeminiMaxTokens,
+      maxTokens: int.tryParse(_geminiMaxTokensController.text.trim()) ?? BackendSettingsRepository.defaultGeminiMaxTokens,
     );
     final stderr = OrchestratorManager.instance.stderrLog;
     if (stderr.isNotEmpty) {
@@ -2924,8 +2888,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
       return;
     }
 
-    if (OrchestratorManager.instance.isRunning &&
-        OrchestratorManager.instance.currentBackend != OrchestratorBackend.ollama) {
+    if (OrchestratorManager.instance.isRunning && OrchestratorManager.instance.currentBackend != OrchestratorBackend.ollama) {
       await OrchestratorManager.instance.stop();
     }
 
@@ -3653,8 +3616,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
             value: _ollamaAutoNumCtx,
             onChanged: (v) async {
               setState(() => _ollamaAutoNumCtx = v);
-              await BackendSettingsRepository.instance
-                  .setOllamaAutoNumCtx(v);
+              await BackendSettingsRepository.instance.setOllamaAutoNumCtx(v);
             },
             dense: true,
             contentPadding: EdgeInsets.zero,
@@ -4078,14 +4040,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
   // ---- Model Settings panel -------------------------------------------------
 
   Widget _buildModelSettings() {
-    final isOllamaBackend = _activeBackend == LlmBackend.ollama ||
-        _activeBackend == LlmBackend.ollamaPython ||
-        _activeBackend == LlmBackend.ollamaOrchestrator ||
-        _activeBackend == LlmBackend.ollamaGenerate;
+    final isOllamaBackend =
+        _activeBackend == LlmBackend.ollama || _activeBackend == LlmBackend.ollamaPython || _activeBackend == LlmBackend.ollamaOrchestrator || _activeBackend == LlmBackend.ollamaGenerate;
     final isGroqBackend = _activeBackend == LlmBackend.groq || _activeBackend == LlmBackend.groqOrchestrator;
     final isGeminiBackend = _activeBackend == LlmBackend.geminiOrchestrator;
-    final isOpenRouterBackend =
-        _activeBackend == LlmBackend.openRouter || _activeBackend == LlmBackend.openRouterOrchestrator;
+    final isOpenRouterBackend = _activeBackend == LlmBackend.openRouter || _activeBackend == LlmBackend.openRouterOrchestrator;
     final isGithubBackend = _activeBackend == LlmBackend.githubOrchestrator;
 
     return SingleChildScrollView(
@@ -4189,9 +4148,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                                 await OrchestratorManager.instance.stop();
                               }
 
-                              if (v == LlmBackend.ollama ||
-                                  v == LlmBackend.ollamaPython ||
-                                  v == LlmBackend.ollamaOrchestrator) {
+                              if (v == LlmBackend.ollama || v == LlmBackend.ollamaPython || v == LlmBackend.ollamaOrchestrator) {
                                 // ignore: unawaited_futures
                                 _refreshOllamaStatus();
                               }
@@ -4240,8 +4197,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                       ),
                       const SizedBox(height: 8),
                       ElevatedButton.icon(
-                        onPressed:
-                            _localServerUrl != null && _localServerUrl!.isNotEmpty ? () => _testLocalServer() : null,
+                        onPressed: _localServerUrl != null && _localServerUrl!.isNotEmpty ? () => _testLocalServer() : null,
                         icon: const Icon(Icons.cloud_done, size: 16),
                         label: const Text("Test Connection"),
                       ),
@@ -4382,8 +4338,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                                 );
                                 return;
                               }
-                              await AgentCredentialsRepository.instance
-                                  .saveCredentials(AgentCredentials(hfToken: token));
+                              await AgentCredentialsRepository.instance.saveCredentials(AgentCredentials(hfToken: token));
                               if (!mounted) return;
                               messenger.showSnackBar(
                                 const SnackBar(content: Text("Agent token saved")),
@@ -4434,8 +4389,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 const SizedBox(height: 28),
               ],
               // Saved models (HF only, non-Ollama)
-              if (!isOllamaBackend &&
-                  (_activeBackend == LlmBackend.orchestrator || _activeBackend == LlmBackend.huggingFace)) ...[
+              if (!isOllamaBackend && (_activeBackend == LlmBackend.orchestrator || _activeBackend == LlmBackend.huggingFace)) ...[
                 const SizedBox(height: 28),
                 _section(
                   title: "Saved models",
@@ -4790,9 +4744,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                         runSpacing: 8,
                         children: [
                           ElevatedButton.icon(
-                            onPressed: (_ollamaBusy || !OllamaManager.instance.supportsUiInstall)
-                                ? null
-                                : _installOllamaBinary,
+                            onPressed: (_ollamaBusy || !OllamaManager.instance.supportsUiInstall) ? null : _installOllamaBinary,
                             icon: const Icon(Icons.download_outlined, size: 14),
                             label: Text(
                               OllamaManager.instance.supportsUiInstall ? 'Install from UI' : 'UI install unavailable',
@@ -5320,9 +5272,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
           borderRadius: BorderRadius.circular(8),
         ),
         child: Text(
-          _ollamaCatalogLoading
-              ? 'Loading catalog…'
-              : 'No models installed yet. Pull one above to populate this table.',
+          _ollamaCatalogLoading ? 'Loading catalog…' : 'No models installed yet. Pull one above to populate this table.',
           style: const TextStyle(fontSize: 12, color: AppTheme.textSecondary),
         ),
       );
@@ -5394,8 +5344,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 SizedBox(width: 8),
                 Expanded(
                   flex: _kOlColFlexParams,
-                  child: Text('Params',
-                      style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold), textAlign: TextAlign.right),
+                  child: Text('Params', style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold), textAlign: TextAlign.right),
                 ),
                 SizedBox(width: 8),
                 Expanded(
@@ -5405,8 +5354,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 SizedBox(width: 8),
                 Expanded(
                   flex: _kOlColFlexSize,
-                  child: Text('Size',
-                      style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold), textAlign: TextAlign.right),
+                  child: Text('Size', style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold), textAlign: TextAlign.right),
                 ),
                 SizedBox(width: 8),
                 Expanded(
@@ -5416,20 +5364,17 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 SizedBox(width: 8),
                 SizedBox(
                   width: _kOlColWidthInstalled,
-                  child: Text('Inst.',
-                      style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold), textAlign: TextAlign.center),
+                  child: Text('Inst.', style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold), textAlign: TextAlign.center),
                 ),
                 SizedBox(width: 8),
                 SizedBox(
                   width: _kOlColWidthTools,
-                  child: Text('Tools',
-                      style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold), textAlign: TextAlign.center),
+                  child: Text('Tools', style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold), textAlign: TextAlign.center),
                 ),
                 SizedBox(width: 8),
                 SizedBox(
                   width: _kOlColWidthActions,
-                  child: Text('Actions',
-                      style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold), textAlign: TextAlign.center),
+                  child: Text('Actions', style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold), textAlign: TextAlign.center),
                 ),
               ],
             ),
@@ -5779,9 +5724,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                       },
               ),
               IconButton(
-                tooltip: serverUp
-                    ? (installed ? 'Re-pull / update ${m.name}' : 'Pull ${m.name}')
-                    : 'Start the Ollama server first',
+                tooltip: serverUp ? (installed ? 'Re-pull / update ${m.name}' : 'Pull ${m.name}') : 'Start the Ollama server first',
                 padding: EdgeInsets.zero,
                 constraints: const BoxConstraints(minWidth: 28, minHeight: 28),
                 icon: const Icon(Icons.download, size: 14),
@@ -6292,8 +6235,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
       return;
     }
 
-    if (OrchestratorManager.instance.isRunning &&
-        OrchestratorManager.instance.currentBackend != OrchestratorBackend.openrouter) {
+    if (OrchestratorManager.instance.isRunning && OrchestratorManager.instance.currentBackend != OrchestratorBackend.openrouter) {
       await OrchestratorManager.instance.stop();
     }
 
@@ -6304,8 +6246,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     _appendLog('Starting OpenRouter orchestrator (model: $model)...');
 
     final temperature = _openRouterTemperature;
-    final maxTokens = int.tryParse(_openRouterMaxTokensController.text.trim()) ??
-        BackendSettingsRepository.defaultOpenRouterMaxTokens;
+    final maxTokens = int.tryParse(_openRouterMaxTokensController.text.trim()) ?? BackendSettingsRepository.defaultOpenRouterMaxTokens;
 
     final started = await OrchestratorManager.instance.start(
       backend: OrchestratorBackend.openrouter,
@@ -6343,8 +6284,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     }
     final model = _githubSelectedModel ?? GithubModelsService.fallbackModels.first;
 
-    if (OrchestratorManager.instance.isRunning &&
-        OrchestratorManager.instance.currentBackend != OrchestratorBackend.github) {
+    if (OrchestratorManager.instance.isRunning && OrchestratorManager.instance.currentBackend != OrchestratorBackend.github) {
       await OrchestratorManager.instance.stop();
     }
 
@@ -6355,8 +6295,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     _appendLog('Starting GitHub Models orchestrator (model: $model)...');
 
     final temperature = _githubTemperature;
-    final maxTokens =
-        int.tryParse(_githubMaxTokensController.text.trim()) ?? BackendSettingsRepository.defaultGithubMaxTokens;
+    final maxTokens = int.tryParse(_githubMaxTokensController.text.trim()) ?? BackendSettingsRepository.defaultGithubMaxTokens;
     final tpmLimit = int.tryParse(_githubTpmLimitController.text.trim()) ?? 0;
     final disableTools = await BackendSettingsRepository.instance.getGithubDisableTools();
     if (disableTools) {
@@ -6849,8 +6788,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   }) async {
     final controller = TextEditingController(text: initial);
     final label = _filterLabel(category);
-    final isDirCategory =
-        category == DevFiltersRepository.kExcludeDirs || category == DevFiltersRepository.kIncludeDirs;
+    final isDirCategory = category == DevFiltersRepository.kExcludeDirs || category == DevFiltersRepository.kIncludeDirs;
 
     Future<void> browse() async {
       if (isDirCategory) {
@@ -6908,9 +6846,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   ),
                   const SizedBox(width: 6),
                   IconButton(
-                    tooltip: isDirCategory
-                        ? 'Browse for a directory'
-                        : 'Browse for a file (type *.ext for an extension instead)',
+                    tooltip: isDirCategory ? 'Browse for a directory' : 'Browse for a file (type *.ext for an extension instead)',
                     icon: Icon(
                       isDirCategory ? Icons.folder_open_outlined : Icons.upload_file_outlined,
                       size: 20,
@@ -7438,10 +7374,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
         final installDir = Directory('$localAppData\\Programs\\Agentic');
         if (await installDir.exists()) {
           // Inno Setup names uninstallers unins000.exe, unins001.exe, etc.
-          final unins = await installDir
-              .list()
-              .where((e) => e is File && e.path.endsWith('.exe') && RegExp(r'unins\d{3}\.exe$').hasMatch(e.path))
-              .toList();
+          final unins = await installDir.list().where((e) => e is File && e.path.endsWith('.exe') && RegExp(r'unins\d{3}\.exe$').hasMatch(e.path)).toList();
           if (unins.isNotEmpty) {
             unins.sort((a, b) => b.path.compareTo(a.path)); // newest first
             final uninsPath = (unins.first as File).path;
@@ -7561,12 +7494,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
         ..writeln('Name: "{userdesktop}\\$appName"; Filename: "{app}\\$exeName"; Tasks: desktopicon')
         ..writeln()
         ..writeln('[Tasks]')
-        ..writeln(
-            'Name: "desktopicon"; Description: "Create a &desktop icon"; GroupDescription: "Additional icons:"; Flags: unchecked')
+        ..writeln('Name: "desktopicon"; Description: "Create a &desktop icon"; GroupDescription: "Additional icons:"; Flags: unchecked')
         ..writeln()
         ..writeln('[Run]')
-        ..writeln(
-            'Filename: "{app}\\$exeName"; Description: "Launch $appName"; Flags: nowait postinstall skipifsilent');
+        ..writeln('Filename: "{app}\\$exeName"; Description: "Launch $appName"; Flags: nowait postinstall skipifsilent');
 
       await File(issPath).writeAsString(iss.toString());
       _appendInstallerLog('Wrote Inno Setup script: $issPath');

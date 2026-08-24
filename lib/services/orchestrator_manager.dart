@@ -20,6 +20,7 @@ import 'openrouter_service.dart';
 ///   - [OrchestratorTaskStatusChanged]: one task moved to a new state.
 sealed class OrchestratorTaskEvent {
   const OrchestratorTaskEvent({required this.conversationId});
+
   final String conversationId;
 }
 
@@ -28,6 +29,7 @@ class OrchestratorTasksProposed extends OrchestratorTaskEvent {
     required super.conversationId,
     required this.tasks,
   });
+
   final List<ConversationTask> tasks;
 }
 
@@ -39,6 +41,7 @@ class OrchestratorTaskStatusChanged extends OrchestratorTaskEvent {
     this.note = '',
     this.description = '',
   });
+
   final int taskId;
   final TaskStatus status;
   final String note;
@@ -86,11 +89,13 @@ enum OrchestratorBackend { huggingface, ollama, groq, gemini, openrouter, github
 ///       __RESPONSE_END__
 class OrchestratorManager {
   OrchestratorManager._internal();
+
   static final OrchestratorManager instance = OrchestratorManager._internal();
 
   Process? _process;
   bool _isRunning = false;
   bool _isReady = false;
+
   // Guards against concurrent start() calls before _isRunning flips true.
   // Holds the in-flight start() future so overlapping callers await the same
   // result instead of each spawning their own subprocess.
@@ -110,8 +115,10 @@ class OrchestratorManager {
   // launched with `multiAgent: true` and Python actually returned a `trace`
   // array in its response payload. Single-agent mode leaves this idle.
   final StreamController<List<Map<String, Object?>>> _traceController = StreamController<List<Map<String, Object?>>>.broadcast();
+
   Stream<List<Map<String, Object?>>> get traceStream => _traceController.stream;
   List<Map<String, Object?>> _lastTrace = const [];
+
   List<Map<String, Object?>> get lastTrace => List.unmodifiable(_lastTrace);
 
   // â”€â”€ Human-friendly status stream â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -135,8 +142,7 @@ class OrchestratorManager {
   // subscribes via ``taskStream`` to update the checklist panel live
   // and the persistence layer subscribes to mirror changes into the
   // ``conversation_tasks`` SQLite table.
-  final StreamController<OrchestratorTaskEvent> _taskController =
-      StreamController<OrchestratorTaskEvent>.broadcast();
+  final StreamController<OrchestratorTaskEvent> _taskController = StreamController<OrchestratorTaskEvent>.broadcast();
 
   /// Live stream of structured task-flow events. Idle when the chat
   /// runs in OPEN mode.
@@ -158,6 +164,7 @@ class OrchestratorManager {
   /// output (they can populate themselves from this list on first build).
   static const int _kMaxLogLines = 2000;
   final List<String> _logLines = [];
+
   List<String> get logLines => List.unmodifiable(_logLines);
   String? _lastNonEmptyLogLine;
 
@@ -431,10 +438,15 @@ class OrchestratorManager {
   String? get currentSessionKey => _sessionKey;
 
   bool get isRunning => _isRunning;
+
   bool get isReady => _isReady;
+
   OrchestratorBackend get currentBackend => _currentBackend;
+
   String? get currentModelId => _currentModelId;
+
   double? get currentTemperature => _currentTemperature;
+
   String get stderrLog => _stderrBuffer.toString();
 
   /// Platform-appropriate Python executable used as a fallback when the
@@ -447,7 +459,7 @@ class OrchestratorManager {
   static Future<String> resolvePythonExecutable() async {
     final configured = await SettingsRepository.instance.getPythonPath();
     if (configured != null && configured.trim().isNotEmpty) {
-      return configured.trim();
+      return  configured.trim();
     }
     return defaultPythonExecutable;
   }
@@ -498,7 +510,7 @@ class OrchestratorManager {
 
   /// Directory the orchestrator is allowed to touch (its --base-path).
   /// Defaults to the project root so tools operate on the current project.
-  static Directory get baseDirectory => Directory(ProjectService().currentPath);
+  static Directory get baseDirectory => Directory(ProjectService.windowsToLinuxPath(ProjectService().currentPath));
 
   /// Install Python dependencies the orchestrator needs. Runs synchronously
   /// (streams output via [onLine] if provided) and returns true on success.
@@ -664,13 +676,8 @@ class OrchestratorManager {
       if (openRouterApiKey == null || openRouterApiKey.isEmpty) {
         openRouterApiKey = await backendSettings.getOpenRouterApiKey();
       }
-      if (openRouterContextLimit == null &&
-          openRouterApiKey != null &&
-          openRouterApiKey.isNotEmpty &&
-          modelId != null &&
-          modelId.isNotEmpty) {
-        openRouterContextLimit = await OpenRouterService.instance
-            .fetchContextLimit(openRouterApiKey, modelId);
+      if (openRouterContextLimit == null && openRouterApiKey != null && openRouterApiKey.isNotEmpty && modelId != null && modelId.isNotEmpty) {
+        openRouterContextLimit = await OpenRouterService.instance.fetchContextLimit(openRouterApiKey, modelId);
       }
     }
 
@@ -741,9 +748,7 @@ class OrchestratorManager {
 
         final rProvider = _toProviderString(reasonerCfg.backend);
         final sProvider = _toProviderString(summarizerCfg.backend);
-        final effectiveOpenRouterContextLimit =
-            openRouterContextLimit ??
-            await backendSettings.getOpenRouterContextLimit();
+        final effectiveOpenRouterContextLimit = openRouterContextLimit ?? await backendSettings.getOpenRouterContextLimit();
 
         args.addAll(['--reasoner-provider', rProvider]);
         args.addAll(['--reasoner-model', reasonerCfg.model]);
@@ -766,9 +771,7 @@ class OrchestratorManager {
 
         // Reasoning level: pass through to the Python orchestrator.
         // Defaults to 'max' if not set in the agent config.
-        final rReasoningLevel = reasonerCfg.reasoningLevel.isNotEmpty
-            ? reasonerCfg.reasoningLevel
-            : 'max';
+        final rReasoningLevel = reasonerCfg.reasoningLevel.isNotEmpty ? reasonerCfg.reasoningLevel : 'max';
         args.addAll(['--reasoning-level', rReasoningLevel]);
 
         args.addAll(['--summarizer-provider', sProvider]);
@@ -867,8 +870,8 @@ class OrchestratorManager {
       // can resolve a connection key the model passes in.
       try {
         final tmp = await getTemporaryDirectory();
-        final dbConnPath = '${tmp.path}/agentic_db_connections.json';
-        await DatabaseConnectionsRepository.instance.writeConfigJson(dbConnPath, workingDir: ProjectService().currentPath);
+        final dbConnPath = '${ProjectService.windowsToLinuxPath(tmp.path)}/agentic_db_connections.json';
+        await DatabaseConnectionsRepository.instance.writeConfigJson(dbConnPath, workingDir: ProjectService.windowsToLinuxPath(ProjectService().currentPath));
         args.addAll(['--db-connections-config', dbConnPath]);
         _appendLog('[manager] DB connections written -> $dbConnPath');
       } catch (e) {
@@ -1113,13 +1116,7 @@ class OrchestratorManager {
   /// ``_escape_xml`` so the Flutter side sees the original text (newlines,
   /// ampersands, angle brackets) as the model intended.
   static String _unescapeXml(String value) {
-    return value
-        .replaceAll('&#10;', '\n')
-        .replaceAll('&#13;', '\r')
-        .replaceAll('&quot;', '"')
-        .replaceAll('&gt;', '>')
-        .replaceAll('&lt;', '<')
-        .replaceAll('&amp;', '&');
+    return value.replaceAll('&#10;', '\n').replaceAll('&#13;', '\r').replaceAll('&quot;', '"').replaceAll('&gt;', '>').replaceAll('&lt;', '<').replaceAll('&amp;', '&');
   }
 
   /// Attempt to parse ``line`` as a task-flow XML envelope. Returns ``true``
@@ -1422,22 +1419,22 @@ class OrchestratorManager {
   }
 }
 
-  /// Returns the default temperature for the given backend from BackendSettingsRepository.
-  Future<double> _getDefaultTemperatureForBackend(OrchestratorBackend backend) async {
-    final backendSettings = BackendSettingsRepository.instance;
-    switch (backend) {
-      case OrchestratorBackend.huggingface:
-        return await backendSettings.getHuggingFaceTemperature();
-      case OrchestratorBackend.ollama:
-        return await backendSettings.getOllamaTemperature();
-      case OrchestratorBackend.groq:
-        return await backendSettings.getGroqTemperature();
-      case OrchestratorBackend.gemini:
-        return await backendSettings.getGeminiTemperature();
-      case OrchestratorBackend.openrouter:
-        return await backendSettings.getOpenRouterTemperature();
-      case OrchestratorBackend.github:
-        return await backendSettings.getGitHubTemperature();
-      // Fallback for unknown backends
-    }
+/// Returns the default temperature for the given backend from BackendSettingsRepository.
+Future<double> _getDefaultTemperatureForBackend(OrchestratorBackend backend) async {
+  final backendSettings = BackendSettingsRepository.instance;
+  switch (backend) {
+    case OrchestratorBackend.huggingface:
+      return await backendSettings.getHuggingFaceTemperature();
+    case OrchestratorBackend.ollama:
+      return await backendSettings.getOllamaTemperature();
+    case OrchestratorBackend.groq:
+      return await backendSettings.getGroqTemperature();
+    case OrchestratorBackend.gemini:
+      return await backendSettings.getGeminiTemperature();
+    case OrchestratorBackend.openrouter:
+      return await backendSettings.getOpenRouterTemperature();
+    case OrchestratorBackend.github:
+      return await backendSettings.getGitHubTemperature();
+    // Fallback for unknown backends
   }
+}
