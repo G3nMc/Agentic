@@ -23,6 +23,7 @@ from __future__ import annotations
 import sys
 from typing import Any, Dict, List, Optional, Iterator, Tuple
 
+from agent.prompts import format_system_prompt, get_system_prompt_value
 from agent.utils.token_estimator import estimate_tokens, chars_for_tokens
 from agent.utils.text import sanitize as _sanitize_text
 
@@ -149,10 +150,8 @@ class TaskTracker:
             return ""
 
         lines: List[str] = [
-            "=== CURRENT TASK STATE (orchestrator-managed — DO NOT re-emit <tasks>) ===",
-            "The plan below is tracked by the orchestrator. Do NOT re-emit a",
-            "<tasks> block. Continue working on the current task and emit",
-            "<task_status> tags ONLY when the status CHANGES.",
+            get_system_prompt_value("TASK_STATE_HEADER"),
+            get_system_prompt_value("TASK_STATE_INTRO"),
             "",
         ]
 
@@ -180,14 +179,11 @@ class TaskTracker:
             task_obj = self._tasks.get(self._active_task_id)
             task_name = getattr(task_obj, "name", f"Task #{self._active_task_id}") if task_obj else f"Task #{self._active_task_id}"
             lines.append(
-                f"CURRENT TASK: #{self._active_task_id} ({task_name}). "
-                "Continue working on THIS task. Emit:\n"
-                "<task_status>\n"
-                f"  <id>{self._active_task_id}</id>\n"
-                "  <status>done|partial|blocked|failed</status>\n"
-                "  <note><short summary></note>\n"
-                "</task_status> when it is "
-                "complete. Do NOT re-emit a status that is already shown above."
+                format_system_prompt(
+                    "TASK_STATE_CURRENT_TEMPLATE",
+                    active=self._active_task_id,
+                    name=task_name,
+                )
             )
         else:
             # Find the first pending task.
@@ -200,8 +196,11 @@ class TaskTracker:
                 task_obj = self._tasks.get(pending)
                 task_name = getattr(task_obj, "name", f"Task #{pending}") if task_obj else f"Task #{pending}"
                 lines.append(
-                    f"NEXT TASK: #{pending} ({task_name}). "
-                    "Emit its <task_status> as in_progress and start working on it."
+                    format_system_prompt(
+                        "TASK_STATE_NEXT_TEMPLATE",
+                        pending=pending,
+                        name=task_name,
+                    )
                 )
             else:
                 lines.append(
@@ -209,12 +208,8 @@ class TaskTracker:
                 )
 
         lines.append("")
-        lines.append(
-            "IMPORTANT: Do NOT emit <task_status> for a task whose status is "
-            "already shown above as done/partial/blocked/failed. Only emit a "
-            "NEW status when it CHANGES."
-        )
-        lines.append("=== END TASK STATE ===")
+        lines.append(get_system_prompt_value("TASK_STATE_IMPORTANT"))
+        lines.append(get_system_prompt_value("TASK_STATE_END"))
         return "\n".join(lines)
 
 

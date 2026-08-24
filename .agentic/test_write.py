@@ -1,0 +1,1 @@
+#!/usr/bin/env python3from pathlib import PathPath(".agentic/test_output.txt").write_text("script ran successfully", encoding="utf-8")

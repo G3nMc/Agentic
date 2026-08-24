@@ -1,0 +1,1 @@
+import pathlibp = pathlib.Path("bin/agent/prompts.py")r = pathlib.Path(".agentic/replacement_block.txt")lines = p.read_text("utf-8").splitlines(keepends=True)repl = r.read_text("utf-8")lines[742] = replp.write_text("".join(lines), "utf-8")print("OK")

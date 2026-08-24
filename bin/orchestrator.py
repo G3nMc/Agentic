@@ -67,6 +67,7 @@ from agent.backends import RateLimitedBackend, build_backend
 from agent.backends.gemini import GeminiBackend
 
 from agent.core.policy import SecurityConfig
+from agent.prompts import sync_prompts_config
 from agent.utils.bootstrap import (
     BACKEND_REQUIRED_MODULES,
     check_dependencies,
@@ -337,6 +338,12 @@ def main():
     if args.install_deps:
         ok = install_dependencies(verbose=True)
         sys.exit(0 if ok else 1)
+
+    # Ensure configs/prompts_config.xml exists with all hardcoded prompts.
+    try:
+        sync_prompts_config()
+    except Exception as exc:
+        print(f"[orch] Warning: could not sync prompts config: {exc}", file=sys.stderr)
 
     audit_log_path = (args.audit_log or "").strip()
     security_config = SecurityConfig(

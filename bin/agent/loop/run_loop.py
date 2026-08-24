@@ -52,6 +52,11 @@ from agent.loop.tool_dispatch import (
     looks_like_unclosed_tool,
     parse_all_tag_tool_calls,
 )
+from agent.prompts import (
+    format_system_prompt,
+    get_project_prompt_for_base_path,
+    get_system_prompt_value,
+)
 from agent.tools.registry import ToolRegistry
 from agent.utils.circuit_breaker import CircuitBreaker
 from agent.utils.token_estimator import chars_for_tokens, estimate_messages_tokens
@@ -265,353 +270,9 @@ def _result_is_success(result: str) -> bool:
 # ======================================================================
 # PROMPT DIRECTIVES
 # ----------------------------------------------------------------------
-# All model-facing text lives here. Static prompts are constants; dynamic
-# ones are ``_directive_*`` helpers returning plain strings (the old
-# dict-returning helpers only ever had ``["content"]`` read off them).
+# Prompt defaults and XML-backed overrides live in agent.prompts. Helpers
+# here only fill dynamic values into the selected prompt template.
 # ======================================================================
-
-_FOLLOWUP_DIRECTIVE = (
-    "[CONTEXT: This is a confirmation reply. The user is confirming the plan from "
-    "your IMMEDIATELY PRECEDING assistant turn. Execute the FIRST concrete action "
-    "from that plan now. Do NOT re-explain the plan. Do NOT re-research the "
-    "codebase if you already have enough context. If the plan involves editing "
-    "files, START EDITING with patch_file.]\n\n"
-)
-
-_AGENT_DIRECTIVE = (
-    "[- Begin every coding task by exploring the project structure: list the "
-    "top-level files, locate the relevant entry point / page / module mentioned by "
-    "the user, and understand the current implementation before making any change. "
-    "Only after you have enough context should you emit the first concrete tool call.]\n"
-    "[You have filesystem tools available. If this request requires any file access, "
-    "inspection, editing, execution, or verification, you MUST emit exactly ONE tool "
-    "call in this format: <tool><name>NAME</name><key>value</key></tool>. "
-    "- Do not add any explanation, preamble, or follow-up text before or after the "
-    "tool call. "
-    "- Prefer dedicated tools first (read_files/search_in_files/list_files/"
-    "flutter_analyze/python_check/python_lint/python_test/git_*) and use run_command "
-    "only as a last resort. "
-    "- No JSON. No attributes. Child tags only: <name> for the tool name, one tag "
-    "per parameter. "
-    "After any code change, you MUST run the highest-scope validator available "
-    "before responding. "
-    "Flutter/Dart validation is PROJECT-SCOPED by default: treat every source file "
-    "as part of an interconnected codebase, and assume changes may affect imports, "
-    "dependencies, generated code, tests, build configuration, and runtime behavior "
-    "outside the modified file. "
-    "- Whenever any .dart file, pubspec.yaml, analysis_options.yaml, build "
-    "configuration, generated source, asset configuration, or test is created, "
-    "modified, analyzed, refactored, or verified, run flutter_analyze against the "
-    "project root. Passing a specific file path to flutter_analyze is prohibited "
-    "unless the user explicitly requests file-specific analysis. "
-    "- If Flutter tests exist or are affected by the change, run project-wide "
-    "flutter_test after flutter_analyze. "
-    "- Whenever any .py file, package configuration, dependency definition, "
-    "generated source, or test is created or modified, run python_check passing the "
-    "directory of each affected file as the target path; once per affected "
-    "directory when they differ. After python_check passes, if tests exist in or "
-    "near that directory, run python_test on the same path. Never run project-wide "
-    "Python validation unless the user explicitly requests it. "
-    "- Never use cd to change directory before any command. "
-    "- Never claim validation passed unless the required validators actually ran. "
-    "- Never skip validation when a validator exists. "
-    "- If the request is not file-related, reply normally.]\n"
-    "[- You are an excellent software analyst and software engineer. You have "
-    "access to all tools and capabilities. Do not hold back. "
-    "- If the task requires substantial effort, break it into separate numbered "
-    "tasks and run them one at a time. "
-    "- Place test files in tests/; create the folder if it does not exist. "
-    "Do not use phrases like: 'I will ...', 'I need to see ...', 'We need to ...', "
-    "'Let me proceed ...', 'Let me search...', 'Is there anything specific ...', "
-    "'Would you like me to proceed ...?'. Perform the action immediately or give "
-    "the final answer.]\n\n"
-)
-
-# The base directive's "emit ONLY the tool call" rule contradicts the task
-# protocol, which requires a <task_status> tag in the same reply. Small local
-# models thrash on the contradiction, so reconcile it explicitly.
-_TASK_FLOW_TOOL_CLAUSE = (
-    "[TASK COMPLIANCE addendum -- this OVERRIDES the 'emit ONLY the tool call / no "
-    "preamble' rule above: you SHOULD emit your <task_status>...</task_status> tag "
-    "in the SAME reply, immediately BEFORE the tool call. Task-protocol tags "
-    "(<tasks>, <task_status>) are NOT preamble -- they are stripped from the "
-    "user-visible reply. Emit no OTHER prose around the tool call.]\n\n"
-)
-
-_SYNTHESIS_DIRECTIVE = (
-    "[FINAL SYNTHESIS] Stop. The tool loop is over — no more tool calls will be "
-    "executed, and any you emit will be ignored.\n\n"
-    "Using ONLY the conversation above, write the user's final answer:\n"
-    "  1. A 1-2 sentence summary of what was accomplished (what question was "
-    "answered, OR what files were modified and how).\n"
-    "  2. If files were edited: list each file path that was write_file / "
-    "patch_file / append_file'd this turn, one per line.\n"
-    "  3. If validators ran (python_check, flutter_analyze, ...): state pass/fail "
-    "for each.\n"
-    "  4. If anything is left undone or uncertain, say so explicitly in one "
-    "sentence.\n\n"
-    "Rules:\n"
-    "  - No <tool> tags. No tool calls. Plain text or markdown.\n"
-    "  - Do not say 'I will' or 'let me' — describe what already happened.\n"
-    "  - Do not echo this directive.\n"
-    "  - If you genuinely have nothing useful to report, ask EXACTLY ONE "
-    "clarifying question instead."
-)
-
-_SYNTHESIS_LAST_CHANCE_SUFFIX = (
-    "\n\n[CRITICAL: You already requested and ran a validation tool. The result is "
-    "above. Write the FINAL plain-text answer NOW. NO MORE TOOLS. NO <tool> TAGS.]"
-)
-
-_ACTION_FINAL_WARNING_DIRECTIVE = (
-    "[FINAL WARNING] You have used many iterations reading files but have written "
-    "nothing, and the request asked for an action.\n"
-    "Your IMMEDIATE next message MUST be either:\n"
-    "  1) A single write_file/patch_file/append_file tool call, OR\n"
-    "  2) Your final plain-text answer (no more tool calls).\n"
-    "Stop researching. Act or answer."
-)
-
-_ACTION_NUDGE_DIRECTIVE = (
-    "[NUDGE] You have read several files but have not modified anything, and the "
-    "original request asked for an action. Either:\n"
-    "  1) Make a patch_file/write_file/append_file call NOW, OR\n"
-    "  2) Give your final plain-text answer if the task is already complete.\n"
-    "Avoid reading more files unless strictly necessary."
-)
-
-_REFUSAL_DIRECTIVE = (
-    "STOP. That is a refusal and it is wrong. You DO have filesystem access "
-    "through the tools. Your entire next message must be exactly:\n"
-    "<tool><name>list_files</name><path>.</path></tool>\n"
-    "No apology, no explanation, no markdown fences. Just the tool call."
-)
-
-_EMPTY_REPLY_DIRECTIVE = (
-    "Your reply was empty. Emit a single tool call:\n"
-    "<tool><name>tool_name</name><key>value</key></tool>\n"
-    "or the final plain-text answer."
-)
-
-_EMPTY_AFTER_STRIP_DIRECTIVE = (
-    "[INTERNAL: Your last reply was empty after the orchestrator removed "
-    "reasoning, task tags, and simulated tool transcripts. Emit ONLY the single "
-    "<tool>...</tool> call (with <name> and parameter child tags) OR the "
-    "user-facing final answer. No preamble, no fake 'User:' / 'Assistant:' lines, "
-    "no '[INTERNAL: ...]' tags from you. Do NOT echo this instruction back.]"
-)
-
-_CLIFFHANGER_DIRECTIVE = (
-    "[AUTONOMY] Your previous reply ended with a cliffhanger or a request for "
-    "confirmation. The user already approved the work — do NOT ask again. Your "
-    "IMMEDIATE next message must be either:\n"
-    "  1. A tool call performing the next concrete step (a <tool>...</tool> "
-    "block), OR\n"
-    "  2. A real final answer summarizing what you completed.\n"
-    "Do not announce intent without acting. Do not split the remaining work "
-    "across more user turns. Forbidden: 'I will ...', 'I need to see ...', 'We "
-    "need to ...', 'Let me proceed ...', 'Let me search ...', 'Would you like me "
-    "to ...?', and any equivalent wording that asks permission, announces future "
-    "work, or describes intended actions instead of performing them."
-)
-
-_STEP_REPORT_DIRECTIVE = (
-    "[STEP REPORT REQUIRED] Your previous reply was a final answer after modifying "
-    "files, but it did not include the mandatory STEP REPORT. Include one now, in "
-    "this format:\n\n"
-    "STEP REPORT\n"
-    "-----------\n"
-    "Done:\n"
-    "  - [what you completed]\n\n"
-    "Pending:\n"
-    "  - [what remains, or 'None']\n\n"
-    "Current state:\n"
-    "  - [1-3 sentences describing the current state]\n\n"
-    "Add this report to your final answer now. Do NOT call any more tools."
-)
-
-_TASK_STATUS_NUDGE_DIRECTIVE = (
-    "[INTERNAL: You have used the tool protocol for several iterations without "
-    "emitting a <task_status>. The UI checklist is frozen because the orchestrator "
-    "cannot tell which task is progressing. Your NEXT reply must include:\n"
-    "<task_status>\n"
-    "  <id><int></id>\n"
-    "  <status><value></status>\n"
-    "  <note><short></note>\n"
-    "</task_status>\n"
-    "describing the work completed so far. Do NOT echo this instruction back.]"
-)
-
-_PLAN_FIRST_DIRECTIVE = (
-    "[INTERNAL: TASK FLOW PROTOCOL is active but you have not emitted a <tasks> "
-    "plan yet. Your NEXT reply MUST begin with a <tasks> block containing one "
-    "<task> child per step, each with <id>, <name> and <description> child tags, "
-    "enumerating every step needed for this request. Then immediately emit "
-    "<task_status> for task #1 and the first <tool> call in the SAME reply. Do NOT "
-    "echo this instruction back.]"
-)
-
-_PLAN_THEN_START_DIRECTIVE = (
-    "[INTERNAL: The <tasks> plan has already been saved by the orchestrator. Do "
-    "NOT re-emit a new <tasks> block. Your NEXT reply must contain, in this exact "
-    "order:\n"
-    "(1) <task_status>\n"
-    "      <id>1</id>\n"
-    "      <status>in_progress</status>\n"
-    "      <note><one line></note>\n"
-    "    </task_status>\n"
-    "(2) the FIRST <tool> call (with <name> and parameter child tags) needed to "
-    "start task #1. Nothing else. Do NOT echo this instruction back.]"
-)
-
-_MALFORMED_GIVE_UP_MESSAGE = (
-    "The model failed to emit a valid tool call after multiple attempts. The "
-    "request may be too ambiguous, or the model may not support tool use. Try "
-    "rephrasing your request or using a different model."
-)
-
-_TRUNCATED_TOOL_ERROR = " It was CUT OFF before the closing </tool> tag. "
-
-_TRUNCATION_SPLIT_DIRECTIVE = (
-    "[BATCH SIZE WARNING] Your last tool call was CUT OFF by the token limit "
-    "several times in a row. You are trying to write too much content in a single "
-    "call. STOP re-emitting the same large payload. SPLIT the work:\n"
-    "  - patch_file with a very long new_content -> several smaller patch_file "
-    "calls, each changing a smaller block.\n"
-    "  - a very large new file -> write_file for the first portion, append_file "
-    "for the rest.\n"
-    "Keep each tool call's content under 6000 characters. Emit ONE small tool call "
-    "now."
-)
-# Markers that indicate the model started fabricating a transcript. Everything
-# from the first match onward is hallucination and must never reach history.
-_FABRICATION_RE = re.compile(
-    r"(?:^|\n)\s*(?:"
-    r"Tool\s+[`'\"]?\w+[`'\"]?\s+returned"
-    r"|User\s*:"
-    r"|Assistant\s*:"
-    r"|\[INTERNAL:"
-    r")",
-    re.IGNORECASE,
-)
-
-# One complete <tool>...</tool> block, non-greedy.
-_TOOL_BLOCK_RE = re.compile(r"<tool\b.*?</tool\s*>", re.DOTALL | re.IGNORECASE)
-
-
-def _directive_agent(task_flow: bool) -> str:
-    """Agent directive, reconciled with task-flow mode."""
-    return _AGENT_DIRECTIVE + _TASK_FLOW_TOOL_CLAUSE if task_flow else _AGENT_DIRECTIVE
-
-
-def _directive_malformed(error: str) -> str:
-    """Corrective feedback for a malformed (or truncated) tool call."""
-    return (
-        f"Your previous reply attempted a tool call but the format was invalid. "
-        f"{error}\n"
-        "RULES for XML tags — content BETWEEN two different tags is FORBIDDEN:\n"
-        "  FORBIDDEN: <tool> ```html <name>search_in_files</name> ...\n"
-        "  FORBIDDEN: <tool>code<name>search_in_files</name> ...\n"
-        "  CORRECT:   <tool><name>search_in_files</name> ...\n"
-        "Reply with EXACTLY ONE valid tool call in this format:\n"
-        "<tool>\n"
-        "  <name>NAME</name>\n"
-        "  <key>value</key>\n"
-        "</tool>\n"
-        "No explanation, no markdown, no backticks. No JSON. No attributes. Child "
-        "tags only.\n"
-        "--- CORRECT examples (do not execute these; they are only illustrations) ---\n"
-        "<tool><name>read_file</name><path>src/main.py</path></tool>\n"
-        '<tool><name>read_files</name><paths>["a.py","b.py","c.py"]</paths></tool>\n'
-        "<tool><name>search_in_files</name><pattern>error</pattern>"
-        "<file_glob>*.log</file_glob></tool>\n"
-        "<tool><name>write_file</name><path>out.txt</path><content>hello world"
-        "</content></tool>\n"
-        "<tool><name>patch_file</name><path>src/main.py</path><old_content>old"
-        "</old_content><new_content>new</new_content></tool>\n"
-        "<tool><name>list_files</name><path>lib</path></tool>\n"
-        "<tool><name>flutter_analyze</name></tool>\n"
-        "<tool><name>python_check</name></tool>\n"
-        "<tool><name>run_command</name><command>git status</command></tool>\n"
-        "<tool><name>git_commit</name><message>fix: resolve null check</message></tool>\n"
-    )
-
-
-def _directive_schema_feedback(drop_lines: Sequence[str]) -> str:
-    """Surface sanitizer key drops so the model does not silently re-emit."""
-    return (
-            "[SCHEMA FEEDBACK] Your last tool call(s) included parameters that are not "
-            "part of the tool's schema. Those keys were stripped before execution:\n"
-            + "\n".join(drop_lines)
-            + "\n\nDo NOT re-emit the same call — it would be identical to one you "
-              "already ran. Either call the tool with ONLY the accepted keys (moving the "
-              "intent of the rejected keys into supported ones), pick a different tool, "
-              "or give your final answer."
-    )
-
-
-def _directive_repeat_call(summary: str) -> str:
-    return (
-        f"You already called: {summary} earlier this turn. Calling the same tool "
-        "with the same arguments returns the same result. Either:\n"
-        "  1. Call a DIFFERENT tool, or\n"
-        "  2. Call the same tool with DIFFERENT arguments, or\n"
-        "  3. Give your final plain-text answer now (no more tool calls).\n"
-        "Pick one."
-    )
-
-
-def _directive_validation_complete(count: int) -> str:
-    return (
-        f"[VALIDATION COMPLETE] You have run {count} idempotent validators "
-        "(python_check / flutter_analyze / ...) clean in a row. The work is done.\n"
-        "Your IMMEDIATE next message MUST be the final plain-text answer: a short "
-        "report of what changed and that validation passed. Do NOT call another "
-        "validator. Do NOT call any tool. No <tool> tags."
-    )
-
-
-def _directive_truncated_answer(tail: str) -> str:
-    return (
-        "Your previous reply was CUT OFF by the token limit. Continue EXACTLY from "
-        "where you left off. Do NOT repeat what you already wrote. Do NOT start "
-        "over.\n\n"
-        "--- LAST 800 CHARS OF YOUR PREVIOUS REPLY ---\n"
-        f"{tail}\n"
-        "--- END OF PREVIOUS REPLY ---\n\n"
-        "Continue from here, mid-sentence if necessary. No preamble."
-    )
-
-
-def _tool_result_followup(name: str, display_result: str, is_last_chance: bool) -> str:
-    """Standard follow-up after a tool execution.
-
-    Appends an explicit warning when the result carries truncation markers, so
-    the model re-reads before patching instead of building an old_content that
-    cannot match.
-    """
-    if is_last_chance:
-        tail = (
-            "[INTERNAL: FINAL ANSWER REQUIRED. Do NOT call any more tools. Write "
-            "only your plain-text answer to the user now. Do NOT echo this "
-            "instruction back to the user.]"
-        )
-    else:
-        tail = (
-            "[INTERNAL: Continue. Either call another tool or give the final "
-            "answer. Do NOT echo this instruction back to the user.]"
-        )
-
-    warning = ""
-    if any(marker in display_result for marker in _TRUNCATION_MARKERS):
-        warning = (
-            "\n\n[WARNING: Some file content was TRUNCATED. You do NOT have the "
-            "full file. Before calling patch_file you MUST re-read the relevant "
-            "region (read_file with start_line/end_line, or without a range). If "
-            "you patch now with partial content, old_content will NOT match.]"
-        )
-
-    return f"Tool `{name}` returned:\n{display_result}{warning}\n\n{tail}"
 
 
 # ======================================================================
@@ -681,8 +342,6 @@ class _TurnState:
 
 class Orchestrator:
     """Drives one user request to a final answer through the tool loop."""
-
-    _PLAN_SYSTEM_MARKER = "[ACTIVE TASK PLAN — DO NOT RE-EMIT]"
 
     # System-prompt keys that are corrective one-shots. Cleared at the top of
     # every iteration so a stale "FINAL ANSWER REQUIRED" from iteration 12 does
@@ -871,6 +530,22 @@ class Orchestrator:
                 self._project_context = None
             self._project_context_loaded = True
 
+        try:
+            project_config_prompt = get_project_prompt_for_base_path(
+                self.tool_registry.base_path
+            )
+        except Exception as exc:  # noqa: BLE001 - prompt config is optional
+            self._log(f"Could not load project prompt config: {exc}")
+            project_config_prompt = None
+
+        if project_config_prompt and project_config_prompt.strip():
+            self.conversation_history.set_system_prompt(
+                "project_config",
+                project_config_prompt.strip(),
+            )
+        else:
+            self.conversation_history.remove_system_prompt("project_config")
+
         self.conversation_history.set_system_prompt(
             "base",
             self.tool_registry.get_system_prompt(
@@ -973,13 +648,8 @@ class Orchestrator:
             return
 
         parts: List[str] = [
-            self._PLAN_SYSTEM_MARKER,
-            "OVERRIDE: the <tasks> plan below has ALREADY been emitted, accepted, "
-            "and is tracked by the orchestrator. Do NOT emit another <tasks> "
-            "block. Do NOT re-plan. The 'PLAN FIRST' instruction applied to the "
-            "FIRST iteration only. You are now in the EXECUTION phase: continue "
-            "working on the current task and emit <task_status> tags as you "
-            "progress.",
+            get_system_prompt_value("PLAN_SYSTEM_MARKER"),
+            get_system_prompt_value("PLAN_SYSTEM_OVERRIDE"),
         ]
 
         planned_ids = self._planned_task_ids
@@ -987,7 +657,7 @@ class Orchestrator:
             tasks = self._planned_tasks
             in_progress = self._inprogress_task_ids
             active = self._active_task_id
-            parts.extend(("", "=== ACTIVE PLAN ==="))
+            parts.extend(("", get_system_prompt_value("PLAN_ACTIVE_HEADER")))
             for tid in planned_ids:
                 task = tasks.get(tid)
                 name = getattr(task, "name", None) or f"Task {tid}"
@@ -1005,7 +675,7 @@ class Orchestrator:
                         short += "..."
                     line += f"\n       {short}"
                 parts.append(line)
-            parts.append("=== END PLAN ===")
+            parts.append(get_system_prompt_value("PLAN_END_MARKER"))
 
         active = self._active_task_id
         if active is not None:
@@ -1014,22 +684,18 @@ class Orchestrator:
             parts.extend(
                 (
                     "",
-                    f"CURRENT TASK: #{active} ({name}). Continue working on THIS "
-                    "task. When it is complete or you cannot proceed, emit:\n"
-                    "<task_status>\n"
-                    f"  <id>{active}</id>\n"
-                    "  <status>done|partial|blocked|failed</status>\n"
-                    "  <note><short summary></note>\n"
-                    "</task_status>\n"
-                    "The orchestrator will auto-advance to the next task.",
+                    format_system_prompt(
+                        "PLAN_CURRENT_TASK_TEMPLATE",
+                        active=active,
+                        name=name,
+                    ),
                 )
             )
         elif planned_ids:
             parts.extend(
                 (
                     "",
-                    "No task is currently in_progress. Pick the first pending "
-                    "task, emit its <task_status> as in_progress, and start work.",
+                    get_system_prompt_value("PLAN_NO_ACTIVE_TASK"),
                 )
             )
 
@@ -1194,7 +860,10 @@ class Orchestrator:
             _directive_agent(self.task_mode.is_task_flow) if use_tools else None,
         )
         self._set_persistent(
-            "followup", _FOLLOWUP_DIRECTIVE if (is_followup and use_tools) else None
+            "followup",
+            get_system_prompt_value("FOLLOWUP_DIRECTIVE")
+            if (is_followup and use_tools)
+            else None,
         )
         self._set_persistent("action_nudge", None)
 
@@ -1360,7 +1029,7 @@ class Orchestrator:
             ):
                 state.refusal_retries += 1
                 self._log(f"Refusal detected (retry {state.refusal_retries}).")
-                self._nudge("refusal", _REFUSAL_DIRECTIVE)
+                self._nudge("refusal", get_system_prompt_value("REFUSAL_DIRECTIVE"))
                 iteration += 1
                 continue
 
@@ -1369,7 +1038,7 @@ class Orchestrator:
             ):
                 state.cliffhanger_retries += 1
                 self._log(f"Cliffhanger reply (retry {state.cliffhanger_retries}).")
-                self._nudge("cliffhanger", _CLIFFHANGER_DIRECTIVE)
+                self._nudge("cliffhanger", get_system_prompt_value("CLIFFHANGER_DIRECTIVE"))
                 iteration += 1
                 continue
 
@@ -1383,7 +1052,7 @@ class Orchestrator:
             ):
                 state.step_report_retries += 1
                 self._log("Missing step report after a write; single nudge.")
-                self._nudge("step_report", _STEP_REPORT_DIRECTIVE)
+                self._nudge("step_report", get_system_prompt_value("STEP_REPORT_DIRECTIVE"))
                 iteration += 1
                 continue
             state.pending_step_report = False
@@ -1444,10 +1113,16 @@ class Orchestrator:
 
         if iteration >= warn_at and state.action_pressure_tier < 2:
             state.action_pressure_tier = 2
-            self._set_persistent("action_nudge", _ACTION_FINAL_WARNING_DIRECTIVE)
+            self._set_persistent(
+                "action_nudge",
+                get_system_prompt_value("ACTION_FINAL_WARNING_DIRECTIVE"),
+            )
         elif iteration >= nudge_at and state.action_pressure_tier < 1:
             state.action_pressure_tier = 1
-            self._set_persistent("action_nudge", _ACTION_NUDGE_DIRECTIVE)
+            self._set_persistent(
+                "action_nudge",
+                get_system_prompt_value("ACTION_NUDGE_DIRECTIVE"),
+            )
 
     def _maybe_extend_iterations(self, state: _TurnState, iteration: int) -> None:
         """Grow the iteration budget when real progress is happening.
@@ -1569,15 +1244,15 @@ class Orchestrator:
                                f"({state.plan_then_start_nudges} attempts)"
                     )
                 )
-            self._nudge("plan_then_start", _PLAN_THEN_START_DIRECTIVE)
+            self._nudge("plan_then_start", get_system_prompt_value("PLAN_THEN_START_DIRECTIVE"))
             return
 
         if state.iters_with_empty_reply >= _MAX_ITERS_WITH_EMPTY_REPLY:
-            self._nudge("empty_reply", _EMPTY_AFTER_STRIP_DIRECTIVE)
+            self._nudge("empty_reply", get_system_prompt_value("EMPTY_AFTER_STRIP_DIRECTIVE"))
             state.iters_with_empty_reply = 0
         elif state.empty_retries < 1:
             state.empty_retries += 1
-            self._nudge("empty_reply", _EMPTY_REPLY_DIRECTIVE)
+            self._nudge("empty_reply", get_system_prompt_value("EMPTY_REPLY_DIRECTIVE"))
 
     def _handle_malformed(
             self, state: _TurnState, text_clean: str, finish_reason: Optional[str], iteration: int
@@ -1620,7 +1295,7 @@ class Orchestrator:
         else:
             self._log(f"Malformed tool call: retries exhausted. Error: {error}")
         # History holds only broken calls; synthesis would fail too.
-        raise _Bail(_MALFORMED_GIVE_UP_MESSAGE)
+        raise _Bail(get_system_prompt_value("MALFORMED_GIVE_UP_MESSAGE"))
 
     def _handle_truncation(
             self,
@@ -1648,9 +1323,15 @@ class Orchestrator:
             self._log(f"Truncated tool call (retry {state.truncation_retries}).")
             if state.truncation_retries >= _MAX_TRUNCATION_BEFORE_SPLIT_NUDGE:
                 self._log("Repeated truncation; switching to the split-batch directive.")
-                self._nudge("truncation_split", _TRUNCATION_SPLIT_DIRECTIVE)
+                self._nudge(
+                    "truncation_split",
+                    get_system_prompt_value("TRUNCATION_SPLIT_DIRECTIVE"),
+                )
             else:
-                self._nudge("malformed", _directive_malformed(_TRUNCATED_TOOL_ERROR))
+                self._nudge(
+                    "malformed",
+                    _directive_malformed(get_system_prompt_value("TRUNCATED_TOOL_ERROR")),
+                )
         else:
             self._log(f"Truncated final answer (retry {state.truncation_retries}).")
             tail = text_clean[-800:]
@@ -1710,7 +1391,7 @@ class Orchestrator:
                 f"Iteration {iteration} in {self.task_mode.value} emitted no "
                 f"<tasks> plan; injecting the plan-first nudge."
             )
-            self._nudge("plan_first", _PLAN_FIRST_DIRECTIVE)
+            self._nudge("plan_first", get_system_prompt_value("PLAN_FIRST_DIRECTIVE"))
             return saw_status, None
 
         return saw_status, text
@@ -1787,7 +1468,7 @@ class Orchestrator:
             f"{state.iters_without_status} tool iterations without a "
             f"<task_status>; injecting a corrective nudge."
         )
-        self._nudge("status_nudge", _TASK_STATUS_NUDGE_DIRECTIVE)
+        self._nudge("status_nudge", get_system_prompt_value("TASK_STATUS_NUDGE_DIRECTIVE"))
         state.iters_without_status = 0
 
     # ------------------------------------------------------------------
@@ -2026,7 +1707,10 @@ class Orchestrator:
         # The base prompt carries the whole tool catalog; leaving it in makes
         # the model keep emitting <tool> tags during synthesis.
         synth_history.clear_system_prompts()
-        synth_history.set_system_prompt("synthesis", _SYNTHESIS_DIRECTIVE)
+        synth_history.set_system_prompt(
+            "synthesis",
+            get_system_prompt_value("SYNTHESIS_DIRECTIVE"),
+        )
 
         while synth_tool_count < max_synth_tools:
             try:
@@ -2069,7 +1753,9 @@ class Orchestrator:
                     synth_tool_count += 1
 
                 synth_history.set_system_prompt(
-                    "synthesis", _SYNTHESIS_DIRECTIVE + _SYNTHESIS_LAST_CHANCE_SUFFIX
+                    "synthesis",
+                    get_system_prompt_value("SYNTHESIS_DIRECTIVE")
+                    + get_system_prompt_value("SYNTHESIS_LAST_CHANCE_SUFFIX"),
                 )
                 continue
 

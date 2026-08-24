@@ -52,6 +52,7 @@ import subprocess
 
 # Reuse the shared I/O protocol utilities (the agent.utils.io_protocol
 # shim re-exports the same symbols for backwards compatibility).
+from agent.prompts import sync_prompts_config
 from agent.utils.io_protocol import (
     RESPONSE_SENTINEL,
     configure_stdio_utf8,
@@ -775,6 +776,12 @@ def main():
     if args.install_deps:
         _install_dependencies()
         sys.exit(0)
+
+    # Ensure configs/prompts_config.xml exists with all hardcoded prompts.
+    try:
+        sync_prompts_config()
+    except Exception as exc:
+        print(f"[orch_multi] Warning: could not sync prompts config: {exc}", file=sys.stderr)
 
     print("[orch_multi] Starting...", file=sys.stderr, flush=True)
 
