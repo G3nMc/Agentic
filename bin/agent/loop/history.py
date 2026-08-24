@@ -203,9 +203,7 @@ class TaskTracker:
                     )
                 )
             else:
-                lines.append(
-                    "All tasks are complete. Emit your final answer."
-                )
+                lines.append(get_system_prompt_value("TASK_STATE_ALL_COMPLETE"))
 
         lines.append("")
         lines.append(get_system_prompt_value("TASK_STATE_IMPORTANT"))

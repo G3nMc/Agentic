@@ -275,6 +275,64 @@ def _result_is_success(result: str) -> bool:
 # ======================================================================
 
 
+def _directive_agent(task_flow: bool) -> str:
+    """Agent directive, reconciled with task-flow mode."""
+    base = get_system_prompt_value("AGENT_DIRECTIVE")
+    if task_flow:
+        return base + get_system_prompt_value("TASK_FLOW_TOOL_CLAUSE")
+    return base
+
+
+def _directive_malformed(error: str) -> str:
+    """Corrective feedback for a malformed (or truncated) tool call."""
+    return format_system_prompt("MALFORMED_DIRECTIVE_TEMPLATE", error=error)
+
+
+def _directive_schema_feedback(drop_lines: Sequence[str]) -> str:
+    """Surface sanitizer key drops so the model does not silently re-emit."""
+    return format_system_prompt(
+        "SCHEMA_FEEDBACK_DIRECTIVE_TEMPLATE",
+        drop_lines="\n".join(drop_lines),
+    )
+
+
+def _directive_repeat_call(summary: str) -> str:
+    return format_system_prompt("REPEAT_CALL_DIRECTIVE_TEMPLATE", summary=summary)
+
+
+def _directive_validation_complete(count: int) -> str:
+    return format_system_prompt("VALIDATION_COMPLETE_DIRECTIVE_TEMPLATE", count=count)
+
+
+def _directive_truncated_answer(tail: str) -> str:
+    return format_system_prompt("TRUNCATED_ANSWER_DIRECTIVE_TEMPLATE", tail=tail)
+
+
+def _tool_result_followup(name: str, display_result: str, is_last_chance: bool) -> str:
+    """Standard follow-up after a tool execution.
+
+    Appends an explicit warning when the result carries truncation markers, so
+    the model re-reads before patching instead of building an old_content that
+    cannot match.
+    """
+    if is_last_chance:
+        tail = get_system_prompt_value("TOOL_RESULT_FINAL_TAIL")
+    else:
+        tail = get_system_prompt_value("TOOL_RESULT_CONTINUE_TAIL")
+
+    warning = ""
+    if any(marker in display_result for marker in _TRUNCATION_MARKERS):
+        warning = get_system_prompt_value("TOOL_RESULT_TRUNCATION_WARNING")
+
+    return format_system_prompt(
+        "TOOL_RESULT_FOLLOWUP_TEMPLATE",
+        name=name,
+        display_result=display_result,
+        warning=warning,
+        tail_directive=tail,
+    )
+
+
 # ======================================================================
 # PER-REQUEST STATE
 # ======================================================================

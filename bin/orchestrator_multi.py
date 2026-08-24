@@ -52,7 +52,7 @@ import subprocess
 
 # Reuse the shared I/O protocol utilities (the agent.utils.io_protocol
 # shim re-exports the same symbols for backwards compatibility).
-from agent.prompts import sync_prompts_config
+from agent.prompts import format_system_prompt, sync_prompts_config
 from agent.utils.io_protocol import (
     RESPONSE_SENTINEL,
     configure_stdio_utf8,
@@ -256,17 +256,10 @@ def _needs_implementation(task: str, answer: str) -> bool:
 
 def _build_execution_brief(user_request: str, planner_answer: str) -> str:
     """Wrap the planner's answer as a brief for the executor run_loop."""
-    return (
-        "[EXECUTION BRIEF] A planner agent produced the plan/solution below "
-        "for the user's request. Implement it for real in this project: read "
-        "the actual files first, then make the necessary edits / create the "
-        "necessary files. Do NOT paste placeholder or mock code -- adapt to "
-        "the real codebase and respect the user's constraints. When done, "
-        "report what you changed and the validation result.\n\n"
-        "=== USER REQUEST ===\n"
-        f"{user_request}\n\n"
-        "=== PLANNER OUTPUT ===\n"
-        f"{planner_answer}"
+    return format_system_prompt(
+        "EXECUTION_BRIEF_TEMPLATE",
+        user_request=user_request,
+        planner_answer=planner_answer,
     )
 
 
@@ -558,14 +551,10 @@ def _run_interactive_loop(args, path_filter=None, db_connections=None) -> None:
                             if last_exec_summary:
                                 executor_orch.conversation_history.set_system_prompt(
                                     "prev_execution",
-                                    "[PREVIOUS EXECUTION CONTEXT]\n"
-                                    "The following is a summary of changes "
-                                    "made in the immediately preceding "
-                                    "execution. The user may be asking for "
-                                    "a correction or continuation. Do NOT "
-                                    "redo work that is already done unless "
-                                    "the user explicitly asks.\n\n"
-                                    + last_exec_summary,
+                                    format_system_prompt(
+                                        "PREVIOUS_EXECUTION_CONTEXT_TEMPLATE",
+                                        last_exec_summary=last_exec_summary,
+                                    ),
                                 )
                                 print(
                                     f"[orch_multi] Injected previous execution "
