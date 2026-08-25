@@ -1248,11 +1248,15 @@ class _ChatViewState extends StateManager<ChatView> with WidgetsBindingObserver 
             // orchestrator activity label (and the model's live thinking)
             // whenever the orchestrator is running or a send is in flight.
             // Works in every task mode, including OPEN.
+            //
+            // Rule: once the assistant reply is in the chat (last message is
+            // the assistant), the turn is over and the strip must disappear.
             _OrchestratorActivityStrip(
-              visible: _sending ||
-                  (_activeBackend != null &&
-                      _isOrchestratorBackend(_activeBackend!) &&
-                      OrchestratorManager.instance.isRunning),
+              visible: !_lastMessageIsAssistant &&
+                  (_sending ||
+                      (_activeBackend != null &&
+                          _isOrchestratorBackend(_activeBackend!) &&
+                          OrchestratorManager.instance.isRunning)),
             ),
             ChatInput(
               enabled: !_sending,
@@ -2366,6 +2370,17 @@ class _ChatViewState extends StateManager<ChatView> with WidgetsBindingObserver 
     _statusMessageId = statusMsg.id;
     setState(() => _messages.add(statusMsg));
     _scrollToBottom();
+  }
+
+  /// True when the most recent visible chat message is an assistant reply.
+  /// Used to hide the activity strip once the model's answer has landed in
+  /// the chat: the turn is over, so no spinner/thinking should remain.
+  bool get _lastMessageIsAssistant {
+    for (final m in _messages.reversed) {
+      if (m.hidden) continue;
+      return m.role == MessageRole.assistant;
+    }
+    return false;
   }
 
   /// Drop the transient status bubble from the chat, if present.
