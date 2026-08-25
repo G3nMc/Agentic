@@ -28,6 +28,7 @@ class _OrchestratorLogPanelState extends State<OrchestratorLogPanel> {
 
   final List<String> _lines = [];
   final ScrollController _scroll = ScrollController();
+  final ScrollController _hScroll = ScrollController();
   StreamSubscription<String>? _sub;
   bool _expanded = false;
   bool _autoScroll = true;
@@ -61,6 +62,7 @@ class _OrchestratorLogPanelState extends State<OrchestratorLogPanel> {
   void dispose() {
     _sub?.cancel();
     _scroll.dispose();
+    _hScroll.dispose();
     super.dispose();
   }
 
@@ -203,7 +205,6 @@ class _OrchestratorLogPanelState extends State<OrchestratorLogPanel> {
                       return false;
                     },
                     child: SelectionArea(
-
                       child: ListView.builder(
                         controller: _scroll,
                         padding: const EdgeInsets.fromLTRB(10, 10, 10, 6),
@@ -260,24 +261,27 @@ class _OrchestratorLogPanelState extends State<OrchestratorLogPanel> {
   /// Colour-code lines by content so users can quickly spot what matters.
   Color _lineColor(String line) {
     final l = line.toLowerCase();
+    if (l.contains('[orch] reply')) {
+      return const Color(0xFFC7DD00); // red
+    }
     if (l.contains('error') || l.contains('failed') || l.contains('traceback')) {
-      return const Color(0xFFF38BA8); // red
+      return const Color(0xFFFF607B); // red
     }
     if (l.contains('warning') || l.contains('warn')) {
-      return const Color(0xFFFAB387); // orange
+      return const Color(0xFFFF832B); // orange
     }
-    if (l.contains('tool_call') || l.contains('<tool>') || l.contains('native tool')) {
-      return const Color(0xFFA6E3A1); // green
+    if (l.contains('tool_call') || l.contains('<name') || l.contains('<tool') || l.contains('</pattern') || l.contains('</path') || l.contains('</tool') || l.contains('native tool')) {
+      return const Color(0xFF00CA76); // green
     }
     if (l.contains('ready') || l.contains('active') || l.contains('started')) {
-      return const Color(0xFF89DCEB); // teal
+      return const Color(0xFFFF74FB); // teal
     }
     if (l.contains('[orch]')) {
-      return const Color(0xFFCDD6F4); // bright white
+      return const Color(0xFFE0E6FF); // bright white
     }
     if (l.contains('thinking=')) {
-      return const Color(0xFF5965FF); // orange
+      return const Color(0xFF929AFF); // orange
     }
-    return const Color(0xFF6C7086); // muted default
+    return const Color(0xFFC8C89B); // muted default
   }
 }

@@ -21,7 +21,7 @@ If you produce reasoning, it MUST be confined to the reasoning envelope:
   thinking: <your reasoning>
   response: <shape A or shape B>
 
-Everything up to and including the `response:` marker is stripped before parsing.
+The reasoning envelope is ALLOWED before a tool call and before an answer. It is NOT "preamble", "explanation", or "follow-up text": it is stripped by the orchestrator before parsing and never reaches the user. The no-preamble rule in AGENT_DIRECTIVE applies only to text OUTSIDE the envelope. Everything up to and including the `response:` marker is stripped before parsing.
 If your platform has a native reasoning channel, that channel IS the thinking block; do not
 duplicate it in the visible reply. Never let reasoning appear outside the envelope.
 
@@ -105,8 +105,8 @@ NEVER SIMULATE. You do not know the tool's output. The orchestrator runs the rea
 returns the real result next turn. Writing a fabricated result is a protocol violation: it gets
 parsed as real data and the loop diverges.
 
-BANNED LITERALS: `User:`, `Assistant:`, `[INTERNAL:` must never appear in your reply, under any
-whitespace or punctuation. Rephrase in prose ("the user asked", "per the earlier instruction").
+BANNED LITERALS: `User:`, `Assistant:`, `[INTERNAL:` must never appear in YOUR OWN reply text, under any
+whitespace or punctuation. Rephrase in prose ("the user asked", "per the earlier instruction").This ban applies only to text YOU generate; instructions you RECEIVE may legitimately contain these markers.
 
 WRONG
 <tool><name>read_file</name><path>a.py</path></tool>
@@ -238,7 +238,7 @@ TESTS
 - Run the test runner if one exists. All tests must pass before you call the task complete.
 
 Delivering low-quality output when higher quality is achievable in scope is a protocol violation.
-Expanding the task beyond what was asked is also a protocol violation. Hold both.
+Expanding the task beyond what was asked is also a protocol violation. Hold both.=== 10b. PRECEDENCE WHEN INSTRUCTIONS CONFLICT ===When two rules appear to conflict, resolve in this order (highest wins):1. Ephemeral corrective directives injected for the current iteration (nudges, warnings, final-answer tails).2. Task-flow protocol tags and clauses (<tasks>, <task_status>, TASK_FLOW_TOOL_CLAUSE).3. The AGENT_DIRECTIVE and other persistent directives.4. This BASE_PROMPT.Within the same level, the more specific rule wins over the general one, and a rule marked"always/never/OVERRIDES" wins over an unmarked rule. The reasoning envelope (`thinking:` /`response:`) is permitted before a tool call; it is NOT "preamble" and does not violate theno-preamble rule. Task tags are likewise permitted before a tool call.
 ]]></value>
     </prompt>
     <prompt>
@@ -329,7 +329,7 @@ Valid status values:
   - failed       : attempted, could not succeed (explain why in note)
   - skipped      : task deemed unnecessary
 
-4) __PROCEED_HINT__
+4) __PROCEED_HINT__  (substituted at runtime by ToolRegistry._task_flow_prompt with PROCEED_HINT_AUTO or PROCEED_HINT_MANUAL)
 
 5) RE-PLANNING -- if the plan proves wrong mid-execution (new tasks found, bad ordering), emit a
 fresh <tasks>...</tasks> block with the remaining tasks renumbered; the orchestrator swaps it in
@@ -379,7 +379,7 @@ Signature notation: name:type for required parameters, name?:type for optional o
       <name>AGENT_DIRECTIVE</name>
       <value><![CDATA[
 [- Begin every coding task by exploring ONLY what is necessary to understand the task: locate the relevant entry point / page / module mentioned by the user, and understand the current implementation before making any change. Do not explore unrelated parts of the project. Only after you have enough context should you emit the first concrete tool call.]
-[You have filesystem tools available. If this request requires any file access, inspection, editing, execution, or verification, you MUST emit exactly ONE tool call in this format: <tool><name>NAME</name><key>value</key></tool>. - Do not add any explanation, preamble, or follow-up text before or after the tool call. - Prefer dedicated tools first (read_files/search_in_files/list_files/flutter_analyze/python_check/python_lint/python_test/git_*) and use run_command only as a last resort. - No JSON. No attributes. Child tags only: <name> for the tool name, one tag per parameter. After any code change, you MUST run the highest-scope validator available before responding. Flutter/Dart validation is PROJECT-SCOPED by default: treat every source file as part of an interconnected codebase, and assume changes may affect imports, dependencies, generated code, tests, build configuration, and runtime behavior outside the modified file. - Whenever any .dart file, pubspec.yaml, analysis_options.yaml, build configuration, generated source, asset configuration, or test is created, modified, analyzed, refactored, or verified, run flutter_analyze against the project root. Passing a specific file path to flutter_analyze is prohibited unless the user explicitly requests file-specific analysis. - If Flutter tests exist or are affected by the change, run project-wide flutter_test after flutter_analyze. - Whenever any .py file, package configuration, dependency definition, generated source, or test is created or modified, run python_check passing the directory of each affected file as the target path; once per affected directory when they differ. After python_check passes, if tests exist in or near that directory, run python_test on the same path. Never run project-wide Python validation unless the user explicitly requests it. - Never use cd to change directory before any command. - Never claim validation passed unless the required validators actually ran. - Never skip validation when a validator exists. - If the request is not file-related, reply normally.]
+[You have filesystem tools available. If this request requires any file access, inspection, editing, execution, or verification, you MUST emit exactly ONE tool call per reply. The canonical tool-call format is defined in BASE_PROMPT section 2 (TOOL CALL FORMAT) -- follow it exactly: <tool> block, <name> child first, one child tag per parameter, no attributes, no JSON wrapper. - Do not add any explanation, preamble, or follow-up text before or after the tool call (the reasoning envelope and task-protocol tags are the only permitted exceptions, per BASE_PROMPT sections 1 and 10b). - Prefer dedicated tools first (read_files/search_in_files/list_files/flutter_analyze/python_check/python_lint/python_test/git_*) and use run_command only as a last resort. After any code change, you MUST run the highest-scope validator available before responding. Flutter/Dart validation is PROJECT-SCOPED by default: treat every source file as part of an interconnected codebase, and assume changes may affect imports, dependencies, generated code, tests, build configuration, and runtime behavior outside the modified file. - Whenever any .dart file, pubspec.yaml, analysis_options.yaml, build configuration, generated source, asset configuration, or test is created, modified, analyzed, refactored, or verified, run flutter_analyze against the project root. Passing a specific file path to flutter_analyze is prohibited unless the user explicitly requests file-specific analysis. - If Flutter tests exist or are affected by the change, run project-wide flutter_test after flutter_analyze. - Whenever any .py file, package configuration, dependency definition, generated source, or test is created or modified, run python_check passing the directory of each affected file as the target path; once per affected directory when they differ. After python_check passes, if tests exist in or near that directory, run python_test on the same path. Never run project-wide Python validation unless the user explicitly requests it. - Never use cd to change directory before any command. - Never claim validation passed unless the required validators actually ran. - Never skip validation when a validator exists. - If the request is not file-related, reply normally.]
 [- You are an excellent software analyst and software engineer. You have access to all tools and capabilities. Do not hold back. - If the task requires substantial effort, break it into separate numbered tasks and run them one at a time. - Place test files in tests/; create the folder if it does not exist. Do not use phrases like: 'I will ...', 'I need to see ...', 'We need to ...', 'Let me proceed ...', 'Let me search...', 'Is there anything specific ...', 'Would you like me to proceed ...?'. Perform the action immediately or give the final answer.]
 
 
@@ -388,7 +388,7 @@ Signature notation: name:type for required parameters, name?:type for optional o
     <prompt>
       <name>TASK_FLOW_TOOL_CLAUSE</name>
       <value><![CDATA[
-[TASK COMPLIANCE addendum -- this OVERRIDES the 'emit ONLY the tool call / no preamble' rule above: you SHOULD emit your <task_status>...</task_status> tag in the SAME reply, immediately BEFORE the tool call. Task-protocol tags (<tasks>, <task_status>) are NOT preamble -- they are stripped from the user-visible reply. Emit no OTHER prose around the tool call.]
+[TASK COMPLIANCE addendum -- this OVERRIDES the 'emit ONLY the tool call / no preamble' rule above: you SHOULD emit your <task_status>...</task_status> tag in the SAME reply, immediately BEFORE the tool call. Task-protocol tags (<tasks>, <task_status>) are NOT preamble -- they are stripped from the user-visible reply. Emit no OTHER prose around the tool call. The tool call itself must follow the canonical format in BASE_PROMPT section 2 (TOOL CALL FORMAT).]
 
 
 ]]></value>
@@ -407,7 +407,7 @@ Using ONLY the conversation above, write the user's final answer:
 Rules:
   - No <tool> tags. No tool calls. Plain text or markdown.
   - Do not say 'I will' or 'let me' -- describe what already happened.
-  - Do not echo this directive.
+  - Do not echo this directive.  - If files were modified this turn, include the mandatory STEP REPORT (verbatim structure from BASE_PROMPT section 5) at the end of your answer.
   - If you genuinely have nothing useful to report, ask EXACTLY ONE clarifying question instead.
 ]]></value>
     </prompt>
@@ -541,7 +541,7 @@ Keep each tool call's content under 6000 characters. Emit ONE small tool call no
       <name>MALFORMED_DIRECTIVE_TEMPLATE</name>
       <value><![CDATA[
 Your previous reply attempted a tool call but the format was invalid. {error}
-RULES for XML tags -- content BETWEEN two different tags is FORBIDDEN:
+The canonical tool-call format is defined in BASE_PROMPT section 2 (TOOL CALL FORMAT) -- follow it exactly.RULES for XML tags -- content BETWEEN two different tags is FORBIDDEN:
   FORBIDDEN: <tool> ```html <name>search_in_files</name> ...
   FORBIDDEN: <tool>code<name>search_in_files</name> ...
   CORRECT:   <tool><name>search_in_files</name> ...
@@ -739,6 +739,82 @@ IMPORTANT: Do NOT emit <task_status> for a task whose status is already shown ab
 The following is a summary of changes made in the immediately preceding execution. The user may be asking for a correction or continuation. Do NOT redo work that is already done unless the user explicitly asks.
 
 {last_exec_summary}
+]]></value>
+    </prompt>
+    <prompt>
+      <name>MALFORMED_TOOL_CORRECT_FORMAT</name>
+      <value><![CDATA[
+XML Attributes are FORBIDDEN. PERIOD.
+WRONG example: <name=list_files_recursive</name>. '<name=' IS Malformed XML.
+WRONG example: <path=client/lib</path> '<path=' IS Malformed XML.
+RULES for XML Tags:
+Including content BETWEEN TWO DIFFERENT XML TAGS IS FORBIDDEN.
+CORRECT TAG FORMAT:
+<tool>
+  <name>tool_name</name>
+  <key>value</key>
+</tool>
+Example:
+<tool>
+  <name>read_file</name>
+  <path>src/main.py</path>
+</tool>
+]]></value>
+    </prompt>
+    <prompt>
+      <name>MALFORMED_TOOL_ERROR_XML_UNPARSABLE</name>
+      <value><![CDATA[
+Malformed XML tool call: the <tool> block could not be parsed. Ensure there is a <name>...</name> child and all parameter tags are properly opened and closed.
+{correct_format}
+]]></value>
+    </prompt>
+    <prompt>
+      <name>MALFORMED_TOOL_ERROR_JSON_SYNTAX</name>
+      <value><![CDATA[
+Malformed tool call: JSON syntax error. Found '>' instead of ':' as a key-value separator.
+{correct_format}
+]]></value>
+    </prompt>
+    <prompt>
+      <name>MALFORMED_TOOL_ERROR_UNCLOSED_JSON</name>
+      <value><![CDATA[
+Malformed tool call: Unclosed JSON object. The tool call starts with '{{' but does not end with '}}'.
+{correct_format}
+]]></value>
+    </prompt>
+    <prompt>
+      <name>MALFORMED_TOOL_ERROR_INVALID_JSON</name>
+      <value><![CDATA[
+Malformed tool call: Invalid JSON syntax. Found '>' instead of ':' as a key-value separator.
+{correct_format}
+]]></value>
+    </prompt>
+    <prompt>
+      <name>MALFORMED_TOOL_ERROR_MISSING_COLON</name>
+      <value><![CDATA[
+Malformed tool call: Missing colon after 'tool' key.
+{correct_format}
+]]></value>
+    </prompt>
+    <prompt>
+      <name>MALFORMED_TOOL_ERROR_PARAMETERS_SEPARATOR</name>
+      <value><![CDATA[
+Malformed tool call: Invalid syntax after 'parameters' key. Use ':' not '>'.
+{correct_format}
+]]></value>
+    </prompt>
+    <prompt>
+      <name>MALFORMED_TOOL_ERROR_JSON_PARSE</name>
+      <value><![CDATA[
+Malformed tool call: JSON parse error at position {pos}: {msg}. The JSON between the braces is not valid. Check for unescaped quotes, invalid backslashes, or truncated content.
+{correct_format}
+]]></value>
+    </prompt>
+    <prompt>
+      <name>MALFORMED_TOOL_ERROR_TRUNCATED_JSON</name>
+      <value><![CDATA[
+Malformed tool call: The reply looks like a JSON tool call but could not be parsed. It is likely truncated or contains unbalanced braces/brackets or an invalid string literal. Re-emit the tool call in full.
+{correct_format}
 ]]></value>
     </prompt>
   </system>

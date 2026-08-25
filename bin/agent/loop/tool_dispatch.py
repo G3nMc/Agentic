@@ -35,6 +35,7 @@ from html import unescape as _html_unescape
 from typing import Any, Dict, List, Optional, Tuple
 
 from agent.loop.task_protocol import strip_task_tags
+from agent.prompts import format_system_prompt, get_system_prompt_value
 
 
 def _sanitize_xml_value(value: str) -> str:
@@ -279,7 +280,7 @@ def parse_tool_call(block_body: str, tool_defs=None) -> Optional[Tuple[str, Dict
 
     # Clean typical model artifacts: leading/trailing whitespace, tabs, and 
     # carriage returns that might interfere with regex or parsing.
-    block_body = block_body.replace('\n', '').replace('\r', '').strip()
+    # block_body = block_body.replace('\n', '').replace('\r', '').strip()
 
     # FIX: Some models wrap the content inside <tool> tags with markdown code fences
     # e.g., <tool> ```html <name>tool_name</name>... </tool> ```
@@ -351,7 +352,7 @@ def parse_xml_tool_calls(
 
     # Clean typical model artifacts: leading/trailing whitespace, tabs, and
     # carriage returns that might interfere with regex or parsing.
-    response = response.replace('\n', '').replace('\r', '').strip()
+    # response = response.replace('\n', '').replace('\r', '').strip()
 
     # response = """We need to read file with line numbers.<tool>
     #             <name>read_file</name>
@@ -759,36 +760,36 @@ def looks_like_refusal(text: str) -> bool:
     return any(re.search(p, low) for p in _REFUSAL_PATTERNS)
 
 
-def _looks_like_tool_attempt(text: str) -> bool:
-    if not text:
-        return False
-
-    # Check for explicit tool tags (XML format or legacy JSON-in-tags).
-    if re.search(r"<\s*tool\s*>", text, re.IGNORECASE):
-        return True
-    if re.search(r"</\s*tool\s*>", text, re.IGNORECASE):
-        return True
-
-    # XML child-tag indicators: <name>...</name> inside a <tool> context
-    if re.search(r"<\s*name\s*>.*</\s*name\s*>", text, re.IGNORECASE | re.DOTALL):
-        return True
-
-    # Only match "tool": "name" when it looks like a JSON object start —
-    # a bare mention of '"tool": "read_file"' in a final-answer narrative
-    # should NOT trigger the malformed path.
-    if re.search(r'\{\s*["\']tool["\']\s*:\s*["\']\w+["\']', text):
-        return True
-
-    if re.search(
-            r"\b(?:tool_call|function_call)\s*[:=]\s*['\"]\w+['\"]", text, re.IGNORECASE
-    ):
-        return True
-
-    if re.search(r"```(?:json|tool)\b", text, re.IGNORECASE):
-        return True
-
-    return False
-
+# def _looks_like_tool_attempt(text: str) -> bool:
+#     if not text:
+#         return False
+#
+#     # Check for explicit tool tags (XML format or legacy JSON-in-tags).
+#     if re.search(r"<\s*tool\s*>", text, re.IGNORECASE):
+#         return True
+#     if re.search(r"</\s*tool\s*>", text, re.IGNORECASE):
+#         return True
+#
+#     # XML child-tag indicators: <name>...</name> inside a <tool> context
+#     if re.search(r"<\s*name\s*>.*</\s*name\s*>", text, re.IGNORECASE | re.DOTALL):
+#         return True
+#
+#     # Only match "tool": "name" when it looks like a JSON object start —
+#     # a bare mention of '"tool": "read_file"' in a final-answer narrative
+#     # should NOT trigger the malformed path.
+#     if re.search(r'\{\s*["\']tool["\']\s*:\s*["\']\w+["\']', text):
+#         return True
+#
+#     if re.search(
+#             r"\b(?:tool_call|function_call)\s*[:=]\s*['\"]\w+['\"]", text, re.IGNORECASE
+#     ):
+#         return True
+#
+#     if re.search(r"```(?:json|tool)\b", text, re.IGNORECASE):
+#         return True
+#
+#     return False
+#
 
 def parse_all_tag_tool_calls_legacy_json(
         response: str, tool_defs=None
@@ -813,187 +814,339 @@ def parse_all_tag_tool_calls_legacy_json(
             return [(name, params)]
     return []
 
+def _looks_like_tool_attempt(text: str) -> bool:
+    """Return True only when text structurally resembles a tool-call attempt."""
+    if not text:
+        return False
 
-def looks_like_malformed_tool_call(text: str) -> Tuple[bool, str | None]:
-    """Detect output that appears to be a tool call but is malformed.
+    stripped = text.lstrip()
 
-    Checks both the primary XML format and the legacy JSON format.
-    """
+    # XML tool call starting the response.
+    start_match = re.match(
+        r"<\s*tool\b([^>]*)>",
+        stripped,
+        re.IGNORECASE | re.DOTALL,
+        )
+    if start_match:
+        attrs = start_match.group(1).strip()
+        remainder = stripped[start_match.end():]
+
+        if attrs:
+            return True
+
+        if re.match(r"\s*<\s*name\b", remainder, re.IGNORECASE):
+            return True
+
+        if re.match(
+                r"\s*[\{\[]\s*['\"](?:tool|name)['\"]",
+                remainder,
+                re.IGNORECASE,
+        ):
+            return True
+
+        if not remainder.strip():
+            return True
+
+    # Complete <tool>...</tool> block with actual tool content.
+    block_pattern = re.compile(
+        r"<\s*tool\b[^>]*>(.*?)</\s*tool\s*>",
+        re.IGNORECASE | re.DOTALL,
+        )
+    for match in block_pattern.finditer(text):
+        body = match.group(1).strip()
+
+        if re.search(r"<\s*name\b", body, re.IGNORECASE):
+            return True
+
+        if re.search(
+                r"""["'](?:tool|name)["']\s*:""",
+                body,
+                re.IGNORECASE,
+        ):
+            return True
+
+        if re.search(
+                r"<\s*[A-Za-z_][\w.-]*\s*=",
+                body,
+                re.IGNORECASE,
+        ):
+            return True
+
+    # Malformed <tool ...> opener.
+    if re.match(
+            r"^\s*<\s*tool\s+[^>]*>",
+            text,
+            re.IGNORECASE | re.DOTALL,
+    ):
+        return True
+
+    # JSON tool object starting the response.
+    if re.match(
+            r"""^\s*\{\s*["']tool["']\s*:""",
+            text,
+            re.IGNORECASE,
+    ):
+        return True
+
+    # JSON array containing a tool object at the beginning.
+    if re.match(
+            r"""^\s*\[\s*\{\s*["']tool["']\s*:""",
+            text,
+            re.IGNORECASE,
+    ):
+        return True
+
+    # Legacy function_call/tool_call protocol only when JSON-like
+    # or explicitly starting the response.
+    if re.match(r"^\s*[\{\[]", text):
+        if re.search(
+                r"""["'](?:tool_call|function_call)["']\s*[:=]\s*["']\w+["']""",
+                text,
+                re.IGNORECASE,
+        ):
+            return True
+
+    if re.match(
+            r"""^\s*(?:tool_call|function_call)\s*[:=]\s*["']\w+["']""",
+            text,
+            re.IGNORECASE,
+    ):
+        return True
+
+    # Fenced JSON/tool blocks are only attempts when their content
+    # actually starts with a tool protocol.
+    fenced_pattern = re.compile(
+        r"```(?:json|tool)\s*(.*?)```",
+        re.IGNORECASE | re.DOTALL,
+        )
+
+    for match in fenced_pattern.finditer(text):
+        body = match.group(1).strip()
+
+        if not body:
+            continue
+
+        if re.match(
+                r"""^[\{\[]\s*["']tool["']\s*:""",
+                body,
+                re.IGNORECASE,
+        ):
+            return True
+
+        if re.match(
+                r"^<\s*tool\b",
+                body,
+                re.IGNORECASE,
+        ):
+            return True
+
+        if re.match(
+                r"""^(?:tool_call|function_call)\s*[:=]""",
+                body,
+                re.IGNORECASE,
+        ):
+            return True
+
+    return False
+
+
+def looks_like_malformed_tool_call(
+        text: str,
+) -> Tuple[bool, str | None]:
+    """Detect malformed XML or legacy JSON tool-call output."""
     if not text:
         return False, None
 
-    # ---- PRIMARY: XML child-tag format check ----
-    # If there's a <tool> tag but the XML parser can't extract a valid
-    # call from it, it's malformed.
-    if re.search(r"<\s*tool\s*>", text, re.IGNORECASE):
-        if not parse_xml_tool_calls(text):
-            # Don't false-positive on legacy JSON-in-tags that the
-            # fallback parser can still handle.
-            if not parse_all_tag_tool_calls_legacy_json(text):
-                return True, (
-                    "Malformed XML tool call: the <tool> block could not be parsed. "
-                    "Ensure there is a <name>...</name> child and all parameter "
-                    "tags are properly opened and closed.\n"
-                    "XML Attributes are FORBIDDEN. PERIOD.\n"
-                    "WRONG example: <name=list_files_recursive</name>. '<name=' IS Malformed XML.\n"
-                    "WRONG example: <path=client/lib</path> As you can see '<path=' IS Malformed XML.\n"
-                    "RULES for XML Tags:\n"
-                    "Including content BETWEEN TWO DIFFERENT XML TAGS IS FORBIDDEN:\n"
-                    "WRONG EXMAPLES:\n"
-                    "<tool>  ```html <name>search_in_files</name> .....\n"
-                    "<tool> ```code <name>search_in_files</name> .....\n"
-                    "<tool> ``` <name>search_in_files</name> .....\n"
-                    "<tool>code<name>search_in_files</name> .....\n"
-                    "CORRECT TAG FORMAT:\n"
-                    "<tool><name>search_in_files</name> .....\n"
-                    "<tool><name>read_file</name> .....\n"
-                    "<tool><name>patch_file</name> .....\n"
-                    "UNIQUE CORRECT TOOL CALL FORMAT:\n"
-                    "<tool>\n"
-                    "  <name>tool_name</name>\n"
-                    "  <key>value</key>\n"
-                    "</tool>\n"
-                    "Example:\n"
-                    "<tool>\n"
-                    "  <name>read_file</name>\n"
-                    "  <path>src/main.py</path>\n"
-                    "</tool>"
-                )
+    correct_format = get_system_prompt_value("MALFORMED_TOOL_CORRECT_FORMAT")
 
-    # ---- FALLBACK: legacy JSON format check ----
+    def parse_xml_valid() -> bool:
+        try:
+            return bool(parse_xml_tool_calls(text))
+        except Exception:
+            return False
+
+    def parse_legacy_valid() -> bool:
+        try:
+            return bool(parse_all_tag_tool_calls_legacy_json(text))
+        except Exception:
+            return False
+
+    # A literal <tool> in prose is not enough.
+    xml_attempt = False
+
+    stripped = text.lstrip()
+
+    start_match = re.match(
+        r"<\s*tool\b([^>]*)>",
+        stripped,
+        re.IGNORECASE | re.DOTALL,
+        )
+
+    if start_match:
+        attrs = start_match.group(1).strip()
+        remainder = stripped[start_match.end():]
+
+        if attrs:
+            xml_attempt = True
+        elif re.match(r"\s*<\s*name\b", remainder, re.IGNORECASE):
+            xml_attempt = True
+        elif re.match(
+                r"\s*[\{\[]\s*['\"](?:tool|name)['\"]",
+                remainder,
+                re.IGNORECASE,
+        ):
+            xml_attempt = True
+        elif not remainder.strip():
+            xml_attempt = True
+
+    if not xml_attempt:
+        for match in re.finditer(
+                r"<\s*tool\b[^>]*>(.*?)</\s*tool\s*>",
+                text,
+                re.IGNORECASE | re.DOTALL,
+        ):
+            body = match.group(1).strip()
+
+            if re.search(r"<\s*name\b", body, re.IGNORECASE):
+                xml_attempt = True
+                break
+
+            if re.search(
+                    r"""["'](?:tool|name)["']\s*:""",
+                    body,
+                    re.IGNORECASE,
+            ):
+                xml_attempt = True
+                break
+
+            if re.search(
+                    r"<\s*[A-Za-z_][\w.-]*\s*=",
+                    body,
+                    re.IGNORECASE,
+            ):
+                xml_attempt = True
+                break
+
+    if xml_attempt:
+        if parse_xml_valid() or parse_legacy_valid():
+            return False, None
+
+        return True, format_system_prompt(
+            "MALFORMED_TOOL_ERROR_XML_UNPARSABLE",
+            correct_format=correct_format,
+        )
+
+    # Nothing resembling a tool protocol.
     if not _looks_like_tool_attempt(text):
         return False, None
 
-    if parse_all_tag_tool_calls_legacy_json(text):
+    # Valid legacy JSON/tag format.
+    if parse_legacy_valid():
         return False, None
 
-    correct_format = (
-        "XML Attributes are FORBIDDEN. PERIOD.\n"
-        "WRONG example: <name=list_files_recursive</name>. '<name=' IS Malformed XML.\n"
-        "WRONG example: <path=client/lib</path> As you can see '<path=' IS Malformed XML.\n"
-        "RULES for XML Tags:\n"
-        "Including content BETWEEN TWO DIFFERENT XML TAGS IS FORBIDDEN:\n"
-        "WRONG EXMAPLES:\n"
-        "<tool>  ```html <name>search_in_files</name> .....\n"
-        "<tool> ```code <name>search_in_files</name> .....\n"
-        "<tool> ``` <name>search_in_files</name> .....\n"
-        "<tool>code<name>search_in_files</name> .....\n"
-        "CORRECT TAG FORMAT:\n"
-        "<tool><name>search_in_files</name> .....\n"
-        "<tool><name>read_file</name> .....\n"
-        "<tool><name>patch_file</name> .....\n"
-        "UNIQUE CORRECT TOOL CALL FORMAT:\n"
-        "<tool>\n"
-        "  <name>tool_name</name>\n"
-        "  <key>value</key>\n"
-        "</tool>\n"
-        "Example:\n"
-        "<tool>\n"
-        "  <name>read_file</name>\n"
-        "  <path>src/main.py</path>\n"
-        "</tool>"
+    stripped = text.lstrip()
+
+    # JSON syntax errors only in actual JSON-like context.
+    if re.search(r"""[{,]\s*["']?\w+["']?\s*>""", text):
+        return True, format_system_prompt(
+            "MALFORMED_TOOL_ERROR_JSON_SYNTAX",
+            correct_format=correct_format,
+        )
+
+    # Actual JSON tool object that is unclosed.
+    starts_json_tool = bool(
+        re.match(
+            r"""^\s*\{\s*["']tool["']\s*:""",
+            text,
+            re.IGNORECASE,
+        )
     )
 
-    # Require JSON key position context ({  or ,) to avoid false positives
-    # on comparison operators like  "count" > 0  in narrative text.
-    if re.search(r'[{,]\s*"\w+"\s*>', text):
-        return True, (
-            f"Malformed tool call: JSON syntax error. Found '\"key\">' instead of '\"key\":'. "
-            f"{correct_format}"
-        )
-
-    if re.search(r'\{\s*["\']tool["\']', text) and not text.rstrip().endswith("}"):
-        # Don't false-positive on <tool>...</tool> wrapped calls — the
-        # outer text ends with </tool>, not "}", but the JSON inside the
-        # tags may be perfectly valid. Extract the JSON body and check
-        # whether IT is unclosed instead.
-        tag_match = re.search(r'<tool[^>]*>(.*?)</tool>', text, re.DOTALL | re.IGNORECASE)
-        if tag_match:
-            inner = tag_match.group(1).strip()
-            if inner.endswith("}"):
-                # Braces are balanced, but the content might still be
-                # broken (e.g. double-escaped backslashes causing a
-                # premature string close).  Verify with json.loads before
-                # declaring it valid.
-                try:
-                    json.loads(inner)
-                except json.JSONDecodeError:
-                    pass  # Fall through to the catch-all below.
-                else:
-                    return False, None  # JSON inside tags is valid
-        return True, (
-            f"Malformed tool call: Unclosed JSON object. The tool call starts with '{{' but does not end with '}}'. "
-            f"{correct_format}"
-        )
-
-    # Require JSON key position context to avoid false positives.
-    if re.search(r'\{[^}]*[{,]\s*"\w+"\s*>', text):
-        return True, (
-            f"Malformed tool call: Invalid JSON syntax. Found '>' instead of ':' as a key-value separator. "
-            f"{correct_format}"
-        )
-
-    if re.search(r'"tool"\s*"[a-zA-Z_]+"', text) and '"tool":' not in text:
-        return True, (
-            f"Malformed tool call: Missing colon after 'tool' key. {correct_format}"
-        )
-
-    # Require JSON key position context for the same reason as above.
-    if re.search(r'[{,]\s*["\']parameters["\']\s*>', text):
-        return True, (
-            f"Malformed tool call: Invalid syntax after 'parameters' key. Use ':' not '>'. {correct_format}"
-        )
-
-    # Catch-all: the text looks like a tool call (has {"tool":...), didn't
-    # parse, and none of the specific patterns above matched.  Try a bare
-    # json.loads on every JSON object extract_json_objects can find — if
-    # any fail, report the parse error so the orchestrator can nudge the
-    # model instead of silently returning raw JSON to the user.
-    #
-    # This catches double-escaped backslashes (\\\\\\\" breaking the string),
-    # premature quote closure, and other content-level JSON errors that
-    # the syntactic patterns above don't cover.
-    for obj in extract_json_objects(text):
+    if starts_json_tool:
         try:
-            json.loads(obj)
-        except json.JSONDecodeError as e:
-            return True, (
-                f"Malformed tool call: JSON parse error at position {e.pos}: {e.msg}. "
-                f"The JSON between the braces is not valid — check for double-escaped "
-                f"backslashes or unescaped quotes inside string values. "
-                f"{correct_format}"
+            parsed = json.loads(stripped)
+            if isinstance(parsed, dict) and "tool" in parsed:
+                return False, None
+        except json.JSONDecodeError:
+            pass
+
+        if not stripped.endswith("}"):
+            return True, format_system_prompt(
+                "MALFORMED_TOOL_ERROR_UNCLOSED_JSON",
+                correct_format=correct_format,
             )
 
-    # Final safety net: if we reached here, _looks_like_tool_attempt(text)
-    # was True (checked at the top) and parse_all_tag_tool_calls(text)
-    # returned nothing (also checked at the top), but none of the specific
-    # syntax patterns or the extract_json_objects catch-all above fired.
-    # This happens when the JSON is so truncated that the brace-walker in
-    # extract_json_objects can't even extract a complete object — e.g. the
-    # model opened {"tool":"write_file","parameters":{"content":"... but
-    # ran out of tokens mid-string, leaving an unclosed string literal that
-    # swallows the closing braces. The trailing bytes may happen to end
-    # with "}" (from an outer array wrapper like [{...}]}) which fooled
-    # the rstrip().endswith("}") check at line 412 above.
-    #
-    # Without this guard the raw JSON is returned verbatim to the user as
-    # a "final answer." Treat any reply that starts with a JSON opener and
-    # contains a "tool":"name" key as a malformed tool call so the
-    # orchestrator can nudge/retry instead of leaking the broken JSON.
-    stripped = text.lstrip()
-    if stripped[:1] in ("{", "[") and re.search(
-            r'["\']tool["\']\s*:\s*["\']\w+["\']', stripped
+    # Invalid JSON syntax in an actual object.
+    if re.search(
+            r"""\{[^{}]*[{,]\s*["']?\w+["']?\s*>""",
+            text,
     ):
-        return True, (
-            f"Malformed tool call: The reply looks like a JSON tool call "
-            f"but could not be parsed — it is likely truncated or has "
-            f"unbalanced braces/brackets (e.g. an unclosed string literal "
-            f"swallowing the closing braces). Re-emit the tool call in "
-            f"full, or split the payload if it is too large. "
-            f"{correct_format}"
+        return True, format_system_prompt(
+            "MALFORMED_TOOL_ERROR_INVALID_JSON",
+            correct_format=correct_format,
+        )
+
+    # Missing colon after "tool" in JSON-like context.
+    if re.search(
+            r"""[{,]\s*["']tool["']\s*["'][A-Za-z_][A-Za-z0-9_-]*["']""",
+            text,
+            re.IGNORECASE,
+    ):
+        return True, format_system_prompt(
+            "MALFORMED_TOOL_ERROR_MISSING_COLON",
+            correct_format=correct_format,
+        )
+
+    # Invalid parameters separator.
+    if re.search(
+            r"""[{,]\s*["']parameters["']\s*>""",
+            text,
+            re.IGNORECASE,
+    ):
+        return True, format_system_prompt(
+            "MALFORMED_TOOL_ERROR_PARAMETERS_SEPARATOR",
+            correct_format=correct_format,
+        )
+
+    # Validate extracted JSON objects only when the text contains an actual
+    # tool key. Normal prose mentioning JSON remains untouched.
+    if re.search(
+            r"""["']tool["']\s*:\s*["']\w+["']""",
+            text,
+            re.IGNORECASE,
+    ):
+        extracted_any = False
+
+        for obj in extract_json_objects(text):
+            extracted_any = True
+
+            try:
+                json.loads(obj)
+            except json.JSONDecodeError as e:
+                return True, format_system_prompt(
+                    "MALFORMED_TOOL_ERROR_JSON_PARSE",
+                    pos=e.pos,
+                    msg=e.msg,
+                    correct_format=correct_format,
+                )
+
+        if extracted_any:
+            return False, None
+
+    # Final safety net: only when the entire response starts as a JSON
+    # tool payload. Never trigger this from prose/examples.
+    if re.match(
+            r"""^\s*[\{\[]\s*["']tool["']\s*:\s*["']\w+["']""",
+            text,
+            re.IGNORECASE | re.DOTALL,
+    ):
+        return True, format_system_prompt(
+            "MALFORMED_TOOL_ERROR_TRUNCATED_JSON",
+            correct_format=correct_format,
         )
 
     return False, None
+
 
 
 # ---------------------------------------------------------------------------

@@ -1,0 +1,240 @@
+# Explain me how system prompts actually w...
+
+_Model: deepseek-v4-pro:0813 | Backend: ollamaOrchestrator_
+
+---
+
+User:
+
+Explain me how system prompts actually works..!! Where are they grabbed and how is the flow? Are there contradicory prompts
+
+---
+
+Assistant:
+
+System prompts are the instructions injected at the very start of a model's context, before any user message. They set the model's role, rules, output format, and constraints.
+
+**Where they're grabbed from**
+
+1. **Platform/application layer** — the app or framework that hosts the model (e.g. a chat UI, an agent harness, an API wrapper) holds the system prompt as a string or template.
+2. **Configuration** — it's typically stored in a config file, environment variable, database, or hardcoded in the host code. In this agent loop, for example, the system prompt is the large block of rules you see at the top of this conversation (output contract, tool protocol, task flow, etc.).
+3. **Injection at request time** — when a request is built, the host assembles the message list as:
+   - `system` message (the prompt)
+   - conversation history (user/assistant turns)
+   - the current user message
+   
+   This whole list is sent to the model in one API call.
+
+**The flow**
+
+```
+Config/Code → system prompt string
+                    ↓
+        Request builder assembles messages
+                    ↓
+        [system] + [history] + [user]
+                    ↓
+              Model API call
+                    ↓
+        Model generates response following the system rules
+```
+
+The model doesn't "fetch" the prompt itself — the host injects it. The model just sees it as the first message and treats it as authoritative context.
+
+**Are there contradictory prompts?**
+
+Yes, commonly. Contradictions arise from:
+
+- **Multiple sources merged** — e.g. a base system prompt from the platform plus a custom one from the app, which may conflict.
+- **Layered instructions** — a general agent prompt plus task-specific instructions that override or clash with it.
+- **Version drift** — old rules left in while new rules are added.
+- **Conflicting priorities** — e.g. "be concise" vs. "be thorough," or "never ask questions" vs. "ask when unclear."
+
+When contradictions exist, models typically resolve them by:
+- **Recency** — later instructions often win.
+- **Specificity** — more specific rules override general ones.
+- **Explicitness** — rules marked as "always/never" tend to dominate.
+- **Context** — the model picks whichever interpretation best fits the immediate task.
+
+In this very system prompt, you can see the resolution strategy made explicit: a **decision ladder** (section 10) that tells the model exactly how to prioritize when instructions conflict — tool needed first, then most direct tool, then best interpretation, then ask once, then report blocked. That's a deliberate design to reduce ambiguity from contradictory rules.
+
+---
+
+User:
+
+My question was related to specific project
+
+---
+
+Assistant:
+
+:In this project, system prompts are **not** a single hardcoded string — they live in a two-layer registry with XML overrides.
+
+## Where they're grabbed from
+
+**1. Hardcoded defaults — `bin/agent/prompts.py`**
+
+The file defines `DEFAULT_SYSTEM_PROMPTS: Dict[str, str]` containing ~50 named prompt fragments:
+
+- `BASE_PROMPT` — the big 11-section rulebook (output contract, tool format, validation gate, etc.)
+- `TASK_FLOW_PROMPT` — the task-planning protocol
+- `AGENT_DIRECTIVE` — the "you are an excellent software analyst" instruction
+- `SYNTHESIS_DIRECTIVE`, `FOLLOWUP_DIRECTIVE`, `REFUSAL_DIRECTIVE`, `CLIFFHANGER_DIRECTIVE`, etc. — corrective "nudges" injected mid-loop
+- `TOOL_CATALOG_HEADER`, `PROJECT_CONTEXT_HEADER_TEMPLATE`, and many more
+
+**2. XML overrides — `configs/prompts_config.xml`**
+
+This file mirrors every key from `DEFAULT_SYSTEM_PROMPTS` inside `<system><prompt><name>...</name><value><![CDATA[...]]></value></prompt></system>`. It also has a `<project/>` section for per-project prompts keyed by `base_path`.
+
+**3. The resolution function — `get_system_prompt_value(key)`**
+
+```python
+def get_system_prompt_value(key: str) -> str:
+    prompts = read_prompts_config()["system"]   # reads XML
+    value = prompts.get(key)
+    if value is not None:
+        return value                            # XML wins
+    return DEFAULT_SYSTEM_PROMPTS[key]          # fallback to hardcoded
+```
+
+So the precedence is: **XML value → hardcoded default**. The XML is the customization layer; the Python dict is the fallback.
+
+## The flow
+
+```
+prompts.py (DEFAULT_SYSTEM_PROMPTS)
+        │
+        ▼
+configs/prompts_config.xml  (overrides, synced by write_prompts_config)
+        │
+        ▼
+get_system_prompt_value(key) / format_system_prompt(key, **values)
+        │
+        ▼
+ToolRegistry.build_system_prompt()   ← assembles BASE_PROMPT + TOOL_CATALOG_HEADER + tool catalog
+        │
+        ▼
+Orchestrator (run_loop.py)           ← injects AGENT_DIRECTIVE, project context, task state,
+        │                                plan markers, and ephemeral nudges per iteration
+        ▼
+Model API call (system message + history + user message)
+```
+
+Key detail from `run_loop.py`'s docstring: prompts are split into **persistent** (base, plan, task_state, agent_directive) and **ephemeral** (nudges). Ephemeral nudges are injected for exactly one model call, then cleared at the top of the next iteration.
+
+## Are there contradictory prompts?
+
+**Yes, deliberately and extensively.** The system is designed around layered, sometimes conflicting instructions:
+
+1. **`BASE_PROMPT` vs `AGENT_DIRECTIVE`** — `BASE_PROMPT` says "emit exactly one `
+
+---
+
+User:
+
+Can you analyze them and see if there is space for improvement, perfection??
+ 
+
+AGENT:
+ Here is the complete analysis of the system prompt architecture in this project.
+
+## Architecture summary
+
+The system prompts live in a two-layer registry:
+
+1. **`bin/agent/prompts.py`** — hardcoded defaults in `DEFAULT_SYSTEM_PROMPTS` (~50 named fragments: `BASE_PROMPT`, `TASK_FLOW_PROMPT`, `AGENT_DIRECTIVE`, corrective nudges, templates, etc.)
+2. **`configs/prompts_config.xml`** — XML overrides mirroring every key, with a `<project/>` section for per-project prompts.
+
+Resolution order: **XML wins → hardcoded fallback**, via `get_system_prompt_value(key)`. The orchestrator assembles the final system message from `BASE_PROMPT` + tool catalog + `AGENT_DIRECTIVE` + project context + task state + ephemeral nudges.
+
+## Real problems found
+
+### 1. Massive duplication — the single biggest issue
+
+`BASE_PROMPT` and `TASK_FLOW_PROMPT` are each defined **twice**: once as module-level raw strings, and again inside `DEFAULT_SYSTEM_PROMPTS` as escaped string literals. That's ~15 KB of duplicated text that must be kept in sync manually. The `update_base_prompts_from_xml` function exists precisely because this drift is a known hazard — but it's a band-aid over a structural flaw.
+
+**Fix:** make `DEFAULT_SYSTEM_PROMPTS` reference the module-level constants:
+
+```python
+DEFAULT_SYSTEM_PROMPTS = {
+    'BASE_PROMPT': BASE_PROMPT,
+    'TASK_FLOW_PROMPT': TASK_FLOW_PROMPT,
+    ...
+}
+```
+
+This eliminates the drift class entirely.
+
+### 2. `read_prompts_config` has a hidden side effect
+
+```python
+def read_prompts_config(path=None):
+    target = write_prompts_config(path, include_missing=True)  # WRITES on every read
+    ...
+```
+
+A function named `read_*` **writes to disk** on every call. `get_system_prompt_value` calls it, so every prompt lookup triggers a full XML sync. This is a performance smell (file I/O + XML parse on every prompt fetch), a correctness hazard (a read mutating state), and a concurrency hazard (two processes syncing simultaneously).
+
+**Fix:** split into `ensure_prompts_config()` (explicit, called once at startup) and a pure `read_prompts_config()` that only parses.
+
+### 3. `_read_tree` silently swallows corruption
+
+```python
+except (ET.ParseError, OSError):
+    root = ET.Element("directives")  # silently returns empty config
+```
+
+A corrupted XML file silently degrades to defaults with **no warning, no log, no error**. The user's carefully customized prompts vanish without a trace. This should at minimum log a warning, and arguably raise.
+
+### 4. Contradictory instructions — several concrete cases
+
+You asked specifically about contradictions. They exist and are mostly **unintentional**:
+
+| Conflict | Where | Why it's a problem |
+|---|---|---|
+| "exactly one tool call" vs. "batch 2+ reads" | BASE §2 vs §4 | §2 says "exactly one `` block"; §4 says use `read_files` for 2+ files. The model must infer "one *call*, but that call may be a batch tool." Never stated explicitly. |
+| "no preamble" vs. "emit `<task_status>` before the tool" | AGENT_DIRECTIVE vs TASK_FLOW_TOOL_CLAUSE | The clause says it "OVERRIDES" — but only because a human noticed the conflict and patched it. The base rule is still wrong in isolation. |
+| "never ask questions" vs. "ask once, briefly" | BASE §5 vs §10 | §5 forbids asking permission; §10.4 permits one clarifying question. The distinction (permission vs. clarification) is subtle and unstated. |
+| "run project-wide flutter_analyze" vs. "never run project-wide Python validation" | AGENT_DIRECTIVE | Asymmetric rules for Dart vs Python with no stated rationale. A model may over-generalize one to the other. |
+| "one coherent step per turn" vs. "one tool call per reply" | BASE §5 vs §2 | A "step" (write + validate) requires two tool calls across two turns, but §5 says they "belong to the same turn." Physically impossible under the §2 constraint. |
+
+### 5. The `__PROCEED_HINT__` placeholder is fragile
+
+`TASK_FLOW_PROMPT` contains a literal `__PROCEED_HINT__` that's substituted at runtime. If anyone ever calls `format_system_prompt('TASK_FLOW_PROMPT')` without the substitution, the placeholder leaks into the model's context. A `str.format`-style `{proceed_hint}` would be safer and more idiomatic.
+
+### 6. Prompt length is a real cost
+
+`BASE_PROMPT` alone is ~4,500 words. Combined with `AGENT_DIRECTIVE`, `TASK_FLOW_PROMPT`, the tool catalog, project context, and task state, the system prompt likely exceeds **8,000–10,000 tokens** before any conversation history. This costs money on every single API call, dilutes attention (the model must hold 11 sections + 30 directives in working memory), and increases the chance of instruction collision (see #4).
+
+**Fix:** consider a two-tier system — a compact "always-on" core (output contract, tool format, stop rule) plus a "lazy-loaded" section injected only when relevant (e.g. `TASK_FLOW_PROMPT` only when task-flow mode is active, which the code already does — but `BASE_PROMPT` itself could be trimmed).
+
+### 7. `_read_project_section` has ambiguous keying
+
+```python
+if base_path:
+    prompts[base_path] = value
+elif name:
+    prompts[name] = value
+```
+
+A project prompt is keyed by `base_path` if present, else by `name`. Two different prompts could collide if one has `base_path="foo"` and another has `name="foo"`. The lookup in `get_project_prompt_for_base_path` only matches on normalized path, so a `name`-keyed entry is silently unreachable if any `base_path` entry exists. This is a latent bug.
+
+## Priority-ordered recommendations
+
+1. **Eliminate the duplication** (fix #1) — highest impact, lowest risk.
+2. **Split read/write** (fix #2) — correctness and performance.
+3. **Log on XML corruption** (fix #3) — prevents silent data loss.
+4. **Resolve the stated contradictions** (fix #4) — add explicit "one *call*, which may be a batch tool" language; clarify the ask-permission vs. ask-clarification distinction.
+5. **Replace `__PROCEED_HINT__`** with a format placeholder (fix #5).
+6. **Trim `BASE_PROMPT`** by ~30% (fix #6) — remove redundant examples, consolidate the three "WRONG" blocks, tighten the checklist.
+7. **Fix project-prompt keying** (fix #7) — use a composite key or reject ambiguous entries.
+
+The architecture is sound — layered, overridable, with an explicit precedence model. The weaknesses are **maintenance hazards** (duplication, hidden side effects, silent corruption) and **attention dilution** (length, unresolved contradictions), not fundamental design flaws.
+
+
+USER:
+I saw in some places there are pieces of prompts hard-coded example: correct_format in looks_like_malformed_tool_call. 
+Can you see if there are in other places other hard-coded prompts we must move to prompts.py and to prompts_config.xml in order to have all those instructions in a place only?
+
+AGENT:
+ :

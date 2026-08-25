@@ -88,7 +88,7 @@ class _ChatViewState extends StateManager<ChatView> with WidgetsBindingObserver 
   ///   - 'task_compliance_auto' : plan + auto proceed
   /// The user picks one from the dropdown above the message list and
   /// the choice is forwarded to the orchestrator on every send.
-  String _taskMode = 'task_compliance_auto';
+  String _taskMode = 'open';
 
   /// Thinking ON/OFF master switch. When ON, the backend enables extended
   /// reasoning (Anthropic thinking, Gemini thinkingConfig, OpenAI reasoning_effort).

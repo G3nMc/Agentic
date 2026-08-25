@@ -93,6 +93,19 @@ from orchestrator_base import (
 
 configure_stdio_utf8()
 
+# Argument names that carry secrets. Redacted before any stderr/log output.
+_SENSITIVE_ARG_KEYS = ("hf_token", "ollama_api_key", "groq_api_key", "gemini_api_key", "openrouter_api_key", "github_api_key",)
+
+
+def _redact_secrets(args_dict: dict) -> dict | None:
+    """Return a copy of the args dict with secret values replaced."""
+    safe = dict(args_dict)
+    for key in _SENSITIVE_ARG_KEYS:
+        if safe.get(key):
+            safe[key] = "<redacted>"
+            return safe
+    return None
+
 
 def main():
     parser = argparse.ArgumentParser(
@@ -385,7 +398,7 @@ def main():
     # Backend-specific dependency checks keep the startup error focused on
     # the backend the user actually selected.
     print(
-        f"[orch] args: {args}",
+        f"[orch] args: {_redact_secrets(vars(args))}",
         file=sys.stderr,
     )
 
@@ -609,7 +622,7 @@ def _run_interactive_loop(orchestrator: Orchestrator, args=None) -> None:
             # AUTO at any time without restarting the subprocess. The
             # request envelope optionally carries a ``task_mode`` field.
             requested_mode = req.get("task_mode")
-            if isinstance(requested_mode, str) and requested_mode.strip(): 
+            if isinstance(requested_mode, str) and requested_mode.strip():
                 new_mode = TaskMode.parse(requested_mode)
                 if new_mode is not orchestrator.task_mode:
                     orchestrator.task_mode = new_mode
