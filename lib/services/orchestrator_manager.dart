@@ -130,6 +130,19 @@ class OrchestratorManager {
   /// log lines. Use this to show what the model is doing right now.
   Stream<String> get statusStream => _statusController.stream;
 
+  // Thinking stream: carries the model's chain-of-thought, emitted by the
+  // Python orchestrator as structured thinking envelopes on stdout. The chat
+  // view subscribes to show the current reasoning live in the activity strip.
+  final StreamController<String> _thinkingController = StreamController<String>.broadcast();
+
+  /// Live stream of model chain-of-thought text (may be multi-line).
+  Stream<String> get thinkingStream => _thinkingController.stream;
+
+  String? _lastThinking;
+
+  /// Most recent chain-of-thought text, or null if none has been emitted.
+  String? get lastThinking => _lastThinking;
+
   /// Live stream of orchestrator log lines (stderr of the subprocess).
   /// Each event is a single trimmed line such as
   ///   "[orch] Groq streaming 'llama-3.3-70b-versatile' (42 chars)..."
@@ -294,11 +307,14 @@ class OrchestratorManager {
     }
 
     // â”€â”€ Model reply arrived â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-    if (l.contains('[orch] model reply')) return 'Thinking...';
+    if (l.contains('[orch] model reply')) return null;
 
     // â”€â”€ Request dispatched â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-    if (l.contains('[orch] request (tool-enabled)')) return 'Planning...';
-    if (l.contains('[orch] request (chat)')) return 'Reasoning...';
+    // Request-dispatch lines fire immediately on every send and are not real
+    // progress — the strip must stay hidden until an actual tool call, task
+    // status, or thinking event arrives.
+    if (l.contains('[orch] request (tool-enabled)')) return null;
+    if (l.contains('[orch] request (chat)')) return null;
 
     // â”€â”€ Multi-agent role transitions â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     if (l.contains('[agent:router')) return 'Routing task...';
@@ -980,6 +996,11 @@ class OrchestratorManager {
     _activeCompleter = Completer<String>();
     _activeLines.clear();
     _requestStartedAt = DateTime.now();
+    // A fresh request invalidates the previous turn's activity labels and
+    // chain-of-thought so the UI strip never shows stale "Planning..." or
+    // leftover thinking while the new request is still warming up.
+    _lastStatus = null;
+    _lastThinking = null;
     // Stash the conversation id so the stdout dispatcher can attach it
     // to incoming task-flow events (Python doesn't re-echo it on every
     // event for the sake of payload size).
@@ -1093,6 +1114,12 @@ class OrchestratorManager {
       if (!_activeCompleter!.isCompleted) {
         _activeCompleter!.complete(response);
       }
+      // The turn is over: clear the activity label and chain-of-thought so
+      // the UI strip empties out instead of spinning with stale content.
+      _lastStatus = null;
+      _lastThinking = null;
+      if (!_statusController.isClosed) _statusController.add('');
+      if (!_thinkingController.isClosed) _thinkingController.add('');
       return;
     }
 
@@ -1210,6 +1237,15 @@ class OrchestratorManager {
       _taskController.add(
         OrchestratorTasksProposed(conversationId: convId, tasks: tasks),
       );
+      return true;
+    }
+
+    if (eventType == 'thinking') {
+      final text = tags['text'] ?? '';
+      if (text.trim().isNotEmpty) {
+        _lastThinking = text;
+        if (!_thinkingController.isClosed) _thinkingController.add(text);
+      }
       return true;
     }
 

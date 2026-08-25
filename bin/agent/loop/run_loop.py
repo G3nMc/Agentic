@@ -33,6 +33,7 @@ from agent.loop.task_protocol import (
     TaskStatusEvent,
     emit_task_status,
     emit_tasks_proposed,
+    emit_thinking,
     log_task_action_received,
     parse_task_action,
     parse_task_status,
@@ -47,6 +48,7 @@ from agent.loop.tool_dispatch import (
     clean_final_answer,
     clean_history_text,
     drain_recent_drops,
+    extract_thinking,
     looks_like_malformed_tool_call,
     looks_like_refusal,
     looks_like_unclosed_tool,
@@ -972,6 +974,7 @@ class Orchestrator:
                 tools=None,
                 thinking=self.thinking,
                 effort=self.effort,
+                on_thinking=emit_thinking,
             )
         except Exception as exc:  # noqa: BLE001
             # Pop the user turn so a retry does not produce two consecutive
@@ -980,6 +983,12 @@ class Orchestrator:
             if last and last.get("role") == "user":
                 self.conversation_history.pop_turn()
             return f"Model error: {exc}"
+
+        # Surface chain-of-thought from the chat-only path as well, so the
+        # UI can show the model's reasoning even for plain Q/A replies.
+        _visible, thinking = extract_thinking(text or "")
+        if thinking:
+            emit_thinking(thinking)
 
         text_clean = clean_history_text(text or "")
 
@@ -1048,6 +1057,13 @@ class Orchestrator:
                 f"reply (finish={finish_reason}, len={len(text or '')}): "
                 f"{(text or '')[:400].replace(chr(10), ' ')!r}"
             )
+
+            # Surface the model's chain-of-thought to the UI as a structured
+            # ``thinking`` event so the chat view can show it live. The
+            # reasoning is still stripped from the visible answer below.
+            _visible, thinking = extract_thinking(text or "")
+            if thinking:
+                emit_thinking(thinking)
 
             text_clean = clean_history_text(text or "")
             self.conversation_history.add_assistant(text_clean)
@@ -1780,6 +1796,7 @@ class Orchestrator:
                     stop=list(_SYNTH_STOP_SEQUENCES),
                     thinking=self.thinking,
                     effort=self.effort,
+                    on_thinking=emit_thinking,
                 )
             except Exception as exc:  # noqa: BLE001
                 self._log(f"Synthesis call failed: {exc}")
@@ -2021,6 +2038,7 @@ class Orchestrator:
                     stop=list(_TOOL_STOP_SEQUENCES),
                     thinking=self.thinking,
                     effort=self.effort,
+                    on_thinking=emit_thinking,
                 )
                 self._model_circuit_breaker.record_success()
                 text, finish_reason = result

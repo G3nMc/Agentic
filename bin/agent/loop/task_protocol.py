@@ -524,6 +524,34 @@ def log_task_action_received(event: TaskActionEvent) -> None:
     _log(f"[task-action] received #{event.id} {event.action.value}")
 
 
+def emit_thinking(text: str, stream=None) -> None:
+    """Emit the model's chain-of-thought as a structured XML envelope.
+
+    The Flutter client intercepts ``<event type="thinking">`` lines on
+    stdout and surfaces the reasoning in the chat view's activity strip,
+    so the user can watch the model think in real time. The text is
+    XML-escaped (including newlines) so the envelope stays on one line.
+
+    Ollama/deepseek models emit ``:``-only chunks between reasoning phases
+    and prefix their reasoning with a lone colon. Drop pure-noise chunks and
+    strip the leading colon so the UI keeps showing the last real thinking
+    instead of a bare ``:``.
+    """
+    if not text:
+        return
+    cleaned = text.strip()
+    if not cleaned or cleaned == ":":
+        return
+    if cleaned.startswith(":"):
+        cleaned = cleaned[1:].strip()
+    if not cleaned:
+        return
+    out = f"<event>{_child('type', 'thinking')}{_child('text', cleaned)}</event>"
+    target = stream if stream is not None else sys.stdout
+    target.write(out + "\n")
+    target.flush()
+
+
 __all__ = [
     "TaskMode",
     "TaskStatus",
@@ -538,5 +566,6 @@ __all__ = [
     "emit_event",
     "emit_tasks_proposed",
     "emit_task_status",
+    "emit_thinking",
     "log_task_action_received",
 ]

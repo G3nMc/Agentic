@@ -58,6 +58,7 @@ class GeminiBackend(ModelBackend):
         stop: Optional[List[str]] = None,
         thinking: bool = False,
         effort: Optional[str] = None,
+        on_thinking=None,
     ) -> Tuple[str, str]:
         # [native-tools-removed] We never forward function declarations.
         _ = tools
@@ -130,6 +131,9 @@ class GeminiBackend(ModelBackend):
                         text_piece = part.get("text")
                         if text_piece:
                             parts.append(text_piece)
+                        thought_piece = part.get("thought")
+                        if thought_piece and on_thinking is not None:
+                            on_thinking(thought_piece)
                     fr = cand0.get("finishReason")
                     if fr:
                         # Map Gemini's enum to OpenAI-style finish reasons.

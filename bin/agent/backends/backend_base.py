@@ -11,7 +11,7 @@ from __future__ import annotations
 import re
 
 # import sys
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from ..utils.rate_limit import TokenBucket, estimate_tokens
 
@@ -33,6 +33,7 @@ class ModelBackend:
         stop: Optional[List[str]] = None,
         thinking: bool = False,
         effort: Optional[str] = None,
+        on_thinking: Optional[Callable[[str], None]] = None,
     ) -> Tuple[str, str]:
         # NOTE: ``stop`` is the set of strings the model should stop on
         # (the underlying API will not generate past any of them). The
@@ -64,14 +65,14 @@ class RateLimitedBackend(ModelBackend):
     def context_limit(self) -> int:
         return self.inner.context_limit
 
-    def chat(self, conversation, max_tokens, temperature, tools=None, stop=None, thinking=False, effort=None):
+    def chat(self, conversation, max_tokens, temperature, tools=None, stop=None, thinking=False, effort=None, on_thinking=None):
         import sys
 
         # Sanitize the conversation in-place before any logic.
         conversation.sanitize()
 
         if self.bucket.tpm_limit <= 0:
-            return self.inner.chat(conversation, max_tokens, temperature, tools, stop=stop, thinking=thinking, effort=effort)
+            return self.inner.chat(conversation, max_tokens, temperature, tools, stop=stop, thinking=thinking, effort=effort, on_thinking=on_thinking)
 
         # Token estimation from the flat message list.
         messages = conversation.to_messages()
@@ -116,6 +117,7 @@ class RateLimitedBackend(ModelBackend):
                 stop=stop,
                 thinking=thinking,
                 effort=effort,
+                on_thinking=on_thinking,
             )
 
             # Note: Output content is NOT sanitized here to preserve markdown

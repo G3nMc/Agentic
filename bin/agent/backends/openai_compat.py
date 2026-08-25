@@ -119,6 +119,7 @@ class OpenAICompatBackend(ModelBackend):
             thinking: bool = False,
             effort: Optional[str] = None,
             stream: bool = False,
+            on_thinking=None,
     ) -> Tuple[str, str]:
         # OpenRouter uses the OpenAI chat-completions format.
         # Native tools are intentionally not forwarded; the agent uses text protocol.
@@ -160,6 +161,7 @@ class OpenAICompatBackend(ModelBackend):
                 content, finish_reason = assemble_openai_chat_stream(
                     chunks,
                     label=self._label,
+                    on_thinking=on_thinking,
                 )
 
                 content = _clean_protocol_content(content)
@@ -203,6 +205,10 @@ class OpenAICompatBackend(ModelBackend):
 
                 content = message.get("content") or ""
                 content = _clean_protocol_content(content)
+
+                reasoning = message.get("reasoning_content") or message.get("reasoning")
+                if reasoning and on_thinking is not None:
+                    on_thinking(reasoning)
 
                 finish_reason = choice.get("finish_reason") or "stop"
 

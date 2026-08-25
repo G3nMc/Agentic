@@ -1245,16 +1245,15 @@ class _ChatViewState extends StateManager<ChatView> with WidgetsBindingObserver 
                 onAction: _onTaskAction,
               ),
             // Live activity strip: shows spinning indicator + current
-            // orchestrator activity label when the orchestrator is running.
-            // Visible both during _sending and while the orchestrator is
-            // actively working on tasks (even between sends in auto mode).
-            // if (_taskMode != 'open' && _conversation != null)
-            //   _OrchestratorActivityStrip(
-            //     visible: _sending ||
-            //         (_activeBackend != null &&
-            //             _isOrchestratorBackend(_activeBackend!) &&
-            //             OrchestratorManager.instance.isRunning),
-            //   ),
+            // orchestrator activity label (and the model's live thinking)
+            // whenever the orchestrator is running or a send is in flight.
+            // Works in every task mode, including OPEN.
+            _OrchestratorActivityStrip(
+              visible: _sending ||
+                  (_activeBackend != null &&
+                      _isOrchestratorBackend(_activeBackend!) &&
+                      OrchestratorManager.instance.isRunning),
+            ),
             ChatInput(
               enabled: !_sending,
               sending: _sending,
@@ -2555,6 +2554,10 @@ class _ChatViewState extends StateManager<ChatView> with WidgetsBindingObserver 
 /// from [OrchestratorManager.statusStream] so the user sees what the model is
 /// doing in real time (e.g. "Reading file...", "Analyzing Dart code...").
 ///
+/// When the model emits chain-of-thought (via [OrchestratorManager.thinkingStream]),
+/// the strip switches to showing the live thinking text. The user can tap the
+/// strip to toggle between the activity label and the thinking text.
+///
 /// Unlike [_TypingIndicator] (which lives inside the scrollable message list
 /// and only appears while [_ChatViewState._sending] is true), this strip is
 /// a fixed-height bar that stays visible as long as the orchestrator process
@@ -2572,7 +2575,11 @@ class _OrchestratorActivityStrip extends StatefulWidget {
 class _OrchestratorActivityStripState extends State<_OrchestratorActivityStrip> with SingleTickerProviderStateMixin {
   late final AnimationController _spin;
   StreamSubscription<String>? _statusSub;
+  StreamSubscription<String>? _thinkingSub;
   String _label = 'Working...';
+  String _thinking = '';
+  bool _showThinking = false;
+  bool _hasContent = false;
 
   @override
   void initState() {
@@ -2585,24 +2592,80 @@ class _OrchestratorActivityStripState extends State<_OrchestratorActivityStrip> 
     // Seed from last known status so a late-mounted strip shows the current
     // activity instead of the generic fallback.
     final last = OrchestratorManager.instance.lastStatus;
-    if (last != null && last.isNotEmpty) _label = last;
+    if (last != null && last.isNotEmpty) {
+      _label = last;
+      _hasContent = true;
+    }
+
+    final lastThinking = OrchestratorManager.instance.lastThinking;
+    if (lastThinking != null && lastThinking.isNotEmpty) {
+      _thinking = lastThinking;
+      _hasContent = true;
+    }
 
     _statusSub = OrchestratorManager.instance.statusStream.listen((status) {
       if (!mounted) return;
-      setState(() => _label = status);
+      setState(() {
+        // An empty status means the turn finished: drop the label, but keep
+        // the strip alive if a thinking text is still being shown.
+        if (status.isEmpty) {
+          _label = 'Working...';
+          _hasContent = _thinking.isNotEmpty;
+          return;
+        }
+        _label = status;
+        _hasContent = true;
+      });
     });
+
+    _thinkingSub = OrchestratorManager.instance.thinkingStream.listen((text) {
+      if (!mounted) return;
+      // Ignore empty / whitespace-only events: they are stream noise between
+      // reasoning chunks, not a turn-end signal. The last real thinking text
+      // must stay visible until the turn actually finishes.
+      final trimmed = text.trim();
+      if (trimmed.isEmpty || trimmed == ':') return;
+      setState(() {
+        _thinking = trimmed;
+        _hasContent = true;
+        // New reasoning arrives: surface it immediately.
+        _showThinking = true;
+      });
+    });
+  }
+
+  @override
+  void didUpdateWidget(covariant _OrchestratorActivityStrip oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    // A fresh send (visible false -> true) starts a new turn: drop the
+    // previous turn's labels and thinking so the strip stays hidden until
+    // the orchestrator actually emits new progress or reasoning.
+    if (widget.visible && !oldWidget.visible) {
+      _label = 'Working...';
+      _thinking = '';
+      _showThinking = false;
+      _hasContent = false;
+    }
   }
 
   @override
   void dispose() {
     _statusSub?.cancel();
+    _thinkingSub?.cancel();
     _spin.dispose();
     super.dispose();
   }
 
+  String get _displayText {
+    if (_showThinking && _thinking.isNotEmpty) return _thinking;
+    return _label;
+  }
+
   @override
   Widget build(BuildContext context) {
-    if (!widget.visible) return const SizedBox.shrink();
+    if (!widget.visible || !_hasContent) return const SizedBox.shrink();
+
+    final hasThinking = _thinking.isNotEmpty;
 
     return Container(
       height: 28,
@@ -2634,16 +2697,34 @@ class _OrchestratorActivityStripState extends State<_OrchestratorActivityStrip> 
           ),
           const SizedBox(width: 8),
           Expanded(
-            child: Text(
-              _label,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: const TextStyle(
-                color: AppTheme.accentSecondary,
-                fontSize: 12,
+            child: GestureDetector(
+              onTap: hasThinking
+                  ? () => setState(() => _showThinking = !_showThinking)
+                  : null,
+              child: Text(
+                _displayText,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(
+                  color: _showThinking && hasThinking
+                      ? AppTheme.accent
+                      : AppTheme.accentSecondary,
+                  fontSize: 12,
+                  fontStyle: _showThinking && hasThinking
+                      ? FontStyle.italic
+                      : FontStyle.normal,
+                ),
               ),
             ),
           ),
+          if (hasThinking) ...[
+            const SizedBox(width: 8),
+            Icon(
+              _showThinking ? Icons.psychology : Icons.psychology_outlined,
+              size: 14,
+              color: _showThinking ? AppTheme.accent : AppTheme.textMuted,
+            ),
+          ],
         ],
       ),
     );

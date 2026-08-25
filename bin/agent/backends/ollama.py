@@ -206,6 +206,7 @@ class OllamaBackend(ModelBackend):
             stop: Optional[List[str]] = None,
             thinking: bool = False,
             effort: Optional[str] = None,
+            on_thinking=None,
     ) -> Tuple[str, str]:
         # [native-tools-removed] tools=... never forwarded.
         # Ollama supports a `think` field on /api/generate for thinking-capable
@@ -290,6 +291,16 @@ class OllamaBackend(ModelBackend):
 
                 if thinking:
                     _log(f"[Ollama:streaming] \nmodel={self.model_id} \nthinking={thinking}  \npiece={piece} ")
+                    # Deepseek-style models emit ":"-only chunks between
+                    # reasoning phases and prefix real reasoning with a lone
+                    # colon. Drop pure-noise chunks and strip the leading
+                    # colon so the UI keeps showing the last real thinking.
+                    cleaned = thinking.strip()
+                    if cleaned and cleaned != ":":
+                        if cleaned.startswith(":"):
+                            cleaned = cleaned[1:].strip()
+                        if cleaned and on_thinking is not None:
+                            on_thinking(cleaned)
                 if piece:
                     parts.append(piece)
                 if chunk.get("done"):

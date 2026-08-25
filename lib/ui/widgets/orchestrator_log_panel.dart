@@ -205,23 +205,39 @@ class _OrchestratorLogPanelState extends State<OrchestratorLogPanel> {
                       return false;
                     },
                     child: SelectionArea(
-                      child: ListView.builder(
+                      child: Scrollbar(
                         controller: _scroll,
-                        padding: const EdgeInsets.fromLTRB(10, 10, 10, 6),
-                        itemCount: _lines.length,
-                        itemBuilder: (_, i) {
-                          final line = _lines[i];
-                          return Text(
-                            line,
-                            softWrap: false,
-                            style: TextStyle(
-                              fontSize: 11,
-                              fontFamily: 'monospace',
-                              color: _lineColor(line),
-                              height: 1.4,
+                        thumbVisibility: true,
+                        child: Scrollbar(
+                          controller: _hScroll,
+                          thumbVisibility: true,
+                          notificationPredicate: (notification) => notification.depth == 0,
+                          child: SingleChildScrollView(
+                            controller: _hScroll,
+                            scrollDirection: Axis.horizontal,
+                            child: SizedBox(
+                              width: _contentWidth(),
+                              child: ListView.builder(
+                                controller: _scroll,
+                                padding: const EdgeInsets.fromLTRB(10, 10, 10, 6),
+                                itemCount: _lines.length,
+                                itemBuilder: (_, i) {
+                                  final line = _lines[i];
+                                  return Text(
+                                    line,
+                                    softWrap: false,
+                                    style: TextStyle(
+                                      fontSize: 11,
+                                      fontFamily: 'monospace',
+                                      color: _lineColor(line),
+                                      height: 1.4,
+                                    ),
+                                  );
+                                },
+                              ),
                             ),
-                          );
-                        },
+                          ),
+                        ),
                       ),
                     ),
                   ),
@@ -256,6 +272,18 @@ class _OrchestratorLogPanelState extends State<OrchestratorLogPanel> {
         curve: Curves.easeOut,
       );
     }
+  }
+
+  /// Estimates the widest log line so the horizontal scroll area is only as
+  /// wide as the longest line (plus padding), keeping the vertical scrollbar
+  /// pinned to the right edge of the panel.
+  double _contentWidth() {
+    if (_lines.isEmpty) return 0;
+    final longest = _lines
+        .map((line) => line.length)
+        .reduce((a, b) => a > b ? a : b);
+    // Monospace 11px: ~6.6px per char, plus horizontal padding.
+    return longest * 6.6 + 20;
   }
 
   /// Colour-code lines by content so users can quickly spot what matters.

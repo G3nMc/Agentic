@@ -257,6 +257,7 @@ def stream_ndjson(
 def assemble_openai_chat_stream(
     chunks: Iterable[Dict[str, Any]],
     label: str = "stream",
+    on_thinking=None,
 ) -> Tuple[str, str]:
     """Collect content deltas from an OpenAI-style SSE stream.
 
@@ -280,6 +281,9 @@ def assemble_openai_chat_stream(
             piece = delta.get("content")
             if piece:
                 parts.append(piece)
+            reasoning = delta.get("reasoning_content") or delta.get("reasoning")
+            if reasoning and on_thinking is not None:
+                on_thinking(reasoning)
             fr = choices[0].get("finish_reason")
             if fr:
                 finish_reason = fr
