@@ -2676,6 +2676,20 @@ class _OrchestratorActivityStripState extends State<_OrchestratorActivityStrip> 
     return _label;
   }
 
+  bool _isTruncated(double maxWidth) {
+    final text = _displayText;
+    if (text.isEmpty || maxWidth <= 0) return false;
+    final painter = TextPainter(
+      text: TextSpan(
+        text: text,
+        style: const TextStyle(fontSize: 12),
+      ),
+      maxLines: 1,
+      textDirection: TextDirection.ltr,
+    )..layout(maxWidth: maxWidth);
+    return painter.didExceedMaxLines;
+  }
+
   @override
   Widget build(BuildContext context) {
     if (!widget.visible || !_hasContent) return const SizedBox.shrink();
@@ -2712,32 +2726,44 @@ class _OrchestratorActivityStripState extends State<_OrchestratorActivityStrip> 
           ),
           const SizedBox(width: 8),
           Expanded(
-            child: GestureDetector(
-              onTap: hasThinking
-                  ? () => setState(() => _showThinking = !_showThinking)
-                  : null,
-              child: Text(
-                _displayText,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: TextStyle(
-                  color: _showThinking && hasThinking
-                      ? AppTheme.accent
-                      : AppTheme.accentSecondary,
-                  fontSize: 12,
-                  fontStyle: _showThinking && hasThinking
-                      ? FontStyle.italic
-                      : FontStyle.normal,
-                ),
-              ),
+            child: LayoutBuilder(
+              builder: (context, constraints) {
+                final truncated = _isTruncated(constraints.maxWidth);
+                return GestureDetector(
+                  onTap: hasThinking
+                      ? () => setState(() => _showThinking = !_showThinking)
+                      : null,
+                  child: Tooltip(
+                    message: truncated ? _displayText : '',
+                    waitDuration: const Duration(milliseconds: 500),
+                    child: Text(
+                      _displayText,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        color: _showThinking && hasThinking
+                            ? AppTheme.accent
+                            : AppTheme.accentSecondary,
+                        fontSize: 12,
+                        fontStyle: _showThinking && hasThinking
+                            ? FontStyle.italic
+                            : FontStyle.normal,
+                      ),
+                    ),
+                  ),
+                );
+              },
             ),
           ),
           if (hasThinking) ...[
             const SizedBox(width: 8),
-            Icon(
-              _showThinking ? Icons.psychology : Icons.psychology_outlined,
-              size: 14,
-              color: _showThinking ? AppTheme.accent : AppTheme.textMuted,
+            GestureDetector(
+              onTap: () => setState(() => _showThinking = !_showThinking),
+              child: Icon(
+                _showThinking ? Icons.expand_less : Icons.expand_more,
+                size: 16,
+                color: _showThinking ? AppTheme.accent : AppTheme.textMuted,
+              ),
             ),
           ],
         ],
