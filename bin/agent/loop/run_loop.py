@@ -1764,7 +1764,7 @@ class Orchestrator:
     # Synthesis and recap
     # ------------------------------------------------------------------
 
-    def _attempt_synthesis(self) -> Optional[str]:
+    def _attempt_synthesis(self, had_tool_activity: bool = False) -> Optional[str]:
         """One last model call asking for a final answer.
 
         If the model insists on a final validation tool we run it and ask
@@ -1781,9 +1781,14 @@ class Orchestrator:
         # The base prompt carries the whole tool catalog; leaving it in makes
         # the model keep emitting <tool> tags during synthesis.
         synth_history.clear_system_prompts()
+        directive_key = (
+            "SYNTHESIS_TOOL_ACTIVITY_DIRECTIVE"
+            if had_tool_activity
+            else "SYNTHESIS_DIRECTIVE"
+        )
         synth_history.set_system_prompt(
             "synthesis",
-            get_system_prompt_value("SYNTHESIS_DIRECTIVE"),
+            get_system_prompt_value(directive_key),
         )
 
         while synth_tool_count < max_synth_tools:
@@ -1829,7 +1834,7 @@ class Orchestrator:
 
                 synth_history.set_system_prompt(
                     "synthesis",
-                    get_system_prompt_value("SYNTHESIS_DIRECTIVE")
+                    get_system_prompt_value(directive_key)
                     + get_system_prompt_value("SYNTHESIS_LAST_CHANCE_SUFFIX"),
                 )
                 continue
@@ -1890,7 +1895,9 @@ class Orchestrator:
         2. Stitch the last few tool results into readable markdown.
         3. Otherwise a short, honest error.
         """
-        synthesized = self._attempt_synthesis()
+        synthesized = self._attempt_synthesis(
+            had_tool_activity=self._turn.successful_tools > 0
+        )
         if synthesized:
             return synthesized
 
