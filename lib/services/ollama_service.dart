@@ -452,7 +452,13 @@ class OllamaService {
       } catch (_) {}
     }
 
-    return response.toString().trim();
+    var responseText = response.toString().trim();
+    // Some models echo the trailing "Assistant:" prompt cue, producing a
+    // reply that starts with a stray colon. Strip it before returning.
+    if (responseText.startsWith(':')) {
+      responseText = responseText.substring(1).trimLeft();
+    }
+    return responseText;
   }
 
   // ---------------------------------------------------------------------------

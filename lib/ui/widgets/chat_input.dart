@@ -6,9 +6,6 @@ import 'package:desktop_drop/desktop_drop.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:simple_spell_checker/simple_spell_checker.dart';
-import 'package:simple_spell_checker_en_lan/simple_spell_checker_en_lan.dart';
-import 'package:simple_spell_checker_it_lan/simple_spell_checker_it_lan.dart';
 
 import '../../core/theme/app_theme.dart';
 import '../../core/utils/notification_helper.dart';
@@ -87,23 +84,14 @@ class ChatInput extends StatefulWidget {
 }
 
 class _ChatInputState extends State<ChatInput> {
-  late final SpellCheckController _controller =
-      widget.controller is SpellCheckController
-          ? widget.controller as SpellCheckController
-          : SpellCheckController();
+  late final TextEditingController _controller =
+      widget.controller ?? TextEditingController();
   final _focusNode = FocusNode();
   final _projectService = ProjectService();
   String _currentProjectFolder = 'Select folder...';
   List<String> _projectFolders = const [];
   List<String> _branches = [];
   String _selectedBranch = '';
-
-  /// Spell-check language currently selected in the input toolbar.
-  /// Defaults to English (en_US) as requested.
-  String _spellCheckLanguage = 'en';
-
-  /// Spell checker instance for the currently selected language.
-  SimpleSpellChecker? _spellChecker;
 
   /// Files the user attached for the next send. Each entry holds its display
   /// name, absolute path, and decoded text content. They are cleared
@@ -176,31 +164,8 @@ class _ChatInputState extends State<ChatInput> {
   @override
   void initState() {
     super.initState();
-    _initSpellChecker();
     _loadProjectInfo();
     _loadGitBranches();
-  }
-
-  /// Registers the bundled English and Italian dictionaries and creates the
-  /// spell checker for the default language (English).
-  void _initSpellChecker() {
-    SimpleSpellCheckerEnRegister.registerLan(preferEnglish: 'en');
-    SimpleSpellCheckerItRegister.registerLan();
-    _spellChecker = SimpleSpellChecker(
-      language: _spellCheckLanguage,
-      whiteList: const <String>[],
-      caseSensitive: false,
-    );
-    _controller.spellChecker = _spellChecker;
-  }
-
-  /// Switches the spell-check dictionary when the user picks a language.
-  void _setSpellCheckLanguage(String language) {
-    if (language == _spellCheckLanguage) return;
-    setState(() {
-      _spellCheckLanguage = language;
-      _spellChecker?.setNewLanguageToState(language);
-    });
   }
 
   void _loadProjectInfo() {
@@ -878,40 +843,6 @@ class _ChatInputState extends State<ChatInput> {
                                   ],
                                 )),
                           if (_branches.isNotEmpty) const SizedBox(width: 8),
-                          Container(
-                            padding: const EdgeInsets.symmetric(horizontal: 6),
-                            constraints: const BoxConstraints(maxHeight: 28),
-                            alignment: Alignment.centerRight,
-                            decoration: BoxDecoration(
-                              color: AppTheme.bgSecondary,
-                              borderRadius: BorderRadius.circular(6),
-                              border: Border.all(color: AppTheme.accentSecondary, width: 0.5),
-                            ),
-                            child: Row(
-                              mainAxisSize: MainAxisSize.min,
-                              children: [
-                                const Text('Spell: ', style: TextStyle(fontSize: 12, color: AppTheme.textSecondary)),
-                                const SizedBox(width: 5),
-                                DropdownButton<String>(
-                                  value: _spellCheckLanguage,
-                                  underline: const SizedBox(),
-                                  items: const [
-                                    DropdownMenuItem<String>(
-                                      value: 'en',
-                                      child: Align(alignment: Alignment.centerRight, child: Text('English', style: TextStyle(fontWeight: FontWeight.normal, fontSize: 12))),
-                                    ),
-                                    DropdownMenuItem<String>(
-                                      value: 'it',
-                                      child: Align(alignment: Alignment.centerRight, child: Text('Italiano', style: TextStyle(fontWeight: FontWeight.normal, fontSize: 12))),
-                                    ),
-                                  ],
-                                  onChanged: (val) {
-                                    if (val != null) _setSpellCheckLanguage(val);
-                                  },
-                                ),
-                              ],
-                            ),
-                          ),
                         ],
                       ),
                     ],
@@ -923,51 +854,6 @@ class _ChatInputState extends State<ChatInput> {
         ),
       ),
     );
-  }
-}
-
-/// TextEditingController that highlights misspelled words in the chat input.
-/// The spell checker is owned by [_ChatInputState] and swapped when the user
-/// changes language; the controller reads the current instance on every
-/// rebuild so the highlight always reflects the active dictionary.
-class SpellCheckController extends TextEditingController {
-  SimpleSpellChecker? spellChecker;
-
-  @override
-  TextSpan buildTextSpan({
-    required BuildContext context,
-    TextStyle? style,
-    required bool withComposing,
-  }) {
-    final checker = spellChecker;
-    if (checker == null || text.isEmpty) {
-      return super.buildTextSpan(
-        context: context,
-        style: style,
-        withComposing: withComposing,
-      );
-    }
-
-    final spans = checker.check(
-      text,
-      wrongStyle: const TextStyle(
-        color: AppTheme.danger,
-        decoration: TextDecoration.underline,
-        decorationColor: AppTheme.danger,
-        decorationStyle: TextDecorationStyle.wavy,
-      ),
-      commonStyle: style ?? const TextStyle(),
-    );
-
-    if (spans == null || spans.isEmpty) {
-      return super.buildTextSpan(
-        context: context,
-        style: style,
-        withComposing: withComposing,
-      );
-    }
-
-    return TextSpan(style: style, children: spans);
   }
 }
 
