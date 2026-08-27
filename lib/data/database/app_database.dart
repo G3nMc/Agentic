@@ -11,8 +11,8 @@ class AppDatabase {
 
   static final AppDatabase instance = AppDatabase._();
 
-  static const String _dbName = "hf_chat.db";
-  static const int _dbVersion = 13;
+  static const String _dbRelativePath = "data/agentic_data.db";
+  static const int _dbVersion = 14;
 
   Database? _db;
   Completer<Database>? _opening;
@@ -48,15 +48,28 @@ class AppDatabase {
     return _db!;
   }
 
-  Future<Database> _openDatabase() async {
-    final docsDir = await getApplicationDocumentsDirectory();
-    final appDir = Directory(p.join(docsDir.path, "agentic"));
+  // Resolves to a stable per-user system data directory (e.g.
+  // %LOCALAPPDATA%\.agentic\agentic_data.db on Windows) so the database
+  // survives debug/release executable path changes.
+  static Future<String> databasePath() async {
+    if (Platform.isWindows) {
+      final localAppData = Platform.environment['LOCALAPPDATA'];
+      if (localAppData != null && localAppData.isNotEmpty) {
+        return p.join("$localAppData/.agentic", _dbRelativePath);
+      }
+    }
+    final baseDir = await getApplicationSupportDirectory();
+    return p.join("${baseDir.path}/.agentic", _dbRelativePath);
+  }
 
+  Future<Database> _openDatabase() async {
+    final path = await databasePath();
+
+    final appDir = Directory(p.dirname(path));
     if (!await appDir.exists()) {
       await appDir.create(recursive: true);
     }
 
-    final path = p.join(appDir.path, _dbName);
     return databaseFactory.openDatabase(
       path,
       options: OpenDatabaseOptions(
@@ -103,6 +116,7 @@ class AppDatabase {
         created_at INTEGER NOT NULL,
         updated_at INTEGER NOT NULL,
         group_id TEXT,
+        project_path TEXT,
         thinking INTEGER NOT NULL DEFAULT 0,
         effort TEXT NOT NULL DEFAULT 'medium'
       );
@@ -304,11 +318,9 @@ class AppDatabase {
       // before the version bump landed. Skip the ALTER in that case so
       // the upgrade doesn't fault on "duplicate column".
       final cols = await db.rawQuery('PRAGMA table_info(messages)');
-      final hasResponseTime =
-          cols.any((row) => row['name'] == 'response_time_ms');
+      final hasResponseTime = cols.any((row) => row['name'] == 'response_time_ms');
       if (!hasResponseTime) {
-        await db.execute(
-            'ALTER TABLE messages ADD COLUMN response_time_ms INTEGER');
+        await db.execute('ALTER TABLE messages ADD COLUMN response_time_ms INTEGER');
       }
     }
     if (oldVersion < 9) {
@@ -392,6 +404,20 @@ class AppDatabase {
       if (!hasHidden) {
         await db.execute(
           'ALTER TABLE messages ADD COLUMN hidden INTEGER NOT NULL DEFAULT 0',
+        );
+      }
+    }
+    if (oldVersion < 14) {
+      // Migrate to v14: add project_path to conversations for project
+      // scoping. Defensive: an earlier v13 build added this column directly
+      // in _onCreate, leaving some installs already in possession of it
+      // before the version bump landed. Skip the ALTER in that case so the
+      // upgrade doesn't fault on "duplicate column".
+      final convCols = await db.rawQuery('PRAGMA table_info(conversations)');
+      final hasProjectPath = convCols.any((row) => row['name'] == 'project_path');
+      if (!hasProjectPath) {
+        await db.execute(
+          'ALTER TABLE conversations ADD COLUMN project_path TEXT',
         );
       }
     }
