@@ -50,6 +50,11 @@ dependencies:
   html: any
   markdown: any
 
+  # Spell checking for the chat input (English + Italian dictionaries).
+  simple_spell_checker: any
+  simple_spell_checker_en_lan: any
+  simple_spell_checker_it_lan: any
+
 dev_dependencies:
   flutter_test:
     sdk: flutter
