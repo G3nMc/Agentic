@@ -125,7 +125,7 @@ class _ChatViewState extends StateManager<ChatView> with WidgetsBindingObserver 
 
   /// Controller for the chat input. Owned here so we can push text into it
   /// when the user taps the edit icon on a message bubble.
-  final TextEditingController _inputController = TextEditingController();
+  final SpellCheckController _inputController = SpellCheckController();
 
   /// ID of the message currently staged for edit. Set when the user taps the
   /// edit icon; cleared after the next send (or if it disappears from the

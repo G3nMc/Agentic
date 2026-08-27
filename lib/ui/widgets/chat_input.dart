@@ -87,8 +87,10 @@ class ChatInput extends StatefulWidget {
 }
 
 class _ChatInputState extends State<ChatInput> {
-  late final TextEditingController _controller =
-      widget.controller ?? _SpellCheckController();
+  late final SpellCheckController _controller =
+      widget.controller is SpellCheckController
+          ? widget.controller as SpellCheckController
+          : SpellCheckController();
   final _focusNode = FocusNode();
   final _projectService = ProjectService();
   String _currentProjectFolder = 'Select folder...';
@@ -189,9 +191,7 @@ class _ChatInputState extends State<ChatInput> {
       whiteList: const <String>[],
       caseSensitive: false,
     );
-    if (_controller is _SpellCheckController) {
-      (_controller as _SpellCheckController).spellChecker = _spellChecker;
-    }
+    _controller.spellChecker = _spellChecker;
   }
 
   /// Switches the spell-check dictionary when the user picks a language.
@@ -841,73 +841,78 @@ class _ChatInputState extends State<ChatInput> {
                           ],
                         ],
                       ),
-                      if (_branches.isNotEmpty)
-                        Container(
+                      Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          if (_branches.isNotEmpty)
+                            Container(
+                                padding: const EdgeInsets.symmetric(horizontal: 6),
+                                constraints: const BoxConstraints(maxHeight: 28),
+                                alignment: Alignment.centerRight,
+                                decoration: BoxDecoration(color: AppTheme.bgSecondary, borderRadius: BorderRadius.circular(6), border: Border.all(color: AppTheme.accentSecondary, width: 0.5)),
+                                child: Row(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    const Text('Git: ', style: TextStyle(fontSize: 12, color: AppTheme.textSecondary)),
+                                    const SizedBox(width: 5),
+                                    DropdownButton<String>(
+                                      value: _selectedBranch.isNotEmpty ? _selectedBranch : null,
+                                      hint: const Align(alignment: Alignment.centerRight, child: Text('Branch', style: TextStyle(fontSize: 12))),
+                                      underline: const SizedBox(),
+                                      items: [
+                                        ..._branches.map((b) => DropdownMenuItem<String>(
+                                            value: b, child: Align(alignment: Alignment.centerRight, child: Text(b, style: const TextStyle(fontWeight: FontWeight.normal, fontSize: 12))))),
+                                        const DropdownMenuItem<String>(
+                                          value: 'CREATE_NEW',
+                                          child: Align(alignment: Alignment.centerRight, child: Text('Create...', style: TextStyle(color: AppTheme.accent, fontSize: 12))),
+                                        ),
+                                      ],
+                                      onChanged: (val) async {
+                                        if (val == 'CREATE_NEW') {
+                                          await _createBranch();
+                                        } else if (val != null) {
+                                          await _checkoutBranch(val);
+                                        }
+                                      },
+                                    ),
+                                  ],
+                                )),
+                          if (_branches.isNotEmpty) const SizedBox(width: 8),
+                          Container(
                             padding: const EdgeInsets.symmetric(horizontal: 6),
                             constraints: const BoxConstraints(maxHeight: 28),
                             alignment: Alignment.centerRight,
-                            decoration: BoxDecoration(color: AppTheme.bgSecondary, borderRadius: BorderRadius.circular(6), border: Border.all(color: AppTheme.accentSecondary, width: 0.5)),
+                            decoration: BoxDecoration(
+                              color: AppTheme.bgSecondary,
+                              borderRadius: BorderRadius.circular(6),
+                              border: Border.all(color: AppTheme.accentSecondary, width: 0.5),
+                            ),
                             child: Row(
                               mainAxisSize: MainAxisSize.min,
                               children: [
-                                const Text('Git: ', style: TextStyle(fontSize: 12, color: AppTheme.textSecondary)),
+                                const Text('Spell: ', style: TextStyle(fontSize: 12, color: AppTheme.textSecondary)),
                                 const SizedBox(width: 5),
                                 DropdownButton<String>(
-                                  value: _selectedBranch.isNotEmpty ? _selectedBranch : null,
-                                  hint: const Align(alignment: Alignment.centerRight, child: Text('Branch', style: TextStyle(fontSize: 12))),
+                                  value: _spellCheckLanguage,
                                   underline: const SizedBox(),
-                                  items: [
-                                    ..._branches.map((b) => DropdownMenuItem<String>(
-                                        value: b, child: Align(alignment: Alignment.centerRight, child: Text(b, style: const TextStyle(fontWeight: FontWeight.normal, fontSize: 12))))),
-                                    const DropdownMenuItem<String>(
-                                      value: 'CREATE_NEW',
-                                      child: Align(alignment: Alignment.centerRight, child: Text('Create...', style: TextStyle(color: AppTheme.accent, fontSize: 12))),
+                                  items: const [
+                                    DropdownMenuItem<String>(
+                                      value: 'en',
+                                      child: Align(alignment: Alignment.centerRight, child: Text('English', style: TextStyle(fontWeight: FontWeight.normal, fontSize: 12))),
+                                    ),
+                                    DropdownMenuItem<String>(
+                                      value: 'it',
+                                      child: Align(alignment: Alignment.centerRight, child: Text('Italiano', style: TextStyle(fontWeight: FontWeight.normal, fontSize: 12))),
                                     ),
                                   ],
-                                  onChanged: (val) async {
-                                    if (val == 'CREATE_NEW') {
-                                      await _createBranch();
-                                    } else if (val != null) {
-                                      await _checkoutBranch(val);
-                                    }
+                                  onChanged: (val) {
+                                    if (val != null) _setSpellCheckLanguage(val);
                                   },
                                 ),
                               ],
-                            )),
-                      const SizedBox(width: 8),
-                      Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 6),
-                        constraints: const BoxConstraints(maxHeight: 28),
-                        alignment: Alignment.centerRight,
-                        decoration: BoxDecoration(
-                          color: AppTheme.bgSecondary,
-                          borderRadius: BorderRadius.circular(6),
-                          border: Border.all(color: AppTheme.accentSecondary, width: 0.5),
-                        ),
-                        child: Row(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            const Text('Spell: ', style: TextStyle(fontSize: 12, color: AppTheme.textSecondary)),
-                            const SizedBox(width: 5),
-                            DropdownButton<String>(
-                              value: _spellCheckLanguage,
-                              underline: const SizedBox(),
-                              items: const [
-                                DropdownMenuItem<String>(
-                                  value: 'en',
-                                  child: Align(alignment: Alignment.centerRight, child: Text('English', style: TextStyle(fontWeight: FontWeight.normal, fontSize: 12))),
-                                ),
-                                DropdownMenuItem<String>(
-                                  value: 'it',
-                                  child: Align(alignment: Alignment.centerRight, child: Text('Italiano', style: TextStyle(fontWeight: FontWeight.normal, fontSize: 12))),
-                                ),
-                              ],
-                              onChanged: (val) {
-                                if (val != null) _setSpellCheckLanguage(val);
-                              },
                             ),
-                          ],
-                        ),
+                          ),
+                        ],
                       ),
                     ],
                   ),
@@ -925,7 +930,7 @@ class _ChatInputState extends State<ChatInput> {
 /// The spell checker is owned by [_ChatInputState] and swapped when the user
 /// changes language; the controller reads the current instance on every
 /// rebuild so the highlight always reflects the active dictionary.
-class _SpellCheckController extends TextEditingController {
+class SpellCheckController extends TextEditingController {
   SimpleSpellChecker? spellChecker;
 
   @override
