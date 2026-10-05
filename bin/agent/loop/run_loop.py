@@ -133,23 +133,34 @@ _EXTENSION_SUPPRESS_SUCCESSES = 6
 
 # Stop sequences for the tool loop.
 #
-# ``<tool>`` is deliberately NOT here. A compliant reply STARTS with ``<tool>``,
-# so using it as a stop string truncates every valid tool call to an empty
-# string -- which is what produced the "empty reply" epidemic the guards below
-# were written to paper over. ``</tool>`` still prevents the model from
-# hallucinating a fake transcript after the real call; the missing closing tag
-# is repaired by the caller.
+# ``<tool`` is deliberately NOT here. A compliant reply may open with the
+# reasoning envelope (``thinking: ... response:``) and THEN emit ``<tool>``
+# (the BASE_PROMPT output contract); using the opening tag as a stop string
+# truncates the call at its first character, leaving only the envelope.
+# That envelope then sails through the no-tool / non-empty guards and leaks
+# to the user as the "final answer" (observed with glm-5.3 on Ollama Cloud:
+# reply ended at "response:" with finish_reason='stop'). ``</tool>`` still
+# prevents the model from hallucinating a fake transcript after the real
+# call; the missing closing tag is repaired by the caller.
 _TOOL_STOP_SEQUENCES: Tuple[str, ...] = (
-    "<tool",
     "</tool>",
     "\nUser:",
     "\nAssistant:",
     "\n[INTERNAL:",
 )
 
-# During synthesis we genuinely want to forbid tool calls, so ``<tool>`` is a
-# legitimate stop string here.
-_SYNTH_STOP_SEQUENCES: Tuple[str, ...] = _TOOL_STOP_SEQUENCES
+# During synthesis we genuinely want to forbid tool calls, so the opening
+# ``<tool`` tag IS a legitimate stop string here. Keep this list SEPARATE
+# from the tool loop's: leaking ``<tool`` back into _TOOL_STOP_SEQUENCES
+# re-introduces the truncation bug above. (5 entries — the Ollama cloud
+# backend clamps it to 4 where the provider rejects five.)
+_SYNTH_STOP_SEQUENCES: Tuple[str, ...] = (
+    "<tool",
+    "</tool>",
+    "\nUser:",
+    "\nAssistant:",
+    "\n[INTERNAL:",
+)
 
 _TRUNCATION_MARKERS: Tuple[str, ...] = (
     "[... more lines",

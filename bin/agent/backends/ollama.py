@@ -147,6 +147,43 @@ class OllamaBackend(ModelBackend):
             "kimi", "k2.7",
         ))
 
+    # Maximum number of stop sequences the Ollama cloud endpoint accepts
+    # before it starts returning 500 "Internal Server Error" (measured
+    # 2026-10-02: deepseek-v4-pro, deepseek-v4.1-flash, glm-5.3-flash,
+    # kimi-k2.6, gpt-oss:20b all return 500 with 5 stop sequences, while
+    # the identical request with 4 succeeds; glm-5.3, glm-5.2, kimi-k3,
+    # kimi-k2.7-code, minimax-m3, minimax-m2.7, gpt-oss:120b,
+    # nemotron-3-super, gemma4:31b and mistral-large-3:675b accept 5
+    # without complaint). We keep the FIRST N of the orchestrator's
+    # tuple: ``_TOOL_STOP_SEQUENCES`` orders them most-critical first
+    # (``<tool``/``</tool>`` plus the ``User:``/``Assistant:`` markers
+    # that block fake transcripts). The dropped ``\n[INTERNAL:`` marker
+    # is the least critical because run_loop already strips a
+    # hallucinated ``[INTERNAL:`` directive post-hoc.
+    _CLOUD_MAX_STOP_SEQUENCES = 4
+
+    def _clamp_stop_sequences(self, stop: Optional[List[str]]) -> Optional[List[str]]:
+        """Cap the stop-sequence count for cloud requests (see constant)."""
+        if not stop or not self._is_cloud_host():
+            return stop
+        original = list(stop)
+        # Deduplicate while preserving order, then keep only the first
+        # ``_CLOUD_MAX_STOP_SEQUENCES`` sequences.
+        seen: set = set()
+        deduped: List[str] = []
+        for s in original:
+            if s not in seen:
+                seen.add(s)
+                deduped.append(s)
+        clamped = deduped[: self._CLOUD_MAX_STOP_SEQUENCES]
+        if clamped != original:
+            _log(
+                f"[Ollama:stop] cloud endpoint accepts at most "
+                f"{self._CLOUD_MAX_STOP_SEQUENCES} stop sequences; "
+                f"dropping {original!r} -> {clamped!r}"
+            )
+        return clamped
+
     def _maybe_add_think(
             self, payload: Dict[str, Any], thinking: bool, effort: Optional[str]
     ) -> None:
@@ -235,7 +272,7 @@ class OllamaBackend(ModelBackend):
             "temperature": temperature,
             "num_predict": max_tokens,
             "num_ctx": self.num_ctx,
-            "stop" : list(stop) if stop else None
+            "stop": self._clamp_stop_sequences(list(stop) if stop else None),
         }
 
         # if stop:

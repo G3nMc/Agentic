@@ -464,6 +464,12 @@ STRAY_THINK_CLOSE_PATTERN = re.compile(
 )
 
 _TOOL_OPEN_PROBE_RE = re.compile(r"<\s*tool\s*>", re.IGNORECASE)
+# Reasoning envelope taught by BASE_PROMPT: a literal
+# ``thinking: <body> response:`` prefix. The tool loop relies on the
+# response body surviving, everything before it is reasoning.
+_ENVELOPE_OPEN_RE = re.compile(r"^\s*thinking\s*:\s*", re.IGNORECASE)
+_ENVELOPE_RESPONSE_RE = re.compile(r"^[ \t]*response\s*:\s*", re.IGNORECASE | re.MULTILINE)
+
 
 
 def extract_thinking(text: str) -> Tuple[str, str]:
@@ -475,6 +481,13 @@ def extract_thinking(text: str) -> Tuple[str, str]:
       1. Tag-delimited blocks listed in ``_THINKING_TAG_PATTERNS`` are
          removed from the visible text and concatenated into the
          thinking output.
+      1b. The literal ``thinking: ... response: ...`` envelope taught by
+          BASE_PROMPT is stripped the same way: the body between
+          ``thinking:`` and ``response:`` counts as reasoning, and the
+          reply resumes after the ``response:`` marker. An envelope with
+          NO ``response:`` marker (generation cut right after the
+          thinking body) is entirely reasoning.
+
       2. If a ``<tool>`` tag is present in what remains, every byte
          BEFORE the first ``<tool>`` is treated as reasoning. The
          protocol forbids preamble before a tool call, so this is
@@ -495,6 +508,25 @@ def extract_thinking(text: str) -> Tuple[str, str]:
             if body:
                 thinking_parts.append(body)
         visible = pat.sub("", visible)
+
+    # (1b) Strip the literal reasoning envelope taught by BASE_PROMPT:
+    # "thinking: <body>\nresponse: <actual reply>". Everything between
+    # the two markers is reasoning; the reply resumes after "response:".
+    # If the "response:" marker is missing the whole envelope is
+    # reasoning (e.g. generation was cut before any real content), so
+    # nothing survives as visible text and the caller's empty-reply
+    # guard fires.
+    env_open = _ENVELOPE_OPEN_RE.match(visible)
+    if env_open:
+        env_resp = _ENVELOPE_RESPONSE_RE.search(visible, pos=env_open.end())
+        if env_resp:
+            env_body = visible[env_open.end(): env_resp.start()].strip()
+            if env_body:
+                thinking_parts.append(env_body)
+            visible = visible[env_resp.end():].lstrip("\r\n")
+        else:
+            thinking_parts.append(visible[env_open.end():].strip())
+            visible = ""
 
     # (2) Preamble before the first tool tag is reasoning by protocol.
     tool_open = _TOOL_OPEN_PROBE_RE.search(visible)
