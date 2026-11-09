@@ -18,6 +18,7 @@ class TokenCountPicker extends StatefulWidget {
     this.hintText,
     this.outlined = false,
     this.isDense = false,
+    this.enabled = true,
   });
 
   final TextEditingController controller;
@@ -35,20 +36,34 @@ class TokenCountPicker extends StatefulWidget {
   final bool outlined;
   final bool isDense;
 
+  /// When false the picker stays visible but read-only, so a value the current
+  /// backend cannot honour is shown honestly instead of being hidden or
+  /// silently dropped. [onChanged] never fires while disabled.
+  final bool enabled;
+
   /// Sensible presets for `num_ctx` — total context window. Cloud models
   /// typically support 128K+; local Ollama defaults to 4K-8K. The 2K floor
   /// covers tiny chit-chat models, the 512K ceiling matches frontier cloud
   /// models like Claude/Gemini at long-context settings.
   static const List<int> numCtxPresets = [
     2048,
+    3072,
     4096,
+    6144,
     8192,
+    12288,
     16384,
+    24576,
     32768,
+    49152,
     65536,
+    98304,
     131072,
+    196608,
     262144,
+    393216,
     524288,
+    786432,
     1048576,
   ];
 
@@ -58,14 +73,23 @@ class TokenCountPicker extends StatefulWidget {
   /// frontier cloud models will emit in a single call.
   static const List<int> maxTokensPresets = [
     256,
+    384,
     512,
+    768,
     1024,
+    1536,
     2048,
+    3072,
     4096,
+    6144,
     8192,
+    12288,
     16384,
+    24576,
     32768,
+    49152,
     65536,
+    98304,
     131072,
   ];
 
@@ -113,7 +137,7 @@ class _TokenCountPickerState extends State<TokenCountPicker> {
   }
 
   void _onDropdownChanged(int? value) {
-    if (value == null) return;
+    if (value == null || !widget.enabled) return;
     setState(() => _selected = value);
     if (value == _customSentinel) {
       // Keep whatever the user already typed; just reveal the input.
@@ -127,6 +151,7 @@ class _TokenCountPickerState extends State<TokenCountPicker> {
   }
 
   void _onCustomChanged(String v) {
+    if (!widget.enabled) return;
     widget.onChanged(v);
   }
 
@@ -173,7 +198,7 @@ class _TokenCountPickerState extends State<TokenCountPicker> {
               value: _selected,
               isExpanded: true,
               items: items,
-              onChanged: _onDropdownChanged,
+              onChanged: widget.enabled ? _onDropdownChanged : null,
             ),
           ),
         ),
@@ -182,6 +207,7 @@ class _TokenCountPickerState extends State<TokenCountPicker> {
           TextField(
             controller: widget.controller,
             keyboardType: TextInputType.number,
+            enabled: widget.enabled,
             decoration: _decoration(
               label: 'Custom value',
               helper: widget.helperText,

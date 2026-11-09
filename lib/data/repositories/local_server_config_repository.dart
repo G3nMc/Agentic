@@ -9,7 +9,7 @@ class LocalServerConfigRepository {
   static final LocalServerConfigRepository instance = LocalServerConfigRepository._();
 
   Future<LocalServerConfig?> getByModelId(String modelId) async {
-    final db = await AppDatabase.instance.database;
+    final db = await AppDatabase.instance.globalDatabase;
     final rows = await db.query(
       "local_server_configs",
       where: "model_id = ?",
@@ -21,7 +21,7 @@ class LocalServerConfigRepository {
   }
 
   Future<List<LocalServerConfig>> listAll() async {
-    final db = await AppDatabase.instance.database;
+    final db = await AppDatabase.instance.globalDatabase;
     final rows = await db.query(
       "local_server_configs",
       orderBy: "created_at DESC",
@@ -30,7 +30,7 @@ class LocalServerConfigRepository {
   }
 
   Future<void> upsert(LocalServerConfig config) async {
-    final db = await AppDatabase.instance.database;
+    final db = await AppDatabase.instance.globalDatabase;
     await db.insert(
       "local_server_configs",
       config.toMap(),
@@ -39,7 +39,7 @@ class LocalServerConfigRepository {
   }
 
   Future<void> delete(String modelId) async {
-    final db = await AppDatabase.instance.database;
+    final db = await AppDatabase.instance.globalDatabase;
     await db.delete(
       "local_server_configs",
       where: "model_id = ?",
@@ -48,7 +48,7 @@ class LocalServerConfigRepository {
   }
 
   Future<void> setEnabled(String modelId, bool enabled) async {
-    final db = await AppDatabase.instance.database;
+    final db = await AppDatabase.instance.globalDatabase;
     await db.update(
       "local_server_configs",
       {"is_enabled": enabled ? 1 : 0},

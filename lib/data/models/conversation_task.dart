@@ -1,6 +1,6 @@
 import 'dart:convert';
 
-/// One unit of work in a TASK COMPLIANCE conversation.
+/// One unit of work in a conversation that emitted a task checklist.
 ///
 /// Mirrors the dataclass in ``bin/agent/loop/task_protocol.py`` so the
 /// XML envelopes the orchestrator emits on stdout can be deserialised
@@ -170,9 +170,8 @@ extension TaskStatusX on TaskStatus {
   }
 }
 
-/// Mirror of ``agent.loop.task_protocol.TaskAction``. Only used when
-/// the dropdown is in TASK COMPLIANCE (non-auto) mode and the user
-/// clicks one of the action buttons in the checklist panel.
+/// Mirror of ``agent.loop.task_protocol.TaskAction``. Only used when the
+/// user clicks one of the action buttons in the manual task-checklist panel.
 enum TaskAction { proceed, retry, skip, abort, replan }
 
 extension TaskActionX on TaskAction {

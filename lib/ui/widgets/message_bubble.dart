@@ -33,6 +33,10 @@ class MessageBubble extends StatefulWidget {
   final VoidCallback? onDelete;
   final VoidCallback? onEdit;
 
+  /// Overrides the default "You" / "Assistant" label. Used to tag turns
+  /// authored by the AUTO INPUT User agent so they are visibly not the human.
+  final String? roleLabel;
+
   /// When true the bubble renders as a compact, non-interactive status
   /// update (e.g. "Working on task #1...") rather than a full assistant
   /// reply. Status bubbles are visually de-emphasised and omit actions.
@@ -44,6 +48,7 @@ class MessageBubble extends StatefulWidget {
     required this.timeInSeconds,
     this.isUser = false,
     this.isStatus = false,
+    this.roleLabel,
     this.onResend,
     this.onDelete,
     this.onEdit,
@@ -107,7 +112,7 @@ class _MessageBubbleState extends State<MessageBubble> {
                 mainAxisSize: MainAxisSize.max,
                 children: [
                   Text(
-                    widget.isUser ? "You" : "Assistant",
+                    widget.roleLabel ?? (widget.isUser ? "You" : "Assistant"),
                     style: const TextStyle(
                       fontSize: 11,
                       fontWeight: FontWeight.w700,
@@ -225,6 +230,7 @@ class _MessageBubbleState extends State<MessageBubble> {
     );
   }
 }
+
 class _StatusBubble extends StatelessWidget {
   final String message;
 

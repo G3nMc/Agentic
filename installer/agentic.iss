@@ -9,7 +9,7 @@ DefaultGroupName=Agentic
 DisableProgramGroupPage=yes
 PrivilegesRequired=lowest
 PrivilegesRequiredOverridesAllowed=dialog
-OutputDir=C:\Users\Gentian\AsPro\AI\Agentic\installer\Output
+OutputDir=C:\Users\Gentian\AsPro\AI\AgenticPers\installer\Output
 OutputBaseFilename=AgenticSetup
 Compression=lzma2/max
 SolidCompression=yes
@@ -21,8 +21,8 @@ UninstallDisplayIcon={app}\agentic.exe
 Name: "english"; MessagesFile: "compiler:Default.isl"
 
 [Files]
-Source: "C:\Users\Gentian\AsPro\AI\Agentic\build\windows\x64\runner\Release\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
-Source: "C:\Users\Gentian\AsPro\AI\Agentic\bin\*"; DestDir: "{app}\bin"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "C:\Users\Gentian\AsPro\AI\AgenticPers\build\windows\x64\runner\Release\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "C:\Users\Gentian\AsPro\AI\AgenticPers\bin\*"; DestDir: "{app}\bin"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
 Name: "{group}\Agentic"; Filename: "{app}\agentic.exe"
@@ -30,6 +30,11 @@ Name: "{userdesktop}\Agentic"; Filename: "{app}\agentic.exe"; Tasks: desktopicon
 
 [Tasks]
 Name: "desktopicon"; Description: "Create a &desktop icon"; GroupDescription: "Additional icons:"; Flags: unchecked
+
+[Registry]
+Root: HKCU; Subkey: "Software\Microsoft\Windows NT\CurrentVersion\AppCompatFlags\Layers"; ValueType: string; ValueName: "{app}\agentic.exe"; ValueData: "RUNASADMIN"; Flags: uninsdeletevalue
+Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\App Paths\agentic.exe"; ValueType: string; ValueName: ""; ValueData: "{app}\agentic.exe"; Flags: uninsdeletekey
+Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\App Paths\agentic.exe"; ValueType: string; ValueName: "Path"; ValueData: "{app}"; Flags: uninsdeletekey
 
 [Run]
 Filename: "{app}\agentic.exe"; Description: "Launch Agentic"; Flags: nowait postinstall skipifsilent

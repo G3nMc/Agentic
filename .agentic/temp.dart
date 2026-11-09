@@ -1,1 +1,0 @@
-final effectiveOpenRouterContextLimit = openRouterContextLimit ?? await backendSettings.getOpenRouterContextLimit();\nprint('Effective OpenRouter context limit: $effectiveOpenRouterContextLimit');

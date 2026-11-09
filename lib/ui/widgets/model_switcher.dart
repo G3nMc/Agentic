@@ -251,7 +251,7 @@ class _ModelSwitcherState extends State<ModelSwitcher> with WidgetsBindingObserv
     final ids = _choices.map((m) => m.id).toSet();
     final current = ids.contains(widget.selectedModelId) ? widget.selectedModelId : (ids.isNotEmpty ? ids.first : widget.selectedModelId);
     return Container(
-      height: 48,
+      height: 40,
       decoration: BoxDecoration(
         border: Border.all(color: AppTheme.accentSecondary, width: 0.5),
         borderRadius: BorderRadius.circular(8),

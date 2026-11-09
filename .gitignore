@@ -48,3 +48,5 @@ installer/Output/AgenticSetup.exe
 *.exe
 installer/Output/AgenticSetup.exe
 *.exe
+# Widget Preview related
+.widget_preview/

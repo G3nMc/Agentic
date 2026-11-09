@@ -24,7 +24,43 @@ from __future__ import annotations
 import json
 import os
 import sys
-from typing import Any, Dict, List
+from dataclasses import dataclass
+from typing import Any, Dict, List, Optional
+
+# ``build_backend`` only accepts a custom ``base_url`` for these providers; the
+# OpenAI-compatible subclasses (groq / github / huggingface) pin their own
+# endpoint and would raise TypeError on an unexpected keyword.
+_USER_BASE_URL_PROVIDERS = frozenset({"ollama", "openrouter", "gemini"})
+
+
+@dataclass(frozen=True)
+class SlotGenerationDefaults:
+    """Generation knobs configured on the Workflow Agents ``User`` card.
+
+    Returned as a typed record instead of being stashed as ad-hoc attributes on
+    the backend object, so the run loop reads documented fields and the values
+    stay unit-testable. Each field keeps the fallback the loop used before the
+    User slot became configurable.
+    """
+
+    temperature: Optional[float] = None
+    max_tokens: int = 0
+    effort: Optional[str] = None
+    thinking: bool = False
+
+
+def _build_user_generation_defaults(args) -> SlotGenerationDefaults:
+    """Collect the ``--user-*`` generation flags into a typed record."""
+    temperature = getattr(args, "user_temperature", None)
+    max_tokens = int(getattr(args, "user_max_tokens", 0) or 0)
+    effort = getattr(args, "user_reasoning_level", None)
+    thinking = bool(getattr(args, "user_thinking", False))
+    return SlotGenerationDefaults(
+        temperature=float(temperature) if temperature is not None else None,
+        max_tokens=max_tokens,
+        effort=(str(effort).strip().lower() or None) if effort else None,
+        thinking=thinking,
+    )
 
 
 def _normalise_external_history(raw: Any) -> List[Dict[str, str]]:
@@ -273,6 +309,96 @@ def _append_debug_response(chat_path: str, response: str) -> None:
         fh.write(f"\n\nAGENT:\n {response}\n")
 
 
+def _build_user_backend_for_args(args, log_prefix: str = "orch"):
+    """Build the optional AUTO INPUT "User" agent backend.
+
+    The User agent is the second Workflow Agents slot (labelled "User" in the
+    settings panel) forwarded via the ``--user-*`` CLI flags. In AUTO INPUT
+    mode it performs the completion evaluation and authors the follow-up user
+    prompt on a separate model and context, so the Assistant model never
+    debates itself.
+
+    Returns ``None`` when no User agent is configured (empty provider or
+    model) or its backend cannot be built; the caller keeps the User slot
+    unset and the run loop surfaces the missing-agent notice and fails safe.
+    """
+    provider = str(getattr(args, "user_provider", "") or "").strip().lower()
+    model = str(getattr(args, "user_model", "") or "").strip()
+    if not provider or not model:
+        return None
+
+    kwargs: Dict[str, Any] = {"model_id": model}
+    api_key = str(getattr(args, "user_api_key", "") or "").strip()
+    base_url = str(getattr(args, "user_base_url", "") or "").strip()
+
+    # Base URL: only the providers whose ``build_backend`` branch accepts a
+    # custom endpoint. The OpenAI-compatible subclasses (groq / github /
+    # huggingface) pin their own URL and would raise TypeError on the kwarg.
+    if base_url and provider in _USER_BASE_URL_PROVIDERS:
+        kwargs["base_url"] = base_url
+
+    # Context window: ``--user-context-window`` wins over the legacy
+    # ``--user-num-ctx`` alias, and only the providers that actually accept an
+    # explicit window get it. Everywhere else the value is reported as ignored
+    # instead of being silently dropped.
+    context_window = int(
+        getattr(args, "user_context_window", 0)
+        or getattr(args, "user_num_ctx", 0)
+        or 0
+    )
+    if context_window > 0:
+        if provider == "ollama":
+            kwargs["num_ctx"] = context_window
+        elif provider == "openrouter":
+            kwargs["context_limit"] = context_window
+        else:
+            print(
+                f"[{log_prefix}] User agent: context_window ignored by "
+                f"{provider} (managed by the provider).",
+                file=sys.stderr,
+            )
+
+    if provider == "huggingface":
+        api_key = api_key or os.environ.get("HF_TOKEN", "")
+    elif provider == "ollama":
+        api_key = api_key or os.environ.get("OLLAMA_API_KEY", "")
+    elif provider == "gemini":
+        api_key = (
+            api_key
+            or os.environ.get("GEMINI_API_KEY", "")
+            or os.environ.get("GOOGLE_API_KEY", "")
+        )
+    elif provider == "groq":
+        api_key = api_key or os.environ.get("GROQ_API_KEY", "")
+    elif provider == "openrouter":
+        api_key = api_key or os.environ.get("OPENROUTER_API_KEY", "")
+    elif provider == "github":
+        api_key = (
+            api_key
+            or os.environ.get("GITHUB_TOKEN", "")
+            or os.environ.get("GITHUB_API_KEY", "")
+        )
+    if api_key:
+        kwargs["api_key"] = api_key
+
+    try:
+        from agent.backends import build_backend
+
+        backend = build_backend(provider, **kwargs)
+    except Exception as ex:  # noqa: BLE001 - a broken User agent must not kill startup
+        print(
+            f"[{log_prefix}] Could not build AUTO-INPUT User agent backend "
+            f"({provider}:{model}): {ex} - falling back to self-evaluation.",
+            file=sys.stderr,
+        )
+        return None
+    print(
+        f"[{log_prefix}] AUTO-INPUT User agent ready: {provider}:{model}",
+        file=sys.stderr,
+    )
+    return backend
+
+
 __all__ = [
     "_normalise_external_history",
     "_prompt_with_visible_history",
@@ -281,4 +407,5 @@ __all__ = [
     "_resolve_debug_chat_path",
     "_read_last_user_turn",
     "_append_debug_response",
+    "_build_user_backend_for_args",
 ]

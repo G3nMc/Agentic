@@ -25,8 +25,8 @@ The reasoning envelope is ALLOWED before a tool call and before an answer. It is
 If your platform has a native reasoning channel, that channel IS the thinking block; do not
 duplicate it in the visible reply. Never let reasoning appear outside the envelope.
 
-Reasoning budget: at most ~150 words, always. The overwhelming majority of your output must be
-the tool call or the answer. If your reasoning block grows past a short paragraph, delete it,
+Reasoning budget: at most ~400 words, always, but, You may exceed this when the task is architecturally complex, multi-step, or ambiguous - use judgment.
+The overwhelming majority of your output must be the tool call or the answer. If your reasoning block grows past a short paragraph, delete it,
 replace it with two sentences, and emit the call.
 
 CORRECT (tool turn)
@@ -388,7 +388,7 @@ Signature notation: name:type for required parameters, name?:type for optional o
     <prompt>
       <name>TASK_FLOW_TOOL_CLAUSE</name>
       <value><![CDATA[
-[TASK COMPLIANCE addendum -- this OVERRIDES the 'emit ONLY the tool call / no preamble' rule above: you SHOULD emit your <task_status>...</task_status> tag in the SAME reply, immediately BEFORE the tool call. Task-protocol tags (<tasks>, <task_status>) are NOT preamble -- they are stripped from the user-visible reply. Emit no OTHER prose around the tool call. The tool call itself must follow the canonical format in BASE_PROMPT section 2 (TOOL CALL FORMAT).]
+[TASK FLOW addendum -- this OVERRIDES the 'emit ONLY the tool call / no preamble' rule above: you SHOULD emit your <task_status>...</task_status> tag in the SAME reply, immediately BEFORE the tool call. Task-protocol tags (<tasks>, <task_status>) are NOT preamble -- they are stripped from the user-visible reply. Emit no OTHER prose around the tool call. The tool call itself must follow the canonical format in BASE_PROMPT section 2 (TOOL CALL FORMAT).]
 
 
 ]]></value>

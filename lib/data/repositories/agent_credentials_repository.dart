@@ -18,7 +18,7 @@ class AgentCredentialsRepository {
   static AgentCredentialsRepository get instance => _instance;
 
   Future<AgentCredentials?> getCredentials() async {
-    final db = await AppDatabase.instance.database;
+    final db = await AppDatabase.instance.globalDatabase;
     final result = await db.query(tableName, limit: 1);
     if (result.isEmpty) {
       return null;
@@ -27,7 +27,7 @@ class AgentCredentialsRepository {
   }
 
   Future<void> saveCredentials(AgentCredentials credentials) async {
-    final db = await AppDatabase.instance.database;
+    final db = await AppDatabase.instance.globalDatabase;
     final now = DateTime.now();
     final data = {
       'id': 'agent_creds',
@@ -44,7 +44,7 @@ class AgentCredentialsRepository {
   }
 
   Future<void> clearCredentials() async {
-    final db = await AppDatabase.instance.database;
+    final db = await AppDatabase.instance.globalDatabase;
     await db.delete(tableName);
   }
 }

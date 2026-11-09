@@ -4,6 +4,7 @@ import 'dart:io';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/foundation.dart';
 
+import '../data/database/app_database.dart';
 import '../data/repositories/settings_repository.dart';
 
 /// Singleton holding the user-selected project folders.
@@ -69,6 +70,7 @@ class ProjectService {
     _loaded = true;
 
     SettingsRepository.projectKeyProvider = () => _currentPath;
+    AppDatabase.projectPathProvider = () => _currentPath;
 
     final savedProjectsRaw = await SettingsRepository.instance.get(_projectsSettingsKey);
 
@@ -256,6 +258,10 @@ class ProjectService {
     }
 
     _updateNotifiers();
+
+    // The active project may have changed. Close the current DB connection so
+    // the next repository access opens the project-local database.
+    await AppDatabase.instance.reopen();
   }
 
   void _updateNotifiers() {

@@ -171,7 +171,382 @@ def register(registry) -> None:
         except Exception as e:
             return json.dumps({"status": "error", "message": str(e)})
 
-    def list_files_recursive(path: str = ".", max_depth: int = 3) -> str:
+
+    def read_files(
+            paths: list,
+            max_lines_per_file: int | None = 800,
+    ) -> str:
+        """Read multiple files in one call. Returns concatenated contents with
+        file headers, ideal for loading several related files at once instead
+        of making separate read_file calls for each one.
+
+        Each file's content is prefixed with a ``=== path ===`` separator so
+        the model can distinguish where one file ends and another begins.
+        Output is capped at ``MAX_TOTAL_BYTES`` (200 KB) to avoid flooding
+        the context window; files beyond the cap are listed by name only.
+
+        ``max_lines_per_file`` (default 200) limits how many lines are
+        returned per file.  Set to ``null`` / omit to get the full file
+        (still subject to the per-file 100 KB cap used by read_file).
+
+        If ``max_lines_per_file`` covers 70% or more of the actual file lines,
+        the file is read in full to avoid a nearly-complete but truncated read.
+        """
+        MAX_TOTAL_BYTES = 200 * 1024
+        PER_FILE_BYTE_CAP = 100 * 1024
+
+        if not isinstance(paths, list) or len(paths) == 0:
+            return json.dumps(
+                {
+                    "status": "error",
+                    "message": "paths must be a non-empty list of file paths",
+                }
+            )
+
+        # Cap the number of files to prevent abuse / context explosion.
+        if len(paths) > 50:
+            return json.dumps(
+                {
+                    "status": "error",
+                    "message": (
+                        f"Too many paths ({len(paths)}); maximum is 50. "
+                        "Reduce the list or use search_in_files to narrow down."
+                    ),
+                }
+            )
+
+        results: list[dict] = []
+        total_bytes = 0
+        truncated_files: list[str] = []
+
+        for file_path in paths:
+            try:
+                fp = registry.resolve_path(file_path)
+            except ValueError as exc:
+                results.append(
+                    {
+                        "path": file_path,
+                        "status": "error",
+                        "message": str(exc),
+                    }
+                )
+                continue
+
+            if not fp.exists():
+                results.append(
+                    {
+                        "path": file_path,
+                        "status": "error",
+                        "message": f"File not found: {file_path}",
+                    }
+                )
+                continue
+
+            if fp.is_dir():
+                results.append(
+                    {
+                        "path": file_path,
+                        "status": "error",
+                        "message": f"Path is a directory, not a file: {file_path}",
+                    }
+                )
+                continue
+
+            try:
+                raw = fp.read_bytes()
+                total_size = len(raw)
+                full_text = raw.decode("utf-8", errors="replace")
+                # Normalize CRLF/CR to LF (same as read_file) so patch_file
+                # can match old_content the model copies from our output.
+                full_text = full_text.replace("\r\n", "\n").replace("\r", "\n")
+            except Exception as exc:
+                results.append(
+                    {
+                        "path": file_path,
+                        "status": "error",
+                        "message": str(exc),
+                    }
+                )
+                continue
+
+            # Apply line limit if requested.
+            if max_lines_per_file is not None:
+                lines = full_text.splitlines()
+                line_count = len(lines)
+
+                # If the limit already covers 70% or more of the file, read it all
+                # to avoid returning a nearly-complete but artificially truncated file.
+                read_all = line_count == 0 or (max_lines_per_file / line_count) >= 0.7
+
+                if not read_all and line_count > max_lines_per_file:
+                    window = lines[:max_lines_per_file]
+                    pad = len(str(max_lines_per_file))
+                    content = "\n".join(
+                        f"{str(i + 1).rjust(pad)}\t{ln}" for i, ln in enumerate(window)
+                    )
+                    content += (
+                        f"\n\n[... {line_count - max_lines_per_file} more lines "
+                        f"(total {line_count} lines). "
+                        f'Use read_file("{file_path}", start_line={max_lines_per_file + 1}) '
+                        f"to continue reading.]"
+                    )
+                    was_truncated = True
+                else:
+                    content = full_text
+                    was_truncated = False
+            else:
+                # No line limit -- apply byte cap like read_file does.
+                if total_size > PER_FILE_BYTE_CAP:
+                    line_count = full_text.count("\n") + 1
+                    content = full_text.encode("utf-8", errors="replace")[
+                        :PER_FILE_BYTE_CAP
+                    ].decode("utf-8", errors="replace")
+                    content = (
+                                  f"[TRUNCATED: returned first {PER_FILE_BYTE_CAP} bytes "
+                                  f"of {total_size} (~{line_count} lines total). "
+                                  f'Use read_file("{file_path}", start_line=N, end_line=M) '
+                                  f"to read a specific section.]\n\n"
+                              ) + content
+                    was_truncated = True
+                else:
+                    content = full_text
+                    was_truncated = False
+
+            entry_bytes = len(content.encode("utf-8", errors="replace"))
+
+            # If adding this file would exceed the total budget, list it by
+            # name only instead of including its full content.
+            if total_bytes + entry_bytes > MAX_TOTAL_BYTES:
+                truncated_files.append(file_path)
+                continue
+
+            total_bytes += entry_bytes
+            results.append(
+                {
+                    "path": file_path,
+                    "status": "success",
+                    "content": content,
+                    "size": total_size,
+                    "truncated": was_truncated,
+                }
+            )
+
+        # Build the concatenated output with clear file separators.
+        parts: list[str] = []
+        for r in results:
+            if r["status"] == "error":
+                parts.append(f"=== {r['path']} ===\nERROR: {r['message']}")
+            else:
+                header = f"=== {r['path']} ==="
+                if r.get("truncated"):
+                    header += "  (truncated)"
+                parts.append(f"{header}\n{r['content']}")
+
+        if truncated_files:
+            parts.append(
+                "[OUTPUT TRUNCATED: the following files were omitted because "
+                "the total output exceeded the size cap. "
+                "Use read_file to read them individually: "
+                + ", ".join(truncated_files)
+                + "]"
+            )
+
+        return json.dumps(
+            {
+                "status": "success",
+                "files_read": len([r for r in results if r["status"] == "success"]),
+                "files_error": len([r for r in results if r["status"] == "error"]),
+                "files_omitted": len(truncated_files),
+                "total_bytes": total_bytes,
+                "content": "\n\n".join(parts),
+            }
+        )
+
+
+    # def read_files(
+    #         paths: list,
+    #         max_lines_per_file: int | None = 800,
+    # ) -> str:
+    #     """Read multiple files in one call. Returns concatenated contents with
+    #     file headers, ideal for loading several related files at once instead
+    #     of making separate read_file calls for each one.
+    #
+    #     Each file's content is prefixed with a ``=== path ===`` separator so
+    #     the model can distinguish where one file ends and another begins.
+    #     Output is capped at ``MAX_TOTAL_BYTES`` (200 KB) to avoid flooding
+    #     the context window; files beyond the cap are listed by name only.
+    #
+    #     ``max_lines_per_file`` (default 200) limits how many lines are
+    #     returned per file.  Set to ``null`` / omit to get the full file
+    #     (still subject to the per-file 100 KB cap used by read_file).
+    #     """
+    #     MAX_TOTAL_BYTES = 200 * 1024
+    #     PER_FILE_BYTE_CAP = 100 * 1024
+    #
+    #     if not isinstance(paths, list) or len(paths) == 0:
+    #         return json.dumps(
+    #             {
+    #                 "status": "error",
+    #                 "message": "paths must be a non-empty list of file paths",
+    #             }
+    #         )
+    #
+    #     # Cap the number of files to prevent abuse / context explosion.
+    #     if len(paths) > 50:
+    #         return json.dumps(
+    #             {
+    #                 "status": "error",
+    #                 "message": (
+    #                     f"Too many paths ({len(paths)}); maximum is 50. "
+    #                     "Reduce the list or use search_in_files to narrow down."
+    #                 ),
+    #             }
+    #         )
+    #
+    #     results: list[dict] = []
+    #     total_bytes = 0
+    #     truncated_files: list[str] = []
+    #
+    #     for file_path in paths:
+    #         try:
+    #             fp = registry.resolve_path(file_path)
+    #         except ValueError as exc:
+    #             results.append(
+    #                 {
+    #                     "path": file_path,
+    #                     "status": "error",
+    #                     "message": str(exc),
+    #                 }
+    #             )
+    #             continue
+    #
+    #         if not fp.exists():
+    #             results.append(
+    #                 {
+    #                     "path": file_path,
+    #                     "status": "error",
+    #                     "message": f"File not found: {file_path}",
+    #                 }
+    #             )
+    #             continue
+    #
+    #         if fp.is_dir():
+    #             results.append(
+    #                 {
+    #                     "path": file_path,
+    #                     "status": "error",
+    #                     "message": f"Path is a directory, not a file: {file_path}",
+    #                 }
+    #             )
+    #             continue
+    #
+    #         try:
+    #             raw = fp.read_bytes()
+    #             total_size = len(raw)
+    #             full_text = raw.decode("utf-8", errors="replace")
+    #             # Normalize CRLF/CR to LF (same as read_file) so patch_file
+    #             # can match old_content the model copies from our output.
+    #             full_text = full_text.replace("\r\n", "\n").replace("\r", "\n")
+    #         except Exception as exc:
+    #             results.append(
+    #                 {
+    #                     "path": file_path,
+    #                     "status": "error",
+    #                     "message": str(exc),
+    #                 }
+    #             )
+    #             continue
+    #
+    #         # Apply line limit if requested.
+    #         if max_lines_per_file is not None:
+    #             lines = full_text.splitlines()
+    #             line_count = len(lines)
+    #             if line_count > max_lines_per_file:
+    #                 window = lines[:max_lines_per_file]
+    #                 pad = len(str(max_lines_per_file))
+    #                 content = "\n".join(
+    #                     f"{str(i + 1).rjust(pad)}\t{ln}" for i, ln in enumerate(window)
+    #                 )
+    #                 content += (
+    #                     f"\n\n[... {line_count - max_lines_per_file} more lines "
+    #                     f"(total {line_count} lines). "
+    #                     f'Use read_file("{file_path}", start_line={max_lines_per_file + 1}) '
+    #                     f"to continue reading.]"
+    #                 )
+    #                 was_truncated = True
+    #             else:
+    #                 content = full_text
+    #                 was_truncated = False
+    #         else:
+    #             # No line limit — apply byte cap like read_file does.
+    #             if total_size > PER_FILE_BYTE_CAP:
+    #                 line_count = full_text.count("\n") + 1
+    #                 content = full_text.encode("utf-8", errors="replace")[
+    #                     :PER_FILE_BYTE_CAP
+    #                 ].decode("utf-8", errors="replace")
+    #                 content = (
+    #                               f"[TRUNCATED: returned first {PER_FILE_BYTE_CAP} bytes "
+    #                               f"of {total_size} (~{line_count} lines total). "
+    #                               f'Use read_file("{file_path}", start_line=N, end_line=M) '
+    #                               f"to read a specific section.]\\n\\n"
+    #                           ) + content
+    #                 was_truncated = True
+    #             else:
+    #                 content = full_text
+    #                 was_truncated = False
+    #
+    #         entry_bytes = len(content.encode("utf-8", errors="replace"))
+    #
+    #         # If adding this file would exceed the total budget, list it by
+    #         # name only instead of including its full content.
+    #         if total_bytes + entry_bytes > MAX_TOTAL_BYTES:
+    #             truncated_files.append(file_path)
+    #             continue
+    #
+    #         total_bytes += entry_bytes
+    #         results.append(
+    #             {
+    #                 "path": file_path,
+    #                 "status": "success",
+    #                 "content": content,
+    #                 "size": total_size,
+    #                 "truncated": was_truncated,
+    #             }
+    #         )
+    #
+    #     # Build the concatenated output with clear file separators.
+    #     parts: list[str] = []
+    #     for r in results:
+    #         if r["status"] == "error":
+    #             parts.append(f"=== {r['path']} ===\nERROR: {r['message']}")
+    #         else:
+    #             header = f"=== {r['path']} ==="
+    #             if r.get("truncated"):
+    #                 header += "  (truncated)"
+    #             parts.append(f"{header}\n{r['content']}")
+    #
+    #     if truncated_files:
+    #         parts.append(
+    #             "[OUTPUT TRUNCATED: the following files were omitted because "
+    #             "the total output exceeded the size cap. "
+    #             "Use read_file to read them individually: "
+    #             + ", ".join(truncated_files)
+    #             + "]"
+    #         )
+    #
+    #     return json.dumps(
+    #         {
+    #             "status": "success",
+    #             "files_read": len([r for r in results if r["status"] == "success"]),
+    #             "files_error": len([r for r in results if r["status"] == "error"]),
+    #             "files_omitted": len(truncated_files),
+    #             "total_bytes": total_bytes,
+    #             "content": "\n\n".join(parts),
+    #         }
+    #     )
+
+
+    def list_files_recursive(path: str = ".", max_depth: int = 6) -> str:
         """Recursively list directory tree up to max_depth levels."""
         try:
             target = registry.resolve_path(path)
@@ -261,6 +636,34 @@ def register(registry) -> None:
             per_pattern_matches = {p: [] for p in pattern_list}
             cap_per_pattern = 300
 
+            def search_file(entry) -> None:
+                """Search one file, appending matches to per_pattern_matches."""
+                if not pf.is_file_allowed(entry):
+                    return
+                if not fnmatch.fnmatch(entry.name, file_glob):
+                    return
+                try:
+                    if entry.stat().st_size > 1_000_000:
+                        return
+                except OSError:
+                    return
+                try:
+                    raw = entry.read_bytes()
+                    if b"\x00" in raw[:8192]:
+                        return
+                    text = raw.decode("utf-8", errors="ignore")
+                    rel = str(entry.relative_to(base_path))
+                    for i, line in enumerate(text.splitlines(), 1):
+                        for p, cr in compiled:
+                            if len(per_pattern_matches[p]) >= cap_per_pattern:
+                                continue
+                            if cr.search(line):
+                                per_pattern_matches[p].append(
+                                    f"{rel}:{i}: {line.rstrip()}"
+                                )
+                except Exception:
+                    pass
+
             def walk(d):
                 if not pf.is_dir_allowed(d):
                     return
@@ -283,34 +686,21 @@ def register(registry) -> None:
                         ):
                             return
                     elif entry.is_file():
-                        if not pf.is_file_allowed(entry):
-                            continue
-                        if not fnmatch.fnmatch(entry.name, file_glob):
-                            continue
-                        try:
-                            if entry.stat().st_size > 1_000_000:
-                                continue
-                        except OSError:
-                            continue
-                        try:
-                            raw = entry.read_bytes()
-                            if b"\x00" in raw[:8192]:
-                                continue
-                            text = raw.decode("utf-8", errors="ignore")
-                            rel = str(entry.relative_to(base_path))
-                            for i, line in enumerate(text.splitlines(), 1):
-                                for p, cr in compiled:
-                                    if len(per_pattern_matches[p]) >= cap_per_pattern:
-                                        continue
-                                    if cr.search(line):
-                                        per_pattern_matches[p].append(
-                                            f"{rel}:{i}: {line.rstrip()}"
-                                        )
-                        except Exception:
-                            pass
+                        search_file(entry)
 
-            if target.is_dir():
+            # The model frequently passes a FILE path expecting a grep of that
+            # one file. Previously this silently returned "success, 0 matches"
+            # (a lie — the walk only ran on directories), which sent the model
+            # into an infinite re-search loop. Now a file path searches that
+            # single file directly.
+            if target.is_file():
+                search_file(target)
+            elif target.is_dir():
                 walk(target)
+            else:
+                return json.dumps(
+                    {"status": "error", "message": f"Path not found: {path}"}
+                )
 
             if not batch_mode:
                 # Preserve legacy response shape.
@@ -371,195 +761,26 @@ def register(registry) -> None:
                             rel = str(entry.relative_to(base_path))
                             matches.append(rel)
 
-            if target.is_dir():
+            if target.is_file():
+                if not pf.is_file_allowed(target):
+                    return json.dumps(
+                        {"status": "error", "message": f"Path not allowed: {path}"}
+                    )
+                if fnmatch.fnmatch(target.name, pattern):
+                    matches.append(str(target.relative_to(base_path)))
+            elif target.is_dir():
                 walk(target)
+            else:
+                return json.dumps(
+                    {"status": "error", "message": f"Path not found: {path}"}
+                )
             return json.dumps(
                 {"status": "success", "matches": matches, "total": len(matches)}
             )
         except Exception as e:
             return json.dumps({"status": "error", "message": str(e)})
 
-    def read_files(
-        paths: list,
-        max_lines_per_file: int | None = 800,
-    ) -> str:
-        """Read multiple files in one call. Returns concatenated contents with
-        file headers, ideal for loading several related files at once instead
-        of making separate read_file calls for each one.
 
-        Each file's content is prefixed with a ``=== path ===`` separator so
-        the model can distinguish where one file ends and another begins.
-        Output is capped at ``MAX_TOTAL_BYTES`` (200 KB) to avoid flooding
-        the context window; files beyond the cap are listed by name only.
-
-        ``max_lines_per_file`` (default 200) limits how many lines are
-        returned per file.  Set to ``null`` / omit to get the full file
-        (still subject to the per-file 100 KB cap used by read_file).
-        """
-        MAX_TOTAL_BYTES = 200 * 1024
-        PER_FILE_BYTE_CAP = 100 * 1024
-
-        if not isinstance(paths, list) or len(paths) == 0:
-            return json.dumps(
-                {
-                    "status": "error",
-                    "message": "paths must be a non-empty list of file paths",
-                }
-            )
-
-        # Cap the number of files to prevent abuse / context explosion.
-        if len(paths) > 50:
-            return json.dumps(
-                {
-                    "status": "error",
-                    "message": (
-                        f"Too many paths ({len(paths)}); maximum is 50. "
-                        "Reduce the list or use search_in_files to narrow down."
-                    ),
-                }
-            )
-
-        results: list[dict] = []
-        total_bytes = 0
-        truncated_files: list[str] = []
-
-        for file_path in paths:
-            try:
-                fp = registry.resolve_path(file_path)
-            except ValueError as exc:
-                results.append(
-                    {
-                        "path": file_path,
-                        "status": "error",
-                        "message": str(exc),
-                    }
-                )
-                continue
-
-            if not fp.exists():
-                results.append(
-                    {
-                        "path": file_path,
-                        "status": "error",
-                        "message": f"File not found: {file_path}",
-                    }
-                )
-                continue
-
-            if fp.is_dir():
-                results.append(
-                    {
-                        "path": file_path,
-                        "status": "error",
-                        "message": f"Path is a directory, not a file: {file_path}",
-                    }
-                )
-                continue
-
-            try:
-                raw = fp.read_bytes()
-                total_size = len(raw)
-                full_text = raw.decode("utf-8", errors="replace")
-                # Normalize CRLF/CR to LF (same as read_file) so patch_file
-                # can match old_content the model copies from our output.
-                full_text = full_text.replace("\r\n", "\n").replace("\r", "\n")
-            except Exception as exc:
-                results.append(
-                    {
-                        "path": file_path,
-                        "status": "error",
-                        "message": str(exc),
-                    }
-                )
-                continue
-
-            # Apply line limit if requested.
-            if max_lines_per_file is not None:
-                lines = full_text.splitlines()
-                line_count = len(lines)
-                if line_count > max_lines_per_file:
-                    window = lines[:max_lines_per_file]
-                    pad = len(str(max_lines_per_file))
-                    content = "\n".join(
-                        f"{str(i + 1).rjust(pad)}\t{ln}" for i, ln in enumerate(window)
-                    )
-                    content += (
-                        f"\n\n[... {line_count - max_lines_per_file} more lines "
-                        f"(total {line_count} lines). "
-                        f'Use read_file("{file_path}", start_line={max_lines_per_file + 1}) '
-                        f"to continue reading.]"
-                    )
-                    was_truncated = True
-                else:
-                    content = full_text
-                    was_truncated = False
-            else:
-                # No line limit — apply byte cap like read_file does.
-                if total_size > PER_FILE_BYTE_CAP:
-                    line_count = full_text.count("\n") + 1
-                    content = full_text.encode("utf-8", errors="replace")[
-                        :PER_FILE_BYTE_CAP
-                    ].decode("utf-8", errors="replace")
-                    content = (
-                        f"[TRUNCATED: returned first {PER_FILE_BYTE_CAP} bytes "
-                        f"of {total_size} (~{line_count} lines total). "
-                        f'Use read_file("{file_path}", start_line=N, end_line=M) '
-                        f"to read a specific section.]\\n\\n"
-                    ) + content
-                    was_truncated = True
-                else:
-                    content = full_text
-                    was_truncated = False
-
-            entry_bytes = len(content.encode("utf-8", errors="replace"))
-
-            # If adding this file would exceed the total budget, list it by
-            # name only instead of including its full content.
-            if total_bytes + entry_bytes > MAX_TOTAL_BYTES:
-                truncated_files.append(file_path)
-                continue
-
-            total_bytes += entry_bytes
-            results.append(
-                {
-                    "path": file_path,
-                    "status": "success",
-                    "content": content,
-                    "size": total_size,
-                    "truncated": was_truncated,
-                }
-            )
-
-        # Build the concatenated output with clear file separators.
-        parts: list[str] = []
-        for r in results:
-            if r["status"] == "error":
-                parts.append(f"=== {r['path']} ===\nERROR: {r['message']}")
-            else:
-                header = f"=== {r['path']} ==="
-                if r.get("truncated"):
-                    header += "  (truncated)"
-                parts.append(f"{header}\n{r['content']}")
-
-        if truncated_files:
-            parts.append(
-                "[OUTPUT TRUNCATED: the following files were omitted because "
-                "the total output exceeded the size cap. "
-                "Use read_file to read them individually: "
-                + ", ".join(truncated_files)
-                + "]"
-            )
-
-        return json.dumps(
-            {
-                "status": "success",
-                "files_read": len([r for r in results if r["status"] == "success"]),
-                "files_error": len([r for r in results if r["status"] == "error"]),
-                "files_omitted": len(truncated_files),
-                "total_bytes": total_bytes,
-                "content": "\n\n".join(parts),
-            }
-        )
 
     registry.tools.update(
         {
@@ -694,7 +915,7 @@ def register(registry) -> None:
                             },
                             "path": {
                                 "type": "string",
-                                "description": "Directory to search in (default '.')",
+                                "description": "Directory to search in, or a single file path to grep directly (default '.')",
                             },
                             "file_glob": {
                                 "type": "string",
@@ -719,7 +940,7 @@ def register(registry) -> None:
                             },
                             "path": {
                                 "type": "string",
-                                "description": "Directory to search in (default '.')",
+                                "description": "Directory to search in, or a single file path to match directly (default '.')",
                             },
                         },
                         "required": ["pattern"],

@@ -51,7 +51,7 @@ sys.dont_write_bytecode = True
 # Also expose the project root (parent of bin/) so transitive imports
 # of the form ``bin.common.*`` resolve — these are used by sibling
 # packages and are kept for backwards compatibility.
-import os
+import os  # noqa: E402  (imports follow the sys.path bootstrap above)
 
 _THIS_DIR = os.path.dirname(os.path.abspath(__file__))
 _PROJECT_ROOT = os.path.dirname(_THIS_DIR)
@@ -60,41 +60,49 @@ if _THIS_DIR not in sys.path:
 if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
 
-import argparse
-import json
+import argparse  # noqa: E402  (imports follow the sys.path bootstrap above)
+import json  # noqa: E402
 
-from agent.backends import RateLimitedBackend, build_backend
-from agent.backends.gemini import GeminiBackend
+from agent.backends import RateLimitedBackend, build_backend  # noqa: E402
+from agent.backends.gemini import GeminiBackend  # noqa: E402
 
-from agent.core.policy import SecurityConfig
-from agent.prompts import sync_prompts_config
-from agent.utils.bootstrap import (
+from agent.core.policy import SecurityConfig  # noqa: E402
+from agent.prompts import sync_prompts_config  # noqa: E402
+from agent.utils.bootstrap import (  # noqa: E402
     BACKEND_REQUIRED_MODULES,
     check_dependencies,
     import_hf_runtime,
     install_dependencies,
 )
-from agent.utils.io_protocol import (
+from agent.utils.io_protocol import (  # noqa: E402
     RESPONSE_SENTINEL,
     configure_stdio_utf8,
     read_interactive_request,
 )
+from agent.utils.session_env import install_stderr_stamping  # noqa: E402
 # Shared helpers between the two CLI orchestrators. The default log
 # prefix in orchestrator_base is "orch", which matches the existing
 # stderr output of this script — no wrapping needed.
-from orchestrator_base import (
+from orchestrator_base import (  # noqa: E402
     _normalise_external_history,
     _load_path_filter,
     _load_db_connections,
     _resolve_debug_chat_path,
     _read_last_user_turn,
     _append_debug_response,
+    _build_user_backend_for_args,
+    _build_user_generation_defaults,
 )
 
 configure_stdio_utf8()
 
+# Multi-session attribution: when the Flutter client launched this process for a
+# specific chat it exported AGENTIC_SESSION_ID, so stamp every `[orch]` stderr
+# line with the short GUID. No-op (and byte-identical output) when unset.
+install_stderr_stamping()
+
 # Argument names that carry secrets. Redacted before any stderr/log output.
-_SENSITIVE_ARG_KEYS = ("hf_token", "ollama_api_key", "groq_api_key", "gemini_api_key", "openrouter_api_key", "github_api_key",)
+_SENSITIVE_ARG_KEYS = ("hf_token", "ollama_api_key", "groq_api_key", "gemini_api_key", "openrouter_api_key", "github_api_key", "user_api_key",)
 
 
 def _redact_secrets(args_dict: dict) -> dict | None:
@@ -271,15 +279,100 @@ def main():
     )
     parser.add_argument(
         "--task-mode",
-        default="task_compliance_auto",
-        choices=["open", "task_compliance", "task_compliance_auto"],
+        default="user_input",
+        choices=["open", "user_input", "auto_input"],
         help=(
-            "Default task-flow mode. 'open' (free-form), 'task_compliance' "
-            "(structured plan + manual proceed between tasks), or "
-            "'task_compliance_auto' (structured plan + auto proceed). The "
-            "Flutter UI can override this per request by including a "
-            "'task_mode' field in the JSON envelope sent to stdin."
+            "Default input mode. 'open' and 'user_input' are free-form chat "
+            "loops that wait for the user after every reply ('user_input' is "
+            "retained for API compatibility); 'auto_input' (after each reply "
+            "the Workflow Agents 'User' model evaluates whether the request "
+            "is complete and, if not, feeds its follow-up prompt back in "
+            "until done). The Flutter UI can override this per request by "
+            "including a 'task_mode' field in the JSON envelope sent to "
+            "stdin."
         ),
+    )
+    # AUTO INPUT "User" agent (second Workflow Agents slot). Optional: when
+    # omitted, AUTO INPUT fails safe with one answer plus a UI notice instead
+    # of letting the assistant judge its own work.
+    parser.add_argument(
+        "--user-provider",
+        default="",
+        help="Provider for the AUTO INPUT 'User' agent (second Workflow Agents slot). Empty disables the User agent.",
+    )
+    parser.add_argument(
+        "--user-model",
+        default="",
+        help="Model ID for the AUTO INPUT 'User' agent.",
+    )
+    parser.add_argument(
+        "--user-api-key",
+        default="",
+        help="API key for the User agent provider. Sensitive - redacted before logging.",
+    )
+    parser.add_argument(
+        "--user-base-url",
+        default="",
+        help="Base URL override for the User agent (Ollama / OpenRouter).",
+    )
+    parser.add_argument(
+        "--user-num-ctx",
+        type=int,
+        default=0,
+        help="Legacy alias of --user-context-window. Kept so older launchers "
+             "keep working. 0 = backend default.",
+    )
+    parser.add_argument(
+        "--user-context-window",
+        type=int,
+        default=0,
+        help="Context window override for the User agent. Applied to Ollama "
+             "(num_ctx) and OpenRouter (context_limit); ignored by providers "
+             "that manage it internally. Takes precedence over --user-num-ctx.",
+    )
+    parser.add_argument(
+        "--user-temperature",
+        type=float,
+        default=None,
+        help="Sampling temperature for the User agent's AUTO INPUT evaluation. "
+             "Omit to keep the low deterministic default.",
+    )
+    parser.add_argument(
+        "--user-max-tokens",
+        type=int,
+        default=0,
+        help="Max output tokens for the User agent's AUTO INPUT evaluation. "
+             "0 = the built-in 1024 default.",
+    )
+    parser.add_argument(
+        "--user-reasoning-level",
+        default=None,
+        choices=["minimal", "low", "medium", "high", "max"],
+        help="Reasoning effort level for the User agent.",
+    )
+    # Two explicit flags on one dest. ``BooleanOptionalAction`` would only
+    # generate ``--no-user-thinking``, while the Flutter client emits
+    # ``--user-no-thinking`` when the switch is OFF — which argparse then
+    # rejects as an unrecognized argument.
+    parser.add_argument(
+        "--user-thinking",
+        dest="user_thinking",
+        action="store_true",
+        default=False,
+        help="Extended thinking ON for the User agent.",
+    )
+    parser.add_argument(
+        "--user-no-thinking",
+        dest="user_thinking",
+        action="store_false",
+        help="Extended thinking OFF for the User agent (default).",
+    )
+    parser.add_argument(
+        "--user-tpm-limit",
+        type=int,
+        default=0,
+        help="Tokens-per-minute cap for the User agent backend. 0 = unlimited "
+             "(default).",
     )
     parser.add_argument(
         "--auto-num-ctx",
@@ -419,11 +512,52 @@ def main():
             file=sys.stderr,
         )
 
+    user_backend = _build_user_backend_for_args(args)
+    if user_backend is not None:
+        print(
+            f"[orch] AUTO INPUT User agent: {args.user_provider}:{args.user_model}",
+            file=sys.stderr,
+        )
+        # Per-slot TPM cap. 0 (the default) leaves the backend untouched, so an
+        # unconfigured User slot keeps the exact behaviour it had before.
+        user_tpm_limit = int(getattr(args, "user_tpm_limit", 0) or 0)
+        if user_tpm_limit > 0:
+            user_backend = RateLimitedBackend(
+                user_backend, tpm_limit=user_tpm_limit, label="user"
+            )
+            print(
+                f"[orch] User agent TPM rate limiter active: {user_tpm_limit} "
+                f"tokens/min (effective {int(user_tpm_limit * 0.95)}).",
+                file=sys.stderr,
+            )
+    elif args.task_mode == "auto_input":
+        print(
+            "[orch] AUTO INPUT mode selected but no User agent is configured "
+            "(pass --user-provider/--user-model); the loop will stop after "
+            "one answer with a notice.",
+            file=sys.stderr,
+        )
+
     print(
         f"[orch] Local Orchestrator ready. Backend: {args.backend}, "
         f"Model: {args.model}",
         file=sys.stderr,
     )
+
+    # Generation knobs for the AUTO INPUT "User" slot, forwarded from the
+    # --user-temperature / --user-max-tokens / --user-reasoning-level /
+    # --user-thinking flags. Unset values keep the loop's documented
+    # fallbacks so an unconfigured slot behaves exactly as before.
+    user_defaults = _build_user_generation_defaults(args)
+    if user_backend is not None:
+        print(
+            f"[orch] AUTO INPUT User generation: "
+            f"temperature={user_defaults.temperature}, "
+            f"max_tokens={user_defaults.max_tokens or 'default'}, "
+            f"effort={user_defaults.effort or 'default'}, "
+            f"thinking={user_defaults.thinking}",
+            file=sys.stderr,
+        )
 
     orchestrator = Orchestrator(
         backend=backend,
@@ -436,6 +570,11 @@ def main():
         db_connections=db_connections,
         task_mode=args.task_mode,
         auto_num_ctx=args.auto_num_ctx,
+        user_backend=user_backend,
+        user_temperature=user_defaults.temperature,
+        user_max_tokens=user_defaults.max_tokens,
+        user_effort=user_defaults.effort,
+        user_thinking=user_defaults.thinking,
     )
     if args.disable_tools:
         print("[orch] Tools disabled — running in plain-chat mode.", file=sys.stderr)
@@ -606,6 +745,11 @@ def _run_interactive_loop(orchestrator: Orchestrator, args=None) -> None:
             req = read_interactive_request(sys.stdin)
             if req is None:
                 break  # EOF
+            # Control line: the client is shutting the session down. Leave the
+            # read loop cleanly so the audit log and chat log are flushed.
+            if req.get("action") == "shutdown":
+                break
+            request_id = req.get("request_id")
             history = _normalise_external_history(req.get("history"))
             if req.get("new_session"):
                 orchestrator.reset()
@@ -618,8 +762,10 @@ def _run_interactive_loop(orchestrator: Orchestrator, args=None) -> None:
                 orchestrator.reset()
                 orchestrator.import_history(history)
             # Per-request task-mode override: the Flutter dropdown can
-            # change between OPEN / TASK COMPLIANCE / TASK COMPLIANCE
-            # AUTO at any time without restarting the subprocess. The
+            # change between USER INPUT / AUTO INPUT at any time without
+            # restarting the subprocess. Legacy mode names (``open``,
+            # ``task_compliance``, ``task_compliance_auto``) are remapped by
+            # ``TaskMode.parse``; the
             # request envelope optionally carries a ``task_mode`` field.
             requested_mode = req.get("task_mode")
             if isinstance(requested_mode, str) and requested_mode.strip():
@@ -669,7 +815,9 @@ def _run_interactive_loop(orchestrator: Orchestrator, args=None) -> None:
             except Exception as e:
                 response = f"Error: {e}"
             # Serialize as a single JSON string so embedded newlines survive.
-            print(json.dumps({"response": response}))
+            # `request_id` is echoed untouched so the Flutter side can discard
+            # an envelope belonging to a turn it already aborted.
+            print(json.dumps({"response": response, "request_id": request_id}))
             print(RESPONSE_SENTINEL)
             sys.stdout.flush()
 

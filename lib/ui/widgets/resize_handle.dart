@@ -6,7 +6,7 @@ import '../../core/theme/app_theme.dart';
 /// of a panel below it. Shows a resize cursor on hover and provides visual
 /// feedback when dragging.
 class ResizeHandle extends StatefulWidget {
-  /// Current height of the panel being resized.
+  /// Current height of the panel above this handle being resized.
   final double height;
 
   /// Called when the user drags the handle to change the height.
@@ -18,12 +18,22 @@ class ResizeHandle extends StatefulWidget {
   /// Maximum allowed height for the panel.
   final double maxHeight;
 
+  /// Uses a smaller hit area when placed between compact sidebar panels.
+  final bool compact;
+
+  /// When true, the handle sits ABOVE the panel it resizes: dragging up
+  /// grows the panel below it, dragging down shrinks it. When false (default),
+  /// the handle sits BELOW the panel: dragging down grows the panel above.
+  final bool inverted;
+
   const ResizeHandle({
     super.key,
     required this.height,
     required this.onHeightChanged,
     this.minHeight = 40.0,
     this.maxHeight = 600.0,
+    this.compact = false,
+    this.inverted = false,
   });
 
   @override
@@ -66,8 +76,10 @@ class _ResizeHandleState extends State<ResizeHandle> {
         },
         onPanUpdate: (details) {
           if (_startY == null || _startHeight == null) return;
-          final deltaY = _startY! - details.globalPosition.dy;
-          final newHeight = _startHeight! + deltaY;
+          final deltaY = details.globalPosition.dy - _startY!;
+          final newHeight = widget.inverted
+              ? _startHeight! - deltaY
+              : _startHeight! + deltaY;
           final clampedHeight = newHeight.clamp(widget.minHeight, widget.maxHeight);
           if (clampedHeight != widget.height) {
             widget.onHeightChanged(clampedHeight);

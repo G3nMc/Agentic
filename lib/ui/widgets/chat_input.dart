@@ -9,9 +9,12 @@ import 'package:flutter/services.dart';
 
 import '../../core/theme/app_theme.dart';
 import '../../core/utils/notification_helper.dart';
+import '../../services/code_context_index.dart';
 import '../../services/orchestrator_manager.dart';
 import '../../services/project_service.dart';
-import '../screens/settings_screen.dart';
+import '../../statemanagement/method_listener.dart';
+import '../screens/home_screen.dart';
+import 'project_explorer.dart';
 
 class ChatInput extends StatefulWidget {
   final bool enabled;
@@ -55,6 +58,14 @@ class ChatInput extends StatefulWidget {
   /// the analysis prompt with zero prior history.
   final VoidCallback? onAutoGenerateAgentContext;
 
+  /// Current input mode selected in the mode dropdown
+  /// (USER INPUT / AUTO INPUT). The parent owns the state; changing the
+  /// selection only affects subsequent prompts.
+  final String taskMode;
+
+  /// Called when the user picks a different task-flow mode.
+  final ValueChanged<String>? onTaskModeChanged;
+
   /// Optional externally-owned controller. When provided, the parent can drive
   /// the input text (e.g. to load a message body for editing). When null, the
   /// widget creates and owns its own controller.
@@ -77,6 +88,8 @@ class ChatInput extends StatefulWidget {
     this.onNewChatFromJson,
     this.onAutoGenerateAgentContext,
     this.controller,
+    this.taskMode = 'user_input',
+    this.onTaskModeChanged,
   });
 
   @override
@@ -84,14 +97,35 @@ class ChatInput extends StatefulWidget {
 }
 
 class _ChatInputState extends State<ChatInput> {
-  late final TextEditingController _controller =
-      widget.controller ?? TextEditingController();
+  late final TextEditingController _controller = widget.controller ?? TextEditingController();
   final _focusNode = FocusNode();
   final _projectService = ProjectService();
   String _currentProjectFolder = 'Select folder...';
   List<String> _projectFolders = const [];
   List<String> _branches = [];
   String _selectedBranch = '';
+
+  /// True when the user has explicitly selected a project folder. The Git chip
+  /// is bound to this flag instead of `_branches.isNotEmpty`: an installed build
+  /// starts with the install directory as CWD, so the branch lookup fails and
+  /// the control used to disappear without any explanation.
+  bool _hasProject = false;
+
+  /// Why the branch list is empty (git not on PATH, folder is not a git
+  /// repository, repository without commits, ...). Rendered in the chip tooltip
+  /// so the control is never mysteriously blank.
+  String? _gitError;
+
+  /// True while a branch lookup is in flight. Shows a small spinner inside the
+  /// chip instead of the branch dropdown.
+  bool _gitLoading = false;
+
+  /// The mode dropdown only offers USER INPUT and AUTO INPUT. A chat restored
+  /// from persisted state may still carry the retired `'open'` value (Python
+  /// treats it as an alias of `'user_input'`), so it is surfaced as USER INPUT
+  /// here instead of leaving the dropdown without a matching item.
+  String get _selectedTaskMode =>
+      widget.taskMode == 'auto_input' ? 'auto_input' : 'user_input';
 
   /// Files the user attached for the next send. Each entry holds its display
   /// name, absolute path, and decoded text content. They are cleared
@@ -146,10 +180,12 @@ class _ChatInputState extends State<ChatInput> {
     if (_templateActive) {
       // Toggle off — clear the input
       _controller.clear();
+      _symbolDropped = false;
       setState(() => _templateActive = false);
     } else {
       // Insert the template
       _controller.text = _kModelTemplate;
+      _symbolDropped = false;
       setState(() => _templateActive = true);
       // Move cursor to end so the user can start editing
       _controller.selection = TextSelection.collapsed(offset: _controller.text.length);
@@ -161,9 +197,25 @@ class _ChatInputState extends State<ChatInput> {
   /// a tinted border so they get visual feedback that the drop will land here.
   bool _dragging = false;
 
+  /// True after a symbol reference has been dropped from the project explorer.
+  /// While active, the Enter key does NOT send the message: the user must
+  /// press the Send button explicitly. This prevents accidental sends of a
+  /// large generated context block before the user has reviewed it.
+  bool _symbolDropped = false;
+
   @override
   void initState() {
     super.initState();
+    _loadProjectInfo();
+    _loadGitBranches();
+    // A folder picked on another screen (Settings -> Projects) changes the
+    // active project without remounting this widget. Follow the notifier so the
+    // Git chip refreshes instead of staying stale until the next restart.
+    _projectService.currentPathNotifier.addListener(_onProjectPathChanged);
+  }
+
+  void _onProjectPathChanged() {
+    if (!mounted) return;
     _loadProjectInfo();
     _loadGitBranches();
   }
@@ -187,44 +239,137 @@ class _ChatInputState extends State<ChatInput> {
     }
   }
 
-  Future<void> _loadGitBranches() async {
-    try {
-      final repoPath = _projectService.currentPath;
-      // Run git command to list branches
-      final result = await Process.run('git', ['-C', repoPath, 'branch', '--format=%(refname:short)']);
-      if (result.exitCode == 0) {
-        final output = result.stdout as String;
-        final branches = output
-            .split('\n')
-            .where((b) => b.trim().isNotEmpty)
-            .toSet()
-            .toList(); // deduplicate
-        setState(() {
-          _branches = branches;
-          // Determine current branch
-          String currentBranch = '';
-          try {
-            final headResult = Process.runSync('git', ['-C', repoPath, 'rev-parse', '--abbrev-ref', 'HEAD']);
-            if (headResult.exitCode == 0) {
-              currentBranch = (headResult.stdout as String).trim();
-            }
-          } catch (_) {}
-          // If we have a previously selected branch that still exists, keep it;
-          // otherwise fall back to current HEAD, then first branch, then empty.
-          if (_selectedBranch.isNotEmpty && branches.contains(_selectedBranch)) {
-            // keep
-          } else if (currentBranch.isNotEmpty && branches.contains(currentBranch)) {
-            _selectedBranch = currentBranch;
-          } else if (branches.isNotEmpty) {
-            _selectedBranch = branches.first;
-          } else {
-            _selectedBranch = '';
-          }
-        });
+  /// Resolves the git executable to run.
+  ///
+  /// A bundle started from the OS does not inherit the shell environment, so a
+  /// bare `git` lookup can fail even when git is installed (macOS launchd hands
+  /// out a minimal PATH and `/usr/bin/git` is only a shim that needs the Xcode
+  /// command line tools). Known install locations are probed before falling
+  /// back to the plain name, which keeps IDE-launched debug runs working.
+  static String _resolveGitExecutable() {
+    if (Platform.isMacOS) {
+      const candidates = [
+        '/opt/homebrew/bin/git',
+        '/usr/local/bin/git',
+        '/usr/bin/git',
+      ];
+      for (final candidate in candidates) {
+        if (File(candidate).existsSync()) return candidate;
       }
-    } catch (e) {
-      // ignore errors (e.g., not a git repo)
+      return 'git';
     }
+    if (Platform.isWindows) {
+      final env = Platform.environment;
+      final roots = <String>[
+        if (env['ProgramW6432'] != null) env['ProgramW6432']!,
+        if (env['ProgramFiles'] != null) env['ProgramFiles']!,
+      ];
+      for (final root in roots) {
+        final candidate = '$root\\Git\\cmd\\git.exe';
+        if (File(candidate).existsSync()) return candidate;
+      }
+      final local = env['LOCALAPPDATA'];
+      if (local != null) {
+        final candidate = '$local\\Programs\\Git\\cmd\\git.exe';
+        if (File(candidate).existsSync()) return candidate;
+      }
+      return 'git';
+    }
+    return 'git';
+  }
+
+  /// Loads the branch list of the active project folder.
+  ///
+  /// Only runs when a folder has been explicitly selected: the process working
+  /// directory is a git repository when the app is launched from an IDE but is
+  /// the install directory in a packaged build, so using it as a fallback made
+  /// the Git chip appear in debug and disappear after installation. Failures are
+  /// recorded in [_gitError] instead of being swallowed.
+  Future<void> _loadGitBranches() async {
+    if (!_projectService.hasExplicitFolder) {
+      if (!mounted) return;
+      setState(() {
+        _hasProject = false;
+        _branches = const [];
+        _selectedBranch = '';
+        _gitError = null;
+        _gitLoading = false;
+      });
+      return;
+    }
+
+    final repoPath = _projectService.currentPath;
+    if (mounted) {
+      setState(() {
+        _hasProject = true;
+        _gitLoading = true;
+      });
+    }
+
+    var branches = <String>[];
+    String? error;
+
+    try {
+      final result = await Process.run(
+        _resolveGitExecutable(),
+        ['-C', repoPath, 'branch', '--format=%(refname:short)'],
+        stdoutEncoding: utf8,
+        stderrEncoding: utf8,
+      );
+      if (result.exitCode == 0) {
+        branches = (result.stdout as String)
+            .split('\n')
+            .map((b) => b.trim())
+            .where((b) => b.isNotEmpty)
+            .toSet()
+            .toList();
+        if (branches.isEmpty) {
+          error = 'No branches yet \u2014 this repository has no commits';
+        }
+      } else {
+        final stderr = (result.stderr as String).trim();
+        error = stderr.isEmpty ? 'git exited with code ${result.exitCode}' : stderr;
+      }
+    } on ProcessException {
+      error = 'git executable not found \u2014 install Git or add it to PATH';
+    } catch (e) {
+      error = 'git failed: $e';
+    }
+
+    // Resolve HEAD only when there is something to select, so a missing or
+    // detached HEAD cannot turn the whole chip into an error state.
+    var currentBranch = '';
+    if (branches.isNotEmpty) {
+      try {
+        final headResult = Process.runSync(
+          _resolveGitExecutable(),
+          ['-C', repoPath, 'rev-parse', '--abbrev-ref', 'HEAD'],
+        );
+        if (headResult.exitCode == 0) {
+          currentBranch = (headResult.stdout as String).trim();
+        }
+      } catch (_) {
+        // Detached HEAD or unreadable ref: the first branch is used below.
+      }
+    }
+
+    if (!mounted) return;
+    setState(() {
+      _branches = branches;
+      _gitError = error;
+      _gitLoading = false;
+      // Keep a still-existing selection; otherwise fall back to HEAD, then the
+      // first branch, then empty.
+      if (_selectedBranch.isNotEmpty && branches.contains(_selectedBranch)) {
+        // keep
+      } else if (currentBranch.isNotEmpty && branches.contains(currentBranch)) {
+        _selectedBranch = currentBranch;
+      } else if (branches.isNotEmpty) {
+        _selectedBranch = branches.first;
+      } else {
+        _selectedBranch = '';
+      }
+    });
   }
 
   Future<void> _createBranch() async {
@@ -261,14 +406,32 @@ class _ChatInputState extends State<ChatInput> {
   Future<void> _executeGitCommand(List<String> args) async {
     try {
       final repoPath = _projectService.currentPath;
-      final result = await Process.run('git', ['-C', repoPath, ...args]);
+      final result = await Process.run(
+        _resolveGitExecutable(),
+        ['-C', repoPath, ...args],
+        stdoutEncoding: utf8,
+        stderrEncoding: utf8,
+      );
       if (result.exitCode != 0) {
         if (mounted) {
-          NotificationHelper.showError(context, 'Git error: ${result.stderr}');
+          final stderr = (result.stderr as String).trim();
+          NotificationHelper.showError(
+            context,
+            'Git error: ${stderr.isEmpty ? 'exit code ${result.exitCode}' : stderr}',
+          );
         }
       }
+    } on ProcessException {
+      if (mounted) {
+        NotificationHelper.showError(
+          context,
+          'Git error: executable not found - install Git or add it to PATH',
+        );
+      }
     } catch (e) {
-      // ignore errors
+      if (mounted) {
+        NotificationHelper.showError(context, 'Git error: $e');
+      }
     }
   }
 
@@ -284,8 +447,13 @@ class _ChatInputState extends State<ChatInput> {
 
     setState(() => _currentProjectFolder = path.split(Platform.pathSeparator).last);
 
-    // Stop orchestrator to ensure it restarts with the new base path
-    await OrchestratorManager.instance.stop();
+    // The new --base-path only takes effect on the next launch, and it applies
+    // to every live chat (file tools resolve against the project). Each session
+    // parks the relaunch while its own turn is in flight, so no answer is lost.
+    OrchestratorManager.instance.requestRestartAll(
+      reason: 'project folder changed to $path',
+      source: OrchestratorStopSource.projectSwitch,
+    );
 
     // Notify parent to restart orchestrator if needed
     widget.onProjectFolderChanged?.call();
@@ -295,10 +463,10 @@ class _ChatInputState extends State<ChatInput> {
   }
 
   void _openSettingsForProjects() {
-    Navigator.of(context).push(
-      MaterialPageRoute(
-        builder: (_) => const SettingsScreen(initialSection: 0),
-      ),
+    // Settings is a tab inside the app shell so the chat never unmounts.
+    MethodListener<HomeScreen>().callMethod(
+      "openSettings",
+      params: {"section": 0},
     );
   }
 
@@ -332,6 +500,7 @@ class _ChatInputState extends State<ChatInput> {
 
   @override
   void dispose() {
+    _projectService.currentPathNotifier.removeListener(_onProjectPathChanged);
     // Only dispose the controller if we own it.
     if (widget.controller == null) {
       _controller.dispose();
@@ -612,6 +781,46 @@ class _ChatInputState extends State<ChatInput> {
     return map[ext] ?? '';
   }
 
+  /// Handles a symbol/file reference dropped from the project explorer.
+  ///
+  /// For symbols, it builds a rich structured context block via
+  /// [CodeContextIndex] and inserts it into the input. For plain files and
+  /// directories, it falls back to the legacy `@kind path` reference.
+  Future<void> _acceptExplorerReference(ExplorerReference reference) async {
+    final root = ProjectService().currentPath;
+    String insertion;
+
+    if (reference.kind == 'symbol' && reference.line != null) {
+      final context = await CodeContextIndex().getSymbolContext(
+        reference.path,
+        reference.line!,
+      );
+      insertion = context?.toPromptBlock(root) ?? reference.toPromptReference(root);
+    } else {
+      insertion = reference.toPromptReference(root);
+    }
+
+    if (!mounted) return;
+
+    final value = _controller.value;
+    final selection = value.selection;
+    final start = selection.isValid ? selection.start : value.text.length;
+    final end = selection.isValid ? selection.end : value.text.length;
+    final prefix = start > 0 && value.text[start - 1] != '\n' ? '\n' : '';
+    final suffix = end < value.text.length && value.text[end] != '\n' ? '\n' : '';
+    final inserted = '$prefix$insertion$suffix';
+    final text = value.text.replaceRange(start, end, inserted);
+    final cursor = start + inserted.length;
+    _controller.value = TextEditingValue(
+      text: text,
+      selection: TextSelection.collapsed(offset: cursor),
+    );
+    // After a symbol drop, require an explicit Send-button press: the
+    // generated context block is large and the user must review it first.
+    _symbolDropped = true;
+    _focusNode.requestFocus();
+  }
+
   Future<void> _handleSend() async {
     final text = _controller.text;
     // Allow send when there's text OR when there's at least one attachment
@@ -622,6 +831,7 @@ class _ChatInputState extends State<ChatInput> {
     final composed = _composeMessage(text);
     _controller.clear();
     _templateActive = false;
+    _symbolDropped = false;
     final attachmentsSnapshot = List<_Attachment>.from(_attachments);
     setState(() => _attachments.clear());
 
@@ -641,7 +851,11 @@ class _ChatInputState extends State<ChatInput> {
 
   KeyEventResult _onKey(FocusNode node, KeyEvent event) {
     if (event is KeyDownEvent && event.logicalKey == LogicalKeyboardKey.enter && !HardwareKeyboard.instance.isShiftPressed) {
-      _handleSend();
+      // After a symbol drop, Enter must not send: the user has to press the
+      // Send button explicitly so the generated context block is reviewed.
+      if (!_symbolDropped) {
+        _handleSend();
+      }
       return KeyEventResult.handled;
     }
     return KeyEventResult.ignored;
@@ -650,7 +864,7 @@ class _ChatInputState extends State<ChatInput> {
   @override
   Widget build(BuildContext context) {
     return Container(
-      padding: const EdgeInsets.fromLTRB(10, 5, 10, 5),
+      padding: const EdgeInsets.fromLTRB(0, 5, 10, 0),
       color: AppTheme.bgPrimary,
       child: Center(
         child: SizedBox(
@@ -676,7 +890,7 @@ class _ChatInputState extends State<ChatInput> {
                 borderRadius: BorderRadius.circular(12),
                 color: _dragging ? AppTheme.accent.withAlpha(12) : null,
               ),
-              padding: const EdgeInsets.fromLTRB(8, 8, 8, 8),
+              padding: const EdgeInsets.all(6),
               child: Column(
                 mainAxisSize: MainAxisSize.min,
                 children: [
@@ -745,26 +959,39 @@ class _ChatInputState extends State<ChatInput> {
                       const SizedBox(width: 10),
                       Expanded(
                         child: ConstrainedBox(
-                          constraints: const BoxConstraints(minHeight: 50, maxHeight: 400),
-                          child: Focus(
-                            onKeyEvent: _onKey,
-                            child: TextField(
-                              controller: _controller,
-                              focusNode: _focusNode,
-                              enabled: widget.enabled,
-                              autofocus: true,
-                              minLines: 1,
-                              maxLines: 8,
-                              style: const TextStyle(
-                                fontSize: 14.5,
-                                color: AppTheme.textPrimary,
-                                height: 1.4,
-                              ),
-                              decoration: const InputDecoration(
-                                hintText: 'Message...',
-                                hintStyle: TextStyle(color: AppTheme.textMuted),
-                                border: InputBorder.none,
-                                contentPadding: EdgeInsets.symmetric(horizontal: 15, vertical: 10),
+                          constraints: const BoxConstraints(minHeight: 40, maxHeight: 450),
+                          child: DragTarget<ExplorerReference>(
+                            onWillAccept: (reference) => reference != null && widget.enabled && !widget.sending,
+                            onAccept: (reference) => _acceptExplorerReference(reference),
+                            builder: (context, candidates, rejected) => Container(
+                              decoration: candidates.isEmpty
+                                  ? null
+                                  : BoxDecoration(
+                                      color: AppTheme.accent.withAlpha(18),
+                                      borderRadius: BorderRadius.circular(6),
+                                      border: Border.all(color: AppTheme.accent),
+                                    ),
+                              child: Focus(
+                                onKeyEvent: _onKey,
+                                child: TextField(
+                                  controller: _controller,
+                                  focusNode: _focusNode,
+                                  enabled: widget.enabled,
+                                  autofocus: true,
+                                  minLines: 1,
+                                  maxLines: 8,
+                                  style: const TextStyle(
+                                    fontSize: 14.5,
+                                    color: AppTheme.textPrimary,
+                                    height: 1.4,
+                                  ),
+                                  decoration: InputDecoration(
+                                    hintText: candidates.isEmpty ? 'Message...' : 'Drop to insert project reference…',
+                                    hintStyle: const TextStyle(color: AppTheme.textMuted),
+                                    border: InputBorder.none,
+                                    contentPadding: const EdgeInsets.symmetric(horizontal: 15, vertical: 6),
+                                  ),
+                                ),
                               ),
                             ),
                           ),
@@ -780,70 +1007,96 @@ class _ChatInputState extends State<ChatInput> {
                     ],
                   ),
                   const SizedBox(height: 8),
+                  // Wrap, not Row: the toolbar carries a project button, a
+                  // git branch picker, the task-mode dropdown and up to three
+                  // icon buttons. On a narrow window (or with the log and
+                  // thinking panels open) a Row overflows and paints the
+                  // yellow/black overflow stripe; a Wrap moves the trailing
+                  // controls onto a second line instead.
                   Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          _ProjectFolderButton(
-                            folderName: _currentProjectFolder,
-                            projectFolders: _projectFolders,
-                            onSelectProject: _switchToProject,
-                            onOpenSettings: _openSettingsForProjects,
-                          ),
-                          const SizedBox(width: 6),
-                          _AutoAgentContextButton(
-                            enabled: widget.enabled && !widget.sending && _projectService.hasExplicitFolder,
-                            onTap: widget.onAutoGenerateAgentContext != null ? _autoGenerateAgentContext : null,
-                          ),
-                          const SizedBox(width: 8),
-                          if (widget.showLogToggle) ...[
-                            _LogToggleButton(
-                              visible: widget.logVisible,
-                              onTap: widget.onToggleLog,
-                            ),
-                          ],
-                        ],
+                      _ProjectFolderButton(
+                        folderName: _currentProjectFolder,
+                        projectFolders: _projectFolders,
+                        onSelectProject: _switchToProject,
+                        onOpenSettings: _openSettingsForProjects,
                       ),
-                      Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          if (_branches.isNotEmpty)
-                            Container(
-                                padding: const EdgeInsets.symmetric(horizontal: 6),
+                      const SizedBox(width: 12),
+                      // The project picker is pinned to the left; every other
+                      // control is right-aligned. A Wrap (not a Row) keeps the
+                      // trailing controls on a second line on a narrow window
+                      // instead of painting the yellow/black overflow stripe,
+                      // and each chip sits in a scale-down FittedBox so a chip
+                      // wider than the space left beside the project button
+                      // shrinks instead of overflowing.
+                      Expanded(
+                        child: Wrap(
+                          alignment: WrapAlignment.end,
+                          crossAxisAlignment: WrapCrossAlignment.center,
+                          spacing: 8,
+                          runSpacing: 6,
+                          children: [
+                            if (_hasProject)
+                              _GitBranchChip(
+                                loading: _gitLoading,
+                                error: _gitError,
+                                branches: _branches,
+                                selectedBranch: _selectedBranch,
+                                onCheckout: _checkoutBranch,
+                                onCreate: _createBranch,
+                              ),
+                            FittedBox(
+                              fit: BoxFit.scaleDown,
+                              alignment: Alignment.centerRight,
+                              child: Container(
                                 constraints: const BoxConstraints(maxHeight: 28),
                                 alignment: Alignment.centerRight,
                                 decoration: BoxDecoration(color: AppTheme.bgSecondary, borderRadius: BorderRadius.circular(6), border: Border.all(color: AppTheme.accentSecondary, width: 0.5)),
                                 child: Row(
                                   mainAxisSize: MainAxisSize.min,
                                   children: [
-                                    const Text('Git: ', style: TextStyle(fontSize: 12, color: AppTheme.textSecondary)),
                                     const SizedBox(width: 5),
+                                    const Icon(Icons.task_alt, size: 14, color: AppTheme.textSecondary),
+                                    const SizedBox(width: 5),
+                                    const Text('Mode: ', style: TextStyle(fontSize: 12, color: AppTheme.textSecondary)),
                                     DropdownButton<String>(
-                                      value: _selectedBranch.isNotEmpty ? _selectedBranch : null,
-                                      hint: const Align(alignment: Alignment.centerRight, child: Text('Branch', style: TextStyle(fontSize: 12))),
+                                      value: _selectedTaskMode,
+                                      isDense: true,
                                       underline: const SizedBox(),
-                                      items: [
-                                        ..._branches.map((b) => DropdownMenuItem<String>(
-                                            value: b, child: Align(alignment: Alignment.centerRight, child: Text(b, style: const TextStyle(fontWeight: FontWeight.normal, fontSize: 12))))),
-                                        const DropdownMenuItem<String>(
-                                          value: 'CREATE_NEW',
-                                          child: Align(alignment: Alignment.centerRight, child: Text('Create...', style: TextStyle(color: AppTheme.accent, fontSize: 12))),
+                                      style: const TextStyle(fontSize: 12, color: AppTheme.textPrimary),
+                                      items: const [
+                                        DropdownMenuItem(
+                                          value: 'user_input',
+                                          child: Text('USER INPUT', style: TextStyle(fontSize: 12)),
+                                        ),
+                                        DropdownMenuItem(
+                                          value: 'auto_input',
+                                          child: Text('AUTO INPUT', style: TextStyle(fontSize: 12)),
                                         ),
                                       ],
-                                      onChanged: (val) async {
-                                        if (val == 'CREATE_NEW') {
-                                          await _createBranch();
-                                        } else if (val != null) {
-                                          await _checkoutBranch(val);
-                                        }
-                                      },
+                                      onChanged: (widget.enabled && !widget.sending && widget.onTaskModeChanged != null)
+                                          ? (v) {
+                                              if (v == null || v == _selectedTaskMode) return;
+                                              widget.onTaskModeChanged!(v);
+                                            }
+                                          : null,
                                     ),
                                   ],
-                                )),
-                          if (_branches.isNotEmpty) const SizedBox(width: 8),
-                        ],
+                                ),
+                              ),
+                            ),
+                            _AutoAgentContextButton(
+                              enabled: widget.enabled && !widget.sending && _projectService.hasExplicitFolder,
+                              onTap: widget.onAutoGenerateAgentContext != null ? _autoGenerateAgentContext : null,
+                            ),
+                            if (widget.showLogToggle)
+                              _LogToggleButton(
+                                visible: widget.logVisible,
+                                onTap: widget.onToggleLog,
+                              ),
+                          ],
+                        ),
                       ),
                     ],
                   ),
@@ -888,8 +1141,8 @@ class _AttachButton extends StatelessWidget {
           onTap: enabled ? onTap : null,
           borderRadius: BorderRadius.circular(6),
           child: Container(
-            width: 48,
-            height: 48,
+            width: 46,
+            height: 46,
             padding: const EdgeInsets.all(6),
             decoration: BoxDecoration(
               color: AppTheme.bgSecondary,
@@ -979,6 +1232,130 @@ class _AttachmentChip extends StatelessWidget {
   }
 }
 
+/// Git branch selector shown in the input toolbar.
+///
+/// Rendered whenever a project folder is explicitly selected — not only when
+/// branches were found. A failed lookup (git missing from `PATH`, folder not a
+/// git repository, repository without commits) leaves a disabled `Git: —` chip
+/// whose tooltip carries the reason, so the control never vanishes silently the
+/// way it did in packaged builds started from a non-repository CWD.
+class _GitBranchChip extends StatelessWidget {
+  final bool loading;
+  final String? error;
+  final List<String> branches;
+  final String selectedBranch;
+  final ValueChanged<String> onCheckout;
+  final VoidCallback onCreate;
+
+  const _GitBranchChip({
+    required this.loading,
+    required this.error,
+    required this.branches,
+    required this.selectedBranch,
+    required this.onCheckout,
+    required this.onCreate,
+  });
+
+  /// Sentinel value of the trailing "Create..." entry. Branch names cannot
+  /// collide with it because `git branch` names are validated by git itself.
+  static const String _kCreateNew = 'CREATE_NEW';
+
+  @override
+  Widget build(BuildContext context) {
+    final hasBranches = branches.isNotEmpty;
+    final tooltip = loading
+        ? 'Loading git branches…'
+        : hasBranches
+            ? 'Switch branch'
+            : (error ?? 'No git branches available');
+
+    return Tooltip(
+      message: tooltip,
+      child: FittedBox(
+        fit: BoxFit.scaleDown,
+        alignment: Alignment.centerRight,
+        child: Container(
+          constraints: const BoxConstraints(maxHeight: 28),
+          alignment: Alignment.centerRight,
+          decoration: BoxDecoration(
+            color: AppTheme.bgSecondary,
+            borderRadius: BorderRadius.circular(6),
+            border: Border.all(color: AppTheme.accentSecondary, width: 0.5),
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const SizedBox(width: 5),
+              const Text('Git: ', style: TextStyle(fontSize: 12, color: AppTheme.textSecondary)),
+              const SizedBox(width: 5),
+              if (loading)
+                const Padding(
+                  padding: EdgeInsets.symmetric(horizontal: 6, vertical: 4),
+                  child: SizedBox(
+                    width: 12,
+                    height: 12,
+                    child: CircularProgressIndicator(strokeWidth: 1.5),
+                  ),
+                )
+              else if (!hasBranches)
+                const Padding(
+                  padding: EdgeInsets.only(right: 6),
+                  child: Text(
+                    '\u2014',
+                    style: TextStyle(fontSize: 12, color: AppTheme.textMuted),
+                  ),
+                )
+              else
+                DropdownButton<String>(
+                  value: selectedBranch.isNotEmpty ? selectedBranch : null,
+                  isDense: true,
+                  underline: const SizedBox(),
+                  hint: const Align(
+                    alignment: Alignment.centerRight,
+                    child: Text('Branch', style: TextStyle(fontSize: 12)),
+                  ),
+                  items: [
+                    ...branches.map(
+                      (b) => DropdownMenuItem<String>(
+                        value: b,
+                        child: Align(
+                          alignment: Alignment.centerRight,
+                          child: Text(
+                            b,
+                            style: const TextStyle(fontWeight: FontWeight.normal, fontSize: 12),
+                          ),
+                        ),
+                      ),
+                    ),
+                    const DropdownMenuItem<String>(
+                      value: _kCreateNew,
+                      child: Align(
+                        alignment: Alignment.centerRight,
+                        child: Text(
+                          'Create...',
+                          style: TextStyle(color: AppTheme.accent, fontSize: 12),
+                        ),
+                      ),
+                    ),
+                  ],
+                  onChanged: (val) {
+                    if (val == null) return;
+                    if (val == _kCreateNew) {
+                      onCreate();
+                    } else if (val != selectedBranch) {
+                      onCheckout(val);
+                    }
+                  },
+                ),
+              const SizedBox(width: 2),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
 class _LogToggleButton extends StatelessWidget {
   final bool visible;
   final VoidCallback? onTap;
@@ -990,12 +1367,14 @@ class _LogToggleButton extends StatelessWidget {
         message: visible ? 'Hide orchestrator log' : 'Show orchestrator log',
         child: InkWell(
           onTap: onTap,
-          borderRadius: BorderRadius.circular(6),
+          borderRadius: BorderRadius.circular(5),
           child: Container(
-            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 4),
+            width: 26,
+            height: 26,
+            alignment: Alignment.center,
             decoration: BoxDecoration(
               borderRadius: BorderRadius.circular(6),
-              border: Border.all(color: AppTheme.accentSecondary, width: 0.5),
+              border: Border.all(color: AppTheme.accentSecondary, width: 1),
             ),
             child: Icon(
               visible ? Icons.terminal : Icons.terminal_outlined,
@@ -1111,8 +1490,8 @@ class _SendButton extends StatelessWidget {
             borderRadius: BorderRadius.circular(8),
             onTap: onStop,
             child: Container(
-              width: 48,
-              height: 48,
+              width: 40,
+              height: 40,
               alignment: Alignment.center,
               child: const Icon(Icons.stop_outlined, size: 30, color: Colors.grey),
             ),
@@ -1128,8 +1507,8 @@ class _SendButton extends StatelessWidget {
         borderRadius: BorderRadius.circular(8),
         onTap: enabled ? onTap : null,
         child: Container(
-          width: 48,
-          height: 48,
+          width: 46,
+          height: 46,
           alignment: Alignment.center,
           child: Icon(
             Icons.arrow_upward,
@@ -1232,8 +1611,8 @@ class _DownloadButtonState extends State<_DownloadButton> {
           onTap: widget.enabled ? _showMenu : null,
           borderRadius: BorderRadius.circular(6),
           child: Container(
-            width: 48,
-            height: 48,
+            width: 46,
+            height: 46,
             padding: const EdgeInsets.all(6),
             decoration: BoxDecoration(
               color: AppTheme.bgSecondary,
@@ -1271,8 +1650,8 @@ class _TemplateButton extends StatelessWidget {
           onTap: enabled ? onTap : null,
           borderRadius: BorderRadius.circular(6),
           child: Container(
-            width: 48,
-            height: 48,
+            width: 46,
+            height: 46,
             padding: const EdgeInsets.all(6),
             decoration: BoxDecoration(
               color: active ? AppTheme.accent.withAlpha(30) : AppTheme.bgSecondary,
@@ -1303,17 +1682,15 @@ class _AutoAgentContextButton extends StatelessWidget {
         message: 'Auto-generate .agentic/.context.md from project analysis',
         child: InkWell(
           onTap: (enabled && onTap != null) ? onTap : null,
-          borderRadius: BorderRadius.circular(6),
+          borderRadius: BorderRadius.circular(5),
           child: Container(
-            width: 28,
-            height: 28,
+            width: 26,
+            height: 26,
             alignment: Alignment.center,
             decoration: BoxDecoration(
-              color: enabled ? AppTheme.accent.withAlpha(25) : AppTheme.bgSecondary,
+              // color: enabled ? AppTheme.accent.withAlpha(25) : AppTheme.bgSecondary,
               borderRadius: BorderRadius.circular(6),
-              border: Border.all(
-                color: enabled ? AppTheme.accentSecondary : AppTheme.border,  width: 0.5
-              ),
+              border: Border.all(color: enabled ? AppTheme.accentSecondary : AppTheme.border, width: 1),
             ),
             child: Icon(
               Icons.auto_awesome,
@@ -1340,8 +1717,8 @@ class _NewChatFromJsonButton extends StatelessWidget {
           onTap: enabled ? onTap : null,
           borderRadius: BorderRadius.circular(6),
           child: Container(
-            width: 48,
-            height: 48,
+            width: 46,
+            height: 46,
             padding: const EdgeInsets.all(6),
             decoration: BoxDecoration(
               color: enabled ? AppTheme.accent.withAlpha(30) : AppTheme.bgSecondary,

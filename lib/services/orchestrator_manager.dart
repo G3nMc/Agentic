@@ -1,9 +1,13 @@
 ﻿import 'dart:async';
 import 'dart:convert';
+import 'dart:developer' as developer;
 import 'dart:io';
 
 import 'package:agentic/services/project_service.dart';
+import 'package:flutter/foundation.dart';
 import 'package:path_provider/path_provider.dart';
+
+import 'package:uuid/uuid.dart';
 
 import '../data/models/conversation_task.dart';
 import '../data/repositories/agent_role_settings_repository.dart';
@@ -14,8 +18,8 @@ import '../data/repositories/settings_repository.dart';
 import '../data/repositories/task_repository.dart';
 import 'openrouter_service.dart';
 
-/// Structured event emitted by the Python orchestrator while running
-/// in TASK COMPLIANCE mode. Two concrete shapes:
+/// Structured event emitted by the Python orchestrator while it reports
+/// task-checklist progress. Two concrete shapes:
 ///   - [OrchestratorTasksProposed]: a fresh plan was declared.
 ///   - [OrchestratorTaskStatusChanged]: one task moved to a new state.
 sealed class OrchestratorTaskEvent {
@@ -64,7 +68,7 @@ const Duration _kOrchestratorInactivityTimeout = Duration(minutes: 60);
 // multiple minutes (slow cloud reasoners, large file edits + repeated
 // flutter_analyze cycles). The inactivity timeout above still catches a
 // truly wedged process within 10 min of silence.
-const Duration _kOrchestratorAbsoluteTimeout = Duration(minutes: 120);
+const Duration _kOrchestratorAbsoluteTimeout = Duration(minutes: 600);
 
 /// Which model backend the orchestrator subprocess should use.
 ///
@@ -75,8 +79,101 @@ const Duration _kOrchestratorAbsoluteTimeout = Duration(minutes: 120);
 /// and [openrouter] routes to any supported provider via OpenRouter.
 enum OrchestratorBackend { huggingface, ollama, groq, gemini, openrouter, github }
 
-/// Manages the lifecycle of the local Python orchestrator subprocess that
-/// bridges the Flutter UI with remote Hugging Face models + local tools.
+/// Why a session teardown was requested.
+///
+/// Only a genuine STOP affordance (or app shutdown / crash recovery) may
+/// terminate a turn that is already in flight. Every other source describes a
+/// *configuration change*: the running process is allowed to finish the
+/// current answer first and be relaunched afterwards.
+enum OrchestratorStopSource {
+  /// User pressed STOP in the chat view.
+  chatStopButton,
+
+  /// User pressed STOP in Settings -> Orchestrator.
+  orchestratorSettingsButton,
+
+  /// The application is quitting.
+  appShutdown,
+
+  /// The caller did not declare an intent (legacy call sites).
+  unspecified,
+
+  /// The active LLM backend changed.
+  backendSwitch,
+
+  /// The model / temperature / token budget changed.
+  modelSwitch,
+
+  /// A different project folder was activated.
+  projectSwitch,
+
+  /// A different conversation was opened.
+  conversationSwitch,
+
+  /// Internal recovery after a crash.
+  internalFailure,
+}
+
+extension OrchestratorStopSourceX on OrchestratorStopSource {
+  /// Whether this source is allowed to kill a live turn immediately.
+  bool get mayTerminateSession =>
+      this == OrchestratorStopSource.chatStopButton ||
+      this == OrchestratorStopSource.orchestratorSettingsButton ||
+      this == OrchestratorStopSource.appShutdown ||
+      this == OrchestratorStopSource.internalFailure;
+}
+
+/// Lifecycle of the orchestrator subprocess.
+///
+/// stopped -> starting -> idle -> busy -> idle ... -> stopped
+/// A configuration change requested while [busy] is parked as a deferred
+/// relaunch and applied once the turn has been delivered to the UI.
+enum OrchestratorSessionState {
+  stopped,
+  starting,
+  idle,
+  busy,
+  restarting,
+  failed,
+}
+
+/// Raised into an awaiting [OrchestratorManager.sendPrompt] future when the
+/// session is torn down underneath it, so the UI reports an abort instead of
+/// waiting for the absolute timeout to expire.
+class OrchestratorAborted implements Exception {
+  OrchestratorAborted(this.source, this.reason);
+
+  final String source;
+  final String reason;
+
+  @override
+  String toString() => 'Orchestrator session aborted ($source): $reason';
+}
+
+/// A relaunch that had to wait until the in-flight turn was delivered.
+class _PendingRestart {
+  _PendingRestart(this.reason, this.source, this.argsFingerprint);
+
+  final String reason;
+  final OrchestratorStopSource source;
+  final String argsFingerprint;
+}
+
+/// Visual activity of a conversation's orchestrator session, as rendered by
+/// the sidebar: [working] shows a leading spinner and an amber dot,
+/// [answered] shows a green dot, and [idle] shows neither.
+enum SessionActivity {
+  /// No session, or a session that has never delivered an answer.
+  idle,
+
+  /// A turn is in flight, or the MaM User model is evaluating the reply.
+  working,
+
+  /// The last turn delivered an assistant answer.
+  answered,
+}
+
+/// One orchestrator subprocess, bound to exactly one conversation.
 ///
 /// Protocol (must match `bin/orchestrator.py`):
 ///   - Orchestrator is launched with `--interactive`.
@@ -87,14 +184,44 @@ enum OrchestratorBackend { huggingface, ollama, groq, gemini, openrouter, github
 ///       {"response": "..."}
 ///     followed by a single line:
 ///       __RESPONSE_END__
-class OrchestratorManager {
-  OrchestratorManager._internal();
+///
+/// This class used to be the application-wide singleton `OrchestratorManager`.
+/// It is now an instance class: every conversation owns one session, so a turn
+/// running in chat A is completely independent from a turn running in chat B.
+/// The former singleton identity lives on in the [OrchestratorManager] facade
+/// declared at the bottom of this file, which indexes sessions by chat GUID.
+///
+/// Nothing inside a session changed: the subprocess protocol, the deferred
+/// relaunch, the stop authority and the log/status/trace streams are exactly as
+/// they were, they are simply no longer shared between conversations.
+class OrchestratorSession {
+  OrchestratorSession(this.conversationId);
 
-  static final OrchestratorManager instance = OrchestratorManager._internal();
+  /// The chat GUID this session belongs to.
+  ///
+  /// It is simultaneously the log file name (`logs/<guid>.log`), the value sent
+  /// to Python as `session_key` / `conversation_id`, and the key the registry
+  /// indexes this session by.
+  final String conversationId;
 
   Process? _process;
   bool _isRunning = false;
   bool _isReady = false;
+
+  /// Current lifecycle state of the subprocess. [_isRunning] is derived from
+  /// it so every legacy `isRunning` guard keeps working unchanged.
+  OrchestratorSessionState _state = OrchestratorSessionState.stopped;
+
+  final StreamController<OrchestratorSessionState> _stateController =
+      StreamController<OrchestratorSessionState>.broadcast();
+
+  /// Relaunch parked because a turn was in flight when the configuration
+  /// changed. Drained in the `finally` of [_sendPromptInternal].
+  _PendingRestart? _pendingRestart;
+
+  /// Fingerprint of the arguments the running subprocess was launched with.
+  /// Used to drop restart requests that would not change anything.
+  String _argsFingerprint = '';
 
   // Guards against concurrent start() calls before _isRunning flips true.
   // Holds the in-flight start() future so overlapping callers await the same
@@ -130,6 +257,70 @@ class OrchestratorManager {
   /// log lines. Use this to show what the model is doing right now.
   Stream<String> get statusStream => _statusController.stream;
 
+  /// Notices raised by the AUTO INPUT loop that the user must see in the
+  /// chat surface — currently the "no User agent configured" case, where the
+  /// loop fails safe and waits for real input instead of letting the
+  /// Assistant review its own work.
+  final StreamController<String> _autoInputNoticeController =
+      StreamController<String>.broadcast();
+
+  /// Human-readable AUTO INPUT notices (empty when nothing to report).
+  Stream<String> get autoInputNoticeStream => _autoInputNoticeController.stream;
+
+  /// Intermediate Assistant answers produced while AUTO INPUT keeps working
+  /// autonomously. Each round emits one entry so the chat can render the
+  /// running output instead of jumping straight to the final answer.
+  final StreamController<String> _autoInputReplyController =
+      StreamController<String>.broadcast();
+
+  /// Intermediate AUTO INPUT answers, in order.
+  Stream<String> get autoInputReplyStream => _autoInputReplyController.stream;
+
+  /// Intermediate AUTO INPUT answers already received for the current turn.
+  /// Widgets that mount late read this to rebuild the running transcript.
+  final List<String> _autoInputReplies = [];
+
+  List<String> get autoInputReplies => List.unmodifiable(_autoInputReplies);
+
+  /// Continuation prompts authored by the User agent (second Workflow Agents
+  /// slot) while AUTO INPUT keeps working. Each one is fed back to the
+  /// Assistant as the next user turn, so the chat renders it as a real
+  /// user-side bubble instead of showing back-to-back assistant replies.
+  final StreamController<String> _autoInputPromptController =
+      StreamController<String>.broadcast();
+
+  /// User-agent continuation prompts, in order.
+  Stream<String> get autoInputPromptStream => _autoInputPromptController.stream;
+
+  final List<String> _autoInputPrompts = [];
+
+  List<String> get autoInputPrompts => List.unmodifiable(_autoInputPrompts);
+
+  /// True while the User agent is reviewing the Assistant's reply and writing
+  /// the next prompt. Drives a user-side indicator so the exchange reads as a
+  /// continuing conversation rather than a stalled assistant.
+  final StreamController<bool> _autoInputEvaluatingController =
+      StreamController<bool>.broadcast();
+
+  Stream<bool> get autoInputEvaluatingStream =>
+      _autoInputEvaluatingController.stream;
+
+  bool _autoInputEvaluating = false;
+
+  bool get autoInputEvaluating => _autoInputEvaluating;
+
+  void _setAutoInputEvaluating(bool value) {
+    if (_autoInputEvaluating == value) return;
+    _autoInputEvaluating = value;
+    if (!_autoInputEvaluatingController.isClosed) {
+      _autoInputEvaluatingController.add(value);
+    }
+    // While the User model reviews the Assistant's reply and writes the next
+    // prompt the sidebar must keep showing `working` (amber), so the MaM
+    // exchange is legible from the chat list without opening the chat.
+    _refreshActivity();
+  }
+
   // Thinking stream: carries the model's chain-of-thought, emitted by the
   // Python orchestrator as structured thinking envelopes on stdout. The chat
   // view subscribes to show the current reasoning live in the activity strip.
@@ -149,16 +340,15 @@ class OrchestratorManager {
   Stream<String> get logStream => _logController.stream;
 
   // ── Task-flow event stream ────────────────────────────────────────
-  // Carries structured events emitted by the Python orchestrator while
-  // running in TASK COMPLIANCE mode: ``tasks_proposed`` (plan
+  // Carries structured events emitted by the Python orchestrator while it
+  // reports task-checklist progress: ``tasks_proposed`` (plan
   // declared), ``task_status`` (one task moved to a new state). The UI
   // subscribes via ``taskStream`` to update the checklist panel live
   // and the persistence layer subscribes to mirror changes into the
   // ``conversation_tasks`` SQLite table.
   final StreamController<OrchestratorTaskEvent> _taskController = StreamController<OrchestratorTaskEvent>.broadcast();
 
-  /// Live stream of structured task-flow events. Idle when the chat
-  /// runs in OPEN mode.
+  /// Live stream of structured task-flow events.
   Stream<OrchestratorTaskEvent> get taskStream => _taskController.stream;
 
   /// The underlying stream controller for task-flow events. Exposed so
@@ -219,8 +409,8 @@ class OrchestratorManager {
   /// the previous session's output â€” no explicit prepend step needed.
   void _writeToLogFile(String line) {
     final base = _basePath;
-    final key = _sessionKey;
-    if (base == null || key == null || key.isEmpty) return;
+    final key = conversationId;
+    if (base == null || key.isEmpty) return;
     try {
       final dir = Directory('$base${Platform.pathSeparator}logs');
       if (!dir.existsSync()) dir.createSync(recursive: true);
@@ -439,23 +629,205 @@ class OrchestratorManager {
   Completer<String>? _activeCompleter;
   final List<String> _activeLines = [];
 
+  /// Correlation id of the turn currently in flight. Echoed back by Python in
+  /// the response envelope so an answer that belongs to a turn the user already
+  /// stopped can be discarded instead of landing in the next turn.
+  String? _activeRequestId;
+
   StreamSubscription<String>? _stdoutSub;
   StreamSubscription<String>? _stderrSub;
 
   // Inactivity watchdog for the currently active request.
   Timer? _inactivityTimer;
   DateTime? _requestStartedAt;
-  String? _sessionKey;
   String? _basePath;
 
-  /// The conversation id of the most recent prompt routed through this
-  /// orchestrator. Used by the Team Mode UI to point the board viewer
-  /// at the current chat's subfolder.
-  String? get currentSessionKey => _sessionKey;
+  /// The chat GUID this session serves.
+  ///
+  /// Kept under its historical name so existing readers (the Team Mode board
+  /// viewer) keep working. The value is immutable for the session's lifetime:
+  /// a session belongs to exactly one conversation, and switching chats never
+  /// rebinds it.
+  String? get currentSessionKey => conversationId;
 
   bool get isRunning => _isRunning;
 
   bool get isReady => _isReady;
+
+  /// Live lifecycle transitions of the subprocess.
+  Stream<OrchestratorSessionState> get sessionStateStream =>
+      _stateController.stream;
+
+  /// Current lifecycle state — widgets mounting late read this instead of
+  /// waiting for the next stream event.
+  OrchestratorSessionState get lastSessionState => _state;
+
+  /// True while a prompt is being processed. Every destructive action checks
+  /// this so a live turn is never killed by an unrelated affordance.
+  bool get isBusy => _state == OrchestratorSessionState.busy;
+
+  /// True when a configuration change is parked until the current turn ends.
+  bool get hasPendingRestart => _pendingRestart != null;
+
+  /// Fingerprint of the arguments the running subprocess was launched with.
+  String get argsFingerprint => _argsFingerprint;
+
+  /// Update the lifecycle state and mirror it onto [_isRunning] so all
+  /// pre-existing `isRunning` guards keep working.
+  void _setState(OrchestratorSessionState next) {
+    if (_state == next) return;
+    _state = next;
+    _isRunning = next == OrchestratorSessionState.idle ||
+        next == OrchestratorSessionState.starting ||
+        next == OrchestratorSessionState.busy ||
+        next == OrchestratorSessionState.restarting;
+    if (!_stateController.isClosed) _stateController.add(next);
+    _refreshActivity();
+  }
+
+  // ── Activity ─────────────────────────────────────────────────────────────
+  // Single source of truth for the sidebar indicators: emitted on every
+  // transition and readable synchronously, so a freshly mounted tile paints
+  // immediately instead of waiting for a stream event.
+  final StreamController<SessionActivity> _activityController =
+      StreamController<SessionActivity>.broadcast();
+
+  SessionActivity _activity = SessionActivity.idle;
+
+  /// Current activity of this chat's session.
+  SessionActivity get activity => _activity;
+
+  /// Live activity transitions, consumed by this chat's sidebar tile.
+  Stream<SessionActivity> get activityStream => _activityController.stream;
+
+  void _setActivity(SessionActivity next) {
+    if (_activity == next) return;
+    _activity = next;
+    if (!_activityController.isClosed) _activityController.add(next);
+  }
+
+  /// Re-derive [activity] from the lifecycle state and the AUTO INPUT flag.
+  ///
+  /// A session is [SessionActivity.working] whenever a turn is in flight *or*
+  /// the MaM User model is evaluating the Assistant's reply, so the whole
+  /// exchange stays amber. It becomes [SessionActivity.answered] only when the
+  /// final assistant reply has been delivered, and returns to
+  /// [SessionActivity.idle] once the subprocess stops.
+  void _refreshActivity({bool answered = false}) {
+    if (_state == OrchestratorSessionState.stopped ||
+        _state == OrchestratorSessionState.failed) {
+      _setActivity(SessionActivity.idle);
+      return;
+    }
+    if (answered) {
+      _setActivity(SessionActivity.answered);
+      return;
+    }
+    if (_state == OrchestratorSessionState.starting ||
+        _state == OrchestratorSessionState.restarting ||
+        _state == OrchestratorSessionState.busy ||
+        _autoInputEvaluating) {
+      _setActivity(SessionActivity.working);
+      return;
+    }
+    // Idle process: keep the last outcome so the green dot survives the end of
+    // the turn instead of being erased the moment the process drains.
+    if (_activity == SessionActivity.answered) return;
+    _setActivity(SessionActivity.idle);
+  }
+
+  /// Every source passed to [stop] in this process, in call order.
+  ///
+  /// Widget tests assert that navigation and configuration affordances never
+  /// request a teardown; recording the source is cheaper and far more precise
+  /// than mocking the singleton. Cleared by [debugResetSession].
+  @visibleForTesting
+  static final List<OrchestratorStopSource> debugStopCalls =
+      <OrchestratorStopSource>[];
+
+  /// Every [requestRestart] reason recorded in this process, in call order.
+  @visibleForTesting
+  static final List<String> debugRestartReasons = <String>[];
+
+  // ── Test seams ────────────────────────────────────────────────────────────
+  // The stop-authority and deferred-restart rules are pure state-machine
+  // decisions: they depend on the session state, the launch fingerprint and
+  // the presence of an in-flight turn — never on a live subprocess. These
+  // helpers let unit tests drive exactly those inputs, so no test has to spawn
+  // Python, touch path_provider or open the SQLite database.
+
+  /// Force the session into [state] and pretend the running process was
+  /// launched with [argsFingerprint].
+  @visibleForTesting
+  void debugSetSessionState({
+    required OrchestratorSessionState state,
+    String argsFingerprint = '',
+  }) {
+    _argsFingerprint = argsFingerprint;
+    _setState(state);
+  }
+
+  /// Force the MaM "User model is reviewing the reply" flag, so a widget test
+  /// can verify that the sidebar keeps the chat amber across the exchange
+  /// without spawning a subprocess or calling a provider.
+  @visibleForTesting
+  void debugSetAutoInputEvaluating(bool value) => _setAutoInputEvaluating(value);
+
+  /// Record that this session delivered an answer, so its activity becomes
+  /// [SessionActivity.answered] without running a real turn.
+  @visibleForTesting
+  void debugMarkAnswered() => _refreshActivity(answered: true);
+
+  /// Install a fresh in-flight turn completer and return it, so a test can
+  /// observe how a teardown resolves an awaiting [sendPrompt] future.
+  @visibleForTesting
+  Completer<String> debugArmTurn() {
+    final completer = Completer<String>();
+    _activeCompleter = completer;
+    _activeLines.clear();
+    return completer;
+  }
+
+  /// True while [debugArmTurn]'s completer is still registered as the active
+  /// turn — i.e. a teardown failed to resolve it.
+  @visibleForTesting
+  bool get debugHasActiveTurn => _activeCompleter != null;
+
+  /// Return the singleton to a pristine state between tests.
+  @visibleForTesting
+  void debugResetSession() {
+    _activeCompleter = null;
+    _activeLines.clear();
+    _cancelInactivityTimer();
+    _requestStartedAt = null;
+    _pendingRestart = null;
+    _argsFingerprint = '';
+    _process = null;
+    _isReady = false;
+    _setState(OrchestratorSessionState.stopped);
+  }
+
+  /// Build the launch fingerprint for a would-be session.
+  ///
+  /// Two sessions with the same fingerprint behave identically, so a restart
+  /// request that produces the same value can be dropped outright — this is
+  /// what stops "open a dropdown and set it back" from killing a turn.
+  static String fingerprintFor({
+    required OrchestratorBackend backend,
+    required String modelId,
+    double? temperature,
+    int? maxTokens,
+    bool multiAgent = false,
+    String? basePath,
+  }) {
+    final path = basePath ?? ProjectService().currentPath;
+    return '${backend.name}|$modelId|${temperature ?? ''}|'
+        '${maxTokens ?? ''}|$multiAgent|$path';
+  }
+
+  /// Whether the running subprocess was launched with [fingerprint].
+  bool matchesFingerprint(String fingerprint) =>
+      _isRunning && _argsFingerprint == fingerprint;
 
   OrchestratorBackend get currentBackend => _currentBackend;
 
@@ -621,7 +993,12 @@ class OrchestratorManager {
     bool disableTools = false,
     bool? multiAgent,
   }) {
-    if (_isRunning) return Future.value(false);
+    if (_isRunning) {
+      // The session is already alive: nothing to launch, and this is not a
+      // failure. When a configuration change is pending it has been parked in
+      // `_pendingRestart` and is applied as soon as the running turn drains.
+      return Future.value(true);
+    }
     // Coalesce: a second caller while the first is still awaiting __READY__
     // must NOT spawn a second subprocess. Return the in-flight future instead.
     final inflight = _startingFuture;
@@ -756,23 +1133,54 @@ class OrchestratorManager {
         resolvedBasePath,
       ];
 
-      // Build reasoner/summarizer args from multi-agent config or fallback to primary backend.
+      // Build the Assistant/User args from the multi-agent config.
       if (effectiveMultiAgent) {
         final agents = await WorkflowAgents.load();
         final reasonerCfg = agents.get('reasoner');
-        final summarizerCfg = agents.get('summarizer');
 
         final rProvider = _toProviderString(reasonerCfg.backend);
-        final sProvider = _toProviderString(summarizerCfg.backend);
         final effectiveOpenRouterContextLimit = openRouterContextLimit ?? await backendSettings.getOpenRouterContextLimit();
+
+        // Per-role Ollama endpoint resolution.
+        //
+        // The slot's own `ollama_base_url` (Settings -> Workflow Agents) is
+        // authoritative: it is the endpoint the model picker in that panel
+        // itself dials, and it is the only way to reach a cloud-only model
+        // whose tag (e.g. `:1017`) does not match OllamaBackend's `-cloud`
+        // auto-promotion heuristic. The global Ollama endpoint is only a
+        // fallback for slots that leave the field blank.
+        //
+        // Emitting no flag is NOT equivalent to "use the default": Python then
+        // builds OllamaBackend with an empty base_url, which resolves to
+        // http://localhost:11434 and fails a cloud run with WinError 10061.
+        String? ollamaUrlFor(AgentRoleConfig cfg) {
+          final perRole = cfg.ollamaBaseUrl?.trim() ?? '';
+          if (perRole.isNotEmpty) return perRole;
+          final fallback = ollamaBaseUrl?.trim() ?? '';
+          return fallback.isEmpty ? null : fallback;
+        }
 
         args.addAll(['--reasoner-provider', rProvider]);
         args.addAll(['--reasoner-model', reasonerCfg.model]);
-        if (rProvider == 'openrouter') {
-          args.addAll([
-            '--reasoner-context-window',
-            effectiveOpenRouterContextLimit.toString(),
-          ]);
+        // Context window: the per-slot value wins; OpenRouter falls back to the
+        // limit resolved from the model catalogue. Python applies it to the
+        // providers that support it (Ollama `num_ctx`, OpenRouter
+        // `context_limit`) and logs a line for the ones that do not, so the
+        // flag is always sent instead of being silently dropped here.
+        int? rContextWindow = reasonerCfg.contextWindow;
+        if ((rContextWindow == null || rContextWindow <= 0) &&
+            rProvider == 'openrouter') {
+          rContextWindow = effectiveOpenRouterContextLimit;
+        }
+        if (rContextWindow != null && rContextWindow > 0) {
+          args.addAll(['--reasoner-context-window', rContextWindow.toString()]);
+        }
+        // Base URL override: honoured by Ollama, OpenRouter and Gemini.
+        if (AgentRoleSettingsRepository.baseUrlBackends.contains(rProvider)) {
+          final rBaseUrl = ollamaUrlFor(reasonerCfg);
+          if (rBaseUrl != null) {
+            args.addAll(['--reasoner-base-url', rBaseUrl]);
+          }
         }
         args.addAll(['--temperature', reasonerCfg.temperature.toString()]);
         args.addAll(['--max-tokens', reasonerCfg.maxTokens.toString()]);
@@ -781,25 +1189,51 @@ class OrchestratorManager {
         if (rKey != null && rKey.isNotEmpty) {
           args.addAll(['--reasoner-api-key', rKey]);
         }
-        if (rProvider == 'ollama' && ollamaBaseUrl != null && ollamaBaseUrl.isNotEmpty) {
-          args.addAll(['--reasoner-base-url', ollamaBaseUrl]);
-        }
 
         // Reasoning level: pass through to the Python orchestrator.
         // Defaults to 'max' if not set in the agent config.
         final rReasoningLevel = reasonerCfg.reasoningLevel.isNotEmpty ? reasonerCfg.reasoningLevel : 'max';
         args.addAll(['--reasoning-level', rReasoningLevel]);
 
-        args.addAll(['--summarizer-provider', sProvider]);
-        args.addAll(['--summarizer-model', summarizerCfg.model]);
-        final sKey = _apiKeyForProvider(sProvider,
-            groqApiKey: groqApiKey, geminiApiKey: geminiApiKey, openRouterApiKey: openRouterApiKey, githubApiKey: githubApiKey, hfToken: hfToken, ollamaApiKey: ollamaApiKey);
-        if (sKey != null && sKey.isNotEmpty) {
-          args.addAll(['--summarizer-api-key', sKey]);
+        // Extended thinking is owned by the Assistant card while MaM is on, so
+        // it must be seeded at launch: the chat-view toggle is hidden in this
+        // mode and no longer sends `thinking` in the request envelope.
+        args.add(reasonerCfg.thinking ? '--thinking' : '--no-thinking');
+
+        // Optional per-slot tokens-per-minute cap (0 = unlimited).
+        if (reasonerCfg.tpmLimit > 0) {
+          args.addAll(['--reasoner-tpm-limit', reasonerCfg.tpmLimit.toString()]);
         }
-        if (sProvider == 'ollama' && ollamaBaseUrl != null && ollamaBaseUrl.isNotEmpty) {
-          args.addAll(['--summarizer-base-url', ollamaBaseUrl]);
-        }
+
+        // AUTO INPUT round cap ("Maximum Auto Round Actions" in Settings ->
+        // Workflow Agents MaM). Workflow-level, so it is read from the
+        // repository rather than from a role config; the run loop uses it as
+        // the Assistant <-> User exchange bound and as the progress total.
+        final maxAutoRounds =
+            await AgentRoleSettingsRepository.instance.getMaxAutoRounds();
+        args.addAll(['--max-agent-rounds', maxAutoRounds.toString()]);
+
+        // AUTO INPUT "User" agent: the second Workflow Agents slot. When it
+        // has a model configured it is forwarded to the orchestrator, which
+        // hands it the [INTERNAL: AUTO-INPUT MODE] evaluation so the
+        // Assistant is reviewed by a genuinely separate model instead of
+        // judging its own output. An empty model deliberately emits no
+        // --user-* flags: Python then keeps the slot unset and the run loop
+        // surfaces the "no User agent configured" notice and fails safe.
+        _appendUserAgentArgs(
+          args,
+          agents.get('user'),
+          ollamaBaseUrl: ollamaBaseUrl,
+          apiKeyFor: (provider) => _apiKeyForProvider(
+            provider,
+            groqApiKey: groqApiKey,
+            geminiApiKey: geminiApiKey,
+            openRouterApiKey: openRouterApiKey,
+            githubApiKey: githubApiKey,
+            hfToken: hfToken,
+            ollamaApiKey: ollamaApiKey,
+          ),
+        );
 
         // Team Mode is not yet supported by multi_mode; log a warning.
         if (await AgentRoleSettingsRepository.instance.isTeamModeEnabled()) {
@@ -850,6 +1284,27 @@ class OrchestratorManager {
             break;
         }
         if (tpmLimit != null) args.addAll(['--tpm-limit', tpmLimit.toString()]);
+
+        // Forward the AUTO INPUT "User" agent (second Workflow Agents slot)
+        // exactly as the multi-agent branch does: the single-agent run loop
+        // implements AUTO INPUT too, so without these flags a User agent the
+        // user did configure would be ignored and the loop would report it
+        // missing while falling back to a single answer.
+        final singleAgentUserCfg = (await WorkflowAgents.load()).get('user');
+        _appendUserAgentArgs(
+          args,
+          singleAgentUserCfg,
+          ollamaBaseUrl: ollamaBaseUrl,
+          apiKeyFor: (provider) => _apiKeyForProvider(
+            provider,
+            groqApiKey: groqApiKey,
+            geminiApiKey: geminiApiKey,
+            openRouterApiKey: openRouterApiKey,
+            githubApiKey: githubApiKey,
+            hfToken: hfToken,
+            ollamaApiKey: ollamaApiKey,
+          ),
+        );
       }
 
       if (disableTools) {
@@ -895,7 +1350,13 @@ class OrchestratorManager {
       }
 
       final python = await resolvePythonExecutable();
-      final env = await resolveSubprocessEnvironment();
+      // `AGENTIC_SESSION_ID` lets the Python side stamp every `[orch]` stderr
+      // line (and every audit record) with this chat's GUID, so the logs of the
+      // N concurrent sessions stay attributable when they land in one sink.
+      final env = <String, String>{
+        ...await resolveSubprocessEnvironment(),
+        'AGENTIC_SESSION_ID': conversationId,
+      };
       _appendLog('[manager] Python -> $python');
       final flutterRoot = env['FLUTTER_ROOT'];
       if (flutterRoot != null) {
@@ -930,10 +1391,22 @@ class OrchestratorManager {
       _currentBackend = backend;
       _currentModelId = modelId;
       _currentTemperature = temperature;
+      // Record what this session was launched with so a restart request that
+      // would not change anything can be dropped instead of killing the turn.
+      _argsFingerprint = fingerprintFor(
+        backend: backend,
+        modelId: modelId ?? '',
+        temperature: temperature,
+        maxTokens: maxTokens,
+        multiAgent: effectiveMultiAgent,
+        basePath: resolvedBasePath,
+      );
+      _setState(OrchestratorSessionState.idle);
       return true;
     } catch (e) {
       _appendLog('start() failed: $e');
       await _cleanup();
+      _setState(OrchestratorSessionState.failed);
       return false;
     }
   }
@@ -950,8 +1423,8 @@ class OrchestratorManager {
     String? sessionKey,
     List<Map<String, String>> seedHistory = const [],
     bool forceHistorySync = false,
-    String taskMode = 'open',
-    bool thinking = false,
+    String taskMode = 'user_input',
+    bool? thinking,
     String? effort,
   }) {
     // Serialize requests so multiple callers don't interleave on stdin.
@@ -977,8 +1450,8 @@ class OrchestratorManager {
     String? sessionKey,
     List<Map<String, String>> seedHistory = const [],
     bool forceHistorySync = false,
-    String taskMode = 'open',
-    bool thinking = false,
+    String taskMode = 'user_input',
+    bool? thinking,
     String? effort,
   }) async {
     if (!_isRunning || _process == null) {
@@ -987,15 +1460,36 @@ class OrchestratorManager {
     if (!_isReady) {
       return 'Error: Orchestrator not ready yet.';
     }
-
-    final shouldResetSession = forceHistorySync || newSession || (sessionKey != null && sessionKey != _sessionKey);
-    if (shouldResetSession) {
-      _sessionKey = sessionKey;
+    // A configuration change is waiting for the live turn to drain. Sending now
+    // would run the next prompt against the old backend/model, so refuse
+    // explicitly instead of silently producing an answer from stale settings.
+    if (_pendingRestart != null || _state == OrchestratorSessionState.restarting) {
+      return 'Error: the orchestrator is being relaunched with the new '
+          'configuration. Send the prompt again in a moment.';
     }
+
+    // A session belongs to exactly one conversation, so a chat switch can no
+    // longer invalidate it: only the caller's explicit request (a brand-new
+    // chat, or a forced history resync) resets the hidden Python history.
+    final shouldResetSession = forceHistorySync || newSession;
 
     _activeCompleter = Completer<String>();
     _activeLines.clear();
+    // A new turn starts with a clean AUTO INPUT transcript; otherwise the
+    // previous turn's intermediate answers would look like part of this one.
+    _autoInputReplies.clear();
+    _autoInputPrompts.clear();
+    _setAutoInputEvaluating(false);
+    // Trace the requested input mode in the orchestrator log so an inert
+    // AUTO INPUT (e.g. missing User agent) is diagnosable from the UI. The
+    // Python side logs the actual evaluation API call per round.
+    if (taskMode == 'auto_input') {
+      _injectLogLine(
+        '[ui] task_mode=auto_input requested; AUTO INPUT loop enabled',
+      );
+    }
     _requestStartedAt = DateTime.now();
+    _setState(OrchestratorSessionState.busy);
     // A fresh request invalidates the previous turn's activity labels and
     // chain-of-thought so the UI strip never shows stale "Planning..." or
     // leftover thinking while the new request is still warming up.
@@ -1007,9 +1501,15 @@ class OrchestratorManager {
     _currentConversationId = sessionKey;
     _bumpInactivityTimer();
 
+    // Correlation id: echoed back by Python. An envelope belonging to a turn
+    // the user already aborted is then dropped instead of landing in the next
+    // one (a real hazard while the process is killed and relaunched).
+    final requestId = const Uuid().v4();
+    _activeRequestId = requestId;
     final request = jsonEncode({
       'prompt': prompt,
       'new_session': shouldResetSession,
+      'request_id': requestId,
       if (seedHistory.isNotEmpty) 'history': seedHistory,
       if (sessionKey != null && sessionKey.isNotEmpty) 'session_key': sessionKey,
       // Sent explicitly so Team Mode can isolate per-chat board/artifacts.
@@ -1017,14 +1517,18 @@ class OrchestratorManager {
       // Python side has a stable contract independent of the legacy
       // session_key plumbing.
       if (sessionKey != null && sessionKey.isNotEmpty) 'conversation_id': sessionKey,
-      // Task-flow dropdown selection. Python looks at this on every
-      // request and switches the system prompt + event emission in or
-      // out of TASK COMPLIANCE mode accordingly.
+      // Mode dropdown selection (USER INPUT / AUTO INPUT). Python looks at
+      // this on every request and switches the loop behaviour and task-event
+      // emission accordingly.
       'task_mode': taskMode,
-      // Thinking ON/OFF master switch + Effort level. Sent per-request
-      // so the Flutter UI controls take effect immediately without
-      // restarting the orchestrator subprocess.
-      'thinking': thinking,
+      // Thinking ON/OFF master switch + Effort level. Sent per-request so the
+      // Flutter UI controls take effect immediately without restarting the
+      // orchestrator subprocess — but ONLY when the caller owns them. In MaM
+      // mode each Workflow Agents card owns its slot's thinking/effort and
+      // they are seeded at launch; a per-request value would override the
+      // slot configuration. Python treats an absent `thinking` as "keep the
+      // launch-time value".
+      if (thinking != null) 'thinking': thinking,
       if (effort != null && effort.isNotEmpty) 'effort': effort,
     });
     // Fix 10c: when the outgoing prompt is itself a <task_action>
@@ -1061,9 +1565,21 @@ class OrchestratorManager {
       );
     } finally {
       _activeCompleter = null;
+      _activeRequestId = null;
       _activeLines.clear();
       _cancelInactivityTimer();
       _requestStartedAt = null;
+      // Fall back to idle only when the subprocess is still alive: a teardown
+      // that landed mid-turn has already moved the state to stopped.
+      if (_isRunning && _isReady) {
+        _setState(OrchestratorSessionState.idle);
+        // A configuration change requested while the turn was running is
+        // applied now — after the answer has been extracted and returned to
+        // the caller, so the reply is never discarded.
+        final pending = _pendingRestart;
+        _pendingRestart = null;
+        if (pending != null) unawaited(_applyPendingRestart(pending));
+      }
     }
   }
 
@@ -1116,6 +1632,11 @@ class OrchestratorManager {
       }
       // The turn is over: clear the activity label and chain-of-thought so
       // the UI strip empties out instead of spinning with stale content.
+      // The AUTO INPUT user-side indicator is cleared too: when the last
+      // evaluation declared the task done no continuation prompt follows, so
+      // the flag would otherwise stay set and keep "User agent is writing..."
+      // on screen after the reply landed.
+      _setAutoInputEvaluating(false);
       _lastStatus = null;
       _lastThinking = null;
       if (!_statusController.isClosed) _statusController.add('');
@@ -1127,7 +1648,7 @@ class OrchestratorManager {
     // carrying a ``type`` child (e.g. ``<event><type>tasks_proposed</type>...</event>``
     // or ``<event><type>task_status</type>...</event>``) are NOT the
     // response envelope -- they are intermediate structured events emitted
-    // by Python while running in TASK COMPLIANCE mode. Route them to
+    // by Python while it reports task-checklist progress. Route them to
     // ``taskStream`` and mirror to SQLite via TaskRepository. The line is
     // then dropped from ``_activeLines`` so it never reaches the response
     // extractor.
@@ -1177,6 +1698,51 @@ class OrchestratorManager {
 
     final eventType = tags['type'];
     if (eventType == null) return false;
+
+    // AUTO INPUT events are conversation-independent (they describe the
+    // autonomous loop itself, not task-plan rows), so handle them before the
+    // conversation-id gate below.
+    if (eventType == 'auto_input_reply') {
+      _setAutoInputEvaluating(false);
+      final text = tags['text'] ?? '';
+      if (text.trim().isNotEmpty) {
+        _autoInputReplies.add(text);
+        if (!_autoInputReplyController.isClosed) {
+          _autoInputReplyController.add(text);
+        }
+      }
+      return true;
+    }
+
+    if (eventType == 'auto_input_evaluating') {
+      // The User agent is now reviewing the Assistant's reply and writing the
+      // next prompt: flip the user-side indicator on until the prompt or the
+      // final answer arrives.
+      _setAutoInputEvaluating(true);
+      return true;
+    }
+
+    if (eventType == 'auto_input_prompt') {
+      _setAutoInputEvaluating(false);
+      final text = tags['text'] ?? '';
+      if (text.trim().isNotEmpty) {
+        _autoInputPrompts.add(text);
+        if (!_autoInputPromptController.isClosed) {
+          _autoInputPromptController.add(text);
+        }
+      }
+      return true;
+    }
+
+    if (eventType == 'auto_input_user_missing') {
+      final text = tags['text'] ?? '';
+      if (text.trim().isNotEmpty) {
+        if (!_autoInputNoticeController.isClosed) {
+          _autoInputNoticeController.add(text);
+        }
+      }
+      return true;
+    }
 
     final convId = _currentConversationId;
     if (convId == null || convId.isEmpty) {
@@ -1299,6 +1865,17 @@ class OrchestratorManager {
       try {
         final obj = jsonDecode(line);
         if (obj is! Map || obj['response'] is! String) continue;
+        // Correlation check: drop an envelope belonging to a turn that has
+        // already been aborted. Accepted whenever either side carries no id,
+        // so an older Python build keeps working unchanged.
+        final echoedId = obj['request_id'];
+        final expectedId = _activeRequestId;
+        if (echoedId is String &&
+            expectedId != null &&
+            echoedId.isNotEmpty &&
+            echoedId != expectedId) {
+          continue;
+        }
         final rawTrace = obj['trace'];
         if (rawTrace is List) {
           final entries = <Map<String, Object?>>[];
@@ -1335,8 +1912,14 @@ class OrchestratorManager {
   void _onProcessExited() {
     _isRunning = false;
     _isReady = false;
-    _sessionKey = null;
+    _argsFingerprint = '';
     _cancelInactivityTimer();
+    // A process that dies on its own (crash, missing dependency, OOM) is a
+    // failure, not an orderly stop; the UI uses this to tell "the session
+    // ended" apart from "a configuration change is pending".
+    if (_state != OrchestratorSessionState.stopped) {
+      _setState(OrchestratorSessionState.failed);
+    }
     if (_readyCompleter != null && !_readyCompleter!.isCompleted) {
       _readyCompleter!.completeError(
         StateError('Orchestrator process exited before signalling ready. '
@@ -1358,8 +1941,125 @@ class OrchestratorManager {
   }
 
   /// Stop the orchestrator subprocess.
-  Future<void> stop() async {
+  ///
+  /// Only a genuine STOP affordance, app shutdown, or crash recovery may
+  /// terminate a turn that is already in flight. Every other source describes
+  /// a *configuration change*: while [isBusy] the teardown is deferred until
+  /// the running answer has been delivered, so in-app navigation can never
+  /// kill a live session. When nothing is in flight the teardown happens
+  /// immediately, which keeps the classic `stop(); start(...)` relaunch
+  /// pattern intact.
+  Future<void> stop({
+    OrchestratorStopSource source = OrchestratorStopSource.unspecified,
+    String reason = '',
+  }) async {
+    debugStopCalls.add(source);
+    final suffix = reason.isEmpty ? '' : ': $reason';
+    if (!source.mayTerminateSession && isBusy) {
+      _parkRestart(
+        reason.isEmpty ? 'configuration changed' : reason,
+        source,
+        '',
+      );
+      return;
+    }
+    _appendLog('[manager] stop requested by ${source.name}$suffix');
+    _abortActiveTurn(source, reason);
     await _cleanup();
+    _setState(OrchestratorSessionState.stopped);
+  }
+
+  /// Resolve any awaiting [sendPrompt] future with [OrchestratorAborted] so a
+  /// teardown never leaves the caller waiting for the absolute timeout.
+  void _abortActiveTurn(OrchestratorStopSource source, String reason) {
+    final completer = _activeCompleter;
+    _activeCompleter = null;
+    _activeRequestId = null;
+    _activeLines.clear();
+    _cancelInactivityTimer();
+    _requestStartedAt = null;
+    _setAutoInputEvaluating(false);
+    if (completer != null && !completer.isCompleted) {
+      completer.completeError(
+        OrchestratorAborted(
+          source.name,
+          reason.isEmpty ? 'session torn down' : reason,
+        ),
+      );
+    }
+  }
+
+  /// Ask for the subprocess to be relaunched with a different configuration.
+  ///
+  /// Identical fingerprints are dropped outright — that alone fixes the
+  /// "open a dropdown, leave the value unchanged" case. While [isBusy] the
+  /// request is parked and applied once the running turn has been delivered to
+  /// the UI; otherwise it is simply noted, because the next launch picks the
+  /// new configuration up anyway.
+  void requestRestart({
+    required String reason,
+    required OrchestratorStopSource source,
+    String argsFingerprint = '',
+  }) {
+    debugRestartReasons.add(reason);
+    if (_isRunning &&
+        argsFingerprint.isNotEmpty &&
+        argsFingerprint == _argsFingerprint) {
+      _appendLog(
+        '[manager] restart request from ${source.name} ignored — '
+        'configuration unchanged ($reason)',
+      );
+      return;
+    }
+    if (!isBusy) {
+      _pendingRestart = null;
+      if (!_isRunning) {
+        _appendLog(
+          '[manager] restart request from ${source.name} noted — '
+          'applies on the next launch ($reason)',
+        );
+        return;
+      }
+      // Nothing is in flight, so the relaunch can happen straight away. This
+      // is what makes a backend / project change effective before the next
+      // prompt: leaving the old process alive would route that prompt to the
+      // configuration the user just replaced.
+      unawaited(
+        _applyPendingRestart(
+          _PendingRestart(reason, source, argsFingerprint),
+        ),
+      );
+      return;
+    }
+    _parkRestart(reason, source, argsFingerprint);
+  }
+
+  void _parkRestart(
+    String reason,
+    OrchestratorStopSource source,
+    String argsFingerprint,
+  ) {
+    _pendingRestart = _PendingRestart(reason, source, argsFingerprint);
+    _appendLog(
+      '[manager] deferred restart requested by ${source.name}: $reason',
+    );
+  }
+
+  /// Apply the parked relaunch once the turn has been delivered.
+  ///
+  /// The process is torn down here (nothing is in flight any more) and the
+  /// next prompt relaunches it with the configuration the user picked. This is
+  /// what makes a mid-turn model/backend/project change effective without ever
+  /// discarding the answer that was being produced.
+  Future<void> _applyPendingRestart(_PendingRestart pending) async {
+    _appendLog(
+      '[manager] applying deferred restart (${pending.source.name}): '
+      '${pending.reason}',
+    );
+    _setState(OrchestratorSessionState.restarting);
+    _abortActiveTurn(pending.source, pending.reason);
+    await _cleanup();
+    _setState(OrchestratorSessionState.stopped);
   }
 
   Future<void> _cleanup() async {
@@ -1367,16 +2067,69 @@ class OrchestratorManager {
     await _stderrSub?.cancel();
     _stdoutSub = null;
     _stderrSub = null;
-    try {
-      _process?.kill();
-    } catch (_) {}
+
+    final process = _process;
+    if (process != null) {
+      // Graceful shutdown first: the Python side exits its read loop on
+      // `{"action": "shutdown"}`, which lets it flush the audit log and the
+      // per-chat log file before terminating. Fall back to kill() when the
+      // process does not react within the grace window.
+      try {
+        process.stdin.writeln(jsonEncode({'action': 'shutdown'}));
+        await process.stdin.flush();
+      } catch (_) {
+        // stdin already closed — fall through to kill().
+      }
+      try {
+        await process.exitCode.timeout(const Duration(seconds: 3));
+      } catch (_) {
+        try {
+          process.kill();
+        } catch (_) {}
+      }
+    }
+
     _process = null;
     _isRunning = false;
     _isReady = false;
-    _sessionKey = null;
+    _argsFingerprint = '';
+    _pendingRestart = null;
+    _refreshActivity();
   }
 
   bool checkHealthy() => _isRunning && _isReady && _process != null;
+
+  bool _disposed = false;
+
+  /// True once this session has been released by the registry.
+  ///
+  /// A disposed session is never reused: the registry drops it and builds a
+  /// fresh one for the same chat on the next acquisition.
+  bool get isDisposed => _disposed;
+
+  /// Tear the subprocess down and release every stream controller.
+  ///
+  /// Called by the registry on LRU eviction, idle-TTL reaping, conversation
+  /// deletion and app shutdown. Safe to call twice.
+  Future<void> dispose() async {
+    if (_disposed) return;
+    _disposed = true;
+    OrchestratorSession.debugStopCalls.add(OrchestratorStopSource.appShutdown);
+    await _cleanup();
+    _setState(OrchestratorSessionState.stopped);
+    _setActivity(SessionActivity.idle);
+    await _stateController.close();
+    await _activityController.close();
+    await _logController.close();
+    await _traceController.close();
+    await _statusController.close();
+    await _autoInputNoticeController.close();
+    await _autoInputReplyController.close();
+    await _autoInputPromptController.close();
+    await _autoInputEvaluatingController.close();
+    await _thinkingController.close();
+    await _taskController.close();
+  }
 
   // ---------------------------------------------------------------------------
   // Helpers for building orchestrator_v2 CLI args
@@ -1402,26 +2155,87 @@ class OrchestratorManager {
     }
   }
 
-  /// Map a backend identifier string (from [WorkflowAgentConfig.backend] or
-  /// [_backendToString]) to the canonical provider name used by
-  /// orchestrator_v2's `--reasoner-provider` / `--summarizer-provider` flags.
-  static String _toProviderString(String backend) {
-    switch (backend) {
-      case 'huggingface':
-        return 'openai'; // HF router uses OpenAI-compatible endpoint
-      case 'ollama':
-        return 'ollama';
-      case 'groq':
-        return 'groq';
-      case 'gemini':
-        return 'gemini';
-      case 'openrouter':
-        return 'openrouter';
-      case 'github':
-        return 'github';
-      default:
-        return backend; // pass through unknown values
+  /// Map a backend identifier from [AgentRoleConfig.backend] to the provider
+  /// name orchestrator_multi passes to `build_backend`
+  /// (see `bin/agent/backends/__init__.py`).
+  ///
+  /// This is intentionally the identity for every supported backend: the
+  /// stored names are already the names the Python factory accepts, and an
+  /// invented alias (the old `huggingface -> openai` remap) made startup fail
+  /// with "Unknown backend: 'openai'". Unknown values are logged and passed
+  /// through unchanged so the user's config is never silently rewritten.
+  @visibleForTesting
+  static String toProviderString(String backend) {
+    final normalised = backend.trim().toLowerCase();
+    if (!AgentRoleSettingsRepository.supportedBackends.contains(normalised)) {
+      developer.log(
+        '[manager] unsupported backend "$backend" is not accepted by '
+        'bin/agent/backends/__init__.py::build_backend',
+        name: 'orchestrator_manager',
+      );
     }
+    return normalised;
+  }
+
+  static String _toProviderString(String backend) => toProviderString(backend);
+
+  /// Append the AUTO INPUT "User" agent CLI flags for [userCfg].
+  ///
+  /// The User agent is the second Workflow Agents slot: Python hands it the
+  /// AUTO-INPUT evaluation so the Assistant is reviewed by a genuinely
+  /// separate model instead of judging its own output. An empty model emits
+  /// no flags at all — Python keeps the slot unset, the run loop surfaces the
+  /// missing-agent notice, and AUTO INPUT fails safe waiting for real input.
+  void _appendUserAgentArgs(
+    List<String> args,
+    AgentRoleConfig userCfg, {
+    required String? ollamaBaseUrl,
+    required String? Function(String provider) apiKeyFor,
+  }) {
+    final userModel = userCfg.model.trim();
+    if (userModel.isEmpty) {
+      _appendLog(
+        '[manager] AUTO INPUT User agent not configured (empty model in '
+        'Workflow Agents > User); AUTO INPUT will report it and wait for '
+        'real input.',
+      );
+      return;
+    }
+    final provider = _toProviderString(userCfg.backend);
+    args.addAll(['--user-provider', provider]);
+    args.addAll(['--user-model', userModel]);
+    final key = apiKeyFor(provider);
+    if (key != null && key.isNotEmpty) {
+      args.addAll(['--user-api-key', key]);
+    }
+    if (AgentRoleSettingsRepository.baseUrlBackends.contains(provider)) {
+      final url = (userCfg.ollamaBaseUrl?.isNotEmpty ?? false)
+          ? userCfg.ollamaBaseUrl!
+          : ollamaBaseUrl;
+      if (url != null && url.isNotEmpty) {
+        args.addAll(['--user-base-url', url]);
+      }
+    }
+    // Every generation setting configured on the User card is forwarded, so the
+    // AUTO INPUT evaluation runs with the values the user actually picked.
+    // `--user-num-ctx` is kept for older launchers; `--user-context-window` is
+    // the canonical flag and takes precedence on the Python side.
+    final userContextWindow = userCfg.contextWindow;
+    if (userContextWindow != null && userContextWindow > 0) {
+      args.addAll(['--user-context-window', userContextWindow.toString()]);
+    }
+    args.addAll(['--user-temperature', userCfg.temperature.toString()]);
+    args.addAll(['--user-max-tokens', userCfg.maxTokens.toString()]);
+    final userReasoningLevel =
+        userCfg.reasoningLevel.isNotEmpty ? userCfg.reasoningLevel : 'max';
+    args.addAll(['--user-reasoning-level', userReasoningLevel]);
+    args.add(userCfg.thinking ? '--user-thinking' : '--user-no-thinking');
+    if (userCfg.tpmLimit > 0) {
+      args.addAll(['--user-tpm-limit', userCfg.tpmLimit.toString()]);
+    }
+    _appendLog('[manager] AUTO INPUT User agent -> $provider:$userModel '
+        '(temp=${userCfg.temperature}, max_tokens=${userCfg.maxTokens}, '
+        'effort=$userReasoningLevel, thinking=${userCfg.thinking})');
   }
 
   /// Return the API key for a given provider string, drawing from the
@@ -1453,6 +2267,624 @@ class OrchestratorManager {
         return null;
     }
   }
+}
+
+/// Marks the async scope that binds unkeyed facade calls to one conversation.
+///
+/// `LlmService.sendChat` establishes it once through
+/// [OrchestratorManager.withConversation]; every continuation of that call
+/// (including nested awaits) then resolves [OrchestratorManager]'s legacy
+/// members against the chat it belongs to, even while a second chat is doing
+/// exactly the same thing at the same time.
+final Object _kConversationZoneKey = Object();
+
+/// Soft cap on simultaneously live orchestrator subprocesses.
+///
+/// Beyond this the least-recently-used *idle* session is disposed to make
+/// room. A busy session is never disposed: the cap is soft and the extra
+/// process is allowed to live until it drains.
+const int kMaxConcurrentSessions = 4;
+
+/// A session that has been idle for longer than this is disposed lazily, on
+/// the next acquisition. Keeps long-running apps from accumulating processes
+/// for chats the user has not touched in a quarter of an hour.
+const Duration kSessionIdleTtl = Duration(minutes: 15);
+
+/// Keyed facade over one [OrchestratorSession] per conversation.
+///
+/// This class keeps its historical name and singleton identity so the existing
+/// call sites keep compiling, but it no longer owns a subprocess: sessions are
+/// indexed by the conversation GUID, created lazily on first use, and each one
+/// runs its own Python process.
+///
+/// The primary goal of the split is that conversation identity is a *key we
+/// index by*, not *a field we overwrite*. Opening chat B therefore cannot
+/// invalidate chat A's hidden history or interrupt the turn it is running.
+///
+/// Members without an id argument are legacy shims. They resolve to:
+///   1. the ambient conversation established by [withConversation], else
+///   2. the conversation last opened through [setCurrentSession], else
+///   3. the most recently used live session.
+/// New code must use the explicit `*For(conversationId, …)` methods.
+class OrchestratorManager {
+  OrchestratorManager._internal();
+
+  static final OrchestratorManager instance = OrchestratorManager._internal();
+
+  /// Session key used when a caller genuinely has no conversation id.
+  static const String fallbackSessionKey = 'app';
+
+  final Map<String, OrchestratorSession> _sessions =
+      <String, OrchestratorSession>{};
+
+  /// Least-recently-used order, oldest first.
+  final List<String> _mru = <String>[];
+
+  final Map<String, DateTime> _lastUsed = <String, DateTime>{};
+
+  final StreamController<OrchestratorSession> _addedController =
+      StreamController<OrchestratorSession>.broadcast();
+
+  String? _currentSessionKey;
+
+  /// Live sessions, in creation order.
+  List<OrchestratorSession> get sessions =>
+      List<OrchestratorSession>.unmodifiable(_sessions.values);
+
+  /// Emits a session the first time it is acquired, so a sidebar tile that
+  /// mounted before its chat ever ran can promote itself to a live
+  /// subscription.
+  Stream<OrchestratorSession> get sessionAdded => _addedController.stream;
+
+  /// The conversation last opened by the UI, if any.
+  String? get currentSessionKey => _currentSessionKey;
+
+  bool get anyRunning => _sessions.values.any((s) => s.isRunning);
+
+  bool get anyBusy => _sessions.values.any((s) => s.isBusy);
+
+  /// True when at least one live session was launched against [backend].
+  ///
+  /// The Settings → Orchestrator panel uses this instead of the old
+  /// `isRunning && currentBackend == X` test: with several chats alive the
+  /// question is "does any process already serve this backend?", not "is the
+  /// one global process serving it?".
+  bool anyRunningWithBackend(OrchestratorBackend backend) =>
+      _sessions.values
+          .any((s) => s.isRunning && s.currentBackend == backend);
+
+  /// Live sessions, most recently used first — the order the Settings panel
+  /// renders them in.
+  List<OrchestratorSession> get sessionsByRecency {
+    final ordered = <OrchestratorSession>[];
+    for (final key in _mru.reversed) {
+      final session = _sessions[key];
+      if (session != null) ordered.add(session);
+    }
+    for (final session in _sessions.values) {
+      if (!ordered.contains(session)) ordered.add(session);
+    }
+    return List<OrchestratorSession>.unmodifiable(ordered);
+  }
+
+  /// Run [body] with [conversationId] bound as the ambient conversation.
+  ///
+  /// Every unkeyed facade member called from inside [body] — directly or from
+  /// any of its async continuations — resolves to that conversation's session.
+  Future<T> withConversation<T>(
+    String? conversationId,
+    Future<T> Function() body,
+  ) {
+    return runZoned(
+      body,
+      zoneValues: <Object, Object?>{
+        _kConversationZoneKey: conversationId ?? fallbackSessionKey,
+      },
+    );
+  }
+
+  /// The session for [conversationId], creating it on first use.
+  OrchestratorSession sessionFor(String? conversationId) {
+    final key = (conversationId == null || conversationId.isEmpty)
+        ? fallbackSessionKey
+        : conversationId;
+    _currentSessionKey = key;
+    final existing = _sessions[key];
+    if (existing != null && !existing.isDisposed) {
+      _touch(key);
+      return existing;
+    }
+    _reapIdle();
+    final session = OrchestratorSession(key);
+    _sessions[key] = session;
+    _touch(key);
+    if (!_addedController.isClosed) _addedController.add(session);
+    _enforceCap(key);
+    return session;
+  }
+
+  /// The live session for [conversationId], or null when it never ran.
+  ///
+  /// Never creates a session, so it is safe to call from a build method.
+  OrchestratorSession? peek(String? conversationId) {
+    if (conversationId == null || conversationId.isEmpty) return null;
+    final session = _sessions[conversationId];
+    if (session == null || session.isDisposed) return null;
+    return session;
+  }
+
+  /// Record [conversationId] as the chat currently on screen.
+  ///
+  /// Used only to resolve the legacy shims; it never rebinds or restarts a
+  /// session, which is what makes navigation non-destructive.
+  void setCurrentSession(String? conversationId) {
+    if (conversationId == null || conversationId.isEmpty) return;
+    _currentSessionKey = conversationId;
+    if (_sessions.containsKey(conversationId)) _touch(conversationId);
+  }
+
+  /// Dispose the session of [conversationId] (deleting a chat).
+  Future<void> disposeSession(String conversationId) async {
+    final session = _sessions.remove(conversationId);
+    _mru.remove(conversationId);
+    _lastUsed.remove(conversationId);
+    if (_currentSessionKey == conversationId) _currentSessionKey = null;
+    await session?.dispose();
+  }
+
+  /// Dispose every session. Called on app shutdown.
+  Future<void> disposeAll() async {
+    final all = _sessions.values.toList(growable: false);
+    _sessions.clear();
+    _mru.clear();
+    _lastUsed.clear();
+    _currentSessionKey = null;
+    await Future.wait(all.map((s) => s.dispose()));
+  }
+
+  /// Ask every session to relaunch with the new configuration.
+  ///
+  /// A backend / model / project change is genuinely global, so each live
+  /// chat must pick it up — but each one still finishes the answer it is
+  /// producing first, because [OrchestratorSession.requestRestart] parks the
+  /// relaunch while a turn is in flight.
+  void requestRestartAll({
+    required String reason,
+    required OrchestratorStopSource source,
+  }) {
+    for (final session in _sessions.values) {
+      session.requestRestart(reason: reason, source: source);
+    }
+  }
+
+  void _touch(String key) {
+    _lastUsed[key] = DateTime.now();
+    _mru.remove(key);
+    _mru.add(key);
+  }
+
+  void _reapIdle() {
+    final now = DateTime.now();
+    final stale = _lastUsed.entries
+        .where((e) =>
+            now.difference(e.value) > kSessionIdleTtl &&
+            e.key != _currentSessionKey)
+        .map((e) => e.key)
+        .toList(growable: false);
+    for (final key in stale) {
+      final session = _sessions[key];
+      if (session == null || session.isBusy) continue;
+      _sessions.remove(key);
+      _mru.remove(key);
+      _lastUsed.remove(key);
+      unawaited(session.dispose());
+    }
+  }
+
+  /// Keep the live-process count near [kMaxConcurrentSessions].
+  ///
+  /// Only idle sessions are evicted, oldest first; the newly acquired [keep]
+  /// session and the chat on screen are always spared.
+  void _enforceCap(String keep) {
+    while (_sessions.length > kMaxConcurrentSessions) {
+      String? victim;
+      for (final key in _mru) {
+        if (key == keep || key == _currentSessionKey) continue;
+        final session = _sessions[key];
+        if (session == null || session.isBusy) continue;
+        victim = key;
+        break;
+      }
+      if (victim == null) return;
+      final session = _sessions.remove(victim);
+      _mru.remove(victim);
+      _lastUsed.remove(victim);
+      if (session != null) unawaited(session.dispose());
+    }
+  }
+
+  String? get _ambientConversationId {
+    final value = Zone.current[_kConversationZoneKey];
+    return value is String && value.isNotEmpty ? value : null;
+  }
+
+  /// Resolution order for the legacy, id-less members.
+  OrchestratorSession? get _currentSession {
+    final ambient = _ambientConversationId;
+    if (ambient != null) {
+      final session = _sessions[ambient];
+      if (session != null) return session;
+    }
+    final key = _currentSessionKey;
+    if (key != null) {
+      final session = _sessions[key];
+      if (session != null) return session;
+    }
+    if (_mru.isEmpty) return null;
+    return _sessions[_mru.last];
+  }
+
+  /// [_currentSession], acquiring the fallback session when nothing exists yet
+  /// (a fresh app where Settings opened the orchestrator panel first).
+  OrchestratorSession get _requireSession =>
+      _currentSession ?? sessionFor(fallbackSessionKey);
+
+  // ── Test seams ───────────────────────────────────────────────────────────
+  // Every source passed to [stop] in this process, in call order. Widget tests
+  // assert that navigation and configuration affordances never request a
+  // teardown.
+  @visibleForTesting
+  static List<OrchestratorStopSource> get debugStopCalls =>
+      OrchestratorSession.debugStopCalls;
+
+  @visibleForTesting
+  static List<String> get debugRestartReasons =>
+      OrchestratorSession.debugRestartReasons;
+
+  /// Drive the current session into [state] (see
+  /// [OrchestratorSession.debugSetSessionState]).
+  @visibleForTesting
+  void debugSetSessionState({
+    required OrchestratorSessionState state,
+    String argsFingerprint = '',
+  }) {
+    _requireSession.debugSetSessionState(
+      state: state,
+      argsFingerprint: argsFingerprint,
+    );
+  }
+
+  /// Install an in-flight turn completer on the current session.
+  @visibleForTesting
+  Completer<String> debugArmTurn() => _requireSession.debugArmTurn();
+
+  @visibleForTesting
+  bool get debugHasActiveTurn => _currentSession?.debugHasActiveTurn ?? false;
+
+  /// Reset the current session to a pristine state between tests.
+  @visibleForTesting
+  void debugResetSession() {
+    _currentSession?.debugResetSession();
+  }
+
+  /// Drop every session and forget the recorded debug calls.
+  @visibleForTesting
+  Future<void> debugResetAll() async {
+    await disposeAll();
+    OrchestratorSession.debugStopCalls.clear();
+    OrchestratorSession.debugRestartReasons.clear();
+  }
+
+  // ── Legacy shims ─────────────────────────────────────────────────────────
+
+  bool get isRunning => _currentSession?.isRunning ?? false;
+
+  bool get isReady => _currentSession?.isReady ?? false;
+
+  bool get isBusy => _currentSession?.isBusy ?? false;
+
+  bool get hasPendingRestart => _currentSession?.hasPendingRestart ?? false;
+
+  String get argsFingerprint => _currentSession?.argsFingerprint ?? '';
+
+  OrchestratorSessionState get lastSessionState =>
+      _currentSession?.lastSessionState ?? OrchestratorSessionState.stopped;
+
+  Stream<OrchestratorSessionState> get sessionStateStream =>
+      _currentSession?.sessionStateStream ?? const Stream.empty();
+
+  OrchestratorBackend get currentBackend => _requireSession.currentBackend;
+
+  String? get currentModelId => _currentSession?.currentModelId;
+
+  double? get currentTemperature => _currentSession?.currentTemperature;
+
+  String get stderrLog => _currentSession?.stderrLog ?? '';
+
+  bool checkHealthy() => _currentSession?.checkHealthy() ?? false;
+
+  bool matchesFingerprint(String fingerprint) =>
+      _currentSession?.matchesFingerprint(fingerprint) ?? false;
+
+  Stream<String> get logStream =>
+      _currentSession?.logStream ?? const Stream.empty();
+
+  List<String> get logLines => _currentSession?.logLines ?? const <String>[];
+
+  String? get lastStatus => _currentSession?.lastStatus;
+
+  Stream<String> get statusStream =>
+      _currentSession?.statusStream ?? const Stream.empty();
+
+  Stream<String> get thinkingStream =>
+      _currentSession?.thinkingStream ?? const Stream.empty();
+
+  String? get lastThinking => _currentSession?.lastThinking;
+
+  Stream<List<Map<String, Object?>>> get traceStream =>
+      _currentSession?.traceStream ?? const Stream.empty();
+
+  List<Map<String, Object?>> get lastTrace =>
+      _currentSession?.lastTrace ?? const <Map<String, Object?>>[];
+
+  Stream<OrchestratorTaskEvent> get taskStream =>
+      _currentSession?.taskStream ?? const Stream.empty();
+
+  StreamController<OrchestratorTaskEvent> get taskController =>
+      _requireSession.taskController;
+
+  Stream<String> get autoInputNoticeStream =>
+      _currentSession?.autoInputNoticeStream ?? const Stream.empty();
+
+  Stream<String> get autoInputReplyStream =>
+      _currentSession?.autoInputReplyStream ?? const Stream.empty();
+
+  Stream<String> get autoInputPromptStream =>
+      _currentSession?.autoInputPromptStream ?? const Stream.empty();
+
+  Stream<bool> get autoInputEvaluatingStream =>
+      _currentSession?.autoInputEvaluatingStream ?? const Stream.empty();
+
+  bool get autoInputEvaluating =>
+      _currentSession?.autoInputEvaluating ?? false;
+
+  List<String> get autoInputReplies =>
+      _currentSession?.autoInputReplies ?? const <String>[];
+
+  List<String> get autoInputPrompts =>
+      _currentSession?.autoInputPrompts ?? const <String>[];
+
+  /// Start (or reuse) the session of [conversationId].
+  Future<bool> startFor(
+    String? conversationId, {
+    String? hfToken,
+    String? modelId,
+    String? workingDirectory,
+    OrchestratorBackend backend = OrchestratorBackend.huggingface,
+    String? ollamaBaseUrl,
+    int? ollamaNumCtx,
+    bool? ollamaAutoNumCtx,
+    double? temperature,
+    int? maxTokens,
+    String? ollamaApiKey,
+    String? groqApiKey,
+    String? geminiApiKey,
+    String? openRouterApiKey,
+    int? openRouterContextLimit,
+    String? githubApiKey,
+    int? tpmLimit,
+    bool disableTools = false,
+    bool? multiAgent,
+  }) {
+    return sessionFor(conversationId).start(
+      hfToken: hfToken,
+      modelId: modelId,
+      workingDirectory: workingDirectory,
+      backend: backend,
+      ollamaBaseUrl: ollamaBaseUrl,
+      ollamaNumCtx: ollamaNumCtx,
+      ollamaAutoNumCtx: ollamaAutoNumCtx,
+      temperature: temperature,
+      maxTokens: maxTokens,
+      ollamaApiKey: ollamaApiKey,
+      groqApiKey: groqApiKey,
+      geminiApiKey: geminiApiKey,
+      openRouterApiKey: openRouterApiKey,
+      openRouterContextLimit: openRouterContextLimit,
+      githubApiKey: githubApiKey,
+      tpmLimit: tpmLimit,
+      disableTools: disableTools,
+      multiAgent: multiAgent,
+    );
+  }
+
+  /// Legacy: start the session of the ambient / current conversation.
+  Future<bool> start({
+    String? hfToken,
+    String? modelId,
+    String? workingDirectory,
+    OrchestratorBackend backend = OrchestratorBackend.huggingface,
+    String? ollamaBaseUrl,
+    int? ollamaNumCtx,
+    bool? ollamaAutoNumCtx,
+    double? temperature,
+    int? maxTokens,
+    String? ollamaApiKey,
+    String? groqApiKey,
+    String? geminiApiKey,
+    String? openRouterApiKey,
+    int? openRouterContextLimit,
+    String? githubApiKey,
+    int? tpmLimit,
+    bool disableTools = false,
+    bool? multiAgent,
+  }) {
+    return _requireSession.start(
+      hfToken: hfToken,
+      modelId: modelId,
+      workingDirectory: workingDirectory,
+      backend: backend,
+      ollamaBaseUrl: ollamaBaseUrl,
+      ollamaNumCtx: ollamaNumCtx,
+      ollamaAutoNumCtx: ollamaAutoNumCtx,
+      temperature: temperature,
+      maxTokens: maxTokens,
+      ollamaApiKey: ollamaApiKey,
+      groqApiKey: groqApiKey,
+      geminiApiKey: geminiApiKey,
+      openRouterApiKey: openRouterApiKey,
+      openRouterContextLimit: openRouterContextLimit,
+      githubApiKey: githubApiKey,
+      tpmLimit: tpmLimit,
+      disableTools: disableTools,
+      multiAgent: multiAgent,
+    );
+  }
+
+  /// Send a prompt to the session of [sessionKey] (or the ambient one).
+  Future<String> sendPrompt(
+    String prompt, {
+    bool newSession = false,
+    String? sessionKey,
+    List<Map<String, String>> seedHistory = const [],
+    bool forceHistorySync = false,
+    String taskMode = 'user_input',
+    bool? thinking,
+    String? effort,
+  }) {
+    final resolvedKey = sessionKey ?? _ambientConversationId;
+    final session = sessionFor(resolvedKey);
+    return session.sendPrompt(
+      prompt,
+      newSession: newSession,
+      sessionKey: session.conversationId,
+      seedHistory: seedHistory,
+      forceHistorySync: forceHistorySync,
+      taskMode: taskMode,
+      thinking: thinking,
+      effort: effort,
+    );
+  }
+
+  /// Stop the session of [conversationId]; other chats are untouched.
+  Future<void> stopFor(
+    String? conversationId, {
+    OrchestratorStopSource source = OrchestratorStopSource.unspecified,
+    String reason = '',
+  }) async {
+    final session = conversationId == null
+        ? _currentSession
+        : _sessions[conversationId];
+    if (session == null) return;
+    await session.stop(source: source, reason: reason);
+  }
+
+  /// Stop every live session.
+  ///
+  /// Used by the Settings → Orchestrator panel: Start/Stop there is a global
+  /// affordance (it prepares the *configuration* the next launch will use), so
+  /// it must reach every chat that owns a process. Each session still applies
+  /// its own stop-authority rules, so a busy session only dies when [source]
+  /// [mayTerminateSession] — otherwise its relaunch is parked until the answer
+  /// lands.
+  Future<void> stopAll({
+    OrchestratorStopSource source = OrchestratorStopSource.unspecified,
+    String reason = '',
+  }) async {
+    final all = _sessions.values.toList(growable: false);
+    await Future.wait(
+      all.map((s) => s.stop(source: source, reason: reason)),
+    );
+  }
+
+  /// Legacy: stop the session of the ambient / current conversation.
+  Future<void> stop({
+    OrchestratorStopSource source = OrchestratorStopSource.unspecified,
+    String reason = '',
+  }) async {
+    final session = _currentSession;
+    if (session == null) {
+      if (source.mayTerminateSession) {
+        OrchestratorSession.debugStopCalls.add(source);
+      }
+      return;
+    }
+    await session.stop(source: source, reason: reason);
+  }
+
+  /// Park (or apply) a relaunch for the session of [conversationId].
+  void requestRestartFor(
+    String? conversationId, {
+    required String reason,
+    required OrchestratorStopSource source,
+    String argsFingerprint = '',
+  }) {
+    sessionFor(conversationId).requestRestart(
+      reason: reason,
+      source: source,
+      argsFingerprint: argsFingerprint,
+    );
+  }
+
+  /// Legacy: park a relaunch on the ambient / current conversation's session.
+  void requestRestart({
+    required String reason,
+    required OrchestratorStopSource source,
+    String argsFingerprint = '',
+  }) {
+    _requireSession.requestRestart(
+      reason: reason,
+      source: source,
+      argsFingerprint: argsFingerprint,
+    );
+  }
+
+  /// Read the on-disk log of [conversationId] into that session's buffer.
+  void loadLogFromDisk(String conversationId) {
+    sessionFor(conversationId).loadLogFromDisk(conversationId);
+  }
+
+  Future<bool> installDependencies({void Function(String line)? onLine}) =>
+      _requireSession.installDependencies(onLine: onLine);
+
+  Future<bool> installPackage(
+    String packageName, {
+    void Function(String line)? onLine,
+  }) =>
+      _requireSession.installPackage(packageName, onLine: onLine);
+
+  // ── Static helpers, re-exported for existing call sites ───────────────────
+
+  static String get defaultPythonExecutable =>
+      OrchestratorSession.defaultPythonExecutable;
+
+  static Future<String> resolvePythonExecutable() =>
+      OrchestratorSession.resolvePythonExecutable();
+
+  static Future<Map<String, String>> resolveSubprocessEnvironment() =>
+      OrchestratorSession.resolveSubprocessEnvironment();
+
+  static Directory get baseDirectory => OrchestratorSession.baseDirectory;
+
+  static String fingerprintFor({
+    required OrchestratorBackend backend,
+    required String modelId,
+    double? temperature,
+    int? maxTokens,
+    bool multiAgent = false,
+    String? basePath,
+  }) =>
+      OrchestratorSession.fingerprintFor(
+        backend: backend,
+        modelId: modelId,
+        temperature: temperature,
+        maxTokens: maxTokens,
+        multiAgent: multiAgent,
+        basePath: basePath,
+      );
+
+  static String toProviderString(String backend) =>
+      OrchestratorSession.toProviderString(backend);
 }
 
 /// Returns the default temperature for the given backend from BackendSettingsRepository.

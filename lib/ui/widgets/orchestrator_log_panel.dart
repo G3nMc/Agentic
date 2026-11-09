@@ -15,7 +15,11 @@ class OrchestratorLogPanel extends StatefulWidget {
   /// Optional fixed height for the panel. If null, uses internal collapsed/expanded heights.
   final double? height;
 
-  const OrchestratorLogPanel({super.key, this.height});
+  /// Conversation whose session log is shown. Passing it scopes the panel to
+  /// that chat's subprocess, so chat B never renders chat A's output.
+  final String? conversationId;
+
+  const OrchestratorLogPanel({super.key, this.height, this.conversationId});
 
   @override
   State<OrchestratorLogPanel> createState() => _OrchestratorLogPanelState();
@@ -30,15 +34,40 @@ class _OrchestratorLogPanelState extends State<OrchestratorLogPanel> {
   final ScrollController _scroll = ScrollController();
   final ScrollController _hScroll = ScrollController();
   StreamSubscription<String>? _sub;
+  StreamSubscription<OrchestratorSession>? _sessionSub;
   bool _expanded = false;
   bool _autoScroll = true;
+
+  OrchestratorSession? get _session =>
+      OrchestratorManager.instance.peek(widget.conversationId);
 
   @override
   void initState() {
     super.initState();
-    _lines.addAll(OrchestratorManager.instance.logLines);
+    _bind();
+    // Sessions are created lazily, so a panel that mounted before its chat ever
+    // ran must go live as soon as the session appears.
+    _sessionSub = OrchestratorManager.instance.sessionAdded.listen((session) {
+      if (session.conversationId == widget.conversationId) _bind();
+    });
+  }
 
-    _sub = OrchestratorManager.instance.logStream.listen((line) {
+  @override
+  void didUpdateWidget(OrchestratorLogPanel oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.conversationId != widget.conversationId) {
+      setState(_lines.clear);
+      _bind();
+    }
+  }
+
+  /// (Re)subscribe to the log stream of the current conversation's session.
+  void _bind() {
+    _sub?.cancel();
+    _sub = null;
+    final session = _session;
+    _lines.addAll(session?.logLines ?? const <String>[]);
+    _sub = (session?.logStream ?? const Stream<String>.empty()).listen((line) {
       if (!mounted) return;
       setState(() {
         _lines.add(line);
@@ -46,7 +75,7 @@ class _OrchestratorLogPanelState extends State<OrchestratorLogPanel> {
       });
       if (_autoScroll) {
         WidgetsBinding.instance.addPostFrameCallback((_) {
-          if (_scroll.hasClients) {
+          if (_scroll.hasClients && _scroll.position.hasContentDimensions) {
             _scroll.animateTo(
               _scroll.position.maxScrollExtent,
               duration: const Duration(milliseconds: 120),
@@ -61,6 +90,7 @@ class _OrchestratorLogPanelState extends State<OrchestratorLogPanel> {
   @override
   void dispose() {
     _sub?.cancel();
+    _sessionSub?.cancel();
     _scroll.dispose();
     _hScroll.dispose();
     super.dispose();
@@ -68,13 +98,13 @@ class _OrchestratorLogPanelState extends State<OrchestratorLogPanel> {
 
   @override
   Widget build(BuildContext context) {
-    final hasContent = _lines.isNotEmpty || OrchestratorManager.instance.isRunning;
+    final running = _session?.isRunning ?? false;
+    final hasContent = _lines.isNotEmpty || running;
     if (!hasContent) return const SizedBox.shrink();
 
     final contentHeight = widget.height ?? (_expanded ? _expandedHeight : _collapsedHeight);
 
     return Container(
-      margin: const EdgeInsets.fromLTRB(10, 0, 10, 10),
       decoration: BoxDecoration(
         color: AppTheme.bgCodeOrchOutput,
         borderRadius: BorderRadius.circular(8),
@@ -101,12 +131,12 @@ class _OrchestratorLogPanelState extends State<OrchestratorLogPanel> {
                     height: 7,
                     decoration: BoxDecoration(
                       shape: BoxShape.circle,
-                      color: OrchestratorManager.instance.isRunning ? Colors.greenAccent : Colors.grey,
+                      color: running ? Colors.greenAccent : Colors.grey,
                     ),
                   ),
                   const SizedBox(width: 6),
                   Text(
-                    OrchestratorManager.instance.isRunning ? 'Orchestrator log' : 'Orchestrator log (stopped)',
+                    running ? 'Orchestrator log' : 'Orchestrator log (stopped)',
                     style: const TextStyle(
                       fontSize: 11,
                       color: Color(0xFFCDD6F4),
@@ -180,11 +210,12 @@ class _OrchestratorLogPanelState extends State<OrchestratorLogPanel> {
           ),
 
           // ── Log lines ────────────────────────────────────────────────────
-          AnimatedContainer(
-            duration: widget.height != null ? const Duration(milliseconds: 50) : const Duration(milliseconds: 200),
-            curve: Curves.easeInOut,
-            height: contentHeight,
-            child: _lines.isEmpty
+          Expanded(
+            child: AnimatedContainer(
+              duration: widget.height != null ? const Duration(milliseconds: 50) : const Duration(milliseconds: 200),
+              curve: Curves.easeInOut,
+              height: widget.height == null ? contentHeight : null,
+              child: _lines.isEmpty
                 ? const Center(
                     child: Text(
                       'Waiting for orchestrator output...',
@@ -241,6 +272,7 @@ class _OrchestratorLogPanelState extends State<OrchestratorLogPanel> {
                       ),
                     ),
                   ),
+            ),
           ),
         ],
       ),

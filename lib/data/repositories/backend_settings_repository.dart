@@ -2,7 +2,6 @@ import 'package:flutter/foundation.dart';
 import 'package:sqflite/sqflite.dart';
 
 import '../../services/llm_service.dart';
-import '../../services/project_service.dart';
 import '../database/app_database.dart';
 
 class BackendSettingsRepository {
@@ -443,17 +442,10 @@ class BackendSettingsRepository {
   Future<void> setGenerateThinking(bool enabled) =>
       _writeString(_kGenerateThinking, enabled.toString());
 
-  Future<String?> _readString(String key) async {
-    final scopedKey = _scopedKey(key);
-    if (scopedKey != key) {
-      final scoped = await _readRaw(scopedKey);
-      if (scoped != null) return scoped;
-    }
-    return _readRaw(key);
-  }
+  Future<String?> _readString(String key) => _readRaw(key);
 
   Future<String?> _readRaw(String key) async {
-    final db = await AppDatabase.instance.database;
+    final db = await AppDatabase.instance.globalDatabase;
     final rows = await db.query(
       "backend_settings",
       where: "id = ?",
@@ -464,18 +456,12 @@ class BackendSettingsRepository {
   }
 
   Future<void> _writeString(String key, String value) async {
-    final db = await AppDatabase.instance.database;
+    final db = await AppDatabase.instance.globalDatabase;
     await db.insert(
       "backend_settings",
-      {"id": _scopedKey(key), "value": value},
+      {"id": key, "value": value},
       conflictAlgorithm: ConflictAlgorithm.replace,
     );
-  }
-
-  String _scopedKey(String key) {
-    final projectKey = ProjectService().activeProjectKey;
-    if (projectKey == null || projectKey.trim().isEmpty) return key;
-    return 'project.$projectKey::$key';
   }
 
   Future<String?> getOllamaPythonBridgeUrl() =>

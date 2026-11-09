@@ -28,6 +28,13 @@ from agent.utils.token_estimator import estimate_tokens, chars_for_tokens
 from agent.utils.text import sanitize as _sanitize_text
 
 
+# Author tag for user turns that were NOT written by the human user. The
+# AUTO-INPUT loop tags every continuation prompt the "User" agent authors, so
+# the evaluation copy can attribute them instead of presenting the model's own
+# earlier words as if the human had typed them.
+USER_AGENT_AUTHOR = "user_agent"
+
+
 # ======================================================================
 # TaskTracker — live task-flow state hosted by ConversationHistory
 # ======================================================================
@@ -280,9 +287,45 @@ class ConversationHistory:
 
     # ── Clean turns (user / assistant / tool-result) ───────────────
 
-    def add_user(self, content: str) -> None:
-        """Append a clean user turn (no directive prepended)."""
-        self._turns.append({"role": "user", "content": content})
+    def add_user(self, content: str, author: str = "") -> None:
+        """Append a clean user turn (no directive prepended).
+
+        *author* tags a turn that was NOT written by the human user. The
+        AUTO-INPUT loop passes :data:`USER_AGENT_AUTHOR` for every continuation
+        prompt its "User" agent authors, so the evaluation copy can attribute
+        those turns instead of presenting the model's own earlier words as if
+        the human had typed them.
+        """
+        turn: Dict[str, str] = {"role": "user", "content": content}
+        if author:
+            turn["author"] = author
+        self._turns.append(turn)
+
+    def annotate_authored_turns(self, author: str, marker: str) -> int:
+        """Prefix every turn written by *author* with *marker*.
+
+        Used on the AUTO-INPUT evaluation copy: any user turn the User agent
+        authored in an earlier round is relabelled, so the reviewer recognises
+        its own previous prompts instead of reading them as the human's words
+        (the residual self-reference that made it argue with itself).
+
+        Returns the number of turns annotated. Mutates this instance only --
+        callers pass a copy, never the live conversation.
+        """
+        if not marker:
+            return 0
+        count = 0
+        for index, msg in enumerate(self._turns):
+            if msg.get("author") != author:
+                continue
+            content = msg.get("content") or ""
+            if content.startswith(marker):
+                continue
+            # Replace the entry instead of mutating the dict: ``copy()`` shares
+            # dict objects with the live history.
+            self._turns[index] = {**msg, "content": f"{marker}{content}"}
+            count += 1
+        return count
 
     def add_assistant(self, content: str) -> None:
         """Append a clean assistant turn."""
@@ -316,7 +359,11 @@ class ConversationHistory:
         messages: List[Dict[str, str]] = []
         if self._system_prompts:
             messages.append({"role": "system", "content": self.system_text()})
-        messages.extend(self._turns)
+        # ``author`` is orchestrator bookkeeping (AUTO-INPUT attribution), not a
+        # wire field: strip it so no backend ever sees an unknown role key.
+        messages.extend(
+            {k: v for k, v in msg.items() if k != "author"} for msg in self._turns
+        )
         return messages
 
     def system_text(self) -> str:

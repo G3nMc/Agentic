@@ -38,7 +38,7 @@ class SettingsRepository {
 
   /// Generic methods for non-sensitive settings still using the DB
   Future<String?> get(String key) async {
-    final db = await AppDatabase.instance.database;
+    final db = await AppDatabase.instance.globalDatabase;
     final rows = await db.query(
       "settings",
       columns: ["value"],
@@ -51,7 +51,7 @@ class SettingsRepository {
   }
 
   Future<void> set(String key, String value) async {
-    final db = await AppDatabase.instance.database;
+    final db = await AppDatabase.instance.globalDatabase;
     await db.insert(
       "settings",
       {"key": key, "value": value},
@@ -60,7 +60,7 @@ class SettingsRepository {
   }
 
   Future<void> delete(String key) async {
-    final db = await AppDatabase.instance.database;
+    final db = await AppDatabase.instance.globalDatabase;
     await db.delete("settings", where: "key = ?", whereArgs: [key]);
   }
 

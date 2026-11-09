@@ -17,9 +17,11 @@ import '../../statemanagement/method_data.dart';
 import '../../statemanagement/method_listener.dart';
 import '../../statemanagement/state_manager.dart';
 import '../screens/home_screen.dart';
-import '../screens/settings_screen.dart';
 import 'chat_selection_modal.dart';
 import 'chat_view.dart';
+import 'session_activity_indicator.dart';
+import 'project_explorer.dart';
+import 'resize_handle.dart';
 
 class Sidebar extends StatefulWidget {
   final String? activeConversationId;
@@ -37,6 +39,7 @@ class _SidebarState extends StateManager<Sidebar> {
   List<WorkflowGroup> _workflowGroups = [];
   String _activeGroupId = '';
   bool _selectMode = false;
+  double _projectExplorerHeight = 245;
   final Set<String> _selectedConversationIds = {};
 
   @override
@@ -81,9 +84,13 @@ class _SidebarState extends StateManager<Sidebar> {
 
   Future<void> _onBackendChanged(LlmBackend v) async {
     if (v == _activeBackend) return;
-    if (OrchestratorManager.instance.isRunning) {
-      await OrchestratorManager.instance.stop();
-    }
+    // A backend change is genuinely global, so every live chat relaunches —
+    // but each one parks the relaunch while its own turn is in flight, so no
+    // answer is ever discarded.
+    OrchestratorManager.instance.requestRestartAll(
+      reason: 'backend changed to ${v.name}',
+      source: OrchestratorStopSource.backendSwitch,
+    );
 
     await BackendSettingsRepository.instance.setActiveBackend(v);
     if (!mounted) return;
@@ -110,6 +117,9 @@ class _SidebarState extends StateManager<Sidebar> {
     switch (methodData.methodName) {
       case "refreshConversations":
         _loadConversations();
+        break;
+      case "backendChanged":
+        _loadActiveBackend();
         break;
       case "newConversation":
         _newChat();
@@ -169,10 +179,9 @@ class _SidebarState extends StateManager<Sidebar> {
     await ConversationRepository.instance.insert(conversation);
     await _loadConversations();
 
-    if (OrchestratorManager.instance.isRunning) {
-      await OrchestratorManager.instance.stop();
-    }
-
+    // A brand-new chat opens its own session. A turn still running in the
+    // previous conversation is kept alive and drains on its own; opening the
+    // new chat is a pure navigation step.
     await MethodListener<HomeScreen>().callMethod(
       "openConversation",
       params: {"conversationId": id},
@@ -212,6 +221,9 @@ class _SidebarState extends StateManager<Sidebar> {
       }
 
       await ConversationRepository.instance.delete(c.id);
+      // Dispose that chat's orchestrator session so its subprocess exits with
+      // the conversation instead of lingering as an orphan.
+      await OrchestratorManager.instance.disposeSession(c.id);
 
       if (widget.activeConversationId == c.id && mounted) {
         await MethodListener<HomeScreen>().callMethod("closeActiveConversation");
@@ -276,18 +288,20 @@ class _SidebarState extends StateManager<Sidebar> {
   }
 
   Future<void> _selectConversation(Conversation c) async {
-    if (OrchestratorManager.instance.isRunning) {
-      await OrchestratorManager.instance.stop();
-    }
-    MethodListener<HomeScreen>().callMethod(
+    // Navigation only: HomeScreen decides whether a running turn has to be
+    // allowed to finish in its own conversation before this one takes over.
+    await MethodListener<HomeScreen>().callMethod(
       "openConversation",
       params: {"conversationId": c.id},
     );
   }
 
   void _openSettings() {
-    Navigator.of(context).push(
-      MaterialPageRoute(builder: (_) => const SettingsScreen()),
+    // Settings is a tab in the app shell, not a pushed route: a route would
+    // unmount the chat (and with it an in-flight turn) while it is open.
+    MethodListener<HomeScreen>().callMethod(
+      "openSettings",
+      params: {"section": 0},
     );
   }
 
@@ -341,6 +355,9 @@ class _SidebarState extends StateManager<Sidebar> {
     try {
       for (final id in _selectedConversationIds) {
         await ConversationRepository.instance.delete(id);
+        // Dispose that chat's orchestrator session: its process must not
+        // outlive the conversation it was answering for.
+        await OrchestratorManager.instance.disposeSession(id);
       }
 
       if (widget.activeConversationId != null && _selectedConversationIds.contains(widget.activeConversationId)) {
@@ -382,12 +399,12 @@ class _SidebarState extends StateManager<Sidebar> {
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         Padding(
-          padding: const EdgeInsets.fromLTRB(8, 18, 8, 10),
+          padding: const EdgeInsets.fromLTRB(8, 18, 8, 5),
           child: Row(
             children: [
               Expanded(
                 child: Container(
-                  constraints: const BoxConstraints(minHeight: 38),
+                  constraints: const BoxConstraints(minHeight: 34),
                   decoration: BoxDecoration(
                     border: Border.all(color: AppTheme.accentSecondary, width: 0.5),
                     borderRadius: BorderRadius.circular(8),
@@ -508,7 +525,7 @@ class _SidebarState extends StateManager<Sidebar> {
             children: [
               Expanded(
                 child: Container(
-                  constraints: const BoxConstraints(minHeight: 38),
+                  constraints: const BoxConstraints(minHeight: 34),
                   child: OutlinedButton.icon(
                     onPressed: _newChat,
                     icon: const Icon(Icons.add, size: 16),
@@ -532,106 +549,129 @@ class _SidebarState extends StateManager<Sidebar> {
             ],
           ),
         ),
-        const SizedBox(height: 12),
-        const Padding(
-          padding: EdgeInsets.fromLTRB(18, 6, 12, 6),
-          child: Text(
-            "Recent",
-            style: TextStyle(
-              fontSize: 11,
-              letterSpacing: 0.6,
-              fontWeight: FontWeight.w600,
-              color: AppTheme.textMuted,
-            ),
-          ),
+        const SizedBox(height: 4),
+        SizedBox(
+          height: _projectExplorerHeight,
+          child: const ProjectExplorer(),
+        ),
+        ResizeHandle(
+          height: _projectExplorerHeight,
+          minHeight: 100,
+          maxHeight: (MediaQuery.sizeOf(context).height * 0.58).clamp(180.0, 600.0).toDouble(),
+          compact: true,
+          onHeightChanged: (height) => setState(() => _projectExplorerHeight = height),
         ),
         Expanded(
-          child: _loading
-              ? const Center(
-                  child: SizedBox(
-                    width: 18,
-                    height: 18,
-                    child: CircularProgressIndicator(strokeWidth: 2),
+          child: Container(
+            margin: const EdgeInsets.fromLTRB(8, 2, 8, 8),
+            decoration: BoxDecoration(
+              color: AppTheme.bgPrimary.withAlpha(100),
+              border: Border.all(color: AppTheme.border),
+              borderRadius: BorderRadius.circular(8),
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                const Padding(
+                  padding: EdgeInsets.fromLTRB(10, 8, 10, 5),
+                  child: Text(
+                    "Recent",
+                    style: TextStyle(
+                      fontSize: 11,
+                      letterSpacing: 0.6,
+                      fontWeight: FontWeight.w600,
+                      color: AppTheme.textMuted,
+                    ),
                   ),
-                )
-              : _conversations.isEmpty
-                  ? const Padding(
-                      padding: EdgeInsets.symmetric(horizontal: 18),
-                      child: Text(
-                        "No conversations yet.\nStart a new chat.",
-                        style: TextStyle(
-                          color: AppTheme.textMuted,
-                          fontSize: 13,
-                        ),
-                      ),
-                    )
-                  : Column(
-                      children: [
-                        if (_selectMode && _selectedConversationIds.isNotEmpty)
-                          Padding(
-                            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                            child: Row(
-                              children: [
-                                Text(
-                                  "${_selectedConversationIds.length} selected",
-                                  style: const TextStyle(
-                                    fontSize: 12,
-                                    fontWeight: FontWeight.w600,
-                                    color: AppTheme.accent,
-                                  ),
+                ),
+                Expanded(
+                  child: _loading
+                      ? const Center(
+                          child: SizedBox(
+                            width: 18,
+                            height: 18,
+                            child: CircularProgressIndicator(strokeWidth: 2),
+                          ),
+                        )
+                      : _conversations.isEmpty
+                          ? const Padding(
+                              padding: EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+                              child: Text(
+                                "No conversations yet.\nStart a new chat.",
+                                style: TextStyle(
+                                  color: AppTheme.textMuted,
+                                  fontSize: 13,
                                 ),
-                                const Spacer(),
-                                TextButton(
-                                  onPressed: _deleteSelectedConversations,
-                                  style: TextButton.styleFrom(
-                                    foregroundColor: AppTheme.danger,
+                              ),
+                            )
+                          : Column(
+                              children: [
+                                if (_selectMode && _selectedConversationIds.isNotEmpty)
+                                  Padding(
                                     padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                                    minimumSize: Size.zero,
-                                    tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                                    child: Row(
+                                      children: [
+                                        Text(
+                                          "${_selectedConversationIds.length} selected",
+                                          style: const TextStyle(
+                                            fontSize: 12,
+                                            fontWeight: FontWeight.w600,
+                                            color: AppTheme.accent,
+                                          ),
+                                        ),
+                                        const Spacer(),
+                                        TextButton(
+                                          onPressed: _deleteSelectedConversations,
+                                          style: TextButton.styleFrom(
+                                            foregroundColor: AppTheme.danger,
+                                            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                                            minimumSize: Size.zero,
+                                            tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                                          ),
+                                          child: const Text("Delete", style: TextStyle(fontSize: 12)),
+                                        ),
+                                      ],
+                                    ),
                                   ),
-                                  child: const Text(
-                                    "Delete",
-                                    style: TextStyle(fontSize: 12),
+                                Expanded(
+                                  child: ListView.builder(
+                                    padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                                    itemCount: _conversations.length,
+                                    itemBuilder: (ctx, i) {
+                                      final c = _conversations[i];
+                                      final isActive = c.id == widget.activeConversationId;
+                                      if (_selectMode) {
+                                        final isSelected = _selectedConversationIds.contains(c.id);
+                                        return _SidebarConversationTileSelect(
+                                          conversation: c,
+                                          isSelected: isSelected,
+                                          onToggle: () {
+                                            setState(() {
+                                              if (isSelected) {
+                                                _selectedConversationIds.remove(c.id);
+                                              } else {
+                                                _selectedConversationIds.add(c.id);
+                                              }
+                                            });
+                                          },
+                                        );
+                                      }
+                                      return _SidebarConversationTile(
+                                        conversation: c,
+                                        isActive: isActive,
+                                        onTap: () => _selectConversation(c),
+                                        onRename: () => _renameConversation(c),
+                                        onDelete: () => _deleteConversation(c),
+                                      );
+                                    },
                                   ),
                                 ),
                               ],
                             ),
-                          ),
-                        Expanded(
-                          child: ListView.builder(
-                            padding: const EdgeInsets.symmetric(horizontal: 8),
-                            itemCount: _conversations.length,
-                            itemBuilder: (ctx, i) {
-                              final c = _conversations[i];
-                              final isActive = c.id == widget.activeConversationId;
-                              if (_selectMode) {
-                                final isSelected = _selectedConversationIds.contains(c.id);
-                                return _SidebarConversationTileSelect(
-                                  conversation: c,
-                                  isSelected: isSelected,
-                                  onToggle: () {
-                                    setState(() {
-                                      if (isSelected) {
-                                        _selectedConversationIds.remove(c.id);
-                                      } else {
-                                        _selectedConversationIds.add(c.id);
-                                      }
-                                    });
-                                  },
-                                );
-                              }
-                              return _SidebarConversationTile(
-                                conversation: c,
-                                isActive: isActive,
-                                onTap: () => _selectConversation(c),
-                                onRename: () => _renameConversation(c),
-                                onDelete: () => _deleteConversation(c),
-                              );
-                            },
-                          ),
-                        ),
-                      ],
-                    ),
+                ),
+              ],
+            ),
+          ),
         ),
       ],
     );
@@ -686,6 +726,15 @@ class _SidebarConversationTileState extends State<_SidebarConversationTile> {
             padding: const EdgeInsets.only(left: 10),
             child: Row(
               children: [
+                // Leading indicator: a spinner while this chat's session is
+                // working. The slot keeps a fixed width so the title never
+                // shifts when a turn starts or ends.
+                SessionActivityBuilder(
+                  conversationId: widget.conversation.id,
+                  builder: (ctx, activity) => SessionWorkingSpinner(
+                    working: activity == SessionActivity.working,
+                  ),
+                ),
                 Expanded(
                   child: Container(
                     margin: EdgeInsets.only(right: showActions ? 6 : 0),
@@ -706,9 +755,9 @@ class _SidebarConversationTileState extends State<_SidebarConversationTile> {
                 ),
                 if (showActions)
                   Container(
-                    constraints: const BoxConstraints(maxHeight: 30),
+                    constraints: const BoxConstraints(maxHeight: 25),
                     decoration: BoxDecoration(
-                      borderRadius: BorderRadius.circular(8),
+                      borderRadius: BorderRadius.circular(5),
                       border: Border.all(color: AppTheme.accentSecondary),
                     ),
                     child: PopupMenuButton<String>(
@@ -733,6 +782,14 @@ class _SidebarConversationTileState extends State<_SidebarConversationTile> {
                       ],
                     ),
                   ),
+                // Trailing indicator: amber while this chat's session is
+                // working (including the MaM User model reviewing the reply),
+                // green once the assistant answered, absent when idle.
+                SessionActivityBuilder(
+                  conversationId: widget.conversation.id,
+                  builder: (ctx, activity) =>
+                      SessionStatusDot(activity: activity),
+                ),
               ],
             ),
           ),
@@ -740,7 +797,6 @@ class _SidebarConversationTileState extends State<_SidebarConversationTile> {
       ),
     );
   }
-
 }
 
 class _SidebarConversationTileSelect extends StatefulWidget {

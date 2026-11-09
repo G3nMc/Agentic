@@ -73,6 +73,12 @@ def read_interactive_request(stream) -> Optional[Dict[str, Any]]:
         try:
             obj = json.loads(line)
             if isinstance(obj, dict):
+                # Control line: the client is asking the process to exit.
+                # Returned verbatim (no prompt/history default-filling) so the
+                # interactive loops can distinguish it from a chat turn and
+                # leave `while True` cleanly, letting the audit log flush.
+                if obj.get("action") == "shutdown":
+                    return obj
                 obj.setdefault("prompt", "")
                 obj.setdefault("new_session", False)
                 obj.setdefault("history", [])

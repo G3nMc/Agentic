@@ -16,6 +16,7 @@ Design
 from __future__ import annotations
 
 import json
+import posixpath
 import re
 import sys
 import time
@@ -26,16 +27,23 @@ from typing import Any, Deque, Dict, FrozenSet, List, Optional, Sequence, Set, T
 from agent.backends import ModelBackend
 from agent.core.policy import SecurityConfig
 from agent.core.project_context import load_project_context
-from agent.loop.history import ConversationHistory
+from agent.loop.history import USER_AGENT_AUTHOR, ConversationHistory
 from agent.loop.task_protocol import (
+    AutoInputDecision,
     TaskMode,
     TaskStatus,
     TaskStatusEvent,
+    emit_auto_input_evaluating,
+    emit_auto_input_prompt,
+    emit_auto_input_reply,
+    emit_auto_input_user_missing,
     emit_task_status,
     emit_tasks_proposed,
     emit_thinking,
     log_task_action_received,
+    parse_auto_input,
     parse_task_action,
+    sanitize_auto_next_prompt,
     parse_task_status,
     parse_tasks,
     strip_task_tags,
@@ -61,6 +69,7 @@ from agent.prompts import (
 )
 from agent.tools.registry import ToolRegistry
 from agent.utils.circuit_breaker import CircuitBreaker
+from agent.utils.session_env import format_log_line
 from agent.utils.token_estimator import chars_for_tokens, estimate_messages_tokens
 
 __all__ = ["Orchestrator"]
@@ -100,7 +109,7 @@ _IDEMPOTENT_VALIDATORS: FrozenSet[str] = frozenset(
         "git_log",
     }
 )
-_MAX_CONSECUTIVE_VALIDATIONS = 3
+_MAX_CONSECUTIVE_VALIDATIONS = 12
 
 # Code-correctness validators (subset of the above). A FAILED run downgrades
 # the orchestrator-decided terminal task status from done -> partial. The
@@ -110,7 +119,23 @@ _CODE_VALIDATORS: FrozenSet[str] = frozenset(
 )
 
 _WRITE_TOOLS: FrozenSet[str] = frozenset({"write_file", "patch_file", "append_file"})
-_READ_TOOLS: FrozenSet[str] = frozenset({"read_file", "read_files"})
+_READ_TOOLS: FrozenSet[str] = frozenset(
+    {
+        "read_file",
+        "read_files",
+        "search_in_files",
+        "find_files",
+        "list_files",
+        "list_files_recursive",
+    }
+)
+
+# Discovery tools that scan the tree and report a match count. A streak of
+# EMPTY results from these is anti-progress: the model trusts a "0 matches"
+# result and re-searches with a slightly different term forever. Distinct from
+# _READ_TOOLS because these return a "total" that can be zero even on success.
+_SEARCH_TOOLS: FrozenSet[str] = frozenset({"search_in_files", "find_files"})
+_EMPTY_SEARCH_BAIL = 5
 
 # Degenerate-text-loop detection.
 _REP_MIN_PHRASE_LEN = 25
@@ -121,6 +146,48 @@ _MAX_ITERS_WITHOUT_STATUS = 3
 _MAX_ITERS_WITH_EMPTY_REPLY = 2
 _MAX_PLAN_THEN_START_NUDGES = 3
 _MAX_PLAN_FIRST_NUDGES = 1
+
+# AUTO-INPUT continuation: after the first complete answer the orchestrator
+# re-prompts the model (via the internal <auto_input> evaluation) until it
+# reports done or the round cap hits. Each round is a full request pass --
+# chat fast path or tool loop -- so the cap bounds worst-case latency.
+#
+# The effective value is the instance attribute ``Orchestrator.max_auto_rounds``,
+# seeded from the ``max_auto_rounds`` constructor argument (Flutter forwards it
+# as ``--max-agent-rounds``; Settings -> Workflow Agents MaM -> "Maximum Auto
+# Round Actions"). ``_DEFAULT_MAX_AUTO_ROUNDS`` is what an absent flag, the
+# single-agent orchestrator and the tests get, so behaviour is unchanged for
+# every caller that does not configure it.
+_DEFAULT_MAX_AUTO_ROUNDS = 20
+_MIN_AUTO_ROUNDS = 1
+# Upper bound: every round is a full request pass against two models, so an
+# unbounded value is a cost / latency foot-gun. Mirrors the Flutter clamp.
+_MAX_AUTO_ROUNDS_CAP = 200
+
+
+def _clamp_auto_rounds(value: Any) -> int:
+    """Coerce *value* into the supported AUTO INPUT round range.
+
+    Tolerates ``None``, an empty string and non-numeric junk (all fall back to
+    the default) so a launcher that omits or mistypes the flag can never turn
+    the loop into either a no-op or an unbounded run.
+    """
+    if value is None:
+        return _DEFAULT_MAX_AUTO_ROUNDS
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return _DEFAULT_MAX_AUTO_ROUNDS
+    if parsed < _MIN_AUTO_ROUNDS:
+        return _MIN_AUTO_ROUNDS
+    if parsed > _MAX_AUTO_ROUNDS_CAP:
+        return _MAX_AUTO_ROUNDS_CAP
+    return parsed
+
+
+# Temperature pinned for the <auto_input> evaluation call: verdicts must stay
+# deterministic regardless of the Assistant/User model's creative setting.
+_AUTO_INPUT_EVAL_TEMPERATURE = 0.1
 
 # Read-only-loop pressure, expressed as a fraction of the CURRENT iteration
 # budget so the thresholds scale with max_iterations instead of being pinned
@@ -155,7 +222,7 @@ _TOOL_STOP_SEQUENCES: Tuple[str, ...] = (
 # re-introduces the truncation bug above. (5 entries — the Ollama cloud
 # backend clamps it to 4 where the provider rejects five.)
 _SYNTH_STOP_SEQUENCES: Tuple[str, ...] = (
-    "<tool",
+    # "<tool",
     "</tool>",
     "\nUser:",
     "\nAssistant:",
@@ -275,9 +342,88 @@ def _canonicalize_tool_key(name: str, params: Dict[str, Any]) -> str:
     return f"{name}::{blob}"
 
 
+def _norm_path(value: Any) -> str:
+    """Normalize a path for comparison (separators, ./ prefix, trailing slash)."""
+    text = str(value).strip().replace("\\", "/")
+    return posixpath.normpath(text) if text else "."
+
+
+def _paths_related(a: str, b: str) -> bool:
+    """True when one path equals, contains, or is a sub-path of the other.
+
+    Works on whole path components, so absolute and relative spellings of
+    the same file, and a directory versus a file inside it, are related.
+    """
+    if a in ("", ".") or b in ("", "."):
+        return True
+    a_parts = a.strip("/").split("/")
+    b_parts = b.strip("/").split("/")
+    shorter, longer = sorted((a_parts, b_parts), key=len)
+    size = len(shorter)
+    return any(
+        longer[i:i + size] == shorter for i in range(len(longer) - size + 1)
+    )
+
+
+def _evict_stale_read_calls(recent_calls: Deque[str], written_path: str) -> None:
+    """Forget read-tool calls invalidated by a successful write.
+
+    The repeat-call detector compares ``name::params`` keys. After a write,
+    re-reading the same file (or a listing/search that covers it) returns
+    different content, so the earlier key is no longer evidence of a loop.
+    Read calls without any path cover the whole tree and are dropped too.
+    """
+    target = _norm_path(written_path)
+    kept: List[str] = []
+    for key in recent_calls:
+        name, _, blob = key.partition("::")
+        if name not in _READ_TOOLS:
+            kept.append(key)
+            continue
+        try:
+            params = json.loads(blob)
+        except ValueError:
+            kept.append(key)
+            continue
+        if not isinstance(params, dict):
+            kept.append(key)
+            continue
+        scopes: List[str] = []
+        for param_name in ("path", "file_path"):
+            value = params.get(param_name)
+            if isinstance(value, str) and value.strip():
+                scopes.append(value)
+        listed = params.get("paths")
+        if isinstance(listed, list):
+            scopes.extend(p for p in listed if isinstance(p, str) and p.strip())
+        if not scopes or any(_paths_related(_norm_path(s), target) for s in scopes):
+            continue
+        kept.append(key)
+    recent_calls.clear()
+    recent_calls.extend(kept)
+
+
 def _result_is_success(result: str) -> bool:
     """Cheap status probe that tolerates both JSON spacing conventions."""
     return '"status": "success"' in result or '"status":"success"' in result
+
+
+def _is_empty_search_result(name: str, result: str) -> bool:
+    """True when a search/find tool reported success but zero matches.
+
+    A zero-match search is the classic "I can't find it, let me search again"
+    loop trigger — the model trusts the empty result and re-searches with a
+    slightly different term forever. Distinct from a failed search (which
+    returns ``"status": "error"``) and from a non-empty search (real progress).
+    """
+    if name not in _SEARCH_TOOLS:
+        return False
+    return (
+        '"total": 0' in result
+        or '"total":0' in result
+        or '"grand_total": 0' in result
+        or '"grand_total":0' in result
+    )
 
 
 # ======================================================================
@@ -399,6 +545,8 @@ class _TurnState:
     turn_had_failed_validator: bool = False
     iter_had_failed_validator: bool = False
 
+    empty_search_streak: int = 0
+
     recent_calls: Deque[str] = field(
         default_factory=lambda: deque(maxlen=_RECENT_CALL_WINDOW)
     )
@@ -460,17 +608,58 @@ class Orchestrator:
             disable_tools: bool = False,
             path_filter: Optional[Any] = None,
             db_connections: Optional[Dict[str, Dict[str, str]]] = None,
-            task_mode: str = "task_compliance_auto",
+            task_mode: str = "user_input",
             thinking: bool = False,
             effort: Optional[str] = None,
             auto_num_ctx: bool = False,
             max_iterations: int = 100,
             max_iteration_cap: int = 150,
+            max_auto_rounds: int = _DEFAULT_MAX_AUTO_ROUNDS,
+            user_backend: Optional[ModelBackend] = None,
+            user_temperature: Optional[float] = None,
+            user_max_tokens: int = 0,
+            user_effort: Optional[str] = None,
+            user_thinking: bool = False,
     ) -> None:
         self.backend = backend
         self.model_id = getattr(backend, "model_id", "(unknown)")
         self.task_mode = TaskMode.parse(task_mode)
         self.disable_tools = disable_tools
+        # Optional label describing which orchestrator slot drives this
+        # loop (e.g. "REASONER (Workflow Agents Assistant)"). Purely
+        # diagnostic -- log clarity only.
+        self.driver_label = "ASSISTANT"
+
+        # AUTO INPUT "User" agent (second Workflow Agents slot). When present
+        # it performs the completion evaluation and authors the follow-up user
+        # prompt on a separate model+context; when absent, AUTO INPUT fails
+        # safe: one answer plus the missing-agent notice and back to real user
+        # input.
+        self.user_backend = user_backend
+        self.user_model_id = (
+            getattr(user_backend, "model_id", "(unknown)")
+            if user_backend is not None
+            else "(self-evaluation)"
+        )
+        # Generation knobs for the User slot, forwarded from the matching
+        # ``--user-*`` CLI flags. Each keeps the documented fallback so an
+        # unconfigured slot behaves exactly as before: the evaluation stays
+        # pinned to a low temperature, capped at 1024 output tokens, with no
+        # reasoning budget and thinking OFF.
+        self.user_temperature = (
+            float(user_temperature)
+            if user_temperature is not None
+            else _AUTO_INPUT_EVAL_TEMPERATURE
+        )
+        self.user_max_tokens = (
+            int(user_max_tokens) if int(user_max_tokens or 0) > 0 else 1024
+        )
+        self.user_effort = (user_effort or None)
+        self.user_thinking = bool(user_thinking)
+        # The request the human actually typed. Every AUTO-INPUT evaluation is
+        # anchored to it, so the reviewer judges the original goal instead of
+        # the Assistant's latest reply once history trimming kicks in.
+        self._auto_input_original_request: str = ""
 
         self.tool_registry = ToolRegistry(
             base_path=base_path,
@@ -499,6 +688,13 @@ class Orchestrator:
         self.max_iterations = max(1, max_iterations)
         self._initial_max_iterations = self.max_iterations
         self._max_iteration_cap = max(self.max_iterations, max_iteration_cap)
+
+        # --- AUTO INPUT round budget --------------------------------------
+        # Launcher setting (Settings -> Workflow Agents MaM -> "Maximum Auto
+        # Round Actions", forwarded as ``--max-agent-rounds``), NOT per-request
+        # state: like ``max_iterations`` it survives ``reset()``. Clamped so a
+        # bad value can neither disable the loop nor unbound it.
+        self.max_auto_rounds = _clamp_auto_rounds(max_auto_rounds)
 
         # --- cumulative session telemetry ---------------------------------
         self._successful_tool_count = 0
@@ -570,8 +766,13 @@ class Orchestrator:
 
         Swap this body for ``logging`` if you want structured logs; every call
         site goes through here.
+
+        The line is stamped with the owning chat's short GUID when the Flutter
+        client launched this process with ``AGENTIC_SESSION_ID`` set, so the
+        stderr of several concurrent sessions stays attributable. With the
+        variable unset the line is byte-identical to the previous output.
         """
-        print(f"[orch] {message}", file=sys.stderr, flush=True)
+        print(format_log_line(message), file=sys.stderr, flush=True)
 
     # ------------------------------------------------------------------
     # Session management
@@ -938,6 +1139,12 @@ class Orchestrator:
         )
         self._set_persistent("action_nudge", None)
 
+        # Remember the human's original request. AUTO-INPUT evaluates every
+        # round against THIS text, so once history trimming drops the first
+        # turn the reviewer still judges the real goal instead of the
+        # Assistant's latest reply.
+        self._auto_input_original_request = user_input
+
         self.conversation_history.add_user(user_input)
         self._log(
             f"Request ({'tool-enabled' if use_tools else 'chat'}): "
@@ -945,12 +1152,9 @@ class Orchestrator:
         )
 
         try:
-            if not use_tools:
-                answer = self._run_chat_only(user_input)
-                if answer is not None:
-                    return answer
-                # Escalated: fall through to the tool loop with tools enabled.
-            return self._run_tool_loop()
+            if self.task_mode.is_auto_input:
+                return self._run_auto_input_loop(user_input, use_tools)
+            return self._run_single_pass(user_input, use_tools)
         except _Bail as bail:
             return bail.answer
         except Exception as exc:  # noqa: BLE001 - the UI must always get a string
@@ -1026,6 +1230,207 @@ class Orchestrator:
         return self._build_recap_answer(
             reason="chat-mode reply was empty after stripping protocol tags"
         )
+
+    # ------------------------------------------------------------------
+    # Single-pass path (USER INPUT mode) and AUTO-INPUT continuation loop
+    # ------------------------------------------------------------------
+
+    def _run_single_pass(self, user_input: str, use_tools: bool) -> str:
+        """One user request -> one answer. Chat fast path, then the tool loop."""
+        if not use_tools:
+            answer = self._run_chat_only(user_input)
+            if answer is not None:
+                return answer
+            # Escalated: fall through to the tool loop with tools enabled.
+        return self._run_tool_loop()
+
+    def _run_auto_input_loop(self, user_input: str, use_tools: bool) -> str:
+        """AUTO INPUT mode: continue without user input until the task is done.
+
+        After each round the User agent (second Workflow Agents slot) reviews
+        the Assistant's reply via the ``AUTO_INPUT_EVAL_DIRECTIVE`` internal
+        prompt on its own model and context, deciding whether the original
+        request is complete. When it is not, the User-authored next prompt is
+        appended as the next user turn and the loop repeats, up to
+        ``max_auto_rounds`` rounds (default 20, configurable in Settings ->
+        Workflow Agents MaM -> "Maximum Auto Round Actions"). Without a
+        configured User agent the loop refuses to start and returns one
+        answer plus a notice instead.
+        """
+        if self.user_backend is None:
+            # AUTO INPUT requires a distinct reviewer: without the User agent
+            # configured (second Workflow Agents slot) the loop never starts,
+            # so the Assistant never judges its own work. Fail safe: one
+            # answer plus the missing-agent notice, then wait for real input.
+            answer = self._run_single_pass(user_input, use_tools)
+            notice = get_system_prompt_value("AUTO_INPUT_USER_MISSING_MESSAGE")
+            emit_auto_input_user_missing(notice)
+            self._log(
+                "AUTO-INPUT mode active but no Workflow Agent is configured as "
+                "User; AUTO INPUT stops after this answer. Configure the User "
+                "role in Settings -> Workflow Agents."
+            )
+            return f"{answer}\n\n{notice}" if answer.strip() else notice
+
+        answer = ""
+        for round_index in range(self.max_auto_rounds):
+            round_use_tools = use_tools if round_index == 0 else True
+            self._log(
+                f"AUTO-INPUT round {round_index + 1}/{self.max_auto_rounds} "
+                f"(Assistant '{self.model_id}', User agent '{self.user_model_id}')."
+            )
+            answer = self._run_single_pass(user_input, round_use_tools)
+
+            decision = self._evaluate_auto_input(round_index)
+            if decision.done or not decision.next_prompt.strip():
+                if not decision.done:
+                    self._log("AUTO-INPUT: continuation prompt was empty; stopping.")
+                return answer
+
+            self._log("AUTO-INPUT not done; continuing with the User-agent prompt.")
+            # Surface the intermediate answer so the client can render progress.
+            emit_auto_input_reply(answer)
+
+            user_input = sanitize_auto_next_prompt(decision.next_prompt)
+            # Surface the User agent's prompt before the next round runs: the
+            # chat renders it as a real user turn, so the model-to-model
+            # exchange reads as a continuing conversation.
+            emit_auto_input_prompt(user_input, model=self.user_model_id)
+            self._prepare_auto_round(user_input)
+
+        return answer
+
+    def _evaluate_auto_input(self, round_index: int) -> AutoInputDecision:
+        """Ask the User agent whether the Assistant's work is complete.
+
+        The User agent (second Workflow Agents slot) runs the evaluation on
+        its OWN model and a defensive copy of the assistant's history, so the
+        Assistant never judges its own work. Only a dedicated USER-agent
+        persona survives on the copy -- the Assistant's base prompt, tool
+        directive and task state are dropped -- so the reviewer is role-anchored
+        instead of judging a bare transcript. Evaluation is pinned to a low
+        temperature so verdicts stay deterministic, and any evaluation failure
+        fails closed to ``done=True`` so the user still receives the last
+        answer instead of a runaway loop.
+        """
+        if round_index >= self.max_auto_rounds - 1:
+            self._log(
+                f"AUTO-INPUT round cap ({self.max_auto_rounds}) reached; "
+                f"returning the last answer."
+            )
+            return AutoInputDecision(done=True, next_prompt="")
+
+        eval_history = self.conversation_history.copy()
+        # Drop the ASSISTANT persona (base prompt, tool directive, plan and
+        # task state), then install the USER-agent persona: the reviewer must
+        # not inherit the Assistant's instructions, but it must know who it is
+        # and what its job is -- previously it received no system message at
+        # all and only had the directive to go on.
+        eval_history.clear_system_prompts()
+        persona = get_system_prompt_value("AUTO_INPUT_USER_PERSONA").strip()
+        if persona:
+            eval_history.set_system_prompt("auto_input_persona", persona)
+        # Relabel every user turn the User agent itself authored in earlier
+        # rounds, so the reviewer does not read its own previous prompts as if
+        # the human had typed them. ``copy()`` shares dict objects with the
+        # live history, but ``annotate_authored_turns`` replaces entries
+        # instead of mutating them, so the live conversation is untouched.
+        authored_count = eval_history.annotate_authored_turns(
+            USER_AGENT_AUTHOR,
+            get_system_prompt_value("AUTO_INPUT_AUTHORED_TURN_MARKER"),
+        )
+        if authored_count:
+            self._log(
+                f"AUTO-INPUT: annotated {authored_count} earlier User-agent "
+                "prompt(s) in the evaluation copy."
+            )
+        eval_history.add_user(self._build_auto_input_directive(authored_count))
+        # Tell the client the User agent is now reviewing / writing, so the
+        # chat can show a user-side indicator while the verdict is produced.
+        emit_auto_input_evaluating(
+            round_index + 1, self.max_auto_rounds, self.user_model_id
+        )
+        self._log(
+            f"AUTO-INPUT API call -> User agent '{self.user_model_id}' "
+            f"(round {round_index + 1}/{self.max_auto_rounds}, "
+            f"temperature={self.user_temperature}, "
+            f"max_tokens={self.user_max_tokens}, "
+            f"effort={self.user_effort or '(none)'}, "
+            f"thinking={self.user_thinking})."
+        )
+        try:
+            text, _ = self.user_backend.chat(
+                conversation=eval_history,
+                max_tokens=self.user_max_tokens,
+                temperature=self.user_temperature,
+                tools=None,
+                thinking=self.user_thinking,
+                effort=self.user_effort,
+                on_thinking=None,
+            )
+        except Exception as exc:  # noqa: BLE001 - evaluation failure must not kill the loop
+            self._log(f"AUTO-INPUT evaluation call failed: {exc}")
+            return AutoInputDecision(done=True, next_prompt="")
+        decision = parse_auto_input(text or "")
+        self._log(
+            f"AUTO-INPUT verdict from User agent '{self.user_model_id}': "
+            f"done={decision.done}, next_prompt="
+            f"{decision.next_prompt[:120]!r}."
+        )
+        if not decision.next_prompt.strip() and not decision.done:
+            self._log("AUTO-INPUT: next_prompt was empty; failing closed to done.")
+        return decision
+
+    def _build_auto_input_directive(self, authored_turn_count: int) -> str:
+        """Render the AUTO-INPUT evaluation directive for the User agent.
+
+        Two protections against the reviewer arguing with itself:
+
+        * every user turn the User agent authored in an earlier round is
+          prefixed with ``AUTO_INPUT_AUTHORED_TURN_MARKER`` on the defensive
+          copy (done by :meth:`_evaluate_auto_input`), and this directive states
+          how many there are -- so the reviewer recognises its own previous
+          prompts instead of reading them as the human's words;
+        * the human's ORIGINAL request is embedded verbatim, so history
+          trimming cannot silently move the goalpost onto the Assistant's
+          latest reply.
+        """
+        note = ""
+        if authored_turn_count > 0:
+            note = format_system_prompt(
+                "AUTO_INPUT_AUTHORED_TURNS_NOTE_TEMPLATE",
+                count=authored_turn_count,
+            )
+
+        anchor = ""
+        original = (self._auto_input_original_request or "").strip()
+        if original:
+            anchor = format_system_prompt(
+                "AUTO_INPUT_EVAL_ANCHOR_TEMPLATE",
+                original_request=original,
+                authored_turns_note=note,
+            )
+        elif note:
+            anchor = "\n\n" + note
+
+        return get_system_prompt_value("AUTO_INPUT_EVAL_DIRECTIVE") + anchor
+
+    def _prepare_auto_round(self, next_prompt: str) -> None:
+        """Reset per-round state and append the model-generated user turn."""
+        self._turn = _TurnState()
+        self._clear_nudges()
+        self._remove_plan_system_prompt()
+        self._set_persistent(
+            "agent_directive",
+            _directive_agent(self.task_mode.is_task_flow),
+        )
+        self._set_persistent("followup", None)
+        self._set_persistent("action_nudge", None)
+        # Tag the turn as User-agent authored: the evaluation copy relabels it
+        # next round so the reviewer never mistakes its own prompt for human
+        # input. The human's own turns stay untagged.
+        self.conversation_history.add_user(next_prompt, author=USER_AGENT_AUTHOR)
+        self._log(f"Request (auto continuation, tool-enabled): {next_prompt[:120]!r}")
 
     # ------------------------------------------------------------------
     # Main tool loop
@@ -1583,6 +1988,14 @@ class Orchestrator:
             result = self.tool_registry.execute(name, params)
             self._record_outcome(state, name, params, result)
 
+            if state.empty_search_streak >= _EMPTY_SEARCH_BAIL:
+                raise _Bail(
+                    self._build_recap_answer(
+                        reason=f"{state.empty_search_streak} empty searches in a "
+                               f"row; model is re-searching and finding nothing"
+                    )
+                )
+
             display_result = self._bound_result(result)
             is_last_chance = iteration >= self.max_iterations - 2
             self.conversation_history.add_turn(
@@ -1607,21 +2020,25 @@ class Orchestrator:
     ) -> bool:
         """Warn (then bail) when the model loops on an identical call.
 
-        Three exemptions: (1) a call whose keys we just stripped is not really a
-        duplicate, (2) an idempotent validator or a run_command verifier re-run
-        after a write is real progress, (3) re-reading a file after a failed
-        patch is how the model recovers from a truncated read.
+        Validators (``python_check``, ``python_test``, ``flutter_analyze``,
+        …) are exempt entirely: they legitimately run many times during a
+        ``write -> validate -> fix -> validate`` cycle, so re-running them is
+        never treated as a stall. Remaining exemptions: (1) a call whose keys
+        we just stripped is not really a duplicate, (2) a ``run_command``
+        verifier re-run after a write is real progress, (3) re-reading a file
+        after a failed patch is how the model recovers from a truncated read.
         """
         repeats: List[Tuple[str, Dict[str, Any]]] = []
         for name, params in tool_calls:
             if name in sanitized_tools:
                 continue
+            # Validators may repeat freely during code validation.
+            if name in _IDEMPOTENT_VALIDATORS:
+                continue
             key = _canonicalize_tool_key(name, params)
             if key not in state.recent_calls:
                 continue
-            if state.wrote_since_validator and (
-                    name in _IDEMPOTENT_VALIDATORS or name == "run_command"
-            ):
+            if state.wrote_since_validator and name == "run_command":
                 self._log(f"{name} re-run after a write — legitimate, not a repeat.")
                 continue
             if name in _READ_TOOLS and state.failed_writes_since_read:
@@ -1659,6 +2076,14 @@ class Orchestrator:
         success = _result_is_success(result)
         state.recent_outcomes.append(success)
 
+        # Track a streak of zero-match searches: anti-progress that precedes
+        # an infinite re-search loop (the model trusts "0 matches" and retries
+        # with a slightly different term). Any non-empty result resets it.
+        if _is_empty_search_result(name, result):
+            state.empty_search_streak += 1
+        else:
+            state.empty_search_streak = 0
+
         is_write = name in _WRITE_TOOLS
         is_validator = name in _IDEMPOTENT_VALIDATORS
 
@@ -1671,6 +2096,8 @@ class Orchestrator:
                 if path:
                     self._files_modified.add(path)
                     state.recent_files.add(path)
+                    # The file changed: earlier reads of it are no longer repeats.
+                    _evict_stale_read_calls(state.recent_calls, path)
                 state.writes += 1
                 state.pending_step_report = True
                 state.wrote_since_validator = True

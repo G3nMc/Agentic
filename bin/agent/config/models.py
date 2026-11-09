@@ -6,11 +6,14 @@ from enum import Enum
 
 
 class ModelRole(Enum):
-    """Roles that models can play in the workflow."""
+    """Roles that models can play in the workflow.
+
+    Only the REASONER remains: it is the strong model that plans, calls tools
+    and writes the final answer. The former SUMMARIZER slot had no runtime
+    consumer (history is trimmed by token budget, not by an LLM) and has been
+    removed.
+    """
     REASONER = "reasoner"      # Strong model: planning, tool calling, final answer
-    SUMMARIZER = "summarizer"  # Cheap model: context compression
-    # EXECUTOR = no LLM (deterministic tool execution)
-    # SHAPER = REMOVED (deterministic context building only)
 
 
 # Reasoning effort levels supported across providers.
@@ -105,14 +108,5 @@ DEFAULT_REASONER = ModelConfig(
     model="gpt-4o",
     temperature=0.1,
     max_tokens=4096,
-    reasoning_level=ReasoningLevel.MAX,
-)
-
-DEFAULT_SUMMARIZER = ModelConfig(
-    role=ModelRole.SUMMARIZER,
-    provider="openai",
-    model="gpt-4o-mini",
-    temperature=0.1,
-    max_tokens=2048,
     reasoning_level=ReasoningLevel.MAX,
 )

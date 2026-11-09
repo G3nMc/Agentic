@@ -54,11 +54,16 @@ Tags
 
 Modes (selected from the UI dropdown)
 -------------------------------------
-``open``                 -- task protocol is OFF; replies are free-form.
-``task_compliance``      -- task protocol is ON; orchestrator pauses
-                            after each task and waits for an explicit
-                            ``<task_action>`` from the client.
-``task_compliance_auto`` -- task protocol is ON; auto-proceed.
+``open``                 -- legacy alias for ``user_input``.
+``user_input``           -- normal chat loop; the orchestrator waits for
+                            an explicit user message before every model call.
+``auto_input``           -- autonomous loop; after each assistant reply the
+                            orchestrator asks the model (via an INTERNAL
+                            prompt) whether the task is complete. If not,
+                            the model crafts the next user prompt and the
+                            loop continues without human input.
+``task_compliance``      -- legacy alias for ``user_input``.
+``task_compliance_auto`` -- legacy alias for ``auto_input``.
 """
 
 from __future__ import annotations
@@ -76,24 +81,29 @@ from typing import Any, List, Optional
 
 
 class TaskMode(str, Enum):
-    OPEN = "open"
-    COMPLIANCE = "task_compliance"
-    COMPLIANCE_AUTO = "task_compliance_auto"
 
+    USER_INPUT = "user_input"
+    AUTO_INPUT = "auto_input"
+  
     @classmethod
     def parse(cls, raw: Any) -> "TaskMode":
         """Normalise external input to a valid mode. Falls back to OPEN."""
         if isinstance(raw, cls):
             return raw
-        s = str(raw or "").strip().lower()
+        s = str(raw or "").strip().lower() 
         for m in cls:
             if m.value == s:
                 return m
-        return cls.OPEN
+        return cls.USER_INPUT
 
     @property
     def is_task_flow(self) -> bool:
-        return self is not TaskMode.OPEN
+        # The new modes are pure user/auto input loops, not structured task-flow.
+        return False
+
+    @property
+    def is_auto_input(self) -> bool:
+        return self is TaskMode.AUTO_INPUT
 
 
 class TaskStatus(str, Enum):
@@ -175,6 +185,19 @@ class TaskActionEvent:
 
     def to_dict(self) -> Dict[str, Any]:
         return {"id": self.id, "action": self.action.value}
+
+
+@dataclass
+class AutoInputDecision:
+    """Outcome of the model's ``<auto_input>`` self-evaluation (auto-input mode).
+
+    ``done``     -- the model judged the original request complete.
+    ``next_prompt`` -- when not done, the follow-up prompt the model wants
+                     fed back as the next user turn to keep working.
+    """
+
+    done: bool
+    next_prompt: str = ""
 
 
 # ---------------------------------------------------------------------------
@@ -364,11 +387,73 @@ def parse_task_status(text: str) -> List[TaskStatusEvent]:
     return out
 
 
+_AUTO_INPUT_TAG_RE = re.compile(
+    r"<\s*auto_input\s*>(?P<body>.*?)<\s*/\s*auto_input\s*>",
+    re.DOTALL | re.IGNORECASE,
+)
+
+_TRUE_RE = re.compile(r"^\s*(?:true|yes|1)\s*$", re.IGNORECASE)
+
+
+def parse_auto_input(text: str) -> Optional[AutoInputDecision]:
+    """Return the FIRST ``<auto_input>...</auto_input>`` decision found.
+
+    Used by auto-input mode: after the assistant finishes a reply the
+    orchestrator sends the model an INTERNAL evaluation prompt asking it to
+    output one ``<auto_input>`` block deciding whether the user's original
+    request is complete.
+
+    Expected format::
+
+        <auto_input>
+          <done>true|false</done>
+          <next_prompt>continue with...</next_prompt>
+        </auto_input>
+
+    An empty or unparseable reply is treated as "done" so a confused model
+    still returns the answer to the user instead of silently looping.
+    """
+    if not text:
+        return AutoInputDecision(done=True, next_prompt="")
+    m = _AUTO_INPUT_TAG_RE.search(text)
+    if not m:
+        # Missing / unparseable block: fail closed so a confused model still
+        # hands the answer back to the user instead of looping forever.
+        return AutoInputDecision(done=True, next_prompt="")
+    body = m.group("body") or ""
+    if not body.strip():
+        return AutoInputDecision(done=True, next_prompt="")
+    tags = _extract_child_tags(body)
+    done_raw = (tags.get("done") or "").strip()
+    next_prompt = (tags.get("next_prompt") or "").strip()
+    done = _TRUE_RE.match(done_raw or "true") is not None
+    if not done and not next_prompt:
+        # Model claims work remains but produced no continuation prompt:
+        # treat it as done rather than stall with an empty user turn.
+        done = True
+    return AutoInputDecision(done=done, next_prompt=next_prompt)
+
+
+_META_TEXT_RE = re.compile(r"\[INTERNAL:.*?\]", re.DOTALL | re.IGNORECASE)
+
+
+def sanitize_auto_next_prompt(text: str) -> str:
+    """Clean a User-agent continuation prompt before it enters as a user turn.
+
+    Strips leaked INTERNAL meta-text directives and collapses blank-line
+    runs, so orchestrator scaffolding never becomes a visible user message
+    in the model's history or in the UI.
+    """
+    cleaned = _META_TEXT_RE.sub("", text or "").strip()
+    return re.sub(r"\n{3,}", "\n\n", cleaned)
+
+
 def parse_task_action(text: str) -> Optional[TaskActionEvent]:
     """Return the FIRST ``<task_action>...</task_action>`` event found.
 
     Used to interpret the next user prompt when the UI sends a Proceed /
-    Retry / Abort / Replan / Skip command in compliance (non-auto) mode.
+    Retry / Abort / Replan / Skip command from the manual task-checklist
+    panel.
 
     Expected format::
 
@@ -552,6 +637,88 @@ def emit_thinking(text: str, stream=None) -> None:
     target.flush()
 
 
+def emit_auto_input_reply(text: str, stream=None) -> None:
+    """Surface one intermediate AUTO-INPUT answer as a structured event.
+
+    The orchestrator emits this between rounds so the Flutter client can
+    render the running answers while the loop autonomously continues. The
+    final answer is returned through the normal response channel instead.
+    """
+    if not text or not text.strip():
+        return
+    out = f"<event>{_child('type', 'auto_input_reply')}{_child('text', text.strip())}</event>"
+    target = stream if stream is not None else sys.stdout
+    target.write(out + "\n")
+    target.flush()
+
+
+def emit_auto_input_evaluating(
+    round_index: int, total_rounds: int, user_model: str, stream=None
+) -> None:
+    """Announce that the User agent is reviewing the Assistant's reply.
+
+    Emitted right before the ``[INTERNAL: AUTO-INPUT MODE]`` evaluation call so
+    the client can show the User agent as active while the verdict is produced.
+    It is followed by :func:`emit_auto_input_prompt` when the task is not done,
+    or by the final answer on the normal response channel when it is.
+    """
+    body = "".join(
+        [
+            _child("type", "auto_input_evaluating"),
+            _child("round", round_index),
+            _child("total", total_rounds),
+            _child("model", user_model or "user"),
+        ]
+    )
+    target = stream if stream is not None else sys.stdout
+    target.write("<event>" + body + "</event>\n")
+    target.flush()
+
+
+def emit_auto_input_prompt(text: str, model: str = "", stream=None) -> None:
+    """Surface the User agent's continuation prompt as a structured event.
+
+    The prompt is consumed by the run loop as the next user turn; emitting it
+    lets the chat render a real user-side bubble so the model-to-model
+    exchange stays visible instead of showing back-to-back assistant replies
+    with nothing in between.
+    """
+    cleaned = (text or "").strip()
+    if not cleaned:
+        return
+    body = "".join(
+        [
+            _child("type", "auto_input_prompt"),
+            _child("model", model or "user"),
+            _child("text", cleaned),
+        ]
+    )
+    target = stream if stream is not None else sys.stdout
+    target.write("<event>" + body + "</event>\n")
+    target.flush()
+
+
+def emit_auto_input_user_missing(message: str, stream=None) -> None:
+    """Emit the "no User agent configured" notice as a structured event.
+
+    AUTO-INPUT needs the second Workflow Agents slot (the User agent) to
+    author continuation prompts. When it is missing the orchestrator fails
+    safe: this event surfaces the reason, the first answer is returned
+    normally, and the loop waits for real user input.
+    """
+    if not message or not message.strip():
+        return
+    out = (
+        "<event>"
+        + _child("type", "auto_input_user_missing")
+        + _child("text", message.strip())
+        + "</event>"
+    )
+    target = stream if stream is not None else sys.stdout
+    target.write(out + "\n")
+    target.flush()
+
+
 __all__ = [
     "TaskMode",
     "TaskStatus",
@@ -559,13 +726,19 @@ __all__ = [
     "Task",
     "TaskStatusEvent",
     "TaskActionEvent",
+    "AutoInputDecision",
     "parse_tasks",
     "parse_task_status",
     "parse_task_action",
+    "parse_auto_input",
     "strip_task_tags",
     "emit_event",
     "emit_tasks_proposed",
     "emit_task_status",
     "emit_thinking",
+    "emit_auto_input_reply",
+    "emit_auto_input_prompt",
+    "emit_auto_input_evaluating",
+    "emit_auto_input_user_missing",
     "log_task_action_received",
 ]

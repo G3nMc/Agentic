@@ -9,7 +9,7 @@ class ModelRepository {
   static final ModelRepository instance = ModelRepository._();
 
   Future<List<HfModel>> listAll() async {
-    final db = await AppDatabase.instance.database;
+    final db = await AppDatabase.instance.globalDatabase;
     final rows = await db.query(
       "models",
       orderBy: "is_favorite DESC, created_at DESC",
@@ -18,7 +18,7 @@ class ModelRepository {
   }
 
   Future<HfModel?> getById(String id) async {
-    final db = await AppDatabase.instance.database;
+    final db = await AppDatabase.instance.globalDatabase;
     final rows = await db.query(
       "models",
       where: "id = ?",
@@ -30,7 +30,7 @@ class ModelRepository {
   }
 
   Future<void> upsert(HfModel model) async {
-    final db = await AppDatabase.instance.database;
+    final db = await AppDatabase.instance.globalDatabase;
     await db.insert(
       "models",
       model.toMap(),
@@ -39,12 +39,12 @@ class ModelRepository {
   }
 
   Future<void> delete(String id) async {
-    final db = await AppDatabase.instance.database;
+    final db = await AppDatabase.instance.globalDatabase;
     await db.delete("models", where: "id = ?", whereArgs: [id]);
   }
 
   Future<void> setFavorite(String id, bool isFavorite) async {
-    final db = await AppDatabase.instance.database;
+    final db = await AppDatabase.instance.globalDatabase;
     await db.update(
       "models",
       {"is_favorite": isFavorite ? 1 : 0},

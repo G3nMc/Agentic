@@ -8,8 +8,12 @@ import '../../services/orchestrator_manager.dart';
 
 /// Multi-agent header replacement for the single-model `ModelSwitcher`.
 ///
-/// Renders four small stacked tiles — Router → Shaper → Reasoner → Executor —
-/// each showing the role name (top) and the configured model id (bottom).
+/// Renders one small tile per configured workflow role, each showing the role
+/// name (top) and the model assigned to it in Settings → Workflow Agents MaM
+/// (bottom). By default every role in [AgentRoleSettingsRepository.roles] is
+/// shown; pass [roleFilter] to narrow the strip down (AUTO INPUT shows only the
+/// Assistant and the User, i.e. the two models that actually drive a
+/// model-against-model exchange).
 /// Subscribes to [OrchestratorManager.traceStream] so the tile of whichever
 /// agent fired most recently glows in the accent colour; the rest stay muted.
 /// Resets to "no active agent" when a new turn starts (the trace stream
@@ -21,7 +25,11 @@ class WorkflowBreadcrumb extends StatefulWidget {
   /// stop flashing once the final response has been delivered.
   final bool sending;
 
-  const WorkflowBreadcrumb({super.key, this.sending = false});
+  /// Optional subset of [AgentRoleSettingsRepository.roles] to render, in the
+  /// given order. Null (the default) renders every configured role.
+  final List<String>? roleFilter;
+
+  const WorkflowBreadcrumb({super.key, this.sending = false, this.roleFilter});
 
   @override
   State<WorkflowBreadcrumb> createState() => _WorkflowBreadcrumbState();
@@ -204,7 +212,9 @@ class _WorkflowBreadcrumbState extends State<WorkflowBreadcrumb> {
       );
     }
     final tiles = <Widget>[];
-    final roles = AgentRoleSettingsRepository.roles;
+    // Narrow the strip to a subset when the caller asks for it (AUTO INPUT
+    // shows only Assistant + User); otherwise render every configured role.
+    final roles = widget.roleFilter ?? AgentRoleSettingsRepository.roles;
     for (var i = 0; i < roles.length; i++) {
       final role = roles[i];
       tiles.add(_tile(role, agents.get(role).model));
@@ -272,9 +282,9 @@ class _WorkflowBreadcrumbState extends State<WorkflowBreadcrumb> {
   String _titleForRole(String role) {
     switch (role) {
       case 'reasoner':
-        return 'Reasoner';
-      case 'summarizer':
-        return 'Summarizer';
+        return 'Assistant';
+      case 'user':
+        return 'User';
       case 'workflow':
         return 'Workflow';
     }

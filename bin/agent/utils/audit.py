@@ -9,6 +9,7 @@ import sys
 from typing import Any, Dict, Optional
 
 from agent.core.policy import SecurityConfig
+from agent.utils.session_env import audit_prefix
 
 
 def sanitize_params_for_log(params: Dict[str, Any]) -> Dict[str, Any]:
@@ -68,7 +69,14 @@ def audit_log(
         params: Dict[str, Any],
         result: str,
 ) -> None:
-    """Append one structured line to the audit log."""
+    """Append one structured line to the audit log.
+
+    When the process was launched by the Flutter client with
+    ``AGENTIC_SESSION_ID`` set, the owning chat GUID is prefixed as
+    ``SESSION=<guid>`` so the entries of concurrent sessions -- which share one
+    audit file when they share a base path -- stay attributable. With the
+    variable unset the record shape is unchanged.
+    """
     if logger is None:
         return
     sanitized = sanitize_params_for_log(params)
@@ -77,4 +85,10 @@ def audit_log(
         status = result_obj.get("status", "unknown")
     except Exception:
         status = "unknown"
-    logger.info("TOOL=%s PARAMS=%s STATUS=%s", tool_name, json.dumps(sanitized), status)
+    logger.info(
+        "%sTOOL=%s PARAMS=%s STATUS=%s",
+        audit_prefix(),
+        tool_name,
+        json.dumps(sanitized),
+        status,
+    )

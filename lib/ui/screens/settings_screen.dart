@@ -12,6 +12,7 @@ import 'package:path_provider/path_provider.dart';
 import '../../core/constants/agent_context_template.dart';
 import '../../core/constants/api_constants.dart';
 import '../../core/theme/app_theme.dart';
+import '../../core/utils/system_open.dart';
 import '../../data/models/agent_credentials.dart';
 import '../../data/models/hf_model.dart';
 import '../../data/repositories/agent_credentials_repository.dart';
@@ -22,8 +23,10 @@ import '../../data/repositories/model_repository.dart';
 import '../../data/repositories/settings_repository.dart';
 
 export '../../data/repositories/database_connections_repository.dart' show DatabaseConnection;
+import '../../services/chat_turn_controller.dart';
 import '../../services/project_service.dart';
 import '../../services/groq_service.dart';
+import '../../services/inno_setup_registry.dart';
 import '../../services/llm_service.dart';
 import '../../services/ollama_generate_service.dart';
 import '../../services/ollama_manager.dart';
@@ -33,7 +36,10 @@ import '../../services/ollama_library_service.dart';
 import '../../services/github_models_service.dart';
 import '../../services/openrouter_service.dart';
 import '../../services/orchestrator_manager.dart';
+import '../../statemanagement/method_listener.dart';
 import '../widgets/agent_workflow_settings.dart';
+import '../widgets/chat_view.dart';
+import '../widgets/sidebar.dart';
 import '../widgets/local_server_config_widget.dart';
 import '../widgets/token_count_picker.dart';
 
@@ -42,7 +48,17 @@ class SettingsScreen extends StatefulWidget {
   /// to that section (0 = Project Folders, 1 = Model Settings, …).
   final int? initialSection;
 
-  const SettingsScreen({super.key, this.initialSection});
+  /// Invoked by the app bar's back affordance. The chat shell hosts this
+  /// screen as a full-window surface, so there is no route to pop; the shell
+  /// supplies this callback to return to the conversation. When null the
+  /// standard [AppBar] back button behaviour applies (pushed route).
+  final VoidCallback? onClose;
+
+  const SettingsScreen({
+    super.key,
+    this.initialSection,
+    this.onClose,
+  });
 
   @override
   State<SettingsScreen> createState() => _SettingsScreenState();
@@ -282,6 +298,18 @@ class _SettingsScreenState extends State<SettingsScreen> {
   }
 
   @override
+  void didUpdateWidget(SettingsScreen oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    // The app shell drives the visible panel, so a navigation request
+    // ("open Settings on Projects") has to be adopted here instead of forcing
+    // a widget rebuild that would unmount the chat behind it.
+    final requested = widget.initialSection;
+    if (requested != null && requested != oldWidget.initialSection) {
+      setState(() => _settingsSection = requested);
+    }
+  }
+
+  @override
   void dispose() {
     _tokenSaveTimer?.cancel();
     _agentTokenSaveTimer?.cancel();
@@ -371,6 +399,51 @@ class _SettingsScreenState extends State<SettingsScreen> {
       }
       if (mounted) setState(() => _persistedLog = List<String>.from(lines));
     } catch (_) {}
+  }
+
+  /// Returns the persisted orchestrator log file, creating it (and the
+  /// containing directory) when it does not exist yet. Returns null only when
+  /// the platform documents directory cannot be resolved.
+  Future<File?> _ensureLogFile() async {
+    if (_logFile == null) {
+      await _initLogFile();
+    }
+    final file = _logFile;
+    if (file == null) return null;
+    try {
+      if (!await file.exists()) {
+        await file.create(recursive: true);
+      }
+    } catch (_) {
+      return null;
+    }
+    return file;
+  }
+
+  /// Opens the persisted log file with the OS default text editor.
+  Future<void> _openLogFile() async {
+    final file = await _ensureLogFile();
+    if (file == null) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Could not resolve the orchestrator log file.'),
+          duration: Duration(seconds: 4),
+        ),
+      );
+      return;
+    }
+    try {
+      await openWithDefaultApplication(file.path);
+    } on SystemOpenException catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Could not open the log file: ${e.message}'),
+          duration: const Duration(seconds: 4),
+        ),
+      );
+    }
   }
 
   // ---- Debounced auto-save handlers -----------------------------------------
@@ -640,9 +713,16 @@ class _SettingsScreenState extends State<SettingsScreen> {
                           if (v == null) return;
                           setState(() => _groqSelectedModel = v);
                           await BackendSettingsRepository.instance.setGroqModel(v);
-                          if (OrchestratorManager.instance.isRunning) {
-                            await OrchestratorManager.instance.stop();
-                          }
+                          // Configuration change only: a running turn keeps the
+                          // model it started with, the new one is used next.
+                          OrchestratorManager.instance.requestRestart(
+                            reason: 'Groq model changed to $v',
+                            source: OrchestratorStopSource.modelSwitch,
+                            argsFingerprint: OrchestratorManager.fingerprintFor(
+                              backend: OrchestratorBackend.groq,
+                              modelId: v,
+                            ),
+                          );
                         },
                       ),
               ),
@@ -978,7 +1058,15 @@ class _SettingsScreenState extends State<SettingsScreen> {
   }
 
   List<String> _openRouterModelOptions() {
-    return _openRouterModels;
+    final models = <String>[..._openRouterModels];
+    final selected = _openRouterSelectedModel?.trim() ?? '';
+    // The persisted model must stay selectable before the catalog has been
+    // fetched: otherwise a saved configuration renders as "No models
+    // available" and the user cannot see which model is actually active.
+    if (selected.isNotEmpty && !models.contains(selected)) {
+      models.insert(0, selected);
+    }
+    return models;
   }
 
   Widget _openRouterControlPanel() {
@@ -1044,9 +1132,17 @@ class _SettingsScreenState extends State<SettingsScreen> {
                               if (v == null) return;
                               setState(() => _openRouterSelectedModel = v);
                               await BackendSettingsRepository.instance.setOpenRouterModel(v);
-                              if (OrchestratorManager.instance.isRunning) {
-                                await OrchestratorManager.instance.stop();
-                              }
+                              // Configuration change only: the running turn keeps
+                              // the model it started with and the new one is
+                              // picked up by the next launch.
+                              OrchestratorManager.instance.requestRestart(
+                                reason: 'OpenRouter model changed to $v',
+                                source: OrchestratorStopSource.modelSwitch,
+                                argsFingerprint: OrchestratorManager.fingerprintFor(
+                                  backend: OrchestratorBackend.openrouter,
+                                  modelId: v,
+                                ),
+                              );
                             },
                           ),
               ),
@@ -1588,9 +1684,17 @@ class _SettingsScreenState extends State<SettingsScreen> {
                           if (v == null) return;
                           setState(() => _githubSelectedModel = v);
                           await BackendSettingsRepository.instance.setGithubModel(v);
-                          if (OrchestratorManager.instance.isRunning) {
-                            await OrchestratorManager.instance.stop();
-                          }
+                          // Configuration change only: the running turn keeps
+                          // the model it started with, the new one is applied
+                          // by the next launch.
+                          OrchestratorManager.instance.requestRestart(
+                            reason: 'GitHub Models model changed to $v',
+                            source: OrchestratorStopSource.modelSwitch,
+                            argsFingerprint: OrchestratorManager.fingerprintFor(
+                              backend: OrchestratorBackend.github,
+                              modelId: v,
+                            ),
+                          );
                           // Auto-toggle plain-chat mode for non-tool models so
                           // the orchestrator skips the tool loop on next start.
                           final cat = _githubCatalog.firstWhere((c) => c.id == v, orElse: () => GithubModel.fromJson(const {}));
@@ -2068,9 +2172,17 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     if (v == null) return;
                     setState(() => _geminiSelectedModel = v);
                     await BackendSettingsRepository.instance.setGeminiModel(v);
-                    if (OrchestratorManager.instance.isRunning) {
-                      await OrchestratorManager.instance.stop();
-                    }
+                    // Configuration change only: a running turn keeps the model
+                    // it started with and the new one is applied on the next
+                    // launch.
+                    OrchestratorManager.instance.requestRestart(
+                      reason: 'Gemini model changed to $v',
+                      source: OrchestratorStopSource.modelSwitch,
+                      argsFingerprint: OrchestratorManager.fingerprintFor(
+                        backend: OrchestratorBackend.gemini,
+                        modelId: v,
+                      ),
+                    );
                   },
                 ),
               ),
@@ -2610,8 +2722,14 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   Future<void> _setSelected(String id) async {
     await SettingsRepository.instance.setSelectedModelId(id);
-    if (OrchestratorManager.instance.isRunning) {
-      await OrchestratorManager.instance.stop();
+    if (OrchestratorManager.instance.anyRunning) {
+      // Pure configuration change: every running turn keeps its model and the
+      // new selection is applied on the next launch. Selecting the model that
+      // is already running is dropped by the fingerprint comparison.
+      OrchestratorManager.instance.requestRestartAll(
+        reason: 'selected model changed to $id',
+        source: OrchestratorStopSource.modelSwitch,
+      );
     }
     if (!mounted) return;
     setState(() => _selectedModelId = id);
@@ -2727,7 +2845,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   Future<void> _startOrchestrator() async {
     if (_orchestratorBusy) return;
-    if (OrchestratorManager.instance.isRunning && OrchestratorManager.instance.currentBackend == OrchestratorBackend.huggingface) {
+    if (OrchestratorManager.instance
+        .anyRunningWithBackend(OrchestratorBackend.huggingface)) {
       return;
     }
 
@@ -2741,8 +2860,15 @@ class _SettingsScreenState extends State<SettingsScreen> {
     // Persist it in case the user hasn't pressed Save.
     await AgentCredentialsRepository.instance.saveCredentials(AgentCredentials(hfToken: token));
 
-    if (OrchestratorManager.instance.isRunning && OrchestratorManager.instance.currentBackend != OrchestratorBackend.huggingface) {
-      await OrchestratorManager.instance.stop();
+    // Relaunch with the new backend. `stopAll()` defers automatically while a
+    // turn is in flight, so this never discards a running answer.
+    if (OrchestratorManager.instance.anyRunning &&
+        !OrchestratorManager.instance
+            .anyRunningWithBackend(OrchestratorBackend.huggingface)) {
+      await OrchestratorManager.instance.stopAll(
+        source: OrchestratorStopSource.backendSwitch,
+        reason: 'starting the HuggingFace orchestrator',
+      );
     }
 
     setState(() {
@@ -2773,10 +2899,58 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   Future<void> _stopOrchestrator() async {
     if (_orchestratorBusy) return;
-    if (!OrchestratorManager.instance.isRunning) return;
+    if (!OrchestratorManager.instance.anyRunning) return;
+    // Explicit user STOP from Settings -> Orchestrator: one of the only two
+    // affordances allowed to terminate a turn that is still in flight. With
+    // multi-session this reaches *every* live chat, hence the confirmation when
+    // any of them is mid-answer.
+    if (OrchestratorManager.instance.anyBusy) {
+      final confirmed = await showDialog<bool>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          backgroundColor: AppTheme.bgPrimary,
+          title: const Text('A task is running'),
+          content: const Text(
+            'The model is still working on the current prompt. '
+            'Stop it and discard the answer?',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(ctx).pop(false),
+              child: const Text('Keep running'),
+            ),
+            TextButton(
+              style: TextButton.styleFrom(foregroundColor: AppTheme.danger),
+              onPressed: () => Navigator.of(ctx).pop(true),
+              child: const Text('Stop'),
+            ),
+          ],
+        ),
+      );
+      if (confirmed != true) return;
+    }
+    if (!mounted) return;
     setState(() => _orchestratorBusy = true);
-    await OrchestratorManager.instance.stop();
+    await OrchestratorManager.instance.stopAll(
+      source: OrchestratorStopSource.orchestratorSettingsButton,
+      reason: 'user pressed STOP in Settings -> Orchestrator',
+    );
     _appendLog('Orchestrator stopped.');
+    if (!mounted) return;
+    setState(() => _orchestratorBusy = false);
+  }
+
+  /// Apply a parked configuration change immediately by terminating the live
+  /// turn. Only reachable from the explicit "Apply now" affordance, which is
+  /// the user's own decision to discard the answer in flight.
+  Future<void> _applyPendingRestartNow() async {
+    if (_orchestratorBusy) return;
+    setState(() => _orchestratorBusy = true);
+    await OrchestratorManager.instance.stopAll(
+      source: OrchestratorStopSource.orchestratorSettingsButton,
+      reason: 'user applied the pending configuration change now',
+    );
+    _appendLog('Pending configuration applied: orchestrator relaunched.');
     if (!mounted) return;
     setState(() => _orchestratorBusy = false);
   }
@@ -2793,8 +2967,15 @@ class _SettingsScreenState extends State<SettingsScreen> {
     }
     final model = _groqSelectedModel ?? GroqService.fallbackModels.first;
 
-    if (OrchestratorManager.instance.isRunning && OrchestratorManager.instance.currentBackend != OrchestratorBackend.groq) {
-      await OrchestratorManager.instance.stop();
+    // Relaunch with the new backend. `stop()` defers while a turn is running,
+    // so a live answer is never discarded by a settings change.
+    if (OrchestratorManager.instance.anyRunning &&
+        !OrchestratorManager.instance
+            .anyRunningWithBackend(OrchestratorBackend.groq)) {
+      await OrchestratorManager.instance.stopAll(
+        source: OrchestratorStopSource.backendSwitch,
+        reason: 'starting the Groq orchestrator',
+      );
     }
 
     setState(() {
@@ -2842,8 +3023,15 @@ class _SettingsScreenState extends State<SettingsScreen> {
     }
     final model = (_geminiSelectedModel != null && _geminiSelectedModel!.trim().isNotEmpty) ? _geminiSelectedModel!.trim() : BackendSettingsRepository.defaultGeminiModel;
 
-    if (OrchestratorManager.instance.isRunning && OrchestratorManager.instance.currentBackend != OrchestratorBackend.gemini) {
-      await OrchestratorManager.instance.stop();
+    // Relaunch with the new backend. `stop()` defers while a turn is running,
+    // so a live answer is never discarded by a settings change.
+    if (OrchestratorManager.instance.anyRunning &&
+        !OrchestratorManager.instance
+            .anyRunningWithBackend(OrchestratorBackend.gemini)) {
+      await OrchestratorManager.instance.stopAll(
+        source: OrchestratorStopSource.backendSwitch,
+        reason: 'starting the Gemini orchestrator',
+      );
     }
 
     setState(() {
@@ -2888,8 +3076,15 @@ class _SettingsScreenState extends State<SettingsScreen> {
       return;
     }
 
-    if (OrchestratorManager.instance.isRunning && OrchestratorManager.instance.currentBackend != OrchestratorBackend.ollama) {
-      await OrchestratorManager.instance.stop();
+    // Relaunch with the new backend. `stop()` defers while a turn is running,
+    // so a live answer is never discarded by a settings change.
+    if (OrchestratorManager.instance.anyRunning &&
+        !OrchestratorManager.instance
+            .anyRunningWithBackend(OrchestratorBackend.ollama)) {
+      await OrchestratorManager.instance.stopAll(
+        source: OrchestratorStopSource.backendSwitch,
+        reason: 'starting the Ollama orchestrator',
+      );
     }
 
     setState(() {
@@ -3355,8 +3550,13 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   Future<void> _setOllamaModel(String name) async {
     await BackendSettingsRepository.instance.setOllamaModel(name);
-    if (OrchestratorManager.instance.isRunning) {
-      await OrchestratorManager.instance.stop();
+    if (OrchestratorManager.instance.anyRunning) {
+      // Configuration change only: every running turn keeps its model and the
+      // new selection is applied by the next launch.
+      OrchestratorManager.instance.requestRestartAll(
+        reason: 'Ollama model changed to $name',
+        source: OrchestratorStopSource.modelSwitch,
+      );
     }
     if (!mounted) return;
     setState(() => _ollamaSelectedModel = name);
@@ -3709,39 +3909,50 @@ class _SettingsScreenState extends State<SettingsScreen> {
   }
 
   @override
-  @override
   Widget build(BuildContext context) {
+    final content = _loading
+        ? const Center(child: CircularProgressIndicator())
+        : Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              _buildSideNav(),
+              const VerticalDivider(width: 1, thickness: 1, color: AppTheme.border),
+              Expanded(
+                child: _settingsSection == 0
+                    ? _buildProjectsSection()
+                    : _settingsSection == 1
+                        ? _buildModelSettings()
+                        : _settingsSection == 2
+                            ? _buildOrchestratorPanel()
+                            : _settingsSection == 3
+                                ? _buildAgentWorkflowPanel()
+                                : _buildDeveloperPanel(),
+              ),
+            ],
+          );
+
     return Scaffold(
       backgroundColor: AppTheme.bgPrimary,
       appBar: AppBar(
         backgroundColor: AppTheme.bgPrimary,
         elevation: 0,
         iconTheme: const IconThemeData(color: AppTheme.textPrimary),
+        // The shell hosts this screen full-window instead of pushing a route,
+        // so `onClose` doubles as the back affordance.
+        leading: widget.onClose == null
+            ? null
+            : IconButton(
+                tooltip: "Back to chat",
+                onPressed: widget.onClose,
+                icon: const Icon(Icons.arrow_back, size: 20),
+                color: AppTheme.textSecondary,
+              ),
         title: const Text(
           "Settings",
           style: TextStyle(color: AppTheme.textPrimary, fontSize: 16, fontWeight: FontWeight.w600),
         ),
       ),
-      body: _loading
-          ? const Center(child: CircularProgressIndicator())
-          : Row(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                _buildSideNav(),
-                const VerticalDivider(width: 1, thickness: 1, color: AppTheme.border),
-                Expanded(
-                  child: _settingsSection == 0
-                      ? _buildProjectsSection()
-                      : _settingsSection == 1
-                          ? _buildModelSettings()
-                          : _settingsSection == 2
-                              ? _buildOrchestratorPanel()
-                              : _settingsSection == 3
-                                  ? _buildAgentWorkflowPanel()
-                                  : _buildDeveloperPanel(),
-                ),
-              ],
-            ),
+      body: content,
     );
   }
 
@@ -3749,7 +3960,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   Widget _buildSideNav() {
     return Container(
-      width: 190,
+      width: 232,
       color: AppTheme.bgPrimary,
       child: ListView(
         padding: const EdgeInsets.symmetric(vertical: 16, horizontal: 8),
@@ -3758,7 +3969,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
           const SizedBox(height: 4),
           _navItem("Model Settings", 1, Icons.tune_outlined),
           const SizedBox(height: 4),
-          _navItem("Workflow Agents", 3, Icons.account_tree_outlined),
+          _navItem("Workflow Agents MaM", 3, Icons.account_tree_outlined),
           const SizedBox(height: 4),
           _navItem("Orchestrator", 2, Icons.memory_outlined),
           const SizedBox(height: 4),
@@ -3786,12 +3997,19 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 color: selected ? AppTheme.accent : AppTheme.textSecondary,
               ),
               const SizedBox(width: 10),
-              Text(
-                label,
-                style: TextStyle(
-                  fontSize: 13.5,
-                  fontWeight: selected ? FontWeight.w600 : FontWeight.normal,
-                  color: selected ? AppTheme.accent : AppTheme.textSecondary,
+              // The side nav is wide enough to keep every label on one line;
+              // Expanded guards against overflow for any future long label.
+              Expanded(
+                child: Text(
+                  label,
+                  maxLines: 1,
+                  softWrap: false,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    fontSize: 13.5,
+                    fontWeight: selected ? FontWeight.w600 : FontWeight.normal,
+                    color: selected ? AppTheme.accent : AppTheme.textSecondary,
+                  ),
                 ),
               ),
             ],
@@ -3983,8 +4201,13 @@ class _SettingsScreenState extends State<SettingsScreen> {
     final switched = await ProjectService().selectProjectFolder(path);
     if (!switched || !mounted) return;
     _resetAgentContext();
-    // Restart orchestrator so it picks up the new --base-path
-    await OrchestratorManager.instance.stop();
+    // Configuration change, not a session interrupt: the new --base-path is
+    // applied on the next launch, or as soon as the in-flight turn drains.
+    OrchestratorManager.instance.requestRestart(
+      reason: 'project folder switched to $path',
+      source: OrchestratorStopSource.projectSwitch,
+    );
+    if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
         content: Text('Switched to: ${path.split(Platform.pathSeparator).last}'),
@@ -4055,6 +4278,34 @@ class _SettingsScreenState extends State<SettingsScreen> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
+              // Persistent expectation-setting note: every control below is a
+              // configuration change, never a live-session interrupt.
+              Container(
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                decoration: BoxDecoration(
+                  color: AppTheme.accent.withAlpha(22),
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(color: AppTheme.accent.withAlpha(70)),
+                ),
+                child: const Row(
+                  children: [
+                    Icon(Icons.info_outline, size: 15, color: AppTheme.accent),
+                    SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        "Changes apply to the next turn. A running task is not "
+                        "interrupted.",
+                        style: TextStyle(
+                          fontSize: 12,
+                          color: AppTheme.textPrimary,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 20),
               _section(
                 title: "LLM Backend",
                 subtitle: "Choose between remote HF API, cloud agents "
@@ -4143,10 +4394,19 @@ class _SettingsScreenState extends State<SettingsScreen> {
                               setState(() => _activeBackend = v);
                               await BackendSettingsRepository.instance.setActiveBackend(v);
 
-                              // Stop orchestrator as backend change requires a process restart
-                              if (OrchestratorManager.instance.isRunning) {
-                                await OrchestratorManager.instance.stop();
-                              }
+                              // Notify the chat view and sidebar so the new backend
+                              // is reflected immediately when returning to the chat.
+                              await MethodListener<ChatView>().callMethod("backendChanged");
+                              await MethodListener<ChatView>().callMethod("refreshActiveBackend");
+                              await MethodListener<Sidebar>().callMethod("backendChanged");
+
+                              // Backend change requires a relaunch — but a turn
+                              // in flight keeps its model: the request is
+                              // parked and applied once the answer has landed.
+                              OrchestratorManager.instance.requestRestart(
+                                reason: 'active backend changed to ${v.name}',
+                                source: OrchestratorStopSource.backendSwitch,
+                              );
 
                               if (v == LlmBackend.ollama || v == LlmBackend.ollamaPython || v == LlmBackend.ollamaOrchestrator) {
                                 // ignore: unawaited_futures
@@ -4443,7 +4703,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   // ---- Orchestrator quick-status note (shown inside Model Settings) ---------
 
   Widget _orchestratorNote() {
-    final running = OrchestratorManager.instance.isRunning;
+    final running = OrchestratorManager.instance.anyRunning;
     return _section(
       title: "Orchestrator",
       subtitle: "Manage the orchestrator process in the Orchestrator section.",
@@ -4488,7 +4748,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   // ---- Orchestrator panel (side-nav section 1) ------------------------------
 
   Widget _buildOrchestratorPanel() {
-    final running = OrchestratorManager.instance.isRunning;
+    final running = OrchestratorManager.instance.anyRunning;
     final needsOrchestrator = _activeBackend == LlmBackend.orchestrator ||
         _activeBackend == LlmBackend.ollamaOrchestrator ||
         _activeBackend == LlmBackend.groqOrchestrator ||
@@ -4518,6 +4778,12 @@ class _SettingsScreenState extends State<SettingsScreen> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
+              // Live session card: what the orchestrator is doing right now and
+              // whether a configuration change is waiting for the turn to end.
+              _LiveSessionCard(
+                onApplyPendingRestart: _orchestratorBusy ? null : _applyPendingRestartNow,
+              ),
+              const SizedBox(height: 20),
               // Status
               _section(
                 title: "Status",
@@ -4596,15 +4862,29 @@ class _SettingsScreenState extends State<SettingsScreen> {
               _section(
                 title: "Log",
                 subtitle: "Persisted log — last 2 000 lines (oldest auto-removed).",
-                child: allLines.isEmpty
-                    ? const Padding(
+                trailing: OutlinedButton.icon(
+                  onPressed: _openLogFile,
+                  icon: const Icon(Icons.open_in_new, size: 16),
+                  label: const Text("Open log file"),
+                  style: OutlinedButton.styleFrom(
+                    visualDensity: VisualDensity.compact,
+                  ),
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    if (allLines.isEmpty)
+                      const Padding(
                         padding: EdgeInsets.symmetric(vertical: 8),
                         child: Text(
                           "No log entries yet.",
                           style: TextStyle(color: AppTheme.textMuted, fontSize: 13),
                         ),
                       )
-                    : _logConsole(allLines),
+                    else
+                      _logConsole(allLines),
+                  ],
+                ),
               ),
               const SizedBox(height: 40),
             ],
@@ -6188,18 +6468,26 @@ class _SettingsScreenState extends State<SettingsScreen> {
   Widget _section({
     required String title,
     String? subtitle,
+    Widget? trailing,
     required Widget child,
   }) {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        Text(
-          title,
-          style: const TextStyle(
-            fontSize: 14,
-            fontWeight: FontWeight.w600,
-            color: AppTheme.textPrimary,
-          ),
+        Row(
+          children: [
+            Expanded(
+              child: Text(
+                title,
+                style: const TextStyle(
+                  fontSize: 14,
+                  fontWeight: FontWeight.w600,
+                  color: AppTheme.textPrimary,
+                ),
+              ),
+            ),
+            if (trailing != null) trailing,
+          ],
         ),
         if (subtitle != null) ...[
           const SizedBox(height: 2),
@@ -6235,8 +6523,15 @@ class _SettingsScreenState extends State<SettingsScreen> {
       return;
     }
 
-    if (OrchestratorManager.instance.isRunning && OrchestratorManager.instance.currentBackend != OrchestratorBackend.openrouter) {
-      await OrchestratorManager.instance.stop();
+    // Relaunch with the new backend. `stopAll()` defers while a turn is
+    // running, so a live answer is never discarded by a settings change.
+    if (OrchestratorManager.instance.anyRunning &&
+        !OrchestratorManager.instance
+            .anyRunningWithBackend(OrchestratorBackend.openrouter)) {
+      await OrchestratorManager.instance.stopAll(
+        source: OrchestratorStopSource.backendSwitch,
+        reason: 'starting the OpenRouter orchestrator',
+      );
     }
 
     setState(() {
@@ -6284,8 +6579,15 @@ class _SettingsScreenState extends State<SettingsScreen> {
     }
     final model = _githubSelectedModel ?? GithubModelsService.fallbackModels.first;
 
-    if (OrchestratorManager.instance.isRunning && OrchestratorManager.instance.currentBackend != OrchestratorBackend.github) {
-      await OrchestratorManager.instance.stop();
+    // Relaunch with the new backend. `stopAll()` defers while a turn is
+    // running, so a live answer is never discarded by a settings change.
+    if (OrchestratorManager.instance.anyRunning &&
+        !OrchestratorManager.instance
+            .anyRunningWithBackend(OrchestratorBackend.github)) {
+      await OrchestratorManager.instance.stopAll(
+        source: OrchestratorStopSource.backendSwitch,
+        reason: 'starting the GitHub Models orchestrator',
+      );
     }
 
     setState(() {
@@ -7499,6 +7801,9 @@ Widget _buildPromptsConfigSection() {    return _section(      title: "System Pr
         ..writeln('[Tasks]')
         ..writeln('Name: "desktopicon"; Description: "Create a &desktop icon"; GroupDescription: "Additional icons:"; Flags: unchecked')
         ..writeln()
+        ..writeln('[Registry]')
+        ..writeln(InnoSetupRegistry.section(exeName: exeName).join('\n'))
+        ..writeln()
         ..writeln('[Run]')
         ..writeln('Filename: "{app}\\$exeName"; Description: "Launch $appName"; Flags: nowait postinstall skipifsilent');
 
@@ -7548,7 +7853,8 @@ Widget _buildPromptsConfigSection() {    return _section(      title: "System Pr
       }
     }
   }
-}
+
+  }
 
 // ---- Database Connection Dialog Widget --------------------------------------
 
@@ -7720,6 +8026,317 @@ class _DatabaseConnectionDialogState extends State<_DatabaseConnectionDialog> {
           child: const Text('Save'),
         ),
       ],
+    );
+  }
+}
+/// Live view of the per-conversation orchestrator sessions.
+///
+/// With multi-session the app owns one subprocess per conversation, so a single
+/// global status card would lie: it cannot say *which* chat is working, which
+/// one has a configuration change parked, or how many processes are alive. This
+/// card renders one row per live session, most recently used first.
+///
+/// Kept as a small stateful widget so its 1 s ticker only runs while it is
+/// actually on screen, instead of forcing the whole Settings screen to rebuild
+/// every second.
+class _LiveSessionCard extends StatefulWidget {
+  const _LiveSessionCard({this.onApplyPendingRestart});
+
+  /// Invoked by a row's "Apply now" action. Null while a teardown is already
+  /// running, so the button cannot be double-fired.
+  final VoidCallback? onApplyPendingRestart;
+
+  @override
+  State<_LiveSessionCard> createState() => _LiveSessionCardState();
+}
+
+class _LiveSessionCardState extends State<_LiveSessionCard> {
+  Timer? _ticker;
+  StreamSubscription<OrchestratorSession>? _addedSub;
+
+  @override
+  void initState() {
+    super.initState();
+    // A session is created lazily on the first send (or an explicit Start), so
+    // the card repaints the moment one appears instead of waiting for the tick.
+    _addedSub = OrchestratorManager.instance.sessionAdded.listen((_) {
+      if (mounted) setState(() {});
+    });
+    // Lifecycle state, parked relaunches and the elapsed time of an active turn
+    // all change without a stream event, so poll once a second while visible.
+    _ticker = Timer.periodic(const Duration(seconds: 1), (_) {
+      if (mounted) setState(() {});
+    });
+  }
+
+  @override
+  void dispose() {
+    _ticker?.cancel();
+    _addedSub?.cancel();
+    super.dispose();
+  }
+
+  /// Live sessions worth reporting: running processes plus the ones whose
+  /// relaunch is parked until their turn drains.
+  List<OrchestratorSession> get _liveSessions => OrchestratorManager
+      .instance.sessionsByRecency
+      .where((s) => s.isRunning || s.hasPendingRestart)
+      .toList(growable: false);
+
+  static String _stateLabel(OrchestratorSession session) {
+    switch (session.lastSessionState) {
+      case OrchestratorSessionState.busy:
+        final status = session.lastStatus;
+        return status == null ? 'Busy — working' : 'Busy — $status';
+      case OrchestratorSessionState.starting:
+        return 'Starting';
+      case OrchestratorSessionState.idle:
+        return 'Idle — ready';
+      case OrchestratorSessionState.restarting:
+        return 'Reloading configuration';
+      case OrchestratorSessionState.failed:
+        return 'Failed';
+      case OrchestratorSessionState.stopped:
+        return 'Stopped';
+    }
+  }
+
+  static Color _stateColor(OrchestratorSession session) {
+    switch (session.lastSessionState) {
+      case OrchestratorSessionState.busy:
+        return AppTheme.accent;
+      case OrchestratorSessionState.starting:
+      case OrchestratorSessionState.restarting:
+        return AppTheme.accentSecondary;
+      case OrchestratorSessionState.idle:
+        return AppTheme.accentSecondary;
+      case OrchestratorSessionState.failed:
+        return AppTheme.danger;
+      case OrchestratorSessionState.stopped:
+        return AppTheme.textMuted;
+    }
+  }
+
+  /// Elapsed time of the conversation's active turn, formatted as `m:ss`.
+  static String? _elapsedLabel(OrchestratorSession session) {
+    final turn = ChatTurnController.instance.activeFor(session.conversationId);
+    if (turn == null || !session.isBusy) return null;
+    final seconds =
+        (DateTime.now().millisecondsSinceEpoch - turn.startedAtMs) ~/ 1000;
+    final minutes = seconds ~/ 60;
+    final rest = (seconds % 60).toString().padLeft(2, '0');
+    return '$minutes:$rest';
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final sessions = _liveSessions;
+    final running = sessions.where((s) => s.isRunning).length;
+    final pendingAny = sessions.any((s) => s.hasPendingRestart);
+
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: AppTheme.bgSecondary,
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: AppTheme.border),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              AnimatedContainer(
+                duration: const Duration(milliseconds: 250),
+                width: 9,
+                height: 9,
+                decoration: BoxDecoration(
+                  color:
+                      running > 0 ? AppTheme.accentSecondary : AppTheme.textMuted,
+                  shape: BoxShape.circle,
+                ),
+              ),
+              const SizedBox(width: 8),
+              const Text(
+                'Live sessions',
+                style: TextStyle(
+                  fontSize: 13,
+                  fontWeight: FontWeight.w600,
+                  color: AppTheme.textPrimary,
+                ),
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Text(
+                  running == 0
+                      ? 'No process running'
+                      : '$running of $kMaxConcurrentSessions processes alive',
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    fontSize: 12,
+                    color: running > 0
+                        ? AppTheme.accentSecondary
+                        : AppTheme.textMuted,
+                  ),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          const Text(
+            'Every open conversation keeps its own orchestrator process. At '
+            'most $kMaxConcurrentSessions run at once; idle chats are released '
+            'automatically and a busy one is never interrupted.',
+            style: TextStyle(fontSize: 11, color: AppTheme.textMuted),
+          ),
+          const SizedBox(height: 12),
+          if (sessions.isEmpty)
+            const Padding(
+              padding: EdgeInsets.symmetric(vertical: 4),
+              child: Text(
+                'No live orchestrator session yet — send a prompt or press '
+                'Start.',
+                style: TextStyle(fontSize: 12, color: AppTheme.textMuted),
+              ),
+            )
+          else
+            ...sessions.map(_sessionRow),
+          if (pendingAny) ...[
+            const SizedBox(height: 12),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+              decoration: BoxDecoration(
+                color: AppTheme.accent.withAlpha(22),
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(color: AppTheme.accent.withAlpha(80)),
+              ),
+              child: Row(
+                children: [
+                  const Icon(Icons.schedule, size: 15, color: AppTheme.accent),
+                  const SizedBox(width: 8),
+                  const Expanded(
+                    child: Text(
+                      'Settings changed. The new configuration is applied to '
+                      'each session when its current turn finishes.',
+                      style: TextStyle(
+                        fontSize: 12,
+                        color: AppTheme.textPrimary,
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  TextButton(
+                    onPressed: widget.onApplyPendingRestart,
+                    style: TextButton.styleFrom(
+                      foregroundColor: AppTheme.accent,
+                      padding: const EdgeInsets.symmetric(horizontal: 8),
+                      minimumSize: const Size(0, 30),
+                    ),
+                    child:
+                        const Text('Apply now', style: TextStyle(fontSize: 12)),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+
+  /// One row per live conversation: short GUID, lifecycle state, elapsed time
+  /// and the same activity dot the sidebar paints (amber working, green
+  /// answered).
+  Widget _sessionRow(OrchestratorSession session) {
+    final stateColor = _stateColor(session);
+    final elapsed = _elapsedLabel(session);
+    final activity = session.activity;
+    final activityColor = switch (activity) {
+      SessionActivity.working => AppTheme.sessionWorking,
+      SessionActivity.answered => AppTheme.sessionAnswered,
+      SessionActivity.idle => AppTheme.textMuted,
+    };
+    final guid = session.conversationId;
+    final shortGuid = guid.length <= 8 ? guid : guid.substring(0, 8);
+
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 4),
+      child: Row(
+        children: [
+          AnimatedContainer(
+            duration: const Duration(milliseconds: 250),
+            width: 8,
+            height: 8,
+            decoration: BoxDecoration(color: stateColor, shape: BoxShape.circle),
+          ),
+          const SizedBox(width: 8),
+          SizedBox(
+            width: 76,
+            child: Text(
+              '$shortGuid…',
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(fontSize: 12, color: AppTheme.textPrimary),
+            ),
+          ),
+          Expanded(
+            child: Text(
+              _stateLabel(session),
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(fontSize: 12, color: stateColor),
+            ),
+          ),
+          if (elapsed != null)
+            Container(
+              margin: const EdgeInsets.only(right: 8),
+              padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
+              decoration: BoxDecoration(
+                color: AppTheme.accent.withAlpha(28),
+                borderRadius: BorderRadius.circular(6),
+              ),
+              child: Text(
+                elapsed,
+                style: const TextStyle(
+                  fontSize: 11,
+                  color: AppTheme.accent,
+                  fontWeight: FontWeight.w600,
+                  fontFeatures: [FontFeature.tabularFigures()],
+                ),
+              ),
+            ),
+          if (activity == SessionActivity.working)
+            Padding(
+              padding: const EdgeInsets.only(right: 6),
+              child: SizedBox(
+                width: 11,
+                height: 11,
+                child: CircularProgressIndicator(
+                  strokeWidth: 2,
+                  valueColor: AlwaysStoppedAnimation<Color>(activityColor),
+                ),
+              ),
+            ),
+          Tooltip(
+            message: switch (activity) {
+              SessionActivity.working => 'Working…',
+              SessionActivity.answered => 'Answered',
+              SessionActivity.idle => 'Idle',
+            },
+            waitDuration: const Duration(milliseconds: 400),
+            child: AnimatedContainer(
+              duration: const Duration(milliseconds: 250),
+              width: 7,
+              height: 7,
+              decoration: BoxDecoration(
+                color: activityColor,
+                shape: BoxShape.circle,
+              ),
+            ),
+          ),
+        ],
+      ),
     );
   }
 }

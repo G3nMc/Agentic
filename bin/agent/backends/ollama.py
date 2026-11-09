@@ -286,6 +286,9 @@ class OllamaBackend(ModelBackend):
             "system": system if system else None,
             "stream": False,
         }
+        # _log(f"[Ollama:prompt]={prompt}")
+
+
 
         # if system:
         #     payload["system"] = system
@@ -304,8 +307,9 @@ class OllamaBackend(ModelBackend):
             f"[Ollama:generate] POST {self.base_url}/api/generate model={self.model_id} "
             f"turns={msg_count} max_tokens={max_tokens} num_ctx={self.num_ctx} "
             f"temperature={temperature} "
-            f"cloud={self._is_cloud_host()} stop={options.get('stop')} "
-            f"think={payload.get('think')}"
+            f"stop={options.get('stop')} "
+            # f"\nSYSTEM={system} "
+            # f"\nPROMPT={prompt} "
         )
 
         # chunk_count = 0
@@ -326,8 +330,10 @@ class OllamaBackend(ModelBackend):
                 piece = chunk.get("response") or ""
                 thinking = chunk.get("thinking") or ""
 
+                _log(f"[Ollama:response] response={piece} ")
+
                 if thinking:
-                    _log(f"[Ollama:streaming] \nmodel={self.model_id} \nthinking={thinking}  \npiece={piece} ")
+                    # _log(f"[Ollama:stream] \nmodel={self.model_id} \n\nthinking={thinking}  \n\npiece={piece} ")
                     # Deepseek-style models emit ":"-only chunks between
                     # reasoning phases and prefix real reasoning with a lone
                     # colon. Drop pure-noise chunks and strip the leading

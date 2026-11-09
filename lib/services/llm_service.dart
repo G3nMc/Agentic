@@ -100,10 +100,97 @@ class LlmService {
     String? ollamaPythonBridgeUrl, // e.g., "http://127.0.0.1:11501"
     String? contextSummary, // Additional context summary to include
     double? temperature, // Optional temperature override
-    String taskMode = 'task_compliance_auto', // open / task_compliance / task_compliance_auto
-    bool thinking = false, // Thinking ON/OFF master switch
+    String taskMode = 'auto_input', // user_input / auto_input
+    bool? thinking, // Thinking ON/OFF; null = keep the launch-time slot value
     String? effort, // Effort level: minimal/low/medium/high/max
   }) async {
+    // Bind this send to its conversation for the whole async scope. Every
+    // unkeyed orchestrator call below (isRunning, start, requestRestart,
+    // sendPrompt, stderrLog…) then resolves against *this* chat's session,
+    // even while another conversation is doing the same thing concurrently.
+    // Without it, opening chat B mid-turn would restart chat A's process.
+    if (conversationId != null && conversationId.isNotEmpty) {
+      return OrchestratorManager.instance.withConversation(
+        conversationId,
+        () => _sendChatInternal(
+          backend: backend,
+          token: token,
+          modelId: modelId,
+          history: history,
+          conversationId: conversationId,
+          localServerUrl: localServerUrl,
+          ollamaBaseUrl: ollamaBaseUrl,
+          ollamaModelId: ollamaModelId,
+          ollamaPythonBridgeUrl: ollamaPythonBridgeUrl,
+          contextSummary: contextSummary,
+          temperature: temperature,
+          taskMode: taskMode,
+          thinking: thinking,
+          effort: effort,
+        ),
+      );
+    }
+    return _sendChatInternal(
+      backend: backend,
+      token: token,
+      modelId: modelId,
+      history: history,
+      conversationId: conversationId,
+      localServerUrl: localServerUrl,
+      ollamaBaseUrl: ollamaBaseUrl,
+      ollamaModelId: ollamaModelId,
+      ollamaPythonBridgeUrl: ollamaPythonBridgeUrl,
+      contextSummary: contextSummary,
+      temperature: temperature,
+      taskMode: taskMode,
+      thinking: thinking,
+      effort: effort,
+    );
+  }
+
+  /// The backend dispatch itself, always executed inside
+  /// [OrchestratorManager.withConversation] so its unkeyed orchestrator calls
+  /// target the conversation that issued them.
+  Future<String> _sendChatInternal({
+    required LlmBackend backend,
+    required String token,
+    required String modelId,
+    required List<ChatMessage> history,
+    String? conversationId,
+    String? localServerUrl,
+    String? ollamaBaseUrl,
+    String? ollamaModelId,
+    String? ollamaPythonBridgeUrl,
+    String? contextSummary,
+    double? temperature,
+    String taskMode = 'auto_input',
+    bool? thinking,
+    String? effort,
+  }) async {
+    // AUTO INPUT is MaM — Model against Model. The Assistant that answers and
+    // the User that reviews and continues are the two models assigned in
+    // Settings -> Workflow Agents MaM, and the multi-agent subprocess is the
+    // one carrying those assignments. When it is already running, route the
+    // turn straight into it: every per-backend branch below compares the
+    // running backend/model/temperature against the single-model settings and
+    // would stop + relaunch the subprocess, discarding the workflow agents the
+    // chat header advertises.
+    if (taskMode == 'auto_input' && OrchestratorManager.instance.isRunning) {
+      final split =
+          _splitPromptAndHistory(history, contextSummary: contextSummary);
+      final prompt = split.prompt;
+      if (prompt == null) throw Exception('No user message to send.');
+      return OrchestratorManager.instance.sendPrompt(
+        prompt,
+        sessionKey: conversationId,
+        seedHistory: split.seed,
+        forceHistorySync: true,
+        taskMode: taskMode,
+        thinking: thinking,
+        effort: effort,
+      );
+    }
+
     switch (backend) {
       case LlmBackend.orchestrator:
         if (OrchestratorManager.instance.isRunning) {
@@ -113,7 +200,17 @@ class LlmService {
           if (currentBackend != OrchestratorBackend.huggingface ||
               currentModel != modelId ||
               currentTemp != temperature) {
-            await OrchestratorManager.instance.stop();
+            // Never kill a turn in flight: park the relaunch and let the
+            // running answer land before the new configuration takes over.
+            OrchestratorManager.instance.requestRestart(
+              reason: 'huggingface model/temperature drift',
+              source: OrchestratorStopSource.modelSwitch,
+              argsFingerprint: OrchestratorManager.fingerprintFor(
+                backend: OrchestratorBackend.huggingface,
+                modelId: modelId,
+                temperature: temperature,
+              ),
+            );
           }
         }
 
@@ -133,14 +230,15 @@ class LlmService {
           }
         }
 
-        final lastUser = _lastUserMessage(history);
-        if (lastUser == null) {
+        final split = _splitPromptAndHistory(history, contextSummary: contextSummary);
+        final prompt = split.prompt;
+        if (prompt == null) {
           throw Exception("No user message to send.");
         }
         return OrchestratorManager.instance.sendPrompt(
-          lastUser,
+          prompt,
           sessionKey: conversationId,
-          seedHistory: _seedHistoryForOrchestrator(history, contextSummary: contextSummary),
+          seedHistory: split.seed,
           forceHistorySync: true,
           taskMode: taskMode,
           thinking: thinking,
@@ -174,7 +272,18 @@ class LlmService {
           if (currentBackend != OrchestratorBackend.ollama ||
               currentModel != resolvedOllamaModel ||
               currentTemp != temperature) {
-            await OrchestratorManager.instance.stop();
+            // Never kill a turn in flight: park the relaunch and let the
+            // running answer land before the new configuration takes over.
+            OrchestratorManager.instance.requestRestart(
+              reason: 'ollama model/temperature drift',
+              source: OrchestratorStopSource.modelSwitch,
+              argsFingerprint: OrchestratorManager.fingerprintFor(
+                backend: OrchestratorBackend.ollama,
+                modelId: resolvedOllamaModel,
+                temperature: temperature,
+                maxTokens: ollamaMaxTokens,
+              ),
+            );
           }
         }
         if (!OrchestratorManager.instance.isRunning) {
@@ -203,14 +312,15 @@ class LlmService {
           }
         }
 
-        final lastUser = _lastUserMessage(history);
-        if (lastUser == null) {
+        final split = _splitPromptAndHistory(history, contextSummary: contextSummary);
+        final prompt = split.prompt;
+        if (prompt == null) {
           throw Exception("No user message to send.");
         }
         return OrchestratorManager.instance.sendPrompt(
-          lastUser,
+          prompt,
           sessionKey: conversationId,
-          seedHistory: _seedHistoryForOrchestrator(history, contextSummary: contextSummary),
+          seedHistory: split.seed,
           forceHistorySync: true,
           taskMode: taskMode,
           thinking: thinking,
@@ -278,12 +388,13 @@ class LlmService {
             );
           }
         }
-        final lastUser = _lastUserMessage(history);
-        if (lastUser == null) throw Exception('No user message to send.');
+        final split = _splitPromptAndHistory(history, contextSummary: contextSummary);
+        final prompt = split.prompt;
+        if (prompt == null) throw Exception('No user message to send.');
         return OrchestratorManager.instance.sendPrompt(
-          lastUser,
+          prompt,
           sessionKey: conversationId,
-          seedHistory: _seedHistoryForOrchestrator(history, contextSummary: contextSummary),
+          seedHistory: split.seed,
           forceHistorySync: true,
           taskMode: taskMode,
           thinking: thinking,
@@ -306,7 +417,18 @@ class LlmService {
           if (currentBackend != OrchestratorBackend.gemini ||
               currentModel != geminiModel ||
               currentTemp != temperature) {
-            await OrchestratorManager.instance.stop();
+            // Never kill a turn in flight: park the relaunch and let the
+            // running answer land before the new configuration takes over.
+            OrchestratorManager.instance.requestRestart(
+              reason: 'gemini model/temperature drift',
+              source: OrchestratorStopSource.modelSwitch,
+              argsFingerprint: OrchestratorManager.fingerprintFor(
+                backend: OrchestratorBackend.gemini,
+                modelId: geminiModel,
+                temperature: temperature,
+                maxTokens: maxTokens,
+              ),
+            );
           }
         }
         if (!OrchestratorManager.instance.isRunning) {
@@ -350,12 +472,13 @@ class LlmService {
           }
         }
 
-        final lastUser = _lastUserMessage(history);
-        if (lastUser == null) throw Exception('No user message to send.');
+        final split = _splitPromptAndHistory(history, contextSummary: contextSummary);
+        final prompt = split.prompt;
+        if (prompt == null) throw Exception('No user message to send.');
         return OrchestratorManager.instance.sendPrompt(
-          lastUser,
+          prompt,
           sessionKey: conversationId,
-          seedHistory: _seedHistoryForOrchestrator(history, contextSummary: contextSummary),
+          seedHistory: split.seed,
           forceHistorySync: true,
           taskMode: taskMode,
           thinking: thinking,
@@ -379,7 +502,18 @@ class LlmService {
           if (currentBackend != OrchestratorBackend.openrouter ||
               currentModel != orModel ||
               currentTemp != orTemperature) {
-            await OrchestratorManager.instance.stop();
+            // Never kill a turn in flight: park the relaunch and let the
+            // running answer land before the new configuration takes over.
+            OrchestratorManager.instance.requestRestart(
+              reason: 'openrouter model/temperature drift',
+              source: OrchestratorStopSource.modelSwitch,
+              argsFingerprint: OrchestratorManager.fingerprintFor(
+                backend: OrchestratorBackend.openrouter,
+                modelId: orModel,
+                temperature: orTemperature,
+                maxTokens: orMaxTokens,
+              ),
+            );
           }
         }
         if (!OrchestratorManager.instance.isRunning) {
@@ -423,12 +557,13 @@ class LlmService {
             );
           }
         }
-        final lastUser = _lastUserMessage(history);
-        if (lastUser == null) throw Exception('No user message to send.');
+        final split = _splitPromptAndHistory(history, contextSummary: contextSummary);
+        final prompt = split.prompt;
+        if (prompt == null) throw Exception('No user message to send.');
         return OrchestratorManager.instance.sendPrompt(
-          lastUser,
+          prompt,
           sessionKey: conversationId,
-          seedHistory: _seedHistoryForOrchestrator(history, contextSummary: contextSummary),
+          seedHistory: split.seed,
           forceHistorySync: true,
           taskMode: taskMode,
           thinking: thinking,
@@ -454,7 +589,18 @@ class LlmService {
           if (currentBackend != OrchestratorBackend.github ||
               currentModel != ghModel ||
               currentTemp != ghTemperature) {
-            await OrchestratorManager.instance.stop();
+            // Never kill a turn in flight: park the relaunch and let the
+            // running answer land before the new configuration takes over.
+            OrchestratorManager.instance.requestRestart(
+              reason: 'github models model/temperature drift',
+              source: OrchestratorStopSource.modelSwitch,
+              argsFingerprint: OrchestratorManager.fingerprintFor(
+                backend: OrchestratorBackend.github,
+                modelId: ghModel,
+                temperature: ghTemperature,
+                maxTokens: ghMaxTokens,
+              ),
+            );
           }
         }
         if (!OrchestratorManager.instance.isRunning) {
@@ -497,12 +643,13 @@ class LlmService {
             );
           }
         }
-        final lastUser = _lastUserMessage(history);
-        if (lastUser == null) throw Exception('No user message to send.');
+        final split = _splitPromptAndHistory(history, contextSummary: contextSummary);
+        final prompt = split.prompt;
+        if (prompt == null) throw Exception('No user message to send.');
         return OrchestratorManager.instance.sendPrompt(
-          lastUser,
+          prompt,
           sessionKey: conversationId,
-          seedHistory: _seedHistoryForOrchestrator(history, contextSummary: contextSummary),
+          seedHistory: split.seed,
           forceHistorySync: true,
           taskMode: taskMode,
           thinking: thinking,
@@ -523,45 +670,53 @@ class LlmService {
     }
   }
 
-  /// Extract the last user message from the chat history.
-  /// NOTE: `ChatMessage.role` is a `MessageRole` enum — comparing it to the
-  /// string `'user'` (as the previous version did) was always false, which
-  /// is what produced the "No user message to send" exception.
-  String? _lastUserMessage(List<ChatMessage> history) {
-    for (var i = history.length - 1; i >= 0; i--) {
-      if (history[i].role == MessageRole.user) return history[i].content;
-    }
-    return null;
-  }
-
-  List<Map<String, String>> _seedHistoryForOrchestrator(
+  /// Split the visible chat into the prompt and the seed history using a
+  /// single index, mirroring the backend's debug-mode ``_read_last_user_turn``:
+  /// the prompt is the last user turn, and the seed history is every
+  /// non-hidden turn *before* it. Because both halves derive from the same
+  /// index, the prompt can never also appear inside the seed history (the
+  /// duplicated-turn bug that made the assistant reply with a terse "OK.").
+  ({String? prompt, List<Map<String, String>> seed}) _splitPromptAndHistory(
     List<ChatMessage> history, {
     String? contextSummary,
   }) {
-    final List<Map<String, String>> result = [];
-    
-    // Add context summary as a system message if provided
+    // Locate the last user turn — its content is the prompt.
+    var lastUserIdx = -1;
+    for (var i = history.length - 1; i >= 0; i--) {
+      if (history[i].role == MessageRole.user) {
+        lastUserIdx = i;
+        break;
+      }
+    }
+
+    final seed = <Map<String, String>>[];
+
+    // Add context summary as a system message if provided.
     if (contextSummary != null && contextSummary.isNotEmpty) {
-      result.add({
+      seed.add({
         'role': 'system',
         'content': 'Context Summary: $contextSummary',
       });
     }
-    
-    if (history.isEmpty) return result;
-    final seed = history.sublist(0, history.length - 1);
-    result.addAll(seed
-        .where((m) => !m.hidden)
-        .map((m) => {
-              'role': switch (m.role) {
-                MessageRole.user => 'user',
-                MessageRole.assistant => 'assistant',
-                MessageRole.system => 'system',
-              },
-              'content': m.content,
-            })
-        .toList(growable: false));
-    return result;
+
+    // Seed history = every non-hidden turn strictly before the prompt.
+    for (var i = 0; i < lastUserIdx; i++) {
+      final m = history[i];
+      if (m.hidden) continue;
+      seed.add({
+        'role': switch (m.role) {
+          MessageRole.user => 'user',
+          MessageRole.assistant => 'assistant',
+          MessageRole.system => 'system',
+        },
+        'content': m.content,
+      });
+    }
+
+    return (
+      prompt: lastUserIdx >= 0 ? history[lastUserIdx].content : null,
+      seed: seed,
+    );
   }
 
   /// Check backend availability
@@ -616,10 +771,16 @@ class LlmService {
     }
   }
 
-  /// Stop the orchestrator if it's running
+  /// Stop the orchestrator if it's running.
+  ///
+  /// This is a genuine teardown request (app shutdown / explicit user action),
+  /// so it is allowed to terminate a turn that is still in flight.
   Future<void> stopOrchestrator() async {
     if (OrchestratorManager.instance.isRunning) {
-      await OrchestratorManager.instance.stop();
+      await OrchestratorManager.instance.stop(
+        source: OrchestratorStopSource.appShutdown,
+        reason: 'LlmService.stopOrchestrator',
+      );
     }
   }
 }

@@ -42,7 +42,7 @@ logger = logging.getLogger(__name__)
 ToolFunc = Callable[..., Any]
 ToolDefinition = Dict[str, Any]
 ResponseKind = Literal["tool_call", "final_answer", "malformed"]
-TaskMode = Literal["open", "task_compliance", "task_compliance_auto"]
+TaskMode = Literal["open", "user_input", "auto_input"]
 
 
 # =====================================================================
@@ -292,15 +292,24 @@ class ToolRegistry:
     # ------------------------------------------------------------------
     # Path helpers
     # ------------------------------------------------------------------
-
     def resolve_path(self, path: str | Path) -> Path:
         """Resolve *path* against the workspace root, refusing anything outside it.
 
         Uses real path containment (not string prefixing), so a sibling directory
         named like the workspace plus a suffix cannot be reached, and symlinks that
         point outward are rejected after resolution.
+
+        Invisible zero-width characters (U+200B..U+200F, U+2060, U+FEFF) are removed
+        before resolving, because they are not stripped by str.strip() and make
+        an otherwise valid path point to a non-existent file.
         """
-        raw = str(path).strip()
+        # Code points of invisible characters to delete from the incoming path
+        invisible = dict.fromkeys(
+            [0x200B, 0x200C, 0x200D, 0x200E, 0x200F, 0x2060, 0xFEFF]
+        )
+
+        # Remove invisible characters first, then trim regular whitespace
+        raw = str(path).translate(invisible).strip()
         candidate = self.base_path if not raw else (self.base_path / raw)
         resolved = candidate.expanduser().resolve()
 
@@ -310,6 +319,25 @@ class ToolRegistry:
                 f"('{self.base_path}'). Use relative paths inside the project."
             )
         return resolved
+
+
+    # def resolve_path(self, path: str | Path) -> Path:
+    #     """Resolve *path* against the workspace root, refusing anything outside it.
+    #
+    #     Uses real path containment (not string prefixing), so a sibling directory
+    #     named like the workspace plus a suffix cannot be reached, and symlinks that
+    #     point outward are rejected after resolution.
+    #     """
+    #     raw = str(path).strip()
+    #     candidate = self.base_path if not raw else (self.base_path / raw)
+    #     resolved = candidate.expanduser().resolve()
+    #
+    #     if resolved != self.base_path and not resolved.is_relative_to(self.base_path):
+    #         raise ValueError(
+    #             f"Access denied: '{path}' resolves outside the workspace "
+    #             f"('{self.base_path}'). Use relative paths inside the project."
+    #         )
+    #     return resolved
 
     def is_within_workspace(self, path: str | Path) -> bool:
         """Non-raising variant of :meth:`resolve_path`."""
@@ -622,12 +650,13 @@ class ToolRegistry:
             project_context: Optional[str] = None,
             task_mode: TaskMode | str = "open",
     ) -> str:
-        """Assemble the full system prompt: base rules, context, protocol, catalog.
+        """Assemble the full system prompt: base rules, context, catalog.
 
         ``project_context`` (typically the contents of ``.agent.md``) is inserted
-        between the base rules and the tool catalog. ``task_mode`` of
-        ``task_compliance`` / ``task_compliance_auto`` appends the TASK FLOW
-        PROTOCOL section; ``open`` omits it entirely.
+        between the base rules and the tool catalog. ``task_mode`` is accepted
+        for API compatibility with the Flutter client but no longer alters the
+        prompt: USER INPUT / AUTO INPUT are pure run-loop behaviours, and the
+        legacy task-flow protocol injection was removed.
         """
         sections: List[str] = [get_system_prompt_value("BASE_PROMPT").strip()]
 
@@ -638,9 +667,6 @@ class ToolRegistry:
                     project_context=project_context.strip(),
                 )
             )
-
-        if task_mode in ("task_compliance", "task_compliance_auto"):
-            sections.append(self._task_flow_prompt(auto=task_mode == "task_compliance_auto"))
 
         sections.append(self._tool_catalog())
         return "\n\n".join(sections)
@@ -686,17 +712,6 @@ class ToolRegistry:
         catalog = "\n\n".join(parts)
         self._catalog_cache = catalog
         return catalog
-
-    @staticmethod
-    def _task_flow_prompt(auto: bool) -> str:
-        """Task-flow protocol section, parsed downstream by ``common.loop.task_protocol``."""
-        hint_key = "PROCEED_HINT_AUTO" if auto else "PROCEED_HINT_MANUAL"
-        hint = get_system_prompt_value(hint_key)
-        return (
-            get_system_prompt_value("TASK_FLOW_PROMPT")
-            .strip()
-            .replace("__PROCEED_HINT__", hint)
-        )
 
     @staticmethod
     def _base_system_prompt() -> List[str]:

@@ -12,18 +12,19 @@ import '../../core/constants/agent_context_template.dart';
 import '../../core/theme/app_theme.dart';
 import '../../core/utils/notification_helper.dart';
 import '../../data/models/conversation.dart';
-import '../../data/models/conversation_task.dart';
+import '../../data/models/conversation_turn.dart';
 import '../../data/models/message.dart';
 import '../../data/repositories/agent_credentials_repository.dart';
 import '../../data/repositories/agent_role_settings_repository.dart';
 import '../../data/repositories/backend_settings_repository.dart';
 import '../../data/repositories/conversation_repository.dart';
+import '../../data/repositories/conversation_turn_repository.dart';
 import '../../data/repositories/dev_filters_repository.dart';
 import '../../data/repositories/local_server_config_repository.dart';
 import '../../data/repositories/message_repository.dart';
 import '../../data/repositories/settings_repository.dart';
-import '../../data/repositories/task_repository.dart';
 import '../../services/chat_processing_service.dart';
+import '../../services/chat_turn_controller.dart';
 import '../../services/context_summary_service.dart';
 import '../../services/huggingface_service.dart';
 import '../../services/llm_service.dart';
@@ -35,14 +36,16 @@ import '../../statemanagement/method_listener.dart';
 import '../../statemanagement/state_manager.dart';
 import '../screens/home_screen.dart';
 import 'chat_input.dart';
+import 'horizontal_resize_handle.dart';
 import 'message_bubble.dart';
 import 'model_switcher.dart';
+import 'model_thinking_panel.dart';
 import 'openrouter_usage_badge.dart';
 import 'orchestrator_log_panel.dart';
 import 'quick_server_panel.dart';
 import 'resize_handle.dart';
 import 'sidebar.dart';
-import 'task_checklist_panel.dart';
+import 'thinking_control.dart';
 import 'workflow_breadcrumb.dart';
 
 class ChatView extends StatefulWidget {
@@ -77,18 +80,40 @@ class _ChatViewState extends StateManager<ChatView> with WidgetsBindingObserver 
   String? _sendError;
   double _currentScroll = 0.0;
 
+  /// AUTO INPUT notice surfaced by the orchestrator (e.g. "no Workflow Agent
+  /// is configured as User"). Rendered as a dismissible banner above the
+  /// input so the user knows why the autonomous loop stopped after one reply.
+  String? _autoInputNotice;
+  StreamSubscription<String>? _autoInputNoticeSub;
+
+  /// Intermediate answers produced while AUTO INPUT keeps working on its own.
+  /// Each one is a real assistant turn in the orchestrator's conversation
+  /// history, so it is persisted and rendered instead of being dropped.
+  StreamSubscription<String>? _autoInputReplySub;
+
+  /// Continuation prompts authored by the AUTO INPUT User agent (second
+  /// Workflow Agents slot). Rendered as user-side bubbles so the
+  /// model-to-model exchange reads as a continuing conversation.
+  StreamSubscription<String>? _autoInputPromptSub;
+
+  /// True while the User agent is reviewing the last reply and writing the
+  /// next prompt; drives the user-side typing indicator.
+  StreamSubscription<bool>? _autoInputEvaluatingSub;
+  bool _autoInputUserWriting = false;
+
   /// Active backend — loaded once and cached so build() never needs a
   /// FutureBuilder (which tears down child widgets on every setState).
   LlmBackend? _activeBackend;
 
-  /// Task-flow mode for this chat. Drives whether the structured
-  /// ``<tasks>`` / ``<task_status>`` protocol is active.
-  ///   - 'open'                : free-form chat (default for legacy chats)
-  ///   - 'task_compliance'      : plan + manual proceed buttons
-  ///   - 'task_compliance_auto' : plan + auto proceed
-  /// The user picks one from the dropdown above the message list and
-  /// the choice is forwarded to the orchestrator on every send.
-  String _taskMode = 'open';
+  /// Input mode for this chat, selected from the dropdown in the input bar.
+  ///   - 'user_input' : user-driven loop; the orchestrator waits for an
+  ///                    explicit user message before every model call
+  ///                    (the default, and what the retired 'open' alias
+  ///                    always resolved to on the Python side).
+  ///   - 'auto_input' : after each reply the orchestrator asks the model to
+  ///                    self-evaluate; if the request isn't done it feeds
+  ///                    its own follow-up prompt back in until completion.
+  String _taskMode = 'user_input';
 
   /// Thinking ON/OFF master switch. When ON, the backend enables extended
   /// reasoning (Anthropic thinking, Gemini thinkingConfig, OpenAI reasoning_effort).
@@ -109,17 +134,26 @@ class _ChatViewState extends StateManager<ChatView> with WidgetsBindingObserver 
   /// Current height of the orchestrator log panel when visible.
   double _logPanelHeight = 220.0 - 123;
 
+  /// Current width of the left (model thinking) panel when visible.
+  double _thinkingPanelWidth = 260.0;
+
+  static const String _thinkingPanelWidthKey = 'thinking_panel_width';
+
   /// Token for the currently in-flight send. Non-null only while [_sending].
   _CancelToken? _currentCancel;
 
-  /// Subscription to structured task-flow events. Used to inject silent
-  /// "Working on task #N..." status bubbles into the chat while the
-  /// orchestrator is progressing through a TASK COMPLIANCE plan.
-  StreamSubscription<OrchestratorTaskEvent>? _taskSub;
+  /// Subscription to the process-global turn journal. The reply of a turn that
+  /// was dispatched from this conversation still arrives here after a remount
+  /// (conversation switch, Settings tab), so the answer is never dropped.
+  StreamSubscription<ChatTurnEvent>? _turnSub;
 
-  /// ID of the most recent hidden status message, if any. Reused so a
-  /// single in-progress status bubble is updated rather than stacking up.
-  String? _statusMessageId;
+  /// Promotes this view from "no session yet" to a live subscription once the
+  /// chat's orchestrator session is created by a send.
+  StreamSubscription<OrchestratorSession>? _sessionAddedSub;
+
+  /// Most recent persisted turn for this conversation. Used to flag a turn that
+  /// never produced a delivered answer (crash, forced stop).
+  ConversationTurn? _lastTurn;
 
   final ScrollController _scrollController = ScrollController();
 
@@ -144,7 +178,37 @@ class _ChatViewState extends StateManager<ChatView> with WidgetsBindingObserver 
     WidgetsBinding.instance.addObserver(this);
     _loadConversation();
     _refreshActiveBackend();
-    _taskSub = OrchestratorManager.instance.taskStream.listen(_onTaskEvent);
+    _restoreThinkingPanelWidth();
+
+    // Re-attach to the turn journal. A turn dispatched from this conversation
+    // survives a widget remount (conversation switch, Settings tab) and its
+    // reply is delivered to whichever view is mounted when it finishes.
+    _turnSub = ChatTurnController.instance.events.listen(_onTurnEvent);
+    final activeTurn = ChatTurnController.instance.active;
+    if (activeTurn != null &&
+        activeTurn.conversationId == widget.conversationId) {
+      _sending = true;
+    }
+
+    // AUTO INPUT events belong to this chat's session only. Binding them here
+    // (rather than to the global singleton) is what stops chat B from rendering
+    // chat A's intermediate answers and user-agent prompts.
+    _bindSessionStreams();
+
+    // AUTO INPUT is MaM (Model against Model): it is the only task mode that
+    // puts the two Workflow Agents slots to work together (Assistant answers,
+    // User reviews and authors the next prompt). Enabling the master switch in
+    // Settings -> Workflow Agents MaM therefore selects AUTO INPUT here —
+    // immediately when the switch is flipped while this chat is open, and on
+    // mount for a switch that was already ON.
+    AgentRoleSettingsRepository.instance.enabledNotifier
+        .addListener(_syncTaskModeWithWorkflow);
+    // The notifier still holds its default (false) on a fresh mount, so read
+    // the persisted switch before deciding the initial mode. The listener
+    // above then covers a switch flipped while this chat stays open.
+    AgentRoleSettingsRepository.instance.isEnabled().then((_) {
+      if (mounted) _syncTaskModeWithWorkflow();
+    });
 
     _scrollController.addListener(() {
       if (!_scrollController.hasClients) return;
@@ -152,6 +216,31 @@ class _ChatViewState extends StateManager<ChatView> with WidgetsBindingObserver 
         _currentScroll = _scrollController.offset;
       });
     });
+  }
+
+  /// Keeps the input-bar task mode in sync with the Workflow Agents MaM
+  /// master switch. MaM (Model against Model) only runs in AUTO INPUT, where
+  /// the Assistant answers and the User agent reviews and authors the next
+  /// prompt; AUTO INPUT likewise needs MaM on, otherwise no second agent is
+  /// configured. Switching MaM ON therefore selects AUTO INPUT, switching it
+  /// OFF falls back to USER INPUT so the chat stops advertising a model pair
+  /// that is no longer configured.
+  void _syncTaskModeWithWorkflow() {
+    if (!mounted) return;
+    final enabled = AgentRoleSettingsRepository.instance.enabledNotifier.value;
+    if (enabled && _taskMode != 'auto_input') {
+      setState(() => _taskMode = 'auto_input');
+    } else if (!enabled && _taskMode == 'auto_input') {
+      setState(() => _taskMode = 'user_input');
+    }
+  }
+
+  Future<void> _restoreThinkingPanelWidth() async {
+    final saved = await SettingsRepository.instance.get(_thinkingPanelWidthKey);
+    final parsed = double.tryParse(saved ?? '');
+    if (parsed != null && parsed >= 120.0) {
+      if (mounted) setState(() => _thinkingPanelWidth = parsed);
+    }
   }
 
   // @override
@@ -166,8 +255,80 @@ class _ChatViewState extends StateManager<ChatView> with WidgetsBindingObserver 
   void didUpdateWidget(ChatView oldWidget) {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.conversationId != widget.conversationId) {
+      // Only per-conversation UI state is reset here. The orchestrator session
+      // is deliberately preserved: switching chats must never discard a turn
+      // that is still being produced for the conversation being left.
+      setState(() {
+        _editingMessageId = null;
+        _sendError = null;
+        _autoInputNotice = null;
+        _autoInputUserWriting = false;
+        // Rehydrate the busy flag from *this* chat's turn journal. Without it
+        // re-entering a chat whose answer is still being produced would show an
+        // idle input bar and a Play button.
+        _sending = ChatTurnController.instance.isBusyFor(widget.conversationId);
+      });
+      // Re-bind every per-session subscription: the streams belong to a
+      // session, so chat B must never render chat A's log, status or AUTO
+      // INPUT traffic.
+      _bindSessionStreams();
       _loadConversation();
     }
+  }
+
+  /// (Re)subscribe to the streams of the current conversation's session and
+  /// adopt its busy state.
+  ///
+  /// Sessions are created lazily, so nothing is subscribed until the chat's
+  /// session actually exists; a session that appears later is promoted through
+  /// [_pendingSessionBind]. Disposing the old subscriptions first is what keeps
+  /// chat A's output out of chat B's widgets.
+  void _bindSessionStreams() {
+    _autoInputNoticeSub?.cancel();
+    _autoInputReplySub?.cancel();
+    _autoInputPromptSub?.cancel();
+    _autoInputEvaluatingSub?.cancel();
+    _autoInputNoticeSub = null;
+    _autoInputReplySub = null;
+    _autoInputPromptSub = null;
+    _autoInputEvaluatingSub = null;
+
+    _sending = ChatTurnController.instance.isBusyFor(widget.conversationId);
+
+    final session = OrchestratorManager.instance.peek(widget.conversationId);
+    if (session == null) {
+      _autoInputUserWriting = false;
+      // The session may be created by a send that is already on its way.
+      _sessionAddedSub ??=
+          OrchestratorManager.instance.sessionAdded.listen((added) {
+        if (added.conversationId == widget.conversationId && mounted) {
+          _bindSessionStreams();
+        }
+      });
+      return;
+    }
+
+    // AUTO INPUT notices are emitted mid-request (e.g. "no Workflow Agent
+    // configured as User"), so they must be wired before the reply returns.
+    _autoInputNoticeSub = session.autoInputNoticeStream.listen((notice) {
+      if (!mounted) return;
+      // `_sending` is cleared by the normal completion path once the final
+      // answer lands, otherwise the typing indicator flickers off early.
+      setState(() => _autoInputNotice = notice);
+    });
+
+    _autoInputReplySub =
+        session.autoInputReplyStream.listen(_handleAutoInputReply);
+
+    _autoInputPromptSub =
+        session.autoInputPromptStream.listen(_handleAutoInputPrompt);
+
+    _autoInputEvaluatingSub =
+        session.autoInputEvaluatingStream.listen((writing) {
+      if (!mounted) return;
+      setState(() => _autoInputUserWriting = writing);
+    });
+    _autoInputUserWriting = session.autoInputEvaluating;
   }
 
   @override
@@ -240,6 +401,9 @@ class _ChatViewState extends StateManager<ChatView> with WidgetsBindingObserver 
     // Hydrate the log panel with the previous session's output from disk.
     OrchestratorManager.instance.loadLogFromDisk(id);
 
+    // Surface an interrupted turn (crash, forced quit, STOP) on the last bubble.
+    await _refreshLastTurn();
+
     WidgetsBinding.instance.addPostFrameCallback((_) => _scrollToBottom());
 
     // If a pending-send text was staged (e.g. from auto-generate-agent-context),
@@ -285,7 +449,23 @@ class _ChatViewState extends StateManager<ChatView> with WidgetsBindingObserver 
   }
 
   /// Immediately cancels the in-flight generation and resets the UI.
+  ///
+  /// This is a genuine STOP: the shared turn is aborted so a late reply is
+  /// discarded, the local token is cancelled, and the subprocess is terminated
+  /// so the model stops burning tokens on an answer nobody will see.
   void _stopGeneration() {
+    // Scope the STOP to the chat that owns this view: aborting its journal
+    // entry and tearing down its session must leave every other running
+    // conversation untouched.
+    final id = widget.conversationId;
+    if (id != null) {
+      ChatTurnController.instance.abort(id, 'user stopped generation');
+      OrchestratorManager.instance.stopFor(
+        id,
+        source: OrchestratorStopSource.chatStopButton,
+        reason: 'user stopped generation from the chat view',
+      );
+    }
     _currentCancel?.cancel();
     _currentCancel = null;
     if (mounted) setState(() => _sending = false);
@@ -438,9 +618,14 @@ class _ChatViewState extends StateManager<ChatView> with WidgetsBindingObserver 
     // Stage the prompt so it fires after the conversation loads.
     _pendingAutoSend = promptText;
 
-    // Stop orchestrator so it restarts fresh for the new conversation.
+    // Park a relaunch instead of killing the process: a turn may still be
+    // running in the conversation we are leaving and its answer has to land
+    // before the new session takes over.
     if (OrchestratorManager.instance.isRunning) {
-      await OrchestratorManager.instance.stop();
+      OrchestratorManager.instance.requestRestart(
+        reason: 'agent-context generation opened a new conversation',
+        source: OrchestratorStopSource.conversationSwitch,
+      );
     }
 
     // Open the new conversation — _loadConversation will pick up
@@ -695,11 +880,38 @@ class _ChatViewState extends StateManager<ChatView> with WidgetsBindingObserver 
       createdAt: now,
     );
 
+    // Take ownership of the turn in the process-global controller BEFORE
+    // anything is persisted. Refusing after the insert would strand an
+    // unanswered user message in the transcript: visible in the DB, invisible
+    // in the UI, and never answered.
+    final turn = ChatTurnController.instance.begin(
+      conversationId: conv.id,
+      prompt: safeText,
+    );
+    if (turn == null) {
+      if (mounted) {
+        setState(() {
+          _sendError = 'A turn is already running in another conversation. '
+              'Wait for it to finish before sending this prompt.';
+        });
+      }
+      return;
+    }
+
     await MessageRepository.instance.insert(userMsg);
     await ConversationRepository.instance.touch(conv.id);
 
     final cancelToken = _CancelToken();
     _currentCancel = cancelToken;
+
+    // Journal the turn so an interruption (crash, forced quit, kill) stays
+    // visible in the transcript as an "Interrupted" turn instead of vanishing.
+    final turnRowId = await ConversationTurnRepository.instance.start(
+      conversationId: conv.id,
+      prompt: safeText,
+      backend: backend.name,
+      modelId: modelId,
+    );
 
     // Capture the moment the request is dispatched so we can measure
     // how long the assistant takes to reply.
@@ -709,21 +921,9 @@ class _ChatViewState extends StateManager<ChatView> with WidgetsBindingObserver 
       _messages.add(userMsg);
       _sending = true;
       _sendError = null;
+      // Dismiss any stale AUTO INPUT notice: the user is driving again.
+      _autoInputNotice = null;
     });
-
-    // A new user turn resets the task status bubble; a fresh one will be
-    // created if the orchestrator reports task progress during this turn.
-    _removeStatusBubble();
-
-    // A new user prompt means the previous task plan is stale — clear it
-    // from the DB and broadcast an empty plan so the checklist panel resets
-    // immediately, without waiting for the orchestrator's next reply.
-    if (_taskMode != 'open') {
-      await TaskRepository.instance.deleteByConversation(conv.id);
-      OrchestratorManager.instance.taskController.add(
-        OrchestratorTasksProposed(conversationId: conv.id, tasks: const []),
-      );
-    }
 
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _scrollToBottom();
@@ -742,7 +942,15 @@ class _ChatViewState extends StateManager<ChatView> with WidgetsBindingObserver 
 
     final history = List<ChatMessage>.unmodifiable(_messages);
 
-    final multiAgentActive = AgentRoleSettingsRepository.instance.enabledNotifier.value;
+    // AUTO INPUT is Model against Model: the Assistant that answers and the
+    // User that reviews are both taken from Settings -> Workflow Agents MaM.
+    // The mode therefore has to bring the multi-agent orchestrator up even
+    // when the master switch is off — otherwise the chat would answer with
+    // the Model Settings model and the configured User agent would never be
+    // consulted.
+    final workflowEnabled =
+        AgentRoleSettingsRepository.instance.enabledNotifier.value;
+    final multiAgentActive = workflowEnabled || _taskMode == 'auto_input';
     if (_isOrchestratorBackend(backend) || multiAgentActive) {
       await _startOrchestratorForActiveBackend(silent: true);
     }
@@ -794,6 +1002,14 @@ class _ChatViewState extends StateManager<ChatView> with WidgetsBindingObserver 
           temperature = 0.2;
       }
 
+      // With Workflow Agents MaM enabled each role card owns its slot's
+      // thinking flag and effort level, and the launcher seeds them on the
+      // orchestrator at start-up. Sending the per-conversation values here
+      // would override the configured slots, so the keys are omitted (null =
+      // "keep the launch-time value" on the Python side).
+      final workflowOwnsThinking =
+          AgentRoleSettingsRepository.instance.enabledNotifier.value;
+
       final reply = await LlmService.instance.sendChat(
         backend: backend,
         token: token ?? "",
@@ -806,11 +1022,24 @@ class _ChatViewState extends StateManager<ChatView> with WidgetsBindingObserver 
         ollamaModelId: modelId,
         ollamaPythonBridgeUrl: ollamaPythonBridgeUrl,
         taskMode: _taskMode,
-        thinking: _thinking,
-        effort: _effort,
+        thinking: workflowOwnsThinking ? null : _thinking,
+        effort: workflowOwnsThinking ? null : _effort,
       );
 
-      if (cancelToken.isCancelled) return;
+      if (cancelToken.isCancelled || turn.cancelled) {
+        await ConversationTurnRepository.instance.finish(
+          turnRowId,
+          status: ConversationTurnStatus.aborted,
+          error: 'stopped by the user',
+        );
+        if (mounted) {
+          setState(() {
+            _sending = false;
+            _currentCancel = null;
+          });
+        }
+        return;
+      }
 
       final responseTimeMs = DateTime.now().millisecondsSinceEpoch - sendStartMs;
 
@@ -825,37 +1054,65 @@ class _ChatViewState extends StateManager<ChatView> with WidgetsBindingObserver 
 
       await MessageRepository.instance.insert(assistantMsg);
       await ConversationRepository.instance.touch(conv.id);
+      await ConversationTurnRepository.instance.finish(
+        turnRowId,
+        status: ConversationTurnStatus.completed,
+      );
 
-      if (!mounted) return;
+      // Hand the reply to the controller so any mounted view for this
+      // conversation renders it — including a view that mounted after the
+      // prompt was dispatched.
+      ChatTurnController.instance.complete(turn, assistantMsg, responseTimeMs);
 
-      _removeStatusBubble();
-
-      setState(() {
-        _messages.add(assistantMsg);
-        _sending = false;
-        _currentCancel = null;
-      });
+      if (mounted) {
+        setState(() {
+          _messages.add(assistantMsg);
+          _sending = false;
+          _currentCancel = null;
+        });
+      }
 
       await MethodListener<Sidebar>().callMethod("refreshConversations");
 
       WidgetsBinding.instance.addPostFrameCallback((_) {
-        _scrollToBottom();
+        if (mounted) _scrollToBottom();
       });
     } on HuggingFaceException catch (e) {
-      if (cancelToken.isCancelled || !mounted) return;
+      // A STOP surfaces as an exception because the subprocess is torn down
+      // underneath the awaiting future. That is an abort, not a failure: the
+      // chip must read "Turn interrupted" instead of "Turn failed".
+      final aborted = turn.cancelled || cancelToken.isCancelled;
+      await ConversationTurnRepository.instance.finish(
+        turnRowId,
+        status: aborted
+            ? ConversationTurnStatus.aborted
+            : ConversationTurnStatus.failed,
+        error: aborted ? 'stopped by the user' : e.message,
+      );
+      ChatTurnController.instance.fail(turn, e.message);
+      if (!mounted) return;
 
       setState(() {
         _sending = false;
         _currentCancel = null;
-        _sendError = e.message;
+        if (!aborted) _sendError = e.message;
       });
     } catch (e) {
-      if (cancelToken.isCancelled || !mounted) return;
+      final aborted = turn.cancelled || cancelToken.isCancelled;
+      await ConversationTurnRepository.instance.finish(
+        turnRowId,
+        status: aborted
+            ? ConversationTurnStatus.aborted
+            : ConversationTurnStatus.failed,
+        error: aborted ? 'stopped by the user' : e.toString(),
+      );
+      ChatTurnController.instance.fail(turn, e.toString());
+      if (!mounted) return;
 
       setState(() {
         _sending = false;
         _currentCancel = null;
-        _sendError = e.toString();
+        if (!aborted) _sendError = e.toString();
       });
     }
   }
@@ -1159,6 +1416,61 @@ class _ChatViewState extends StateManager<ChatView> with WidgetsBindingObserver 
     return trimmed.isNotEmpty ? trimmed : reply;
   }
 
+  /// Persist and render one intermediate AUTO INPUT answer.
+  ///
+  /// While AUTO INPUT runs, every non-final answer is a real assistant turn in
+  /// the orchestrator's conversation, so it is stored as soon as it arrives
+  /// instead of being discarded: the user sees the running transcript and the
+  /// persisted chat stays consistent with what the models actually exchanged.
+  Future<void> _handleAutoInputReply(String reply) async {
+    final conv = _conversation;
+    if (conv == null) return;
+    final cleaned = _sanitizeAssistantReply(reply);
+    if (cleaned.trim().isEmpty) return;
+
+    final msg = ChatMessage(
+      id: const Uuid().v4(),
+      conversationId: conv.id,
+      role: MessageRole.assistant,
+      content: cleaned,
+      createdAt: DateTime.now().millisecondsSinceEpoch,
+    );
+
+    await MessageRepository.instance.insert(msg);
+    await ConversationRepository.instance.touch(conv.id);
+    if (!mounted) return;
+    setState(() => _messages.add(msg));
+    WidgetsBinding.instance.addPostFrameCallback((_) => _scrollToBottom());
+  }
+
+  /// Persist and render a User-agent continuation prompt.
+  ///
+  /// In AUTO INPUT the second Workflow Agents slot authors the next user turn
+  /// while the loop keeps running. Rendering it as a user bubble tagged with
+  /// the `user` agent makes the exchange read as a continuing conversation
+  /// instead of back-to-back assistant answers.
+  Future<void> _handleAutoInputPrompt(String prompt) async {
+    final conv = _conversation;
+    if (conv == null) return;
+    final cleaned = prompt.trim();
+    if (cleaned.isEmpty) return;
+
+    final msg = ChatMessage(
+      id: const Uuid().v4(),
+      conversationId: conv.id,
+      role: MessageRole.user,
+      content: cleaned,
+      createdAt: DateTime.now().millisecondsSinceEpoch,
+      agent: 'user',
+    );
+
+    await MessageRepository.instance.insert(msg);
+    await ConversationRepository.instance.touch(conv.id);
+    if (!mounted) return;
+    setState(() => _messages.add(msg));
+    WidgetsBinding.instance.addPostFrameCallback((_) => _scrollToBottom());
+  }
+
   Future<void> _editChatTitle(Conversation conv) async {
     final controller = TextEditingController(text: conv.title);
     final newTitle = await showDialog<String>(
@@ -1234,30 +1546,20 @@ class _ChatViewState extends StateManager<ChatView> with WidgetsBindingObserver 
         return Column(
           children: [
             _buildHeader(_conversation!),
-            _buildTaskModeBar(),
-            Expanded(child: _buildMessagesList()),
-            if (_sendError != null) _buildErrorBar(),
-            _buildScrollToBottomButton(),
-            if (_taskMode != 'open' && _conversation != null)
-              TaskChecklistPanel(
-                conversationId: _conversation!.id,
-                taskMode: _taskMode,
-                onAction: _onTaskAction,
+            Expanded(
+              child: Stack(
+                children: [
+                  Positioned.fill(child: _buildMessagesList()),
+                  Positioned(
+                    right: 16,
+                    bottom: 16,
+                    child: _buildScrollToBottomButton(),
+                  ),
+                ],
               ),
-            // Live activity strip: shows spinning indicator + current
-            // orchestrator activity label (and the model's live thinking)
-            // whenever the orchestrator is running or a send is in flight.
-            // Works in every task mode, including OPEN.
-            //
-            // Rule: once the assistant reply is in the chat (last message is
-            // the assistant), the turn is over and the strip must disappear.
-            _OrchestratorActivityStrip(
-              visible: !_lastMessageIsAssistant &&
-                  (_sending ||
-                      (_activeBackend != null &&
-                          _isOrchestratorBackend(_activeBackend!) &&
-                          OrchestratorManager.instance.isRunning)),
             ),
+            if (_autoInputNotice != null) _buildAutoInputNoticeBar(),
+            if (_sendError != null) _buildErrorBar(),
             ChatInput(
               enabled: !_sending,
               sending: _sending,
@@ -1274,6 +1576,11 @@ class _ChatViewState extends StateManager<ChatView> with WidgetsBindingObserver 
               onNewChatFromJson: _newChatFromJson,
               controller: _inputController,
               onAutoGenerateAgentContext: _autoGenerateAgentContext,
+              taskMode: _taskMode,
+              onTaskModeChanged: (v) {
+                if (v == _taskMode) return;
+                setState(() => _taskMode = v);
+              },
             ),
             if (showServerPanel)
               QuickServerPanel(
@@ -1285,8 +1592,42 @@ class _ChatViewState extends StateManager<ChatView> with WidgetsBindingObserver 
                 height: clampedLogHeight,
                 onHeightChanged: (h) => setState(() => _logPanelHeight = h),
                 minHeight: 40.0,
+                inverted: true,
               ),
-              OrchestratorLogPanel(height: clampedLogHeight),
+              Padding(
+                padding: const EdgeInsets.fromLTRB(0, 0, 10, 0),
+                child: SizedBox(
+                  height: clampedLogHeight,
+                  child: Row(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      SizedBox(
+                        width: _thinkingPanelWidth,
+                        child: ModelThinkingPanel(
+                          height: clampedLogHeight,
+                          conversationId: widget.conversationId,
+                        ),
+                      ),
+                      HorizontalResizeHandle(
+                        width: _thinkingPanelWidth,
+                        onWidthChanged: (w) {
+                          setState(() => _thinkingPanelWidth = w);
+                          SettingsRepository.instance
+                              .set(_thinkingPanelWidthKey, w.toStringAsFixed(1));
+                        },
+                        minWidth: 120.0,
+                        maxWidth: constraints.maxWidth * 0.7,
+                      ),
+                      Expanded(
+                        child: OrchestratorLogPanel(
+                          height: clampedLogHeight,
+                          conversationId: widget.conversationId,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
             ],
           ],
         );
@@ -1296,7 +1637,7 @@ class _ChatViewState extends StateManager<ChatView> with WidgetsBindingObserver 
 
   Widget _buildHeader(Conversation conv) {
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
+      padding: const EdgeInsets.only(left: 20, top: 8, bottom: 8),
       decoration: const BoxDecoration(
         border: Border(bottom: BorderSide(color: AppTheme.border)),
         color: AppTheme.bgPrimary,
@@ -1322,44 +1663,42 @@ class _ChatViewState extends StateManager<ChatView> with WidgetsBindingObserver 
             ),
           ),
           const OpenRouterUsageBadge(),
-          const SizedBox(width: 8),
-          // Thinking ON/OFF master switch
-          GestureDetector(
-            onTap: () {
-              final newValue = !_thinking;
-              setState(() => _thinking = newValue);
-              final conv = _conversation;
-              if (conv != null) {
-                ConversationRepository.instance.updateThinking(conv.id, newValue);
-                _conversation = conv.copyWith(thinking: newValue);
-              }
+          // Thinking ON/OFF + effort. Hidden while Workflow Agents MaM is
+          // enabled: in that mode each role card in Settings owns its own
+          // thinking flag and effort level, and the launcher seeds both on the
+          // orchestrator at start-up, so a second per-conversation control here
+          // would silently override the configured slots.
+          ValueListenableBuilder<bool>(
+            valueListenable: AgentRoleSettingsRepository.instance.enabledNotifier,
+            builder: (ctx, multiAgent, _) {
+              if (multiAgent) return const SizedBox.shrink();
+              return Padding(
+                padding: const EdgeInsets.only(left: 8),
+                child: ThinkingControl(
+                  condense: true,
+                  thinking: _thinking,
+                  effort: _effort,
+                  onThinkingChanged: (newValue) {
+                    setState(() => _thinking = newValue);
+                    final conv = _conversation;
+                    if (conv != null) {
+                      ConversationRepository.instance
+                          .updateThinking(conv.id, newValue);
+                      _conversation = conv.copyWith(thinking: newValue);
+                    }
+                  },
+                  onEffortChanged: (v) {
+                    setState(() => _effort = v);
+                    final conv = _conversation;
+                    if (conv != null) {
+                      ConversationRepository.instance.updateEffort(conv.id, v);
+                      _conversation = conv.copyWith(effort: v);
+                    }
+                  },
+                ),
+              );
             },
-            child: Tooltip(
-              message: _thinking ? 'Thinking: ON' : 'Thinking: OFF',
-              child: Container(
-                width: 46,
-                height: 46,
-                decoration: BoxDecoration(
-                  border: Border.all(
-                    color: _thinking ? AppTheme.accent : AppTheme.accentSecondary,
-                    width: 0.5,
-                  ),
-                  borderRadius: BorderRadius.circular(8),
-                  color: _thinking ? AppTheme.accent.withValues(alpha: 0.1) : Colors.transparent,
-                ),
-                child: Icon(
-                  Icons.psychology,
-                  size: 18,
-                  color: _thinking ? AppTheme.accent : AppTheme.textSecondary,
-                ),
-              ),
-            ),
           ),
-          // Effort dropdown (only visible when thinking is ON)
-          if (_thinking) ...[
-            const SizedBox(width: 6),
-            _buildEffortDropdown(),
-          ],
           const SizedBox(width: 8),
           ValueListenableBuilder<bool>(
             valueListenable: AgentRoleSettingsRepository.instance.enabledNotifier,
@@ -1367,8 +1706,20 @@ class _ChatViewState extends StateManager<ChatView> with WidgetsBindingObserver 
               if (multiAgent) {
                 // Multi-agent mode owns the per-role models in Settings,
                 // so the per-conversation model picker is replaced by a
-                // breadcrumb that shows the four roles + their models.
+                // breadcrumb that shows the configured roles + their models.
                 return WorkflowBreadcrumb(sending: _sending);
+              }
+              // AUTO INPUT is Model against Model (MaM): the reply comes from
+              // the Assistant model while the review and the next user prompt
+              // come from the User model, both configured in
+              // Settings -> Workflow Agents MaM. Showing the single-model
+              // picker here would advertise a model that is not actually
+              // driving the exchange, so the header surfaces the two agents.
+              if (_taskMode == 'auto_input') {
+                return WorkflowBreadcrumb(
+                  sending: _sending,
+                  roleFilter: const ['reasoner', 'user'],
+                );
               }
               return ModelSwitcher(
                 selectedModelId: conv.modelId ?? '',
@@ -1381,22 +1732,43 @@ class _ChatViewState extends StateManager<ChatView> with WidgetsBindingObserver 
               );
             },
           ),
-          const SizedBox(width: 12),
+          const SizedBox(width: 8),
           Container(
-              width: 46,
-              height: 46,
+              width: 40,
+              height: 40,
               decoration: BoxDecoration(
                 border: Border.all(color: AppTheme.accentSecondary, width: 0.5),
                 borderRadius: BorderRadius.circular(8),
               ),
-              child: IconButton(
-                tooltip: OrchestratorManager.instance.isRunning ? "Stop orchestrator" : "Start orchestrator",
-                icon: Icon(
-                  OrchestratorManager.instance.isRunning ? Icons.stop_outlined : Icons.play_arrow_outlined,
-                  size: 20,
-                  color: OrchestratorManager.instance.isRunning ? AppTheme.accentSecondary : AppTheme.accent,
-                ),
-                onPressed: () => OrchestratorManager.instance.isRunning ? _stopOrchestrator() : _startOrchestrator(),
+              // Start/Stop is bound to *this chat's* session only. The
+              // StreamBuilder flips the icon without a manual setState, and
+              // pressing it can never touch another conversation's process.
+              child: StreamBuilder<OrchestratorSessionState>(
+                stream: OrchestratorManager.instance
+                    .peek(conv.id)
+                    ?.sessionStateStream,
+                initialData: OrchestratorManager.instance
+                    .peek(conv.id)
+                    ?.lastSessionState,
+                builder: (context, snapshot) {
+                  final running =
+                      OrchestratorManager.instance.peek(conv.id)?.isRunning ??
+                          false;
+                  return IconButton(
+                    tooltip: running
+                        ? "Stop this chat's orchestrator"
+                        : "Start this chat's orchestrator",
+                    icon: Icon(
+                      running ? Icons.stop_outlined : Icons.play_arrow_outlined,
+                      size: 20,
+                      color: running
+                          ? AppTheme.accentSecondary
+                          : AppTheme.accent,
+                    ),
+                    onPressed: () =>
+                        running ? _stopOrchestrator() : _startOrchestrator(),
+                  );
+                },
               )),
           const SizedBox(width: 12),
           // Local server button (only for local backend)
@@ -1787,8 +2159,13 @@ class _ChatViewState extends StateManager<ChatView> with WidgetsBindingObserver 
 
     if (!mounted) return;
 
-    if (OrchestratorManager.instance.isRunning) {
-      await OrchestratorManager.instance.stop();
+    // Navigation only — a running turn is never killed here. The orchestrator
+    // relaunch, if one is needed, is parked until that turn drains.
+    if (OrchestratorManager.instance.isBusy) {
+      OrchestratorManager.instance.requestRestart(
+        reason: 'new chat created from JSON while a turn was running',
+        source: OrchestratorStopSource.conversationSwitch,
+      );
     }
 
     // Navigate to the new conversation via HomeScreen. The openConversation
@@ -1806,7 +2183,17 @@ class _ChatViewState extends StateManager<ChatView> with WidgetsBindingObserver 
   Future<void> _stopOrchestrator() async {
     try {
       NotificationHelper.showInfo(context, 'Stopping orchestrator...');
-      await OrchestratorManager.instance.stop();
+      // Explicit user STOP, scoped to this chat: the only affordance in the
+      // chat surface allowed to terminate a turn that is still in flight, and
+      // it must never reach another conversation's process.
+      final id = widget.conversationId;
+      if (id != null) {
+        await OrchestratorManager.instance.stopFor(
+          id,
+          source: OrchestratorStopSource.chatStopButton,
+          reason: 'user pressed STOP in the chat view',
+        );
+      }
       if (!mounted) return;
       NotificationHelper.showSuccess(context, 'Orchestrator stopped');
       setState(() {});
@@ -1824,14 +2211,41 @@ class _ChatViewState extends StateManager<ChatView> with WidgetsBindingObserver 
         setState(() => _activeBackend = backend);
       }
 
-      final multiAgentEnabled = AgentRoleSettingsRepository.instance.enabledNotifier.value;
+      // AUTO INPUT is Model against Model: the Assistant (first slot) and the
+      // User (second slot) are the models configured in Settings -> Workflow
+      // Agents MaM. Selecting AUTO INPUT therefore has to bring up the
+      // multi-agent orchestrator even when the master switch is off, otherwise
+      // the chat would answer with the Model Settings model and the configured
+      // User agent would never be consulted.
+      final workflowEnabled =
+          AgentRoleSettingsRepository.instance.enabledNotifier.value;
+      final autoInputRequested = _taskMode == 'auto_input';
+      final multiAgentEnabled = workflowEnabled || autoInputRequested;
       if (!_isOrchestratorBackend(backend) && !multiAgentEnabled) return false;
 
       // Multi-agent mode: start orchestrator with multi-agent flag, ignoring
       // the conversation's backend/model selection (agent config drives models).
       if (multiAgentEnabled) {
+        // Already running the MaM session: reuse it. The models are owned by
+        // the Workflow Agents slots, so the session only needs replacing when a
+        // relaunch is explicitly pending.
         if (OrchestratorManager.instance.isRunning) {
-          await OrchestratorManager.instance.stop();
+          if (mounted && !_logVisible) {
+            setState(() => _logVisible = true);
+          }
+          if (!OrchestratorManager.instance.hasPendingRestart) return true;
+          if (OrchestratorManager.instance.isBusy) {
+            // A turn is in flight: let it finish and apply the relaunch after.
+            OrchestratorManager.instance.requestRestart(
+              reason: 'multi-agent session requested while a turn was running',
+              source: OrchestratorStopSource.modelSwitch,
+            );
+            return true;
+          }
+          await OrchestratorManager.instance.stop(
+            source: OrchestratorStopSource.internalFailure,
+            reason: 'relaunching the multi-agent session',
+          );
         }
         if (mounted && !_logVisible) {
           setState(() => _logVisible = true);
@@ -1970,14 +2384,34 @@ class _ChatViewState extends StateManager<ChatView> with WidgetsBindingObserver 
         return true;
       }
 
-      // Stop existing orchestrator if backend, model, or temperature changed.
+      // Backend / model / temperature changed: relaunch — but never while a
+      // turn is mid-flight. In that case the new configuration is parked and
+      // applied as soon as the running answer has reached the chat.
       if (OrchestratorManager.instance.isRunning) {
         final currentBackend = OrchestratorManager.instance.currentBackend;
         final currentModel = OrchestratorManager.instance.currentModelId;
         final currentTemp = OrchestratorManager.instance.currentTemperature;
 
-        if (currentBackend != desiredBackend || currentModel != modelId || currentTemp != temperature) {
-          await OrchestratorManager.instance.stop();
+        if (currentBackend != desiredBackend ||
+            currentModel != modelId ||
+            currentTemp != temperature) {
+          if (OrchestratorManager.instance.isBusy) {
+            OrchestratorManager.instance.requestRestart(
+              reason: 'backend/model/temperature changed while a turn was running',
+              source: OrchestratorStopSource.modelSwitch,
+              argsFingerprint: OrchestratorManager.fingerprintFor(
+                backend: desiredBackend,
+                modelId: modelId ?? '',
+                temperature: temperature,
+                maxTokens: maxTokens,
+              ),
+            );
+            return true;
+          }
+          await OrchestratorManager.instance.stop(
+            source: OrchestratorStopSource.internalFailure,
+            reason: 'relaunching with a different backend/model/temperature',
+          );
         }
       }
 
@@ -2237,162 +2671,141 @@ class _ChatViewState extends StateManager<ChatView> with WidgetsBindingObserver 
       );
     }
 
+    // While the User agent is reviewing / writing the next prompt the Assistant
+    // is idle, so the user-side indicator replaces the assistant one: the
+    // transcript then reads as a turn-by-turn exchange instead of a stalled
+    // assistant that keeps typing forever.
+    final showAssistantTyping = _sending && !_autoInputUserWriting;
+    final trailingRows =
+        (showAssistantTyping ? 1 : 0) + (_autoInputUserWriting ? 1 : 0);
+
     return ListView.builder(
       controller: _scrollController,
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 10),
-      itemCount: _messages.length + (_sending ? 1 : 0),
+      itemCount: _messages.length + trailingRows,
       itemBuilder: (ctx, i) {
-        if (_sending && i == _messages.length) {
-          return const _TypingIndicator();
+        if (i >= _messages.length) {
+          if (showAssistantTyping && i == _messages.length) {
+            return const _TypingIndicator();
+          }
+          return const _UserAgentTypingIndicator();
         }
         final m = _messages[i];
-        return MessageBubble(
+        final isUserAgentTurn = m.agent == 'user';
+        final isLastRow = i == _messages.length - 1;
+        final bubble = MessageBubble(
           message: m.content,
           timeInSeconds: (m.responseTimeMs ?? 0) / 1000.0,
           isUser: m.role == MessageRole.user,
           isStatus: m.hidden,
-          // Show resend only on user bubbles and only when not already sending.
-          onResend: (m.role == MessageRole.user && !_sending && !m.hidden) ? () => _handleResend(m.id) : null,
-          onEdit: (m.role == MessageRole.user && !_sending && !m.hidden) ? () => _handleEdit(m.id) : null,
+          roleLabel: isUserAgentTurn ? 'User agent' : null,
+          // Resend / edit only apply to turns the human actually authored: the
+          // User agent's prompts are generated, not typed, so they must not be
+          // re-sent or edited as if they were the operator's own messages.
+          onResend: (m.role == MessageRole.user &&
+                  !_sending &&
+                  !m.hidden &&
+                  !isUserAgentTurn)
+              ? () => _handleResend(m.id)
+              : null,
+          onEdit: (m.role == MessageRole.user &&
+                  !_sending &&
+                  !m.hidden &&
+                  !isUserAgentTurn)
+              ? () => _handleEdit(m.id)
+              : null,
           onDelete: !m.hidden ? () => _handleDeleteMessage(m.id) : null,
+        );
+
+        // Flag a turn that never produced a delivered answer: the subprocess
+        // died, the app was force-quit, or the user stopped it mid-flight. The
+        // chip is attached to the last row so it reads as the tail of the
+        // transcript rather than a detached banner.
+        final interrupted = isLastRow &&
+            _lastTurn != null &&
+            _lastTurn!.isInterrupted &&
+            !_sending;
+        if (!interrupted) return bubble;
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [bubble, _buildInterruptedChip(_lastTurn!)],
         );
       },
     );
   }
 
-  /// Compact bar above the message list that lets the user pick the
-  /// task-flow mode (OPEN / TASK COMPLIANCE / TASK COMPLIANCE AUTO).
-  /// Changing the selection only affects subsequent prompts; previous
-  /// messages are not retroactively reinterpreted.
-  Widget _buildTaskModeBar() {
-    final theme = Theme.of(context);
-    return Container(
-      width: double.infinity,
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-      decoration: BoxDecoration(
-        border: Border(bottom: BorderSide(color: theme.dividerColor)),
-      ),
-      child: Row(
-        children: [
-          Icon(Icons.task_alt, size: 16, color: theme.colorScheme.onSurfaceVariant),
-          const SizedBox(width: 8),
-          Text('Mode:', style: theme.textTheme.labelMedium),
-          const SizedBox(width: 8),
-          DropdownButton<String>(
-            value: _taskMode,
-            isDense: true,
-            underline: const SizedBox.shrink(),
-            items: const [
-              DropdownMenuItem(
-                value: 'open',
-                child: Text('OPEN'),
+  /// Small inline chip marking the last turn as never delivered.
+  Widget _buildInterruptedChip(ConversationTurn turn) {
+    final label = turn.status == ConversationTurnStatus.aborted
+        ? 'Turn interrupted'
+        : 'Turn failed';
+    final detail = (turn.error ?? '').trim();
+    return Padding(
+      padding: const EdgeInsets.only(left: 12, right: 12, bottom: 8),
+      child: Tooltip(
+        message: detail.isEmpty ? label : '$label — $detail',
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+          decoration: BoxDecoration(
+            color: AppTheme.danger.withAlpha(28),
+            borderRadius: BorderRadius.circular(6),
+            border: Border.all(color: AppTheme.danger.withAlpha(90)),
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Icon(
+                Icons.report_problem_outlined,
+                size: 13,
+                color: AppTheme.danger,
               ),
-              DropdownMenuItem(
-                value: 'task_compliance',
-                child: Text('TASK COMPLIANCE'),
-              ),
-              DropdownMenuItem(
-                value: 'task_compliance_auto',
-                child: Text('TASK COMPLIANCE AUTO'),
+              const SizedBox(width: 6),
+              Text(
+                label,
+                style: const TextStyle(
+                  color: AppTheme.danger,
+                  fontSize: 11,
+                  fontWeight: FontWeight.w600,
+                ),
               ),
             ],
-            onChanged: _sending
-                ? null
-                : (v) {
-                    if (v == null || v == _taskMode) return;
-                    setState(() => _taskMode = v);
-                  },
+          ),
+        ),
+      ),
+    );
+  }
+
+  
+
+  /// Banner shown when the orchestrator reports that AUTO INPUT cannot
+  /// continue autonomously — currently the "no Workflow Agent configured as
+  /// User" case. Styled as a warning (not an error) because no request failed:
+  /// the loop simply handed control back to the user.
+  Widget _buildAutoInputNoticeBar() {
+    return Container(
+      width: double.infinity,
+      color: AppTheme.accent.withAlpha(38),
+      padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
+      child: Row(
+        children: [
+          const Icon(Icons.info_outline, size: 16, color: AppTheme.accent),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              _autoInputNotice ?? '',
+              style: const TextStyle(color: AppTheme.textPrimary, fontSize: 13),
+            ),
+          ),
+          IconButton(
+            icon: const Icon(Icons.close, size: 16),
+            onPressed: () => setState(() => _autoInputNotice = null),
+            color: AppTheme.textMuted,
+            splashRadius: 14,
+            tooltip: 'Dismiss',
           ),
         ],
       ),
     );
-  }
-
-  /// Handle a click on a TaskChecklistPanel action button. Sends the
-  /// directive to the orchestrator as a ``<task_action>`` envelope --
-  /// the existing send/response cycle picks it up unchanged.
-  Future<void> _onTaskAction(int taskId, TaskAction action) async {
-    if (_sending) return;
-    final envelope = action.toEnvelope(taskId);
-    // _sendMessage handles the full pipeline (append to UI, persist,
-    // forward via LlmService.sendChat). The envelope is treated as a
-    // user message; the orchestrator-side regex in task_protocol.py
-    // parses the action and continues the workflow.
-    await _sendMessage(envelope);
-  }
-
-  /// React to structured task-flow events from the orchestrator.
-  /// When a task moves to ``in_progress`` we silently insert (or update)
-  /// a compact status bubble into the chat so the user sees what the
-  /// model is doing, like Hermes/Codex/Claude do. The bubble is marked
-  /// ``hidden`` so it is excluded from the history sent back to the model.
-  void _onTaskEvent(OrchestratorTaskEvent event) {
-    if (event.conversationId != widget.conversationId) return;
-
-    // Only show status for the active in-progress task. Terminal or
-    // pending tasks don't need a live bubble.
-    if (event is! OrchestratorTaskStatusChanged) return;
-    if (event.status != TaskStatus.inProgress) {
-      // If the active status task finished, remove its bubble.
-      _removeStatusBubble();
-      return;
-    }
-
-    final statusText = event.note.isNotEmpty
-        ? event.note
-        : (event.description.isNotEmpty ? event.description : 'Task #${event.taskId}');
-    final text = 'Working on: $statusText';
-
-    final existingId = _statusMessageId;
-    if (existingId != null) {
-      final idx = _messages.indexWhere((m) => m.id == existingId);
-      if (idx != -1) {
-        setState(() {
-          _messages[idx] = _messages[idx].copyWith(content: text);
-        });
-        _scrollToBottom();
-        return;
-      }
-    }
-
-    final conv = _conversation;
-    if (conv == null) return;
-
-    final statusMsg = ChatMessage(
-      id: const Uuid().v4(),
-      conversationId: conv.id,
-      role: MessageRole.assistant,
-      content: text,
-      createdAt: DateTime.now().millisecondsSinceEpoch,
-      hidden: true,
-    );
-
-    _statusMessageId = statusMsg.id;
-    setState(() => _messages.add(statusMsg));
-    _scrollToBottom();
-  }
-
-  /// True when the most recent visible chat message is an assistant reply.
-  /// Used to hide the activity strip once the model's answer has landed in
-  /// the chat: the turn is over, so no spinner/thinking should remain.
-  bool get _lastMessageIsAssistant {
-    for (final m in _messages.reversed) {
-      if (m.hidden) continue;
-      return m.role == MessageRole.assistant;
-    }
-    return false;
-  }
-
-  /// Drop the transient status bubble from the chat, if present.
-  void _removeStatusBubble() {
-    final id = _statusMessageId;
-    if (id == null) return;
-    final idx = _messages.indexWhere((m) => m.id == id);
-    if (idx == -1) return;
-    setState(() {
-      _messages.removeAt(idx);
-      _statusMessageId = null;
-    });
   }
 
   Widget _buildErrorBar() {
@@ -2450,28 +2863,24 @@ class _ChatViewState extends StateManager<ChatView> with WidgetsBindingObserver 
       return const SizedBox.shrink();
     }
 
-    return Container(
-      padding: const EdgeInsets.only(left: 20),
-      alignment: AlignmentGeometry.bottomCenter,
-      child: Material(
-        color: Colors.transparent,
+    return Material(
+      color: Colors.transparent,
+      borderRadius: BorderRadius.circular(20),
+      child: InkWell(
         borderRadius: BorderRadius.circular(20),
-        child: InkWell(
-          borderRadius: BorderRadius.circular(20),
-          onTap: _scrollToBottom,
-          child: Container(
-            width: 40,
-            height: 40,
-            alignment: Alignment.center,
-            decoration: BoxDecoration(
-              border: Border.all(color: AppTheme.accentSecondary, width: 1),
-              borderRadius: BorderRadius.circular(20),
-            ),
-            child: const Icon(
-              Icons.keyboard_arrow_down_rounded,
-              size: 30,
-              color: AppTheme.accentSecondary,
-            ),
+        onTap: _scrollToBottom,
+        child: Container(
+          width: 40,
+          height: 40,
+          alignment: Alignment.center,
+          decoration: BoxDecoration(
+            border: Border.all(color: AppTheme.accentSecondary, width: 1),
+            borderRadius: BorderRadius.circular(20),
+          ),
+          child: const Icon(
+            Icons.keyboard_arrow_down_rounded,
+            size: 30,
+            color: AppTheme.accentSecondary,
           ),
         ),
       ),
@@ -2512,263 +2921,86 @@ class _ChatViewState extends StateManager<ChatView> with WidgetsBindingObserver 
     );
   }
 
-  /// Builds the effort level dropdown shown next to the thinking toggle.
-  /// Only visible when [_thinking] is ON. Maps to provider-specific budgets:
-  ///   OpenAI: reasoning_effort, Anthropic: thinking.budget_tokens,
-  ///   Gemini: thinkingConfig.thinkingBudget.
-  Widget _buildEffortDropdown() {
-    const levels = ['minimal', 'low', 'medium', 'high', 'max'];
-    return Container(
-      height: 46,
-      padding: const EdgeInsets.symmetric(horizontal: 10),
-      decoration: BoxDecoration(
-        border: Border.all(color: AppTheme.accentSecondary, width: 0.5),
-        borderRadius: BorderRadius.circular(8),
-      ),
-      child: DropdownButtonHideUnderline(
-        child: DropdownButton<String>(
-          value: levels.contains(_effort) ? _effort : 'medium',
-          isDense: true,
-          style: const TextStyle(fontSize: 12, color: AppTheme.textPrimary),
-          icon: const Icon(Icons.keyboard_arrow_down, size: 14),
-          items: levels
-              .map((l) => DropdownMenuItem<String>(
-                    value: l,
-                    child: Text(
-                      l[0].toUpperCase() + l.substring(1),
-                      style: const TextStyle(fontSize: 12),
-                    ),
-                  ))
-              .toList(),
-          onChanged: (v) {
-            if (v == null) return;
-            setState(() => _effort = v);
-            final conv = _conversation;
-            if (conv != null) {
-              ConversationRepository.instance.updateEffort(conv.id, v);
-              _conversation = conv.copyWith(effort: v);
-            }
-          },
-        ),
-      ),
-    );
+  /// Deliver a turn result to whichever view is mounted when it lands.
+  ///
+  /// The transaction that owns the turn persists the assistant message, so the
+  /// handler re-reads the conversation instead of duplicating it. That is what
+  /// makes a reply survive a remount: the view is disposable, the turn is not.
+  Future<void> _onTurnEvent(ChatTurnEvent event) async {
+    if (event.conversationId != widget.conversationId) return;
+    switch (event) {
+      case ChatTurnStarted():
+        if (mounted) setState(() => _sending = true);
+        break;
+      case ChatTurnCompleted():
+        await _reloadMessages();
+        if (!mounted) return;
+        setState(() {
+          _sending = false;
+          _sendError = null;
+        });
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (mounted) _scrollToBottom();
+        });
+        break;
+      case ChatTurnFailed(:final error):
+        if (!mounted) return;
+        setState(() {
+          _sending = false;
+          _sendError = error;
+        });
+        break;
+      case ChatTurnAborted():
+        if (!mounted) return;
+        setState(() {
+          _sending = false;
+          _sendError = null;
+        });
+        break;
+    }
+    await _refreshLastTurn();
+  }
+
+  /// Re-read the conversation transcript from SQLite. Used when a turn
+  /// completes elsewhere so the visible history matches what was persisted.
+  Future<void> _reloadMessages() async {
+    final id = widget.conversationId;
+    if (id == null) return;
+    final msgs = await MessageRepository.instance.listByConversation(id);
+    if (!mounted) return;
+    setState(() {
+      _messages
+        ..clear()
+        ..addAll(msgs);
+    });
+  }
+
+  /// Refresh [_lastTurn] so an interrupted turn (crash, forced stop, app quit)
+  /// is visible in the transcript instead of vanishing silently.
+  Future<void> _refreshLastTurn() async {
+    final id = widget.conversationId;
+    if (id == null) return;
+    final turn = await ConversationTurnRepository.instance
+        .latestForConversation(id);
+    if (!mounted) return;
+    if (turn?.id == _lastTurn?.id && turn?.status == _lastTurn?.status) return;
+    setState(() => _lastTurn = turn);
   }
 
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
-    _taskSub?.cancel();
+    AgentRoleSettingsRepository.instance.enabledNotifier
+        .removeListener(_syncTaskModeWithWorkflow);
+    _turnSub?.cancel();
+    _sessionAddedSub?.cancel();
+    _autoInputNoticeSub?.cancel();
+    _autoInputReplySub?.cancel();
+    _autoInputPromptSub?.cancel();
+    _autoInputEvaluatingSub?.cancel();
     _scrollController.dispose();
     _inputController.dispose();
     super.dispose();
-  }
-}
-
-/// Compact activity strip shown above the chat input when the orchestrator
-/// is running. Displays a spinning indicator + a live status label derived
-/// from [OrchestratorManager.statusStream] so the user sees what the model is
-/// doing in real time (e.g. "Reading file...", "Analyzing Dart code...").
-///
-/// When the model emits chain-of-thought (via [OrchestratorManager.thinkingStream]),
-/// the strip switches to showing the live thinking text. The user can tap the
-/// strip to toggle between the activity label and the thinking text.
-///
-/// Unlike [_TypingIndicator] (which lives inside the scrollable message list
-/// and only appears while [_ChatViewState._sending] is true), this strip is
-/// a fixed-height bar that stays visible as long as the orchestrator process
-/// is running — even between sends in task_compliance_auto mode, when the
-/// orchestrator progresses through tasks autonomously.
-class _OrchestratorActivityStrip extends StatefulWidget {
-  const _OrchestratorActivityStrip({required this.visible});
-
-  final bool visible;
-
-  @override
-  State<_OrchestratorActivityStrip> createState() => _OrchestratorActivityStripState();
-}
-
-class _OrchestratorActivityStripState extends State<_OrchestratorActivityStrip> with SingleTickerProviderStateMixin {
-  late final AnimationController _spin;
-  StreamSubscription<String>? _statusSub;
-  StreamSubscription<String>? _thinkingSub;
-  String _label = 'Working...';
-  String _thinking = '';
-  bool _showThinking = false;
-  bool _hasContent = false;
-
-  @override
-  void initState() {
-    super.initState();
-    _spin = AnimationController(
-      vsync: this,
-      duration: const Duration(milliseconds: 1200),
-    )..repeat();
-
-    // Seed from last known status so a late-mounted strip shows the current
-    // activity instead of the generic fallback.
-    final last = OrchestratorManager.instance.lastStatus;
-    if (last != null && last.isNotEmpty) {
-      _label = last;
-      _hasContent = true;
-    }
-
-    final lastThinking = OrchestratorManager.instance.lastThinking;
-    if (lastThinking != null && lastThinking.isNotEmpty) {
-      _thinking = lastThinking;
-      _hasContent = true;
-    }
-
-    _statusSub = OrchestratorManager.instance.statusStream.listen((status) {
-      if (!mounted) return;
-      setState(() {
-        // An empty status means the turn finished: drop the label, but keep
-        // the strip alive if a thinking text is still being shown.
-        if (status.isEmpty) {
-          _label = 'Working...';
-          _hasContent = _thinking.isNotEmpty;
-          return;
-        }
-        _label = status;
-        _hasContent = true;
-      });
-    });
-
-    _thinkingSub = OrchestratorManager.instance.thinkingStream.listen((text) {
-      if (!mounted) return;
-      // Ignore empty / whitespace-only events: they are stream noise between
-      // reasoning chunks, not a turn-end signal. The last real thinking text
-      // must stay visible until the turn actually finishes.
-      final trimmed = text.trim();
-      if (trimmed.isEmpty || trimmed == ':') return;
-      setState(() {
-        _thinking = trimmed;
-        _hasContent = true;
-        // New reasoning arrives: surface it immediately.
-        _showThinking = true;
-      });
-    });
-  }
-
-  @override
-  void didUpdateWidget(covariant _OrchestratorActivityStrip oldWidget) {
-    super.didUpdateWidget(oldWidget);
-    // A fresh send (visible false -> true) starts a new turn: drop the
-    // previous turn's labels and thinking so the strip stays hidden until
-    // the orchestrator actually emits new progress or reasoning.
-    if (widget.visible && !oldWidget.visible) {
-      _label = 'Working...';
-      _thinking = '';
-      _showThinking = false;
-      _hasContent = false;
-    }
-  }
-
-  @override
-  void dispose() {
-    _statusSub?.cancel();
-    _thinkingSub?.cancel();
-    _spin.dispose();
-    super.dispose();
-  }
-
-  String get _displayText {
-    if (_showThinking && _thinking.isNotEmpty) return _thinking;
-    return _label;
-  }
-
-  bool _isTruncated(double maxWidth) {
-    final text = _displayText;
-    if (text.isEmpty || maxWidth <= 0) return false;
-    final painter = TextPainter(
-      text: TextSpan(
-        text: text,
-        style: const TextStyle(fontSize: 12),
-      ),
-      maxLines: 1,
-      textDirection: TextDirection.ltr,
-    )..layout(maxWidth: maxWidth);
-    return painter.didExceedMaxLines;
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    if (!widget.visible || !_hasContent) return const SizedBox.shrink();
-
-    final hasThinking = _thinking.isNotEmpty;
-
-    return Container(
-      height: 28,
-      padding: const EdgeInsets.symmetric(horizontal: 16),
-      decoration: const BoxDecoration(
-        color: AppTheme.bgPrimary,
-        border: Border(
-          top: BorderSide(color: AppTheme.border, width: 0.5),
-        ),
-      ),
-      child: Row(
-        children: [
-          SizedBox(
-            width: 14,
-            height: 14,
-            child: AnimatedBuilder(
-              animation: _spin,
-              builder: (_, __) {
-                return Transform.rotate(
-                  angle: _spin.value * 2 * 3.14159265,
-                  child: const Icon(
-                    Icons.sync,
-                    size: 14,
-                    color: AppTheme.accentSecondary,
-                  ),
-                );
-              },
-            ),
-          ),
-          const SizedBox(width: 8),
-          Expanded(
-            child: LayoutBuilder(
-              builder: (context, constraints) {
-                final truncated = _isTruncated(constraints.maxWidth);
-                return GestureDetector(
-                  onTap: hasThinking
-                      ? () => setState(() => _showThinking = !_showThinking)
-                      : null,
-                  child: Tooltip(
-                    message: truncated ? _displayText : '',
-                    waitDuration: const Duration(milliseconds: 500),
-                    child: Text(
-                      _displayText,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: TextStyle(
-                        color: _showThinking && hasThinking
-                            ? AppTheme.accent
-                            : AppTheme.accentSecondary,
-                        fontSize: 12,
-                        fontStyle: _showThinking && hasThinking
-                            ? FontStyle.italic
-                            : FontStyle.normal,
-                      ),
-                    ),
-                  ),
-                );
-              },
-            ),
-          ),
-          if (hasThinking) ...[
-            const SizedBox(width: 8),
-            GestureDetector(
-              onTap: () => setState(() => _showThinking = !_showThinking),
-              child: Icon(
-                _showThinking ? Icons.expand_less : Icons.expand_more,
-                size: 16,
-                color: _showThinking ? AppTheme.accent : AppTheme.textMuted,
-              ),
-            ),
-          ],
-        ],
-      ),
-    );
   }
 }
 
@@ -2848,6 +3080,93 @@ class _TypingIndicatorState extends State<_TypingIndicator> with SingleTickerPro
             style: const TextStyle(color: AppTheme.accentSecondary, fontSize: 13),
           ),
         ],
+      ),
+    );
+  }
+}
+
+/// User-side counterpart of [_TypingIndicator].
+///
+/// Shown while the AUTO INPUT User agent (second Workflow Agents slot) reviews
+/// the Assistant's reply and writes the next prompt. Without it the transcript
+/// would look like a single assistant typing forever with no visible
+/// counterpart, because the User agent's turn happens between two assistant
+/// answers.
+class _UserAgentTypingIndicator extends StatefulWidget {
+  const _UserAgentTypingIndicator();
+
+  @override
+  State<_UserAgentTypingIndicator> createState() =>
+      _UserAgentTypingIndicatorState();
+}
+
+class _UserAgentTypingIndicatorState extends State<_UserAgentTypingIndicator>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _c;
+
+  @override
+  void initState() {
+    super.initState();
+    _c = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 1000),
+    )..repeat();
+  }
+
+  @override
+  void dispose() {
+    _c.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Align(
+      alignment: Alignment.centerRight,
+      child: Container(
+        margin: const EdgeInsets.only(bottom: 16, left: 16),
+        padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 14),
+        decoration: BoxDecoration(
+          color: AppTheme.userBubble,
+          border: Border.all(width: 0.5, color: AppTheme.aiBubble),
+          borderRadius: BorderRadius.circular(16),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            AnimatedBuilder(
+              animation: _c,
+              builder: (_, __) {
+                return Row(
+                  children: List.generate(3, (i) {
+                    final phase = (_c.value + i * 0.2) % 1.0;
+                    final opacity =
+                        0.3 + 0.7 * (phase < 0.5 ? phase * 2 : (1 - phase) * 2);
+                    return Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 3),
+                      child: Opacity(
+                        opacity: opacity.clamp(0.2, 1.0),
+                        child: Container(
+                          width: 6,
+                          height: 6,
+                          decoration: const BoxDecoration(
+                            color: AppTheme.accent,
+                            shape: BoxShape.circle,
+                          ),
+                        ),
+                      ),
+                    );
+                  }),
+                );
+              },
+            ),
+            const SizedBox(width: 10),
+            const Text(
+              'User agent is writing...',
+              style: TextStyle(color: AppTheme.textSecondary, fontSize: 13),
+            ),
+          ],
+        ),
       ),
     );
   }

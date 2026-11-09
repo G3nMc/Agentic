@@ -3,7 +3,7 @@ import 'package:sqflite/sqflite.dart';
 import '../database/app_database.dart';
 import '../models/conversation_task.dart';
 
-/// Persistence for the TASK COMPLIANCE task list, keyed by conversation.
+/// Persistence for the structured task checklist, keyed by conversation.
 class TaskRepository {
   TaskRepository._();
 
@@ -11,7 +11,7 @@ class TaskRepository {
 
   /// Load every task that belongs to ``conversationId`` ordered by the
   /// model-assigned ``task_id``. Empty list when the conversation never
-  /// emitted a plan (free-form / OPEN mode chats).
+  /// emitted a plan (free-form / USER INPUT mode chats).
   Future<List<ConversationTask>> listByConversation(String conversationId) async {
     final db = await AppDatabase.instance.database;
     final rows = await db.query(

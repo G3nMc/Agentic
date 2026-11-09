@@ -1,14 +1,26 @@
 #!/usr/bin/env python3
 """
-Multi-agent Orchestrator — entry point for the new multi_mode workflow.
+Multi-slot Orchestrator — entry point for Workflow Agents (multi-slot) mode.
 ==============================================================
 
-Uses the multi_mode package (single-loop Reasoner + Summarizer)
-instead of the old multi-agent pipeline.
+The Workflow Agents panel configures two model slots:
+
+  * REASONER ("Assistant") — drives the tool loop and produces the answer.
+  * USER ("User")          — the second Workflow Agents slot. When present it
+                             reviews the Assistant's work in AUTO INPUT mode on
+                             its own model and context, so the Assistant never
+                             judges its own output.
+
+The tool loop itself lives in :mod:`agent.loop.run_loop` — the same loop the
+single-agent ``orchestrator.py`` uses — so this entry point only maps the
+Workflow Agents settings onto backends and speaks the stdin/stdout protocol
+the Flutter UI expects.
 
 Protocol (when run with --interactive, used by the Flutter UI):
   - The client writes exactly one JSON object per line to stdin:
-      {"prompt": "...", "new_session": true|false}
+      {"prompt": "...", "new_session": true|false, "history": [...],
+       "task_mode": "open|user_input|auto_input", "thinking": bool,
+       "effort": "minimal|low|medium|high|max"}
   - The orchestrator answers with the full text response on stdout, followed
     by a single line containing exactly `__RESPONSE_END__`.
   - Diagnostics go to stderr so they don't corrupt the response stream.
@@ -24,51 +36,52 @@ Usage:
 
 from __future__ import annotations
 
+import os
 import sys
 
-from agent.config import AgentConfig, ModelRole
-from agent.config.models import ReasoningLevel, ModelConfig
-from agent.loop.run_loop import Orchestrator
-from agent.tools.registry import ToolRegistry
-
-# Disable .pyc generation
+# Disable .pyc generation for every module imported below.
 sys.dont_write_bytecode = True
 
-# Ensure ``import multi_mode`` works
-import os
-
+# Make ``import agent`` / ``import orchestrator_base`` resolve whether this
+# script is launched as ``python bin/orchestrator_multi.py`` or from bin/
+# itself (the Flutter client uses the latter).
 _THIS_DIR = os.path.dirname(os.path.abspath(__file__))
 _PROJECT_ROOT = os.path.dirname(_THIS_DIR)
-# Add both bin/ (for old agent package) and project root (for multi_mode)
-if _THIS_DIR not in sys.path:
-    sys.path.insert(0, _THIS_DIR)
-if _PROJECT_ROOT not in sys.path:
-    sys.path.insert(0, _PROJECT_ROOT)
+for _entry in (_THIS_DIR, _PROJECT_ROOT):
+    if _entry not in sys.path:
+        sys.path.insert(0, _entry)
 
-import argparse
-import json
-import re
-import subprocess
+import argparse  # noqa: E402  (imports follow the sys.path bootstrap above)
+import json  # noqa: E402
+import subprocess  # noqa: E402
+from typing import Any, Dict, Optional  # noqa: E402
 
-# Reuse the shared I/O protocol utilities (the agent.utils.io_protocol
-# shim re-exports the same symbols for backwards compatibility).
-from agent.prompts import format_system_prompt, sync_prompts_config
-from agent.utils.io_protocol import (
+from agent.backends import RateLimitedBackend, build_backend  # noqa: E402
+from agent.core.policy import SecurityConfig  # noqa: E402
+from agent.loop.run_loop import (  # noqa: E402
+    _DEFAULT_MAX_AUTO_ROUNDS,
+    Orchestrator,
+)
+from agent.loop.task_protocol import TaskMode  # noqa: E402
+from agent.prompts import sync_prompts_config  # noqa: E402
+from agent.utils.io_protocol import (  # noqa: E402
     RESPONSE_SENTINEL,
     configure_stdio_utf8,
     read_interactive_request,
 )
-# Shared helpers between the two CLI orchestrators. We import the base
-# functions and re-bind them through thin wrappers below to preserve the
-# historical "[orch_multi]" log prefix without changing call sites.
-from orchestrator_base import (
-    _normalise_external_history,
-    _prompt_with_visible_history,
-    _load_path_filter as _base_load_path_filter,
-    _load_db_connections as _base_load_db_connections,
-    _resolve_debug_chat_path,
-    _read_last_user_turn,
+
+# Shared helpers between the two CLI orchestrators. The two ``_load_*`` names
+# are rebound to multi-mode wrappers below so the historical "[orch_multi]"
+# log prefix survives without touching call sites.
+from orchestrator_base import (  # noqa: E402
     _append_debug_response,
+    _build_user_backend_for_args,
+    _build_user_generation_defaults,
+    _load_db_connections as _base_load_db_connections,
+    _load_path_filter as _base_load_path_filter,
+    _normalise_external_history,
+    _read_last_user_turn,
+    _resolve_debug_chat_path,
 )
 
 
@@ -85,16 +98,11 @@ def _load_db_connections(config_path: str):
 configure_stdio_utf8()
 
 
-# multi_mode imports are deferred to avoid crashing before --install-deps can run.
-# They are imported inside _create_orchestrator().
-
-
 def _install_dependencies() -> None:
     """Install the single HTTP dependency every backend needs.
 
-    After the SDK-free refactor (see :mod:`common.backends.http_client`)
-    every model backend talks to its provider via plain REST through
-    ``requests``. No provider SDK is required anymore.
+    After the SDK-free refactor every model backend talks to its provider via
+    plain REST through ``requests``. No provider SDK is required anymore.
     """
     packages = [
         "requests",
@@ -114,473 +122,356 @@ def _install_dependencies() -> None:
     print("[deps] All dependencies installed.", file=sys.stderr)
 
 
-# `_normalise_external_history`, `_prompt_with_visible_history`,
-# `_load_path_filter` and `_load_db_connections` are imported from
-# :mod:`orchestrator_base` at the top of this file. The two ``_load_*``
-# names are bound to multi-mode-specific wrappers that pass
-# ``log_prefix="orch_multi"``; call sites below stay unchanged.
-# Debug helpers are also imported from :mod:`orchestrator_base`.
-
-
-def build_config_from_args(args):
-    """Build AgentConfig from CLI arguments."""
-
-    config = AgentConfig(enable_summarization=False)
-
-    # Reasoner (required)
-    reasoner_provider = args.reasoner_provider
-    reasoner_model = args.reasoner_model
-    reasoner_api_key = args.reasoner_api_key or None
-    reasoner_base_url = args.reasoner_base_url or None
-    reasoner_temp = args.temperature
-    reasoner_max_tokens = args.max_tokens
-    reasoner_context = args.reasoner_context_window
-
-    reasoning_level = ReasoningLevel(args.reasoning_level)
-
-    config.models[ModelRole.REASONER] = ModelConfig(
-        role=ModelRole.REASONER,
-        provider=reasoner_provider,
-        model=reasoner_model,
-        api_key=reasoner_api_key,
-        base_url=reasoner_base_url,
-        temperature=reasoner_temp,
-        max_tokens=reasoner_max_tokens,
-        context_window=reasoner_context,
-        reasoning_level=reasoning_level,
-    )
-
-    # Summarizer (optional)
-    if args.summarizer_provider and args.summarizer_model:
-        summarizer_provider = args.summarizer_provider
-        summarizer_model = args.summarizer_model
-        summarizer_api_key = args.summarizer_api_key or None
-        summarizer_base_url = args.summarizer_base_url or None
-        summarizer_temp = args.temperature
-        summarizer_max_tokens = args.max_tokens
-        summarizer_context = args.summarizer_context_window
-
-        config.models[ModelRole.SUMMARIZER] = ModelConfig(
-            role=ModelRole.SUMMARIZER,
-            provider=summarizer_provider,
-            model=summarizer_model,
-            api_key=summarizer_api_key,
-            base_url=summarizer_base_url,
-            temperature=summarizer_temp,
-            max_tokens=summarizer_max_tokens,
-            context_window=summarizer_context,
-        )
-    else:
-        config.enable_summarization = False
-
-    # General settings
-    config.max_iterations = args.max_iterations
-    config.tool_timeout = args.tool_timeout
-    config.parallel_tools = not args.no_parallel_tools
-    config.project_root = args.base_path
-
-    return config
-
-
-def _create_orchestrator(args):
-    """Create an Orchestrator instance from CLI args."""
-    # Lazy imports to avoid crashing before --install-deps can run.
-
-    config = build_config_from_args(args)
-
-    # Create orchestrator (it will build backends and tools internally)
-    orchestrator = Orchestrator(config)
-
-    # Apply sandbox mode: remove dangerous tools
-    if args.sandbox:
-        dangerous = {"write_file", "append_file", "delete_file", "run_command", "patch_file", "move_file"}
-        for name in dangerous:
-            orchestrator.tool_registry.unregister(name)
-        print("[orch_multi] SANDBOX MODE: write/delete/run_command are disabled.", file=sys.stderr)
-
-    # Disable all tools if requested
-    if args.disable_tools:
-        orchestrator.tool_registry = ToolRegistry()  # empty registry
-        print("[orch_multi] Tools disabled — running in plain-chat mode.", file=sys.stderr)
-
-    return orchestrator
-
-
 # ======================================================================
-# Executor stage: REASONER -> (heuristic) -> run_loop using SUMMARIZER model
-# ----------------------------------------------------------------------
-# The multi_mode Reasoner can only produce TEXT (every multi_mode backend
-# has native tool-calling removed), so on its own it never executes tools.
-# We bridge that here: when the planner's answer needs real implementation,
-# we hand it as a brief to the proven single-agent run_loop Orchestrator,
-# driven by the model configured in the SUMMARIZER slot. That loop uses the
-# <tool> text protocol to read/edit/validate the actual project.
+# Workflow Agents slot -> backend mapping
 # ======================================================================
 
-# Action verbs that signal the user wants something implemented (not just
-# explained). Mirrors the single-agent loop's intent gate.
-_ACTION_VERB_RE = re.compile(
-    r"\b(implement|fix|write|create|edit|update|modify|refactor|add|delete|"
-    r"remove|rename|build|generate|patch|change|apply|install|setup|"
-    r"configure|migrate|port|replace|integrate|scaffold|"
-    r"implementing|adding|creating|building|fixing|updating|generating|"
-    r"integrating|refactoring|writing|editing|patching|replacing|"
-    r"implements|adds|creates|builds|fixes)\b",
-    re.IGNORECASE,
-)
-_CODE_FENCE_RE = re.compile(r"```")
-# A file-path-ish token: an extension we care about, or a common source dir.
-_FILE_PATH_RE = re.compile(
-    r"\b[\w./-]+\.(?:py|dart|yaml|yml|json|js|ts|tsx|html|css|md|sql)\b"
-    r"|\bNEW FILE\b|\blib/|\bapp/|\bbin/|\bsrc/",
-    re.IGNORECASE,
-)
+# ``build_backend`` only accepts a custom ``base_url`` for these providers;
+# the OpenAI-compatible subclasses (groq / github / huggingface) pin their own
+# endpoint and would raise TypeError on an unexpected keyword.
+_BASE_URL_PROVIDERS = frozenset({"ollama", "openrouter", "gemini"})
+
+# Providers that take an explicit context window. Ollama maps it to num_ctx
+# (KV-cache RAM), OpenRouter to the catalog context_length.
+_CONTEXT_WINDOW_PROVIDERS = frozenset({"ollama", "openrouter"})
+
+# Environment fallbacks per provider, mirroring orchestrator_base.
+_API_KEY_ENV_VARS: Dict[str, tuple] = {
+    "huggingface": ("HF_TOKEN",),
+    "ollama": ("OLLAMA_API_KEY",),
+    "gemini": ("GEMINI_API_KEY", "GOOGLE_API_KEY"),
+    "groq": ("GROQ_API_KEY",),
+    "openrouter": ("OPENROUTER_API_KEY",),
+    "github": ("GITHUB_TOKEN", "GITHUB_API_KEY"),
+}
 
 
-def _needs_implementation(task: str, answer: str) -> bool:
-    """Heuristic gate: should the planner's answer be handed to the
-    tool-using executor (run_loop) to actually implement it?
+def _resolve_api_key(provider: str, api_key: str) -> str:
+    """Return *api_key*, falling back to the provider's env var(s)."""
+    key = (api_key or "").strip()
+    if key:
+        return key
+    for env_name in _API_KEY_ENV_VARS.get(provider, ()):
+        value = (os.environ.get(env_name) or "").strip()
+        if value:
+            return value
+    return ""
 
-    Implementation-biased (the whole point is to make the agent ACT):
-    fires when the original request shows action intent, OR the planner's
-    answer contains code blocks together with file-path markers.
+
+def _build_slot_backend(
+        provider: str,
+        model: str,
+        api_key: str,
+        base_url: str,
+        context_window: Optional[int],
+        slot_label: str,
+):
+    """Build the backend for one Workflow Agents slot.
+
+    Returns ``None`` (after logging why) when the slot has no model, names an
+    unknown provider, or the provider rejects the configuration — the caller
+    then falls back to the next slot instead of aborting the session.
     """
-    task = task or ""
-    answer = answer or ""
-    if _ACTION_VERB_RE.search(task):
-        return True
-    if _CODE_FENCE_RE.search(answer) and _FILE_PATH_RE.search(answer):
-        return True
-    return False
-
-
-def _build_execution_brief(user_request: str, planner_answer: str) -> str:
-    """Wrap the planner's answer as a brief for the executor run_loop."""
-    return format_system_prompt(
-        "EXECUTION_BRIEF_TEMPLATE",
-        user_request=user_request,
-        planner_answer=planner_answer,
-    )
-
-
-# Directories never worth showing the planner (build output, VCS, caches).
-_TREE_IGNORE_DIRS = frozenset({
-    ".git", ".dart_tool", "build", ".idea", ".vscode", "node_modules",
-    "__pycache__", ".gradle", ".pub-cache", "Pods", ".venv", "venv",
-    "dist", "out", ".next", ".expo", ".cxx", "DerivedData",
-})
-
-
-def _build_project_tree(base_path: str, max_entries: int = 1500, max_depth: int = 10) -> str:
-    """Build a bounded, indented listing of the project's files and nested
-    folders so the tool-less planner can reference REAL paths instead of
-    inventing them. Skips build output / VCS / cache and hidden dirs.
-    """
-    try:
-        base = os.path.abspath(base_path)
-    except Exception:  # noqa: BLE001
-        return ""
-    if not os.path.isdir(base):
-        return ""
-    lines = []
-    count = 0
-    truncated = False
-    for root, dirs, files in os.walk(base):
-        rel = os.path.relpath(root, base)
-        depth = 0 if rel == "." else (rel.count(os.sep) + 1)
-        if depth >= max_depth:
-            dirs[:] = []
-        # Prune ignored / hidden dirs in place (sorted for stable output).
-        dirs[:] = sorted(
-            d for d in dirs
-            if d not in _TREE_IGNORE_DIRS and not d.startswith(".")
-        )
-        indent = "  " * depth
-        if rel != ".":
-            lines.append(f"{indent}{os.path.basename(root)}/")
-        for fname in sorted(files):
-            if fname.startswith("."):
-                continue
-            if count >= max_entries:
-                truncated = True
-                break
-            lines.append(f"{indent}  {fname}")
-            count += 1
-        if truncated:
-            break
-    body = "\n".join(lines)
-    if not body:
-        return ""
-    header = f"PROJECT FILE TREE (root: {base}) -- real paths, use these:\n"
-    if truncated:
-        body += f"\n... (truncated at {max_entries} files)"
-    return header + body
-
-
-def _build_executor_orchestrator(args, summarizer_cfg, path_filter, db_connections):
-    """Build a single-agent run_loop Orchestrator to act as the EXECUTOR
-    stage, driven by the SUMMARIZER-slot model.
-
-    Returns None when no summarizer model is configured or its provider is
-    unsupported / fails to build -- the caller then falls back to returning
-    the planner's answer unchanged.
-    """
-    if summarizer_cfg is None or not getattr(summarizer_cfg, "model", ""):
+    provider = (provider or "").strip().lower()
+    model = (model or "").strip()
+    if not provider or not model:
         print(
-            "[orch_multi] No SUMMARIZER model configured -> executor stage "
-            "disabled; planner answer goes straight to the UI.",
+            f"[orch_multi] {slot_label} slot has no provider/model configured.",
             file=sys.stderr, flush=True,
         )
         return None
 
-    provider = (getattr(summarizer_cfg, "provider", "") or "").lower().strip()
-    try:
-        from agent.backends import build_backend
-        from agent.loop import Orchestrator as RunLoopOrchestrator
-        from agent.core.policy import SecurityConfig
-    except Exception as ex:  # noqa: BLE001
-        print(f"[orch_multi] Executor imports failed: {ex}", file=sys.stderr, flush=True)
-        return None
+    kwargs: Dict[str, Any] = {"model_id": model}
+    key = _resolve_api_key(provider, api_key)
+    if key:
+        kwargs["api_key"] = key
 
-    # Map the ModelConfig to build_backend kwargs per provider.
-    kwargs = {"model_id": summarizer_cfg.model}
-    if getattr(summarizer_cfg, "api_key", None):
-        kwargs["api_key"] = summarizer_cfg.api_key
-    if provider == "ollama":
-        if getattr(summarizer_cfg, "base_url", None):
-            kwargs["base_url"] = summarizer_cfg.base_url
-        kwargs["num_ctx"] = int(getattr(summarizer_cfg, "context_window", 32768) or 32768)
-    elif provider == "openrouter":
-        if getattr(summarizer_cfg, "base_url", None):
-            kwargs["base_url"] = summarizer_cfg.base_url
+    url = (base_url or "").strip()
+    if url and provider in _BASE_URL_PROVIDERS:
+        kwargs["base_url"] = url
+
+    if context_window:
+        if provider == "ollama":
+            kwargs["num_ctx"] = int(context_window)
+        elif provider == "openrouter":
+            kwargs["context_limit"] = int(context_window)
+        else:
+            print(
+                f"[orch_multi] {slot_label}: context_window={context_window} "
+                f"ignored by {provider} (managed by the provider).",
+                file=sys.stderr, flush=True,
+            )
 
     try:
         backend = build_backend(provider, **kwargs)
-    except Exception as ex:  # noqa: BLE001
+    except Exception as ex:  # noqa: BLE001 - a broken slot must not kill startup
         print(
-            f"[orch_multi] Could not build executor backend for provider "
-            f"'{provider}': {ex}; executor stage disabled.",
+            f"[orch_multi] Could not build {slot_label} backend "
+            f"({provider}:{model}): {ex}",
             file=sys.stderr, flush=True,
         )
         return None
 
-    try:
-        security_config = SecurityConfig(sandbox_mode=bool(getattr(args, "sandbox", False)))
-        executor = RunLoopOrchestrator(
-            backend=backend,
-            base_path=args.base_path,
-            temperature=float(getattr(summarizer_cfg, "temperature", 0.2) or 0.2),
-            max_tokens=max(int(getattr(summarizer_cfg, "max_tokens", 0) or 0), 8192),
-            security_config=security_config,
-            disable_tools=bool(getattr(args, "disable_tools", False)),
-            path_filter=path_filter,
-            db_connections=db_connections,
-            task_mode="open",
-            auto_num_ctx=False,
+    print(
+        f"[orch_multi] {slot_label} backend ready: {provider}:{model}",
+        file=sys.stderr, flush=True,
+    )
+    return backend
+
+
+def _apply_tpm_limit(backend, tpm_limit: int, slot_label: str):
+    """Wrap *backend* in a RateLimitedBackend when a TPM cap was configured.
+
+    Returns *backend* unchanged for ``tpm_limit <= 0`` (the default), so an
+    unconfigured slot keeps the exact behaviour it had before the per-role cap
+    existed.
+    """
+    limit = int(tpm_limit or 0)
+    if backend is None or limit <= 0:
+        return backend
+    wrapped = RateLimitedBackend(backend, tpm_limit=limit, label=slot_label)
+    print(
+        f"[orch_multi] {slot_label} TPM rate limiter active: {limit} tokens/min "
+        f"(effective {int(limit * 0.95)}).",
+        file=sys.stderr, flush=True,
+    )
+    return wrapped
+
+
+def _create_orchestrator(
+        args,
+        path_filter=None,
+        db_connections=None,
+        task_mode: str = "open",
+) -> Orchestrator:
+    """Build the run-loop Orchestrator that drives this session.
+
+    The REASONER slot (the Workflow Agents "Assistant") drives the session and
+    is the only driver: no second slot can take over.
+
+    Raises :class:`RuntimeError` when its backend cannot be built — the caller
+    converts that into an error reply instead of letting the process die.
+    """
+    backend = _build_slot_backend(
+        args.reasoner_provider,
+        args.reasoner_model,
+        args.reasoner_api_key,
+        args.reasoner_base_url,
+        args.reasoner_context_window,
+        "REASONER",
+    )
+    driver_label = "REASONER (Workflow Agents Assistant)"
+    if backend is None:
+        raise RuntimeError(
+            "No usable model backend. Configure the Assistant (REASONER) slot "
+            "in Settings -> Workflow Agents MaM."
         )
-    except Exception as ex:  # noqa: BLE001
+
+    # AUTO INPUT "User" agent (second Workflow Agents slot). When it is absent
+    # the run loop fails safe: one answer plus the missing-agent notice.
+    user_backend = _build_user_backend_for_args(args, log_prefix="orch_multi")
+    if user_backend is None:
         print(
-            f"[orch_multi] Could not construct executor orchestrator: {ex}",
+            "[orch_multi] No User agent configured; AUTO INPUT stops after one "
+            "answer and waits for real input.",
             file=sys.stderr, flush=True,
         )
-        return None
+    else:
+        print(
+            f"[orch_multi] AUTO INPUT User agent -> "
+            f"{getattr(user_backend, 'model_id', '(unknown)')}",
+            file=sys.stderr, flush=True,
+        )
+        # Per-slot TPM cap. 0 (the default) leaves the backend untouched.
+        user_backend = _apply_tpm_limit(
+            user_backend,
+            getattr(args, "user_tpm_limit", 0),
+            "USER",
+        )
 
-    # Remove batch/multi-file tools that produce huge JSON payloads
-    # exceeding max_tokens and causing truncation spirals. The model
-    # must use patch_file (singular) one file at a time instead.
-    # Note: write_files and patch_files were fully removed from the
-    # tool registry in fs_write.py — they no longer exist to unregister.
-    _oversized_tools = ("delete_files",)
-    for tool_name in _oversized_tools:
-        try:
-            executor.tool_registry.unregister(tool_name)
-        except Exception:  # noqa: BLE001
-            pass  # tool may not be registered
+    # Generation knobs for the User slot, forwarded from the matching
+    # ``--user-*`` flags. Unset values keep the loop's documented fallbacks so
+    # an unconfigured slot behaves exactly as it did before.
+    user_defaults = _build_user_generation_defaults(args)
+    if user_backend is not None:
+        print(
+            f"[orch_multi] User agent generation: "
+            f"temperature={user_defaults.temperature}, "
+            f"max_tokens={user_defaults.max_tokens or 'default'}, "
+            f"effort={user_defaults.effort or 'default'}, "
+            f"thinking={user_defaults.thinking}",
+            file=sys.stderr, flush=True,
+        )
+
+    orchestrator = Orchestrator(
+        backend=backend,
+        base_path=args.base_path,
+        temperature=float(args.temperature),
+        max_tokens=int(args.max_tokens),
+        security_config=SecurityConfig(sandbox_mode=bool(getattr(args, "sandbox", False))),
+        disable_tools=bool(getattr(args, "disable_tools", False)),
+        path_filter=path_filter,
+        db_connections=db_connections,
+        task_mode=task_mode,
+        effort=(args.reasoning_level or None),
+        max_iterations=int(args.max_iterations),
+        max_auto_rounds=int(
+            getattr(args, "max_agent_rounds", _DEFAULT_MAX_AUTO_ROUNDS)
+        ),
+        user_backend=user_backend,
+        user_temperature=user_defaults.temperature,
+        user_max_tokens=user_defaults.max_tokens,
+        user_effort=user_defaults.effort,
+        user_thinking=user_defaults.thinking,
+    )
+    orchestrator.driver_label = driver_label
+
     print(
-        f"[orch_multi] Removed batch tools {_oversized_tools} from executor "
-        f"to prevent truncation.",
+        f"[orch_multi] Session driver: {driver_label} "
+        f"({getattr(backend, 'model_id', '(unknown)')}), "
+        f"task_mode={orchestrator.task_mode.value}, "
+        f"max_auto_rounds={orchestrator.max_auto_rounds}.",
         file=sys.stderr, flush=True,
     )
-
-    print(
-        f"[orch_multi] Executor stage ready (run_loop) using SUMMARIZER model "
-        f"{provider}:{summarizer_cfg.model}.",
-        file=sys.stderr, flush=True,
-    )
-    return executor
+    if bool(getattr(args, "sandbox", False)):
+        print(
+            "[orch_multi] SANDBOX MODE: write/delete/run_command are disabled.",
+            file=sys.stderr, flush=True,
+        )
+    if bool(getattr(args, "disable_tools", False)):
+        print(
+            "[orch_multi] Tools disabled — running in plain-chat mode.",
+            file=sys.stderr, flush=True,
+        )
+    return orchestrator
 
 
 def _run_interactive_loop(args, path_filter=None, db_connections=None) -> None:
-    """Interactive loop using the new multi_mode Orchestrator."""
+    """Interactive loop (JSON-per-line protocol) driven by the REASONER slot."""
 
     # Ensure stdout is line-buffered so the Flutter side sees __READY__ immediately.
-    if hasattr(sys.stdout, 'reconfigure'):
+    if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(line_buffering=True)
     print("__READY__", flush=True)
     print("[orch_multi] Ready for requests.", file=sys.stderr, flush=True)
 
     debug_mode = bool(getattr(args, "is_debug", False))
-    debug_chat_path = _resolve_debug_chat_path(args.base_path, args.file_name) if debug_mode else ""
+    debug_chat_path = (
+        _resolve_debug_chat_path(args.base_path, args.file_name) if debug_mode else ""
+    )
     if debug_mode:
         print(
             f"[orch_multi] DEBUG MODE active. Chat file: {debug_chat_path}",
             file=sys.stderr, flush=True,
         )
 
-    orchestrator = None
-    executor_orch = None  # lazily-built run_loop executor (SUMMARIZER model)
-    last_exec_summary = ""  # brief summary of the previous execution
+    orchestrator: Optional[Orchestrator] = None
     try:
         while True:
             req = read_interactive_request(sys.stdin)
             if req is None:
                 break  # EOF
+            # Control line: the client is shutting the session down. Leave the
+            # read loop cleanly so the audit log and chat log are flushed.
+            if req.get("action") == "shutdown":
+                break
+            request_id = req.get("request_id")
 
             history = _normalise_external_history(req.get("history"))
-            new_session = req.get("new_session") or bool(history)
+            prompt = (req.get("prompt") or "").strip()
 
             # Debug mode: ignore the incoming prompt and read the latest user
-            # turn from the chat file. This lets a developer edit the file and
+            # turn from the chat file, so a developer can edit the file and
             # rerun the backend without touching the Flutter UI.
-            prompt = (req.get("prompt") or "").strip()
             if debug_mode:
                 file_prompt, file_history = _read_last_user_turn(debug_chat_path)
                 if file_prompt:
                     prompt = file_prompt
                     history = file_history
-                    new_session = False
                     print(
                         f"[orch_multi] Debug: loaded prompt ({len(prompt)} chars) "
-                        f"with {len(history)} self turns from {debug_chat_path}",
+                        f"with {len(history)} history turns from {debug_chat_path}",
                         file=sys.stderr, flush=True,
                     )
 
-            if new_session or orchestrator is None:
-                orchestrator = _create_orchestrator(args)
+            requested_mode_raw = str(req.get("task_mode") or "").strip()
+
+            if orchestrator is None:
+                try:
+                    orchestrator = _create_orchestrator(
+                        args,
+                        path_filter,
+                        db_connections,
+                        task_mode=TaskMode.parse(requested_mode_raw or "open").value,
+                    )
+                except Exception as ex:  # noqa: BLE001 - keep the UI alive
+                    print(
+                        f"[orch_multi] Could not start a session: {ex}",
+                        file=sys.stderr, flush=True,
+                    )
+                    # Retry on the next request: a configuration change in the
+                    # UI must be able to fix the session without a restart.
+                    print(json.dumps({"response": f"Error: {ex}", "request_id": request_id}))
+                    print(RESPONSE_SENTINEL)
+                    sys.stdout.flush()
+                    continue
+
+            # Session seeding: the Flutter side ships the visible chat log so
+            # the orchestrator's hidden memory cannot drift away from what the
+            # user sees. A new session always resets; a history-carrying
+            # request treats the external log as authoritative (same contract
+            # as the single-agent orchestrator).
+            if req.get("new_session") or history:
+                orchestrator.reset()
+                if history:
+                    orchestrator.import_history(history)
+
+            # Per-request task-mode override: the Flutter dropdown can switch
+            # between USER INPUT / AUTO INPUT at any time without restarting the
+            # subprocess. Legacy mode names (open, task_compliance,
+            # task_compliance_auto) are remapped to those two by
+            # TaskMode.parse. The system prompt is re-derived on the next turn,
+            # so a switch resets the conversation.
+            if requested_mode_raw:
+                new_mode = TaskMode.parse(requested_mode_raw)
+                if new_mode is not orchestrator.task_mode:
+                    orchestrator.task_mode = new_mode
+                    orchestrator.reset()
+                    if history:
+                        orchestrator.import_history(history)
+                    print(
+                        f"[orch_multi] task_mode switched to {new_mode.value}.",
+                        file=sys.stderr, flush=True,
+                    )
 
             # Per-request thinking/effort override: the Flutter UI controls
             # take effect immediately without restarting the subprocess.
             thinking_val = req.get("thinking")
             if isinstance(thinking_val, bool):
-                # Update the reasoner model config's thinking flag.
-                reasoner_cfg = orchestrator.config.models.get(ModelRole.REASONER)
-                if reasoner_cfg:
-                    reasoner_cfg.thinking = thinking_val
+                orchestrator.thinking = thinking_val
             effort_val = req.get("effort")
             if isinstance(effort_val, str) and effort_val.strip():
-                effort_str = effort_val.strip().lower()
-                reasoner_cfg = orchestrator.config.models.get(ModelRole.REASONER)
-                if reasoner_cfg:
-                    reasoner_cfg.effort = effort_str
+                orchestrator.effort = effort_val.strip().lower()
+
             if not prompt:
+                # Respect the protocol even for empty prompts.
                 print(RESPONSE_SENTINEL)
                 sys.stdout.flush()
                 continue
 
-            # Prepend visible self if provided
-            full_prompt = _prompt_with_visible_history(prompt, history)
-
-            # Context for the (tool-less) planner, assembled in order:
-            #   1. APP CONTEXT from <root>/.agentic/.context.md -- loaded ALWAYS
-            #      (the project's own analysis), per "prima di qualsiasi cosa".
-            #   2. PROJECT FILE TREE -- only for code/dev requests (skipped for
-            #      chit-chat like "hi"), so the planner cites real paths.
-            context_parts = []
             try:
-                from agent.core.project_context import load_project_context
-                app_ctx = load_project_context(args.base_path)
-                if app_ctx:
-                    context_parts.append(
-                        "APP CONTEXT (from .agentic/.context.md):\n" + app_ctx
-                    )
-            except Exception as ex_ctx:  # noqa: BLE001
+                response = orchestrator.run(prompt)
+            except Exception as ex:  # noqa: BLE001 - the UI must always get a reply
                 print(
-                    f"[orch_multi] App context (.context.md) load skipped: {ex_ctx}",
+                    f"[orch_multi] Request failed: {ex}",
                     file=sys.stderr, flush=True,
                 )
-            try:
-                from agent.loop.tool_detector import ToolIntentDetector
-                if ToolIntentDetector.needs_tools(prompt):
-                    tree = _build_project_tree(args.base_path)
-                    if tree:
-                        context_parts.append(tree)
-            except Exception as ex_tree:  # noqa: BLE001
-                print(
-                    f"[orch_multi] Project tree build skipped: {ex_tree}",
-                    file=sys.stderr, flush=True,
-                )
-            project_context = "\n\n".join(context_parts)
-
-            try:
-                result = orchestrator.run(full_prompt, project_context=project_context)
-                if result.success:
-                    response = result.final_answer or "Task completed."
-                else:
-                    response = result.error or "Task failed."
-
-                # --- Executor stage: REASONER -> run_loop (SUMMARIZER model) ---
-                # When the planner's answer needs real implementation, hand it
-                # as a brief to the single-agent run_loop Orchestrator driven by
-                # the SUMMARIZER-slot model. That loop reads the real files,
-                # edits/creates them, validates, and reports -- which is what
-                # actually "uses tools". Falls back to the planner answer when
-                # no executor is available or it errors.
-                if (
-                        result.success
-                        and result.final_answer
-                        and _needs_implementation(prompt, result.final_answer)
-                ):
-                    summarizer_cfg = orchestrator.config.models.get(ModelRole.SUMMARIZER)
-                    if executor_orch is None:
-                        executor_orch = _build_executor_orchestrator(
-                            args, summarizer_cfg, path_filter, db_connections
-                        )
-                    if executor_orch is not None:
-                        print(
-                            "[orch_multi] Planner answer needs implementation "
-                            "-> running executor stage (run_loop).",
-                            file=sys.stderr, flush=True,
-                        )
-                        try:
-                            # Preserve a brief summary of the previous
-                            # execution so the executor knows what was
-                            # already done. This prevents re-doing work
-                            # when the user sends a follow-up correction
-                            # like "There was a misunderstanding...".
-                            executor_orch.reset()
-                            if last_exec_summary:
-                                executor_orch.conversation_history.set_system_prompt(
-                                    "prev_execution",
-                                    format_system_prompt(
-                                        "PREVIOUS_EXECUTION_CONTEXT_TEMPLATE",
-                                        last_exec_summary=last_exec_summary,
-                                    ),
-                                )
-                                print(
-                                    f"[orch_multi] Injected previous execution "
-                                    f"summary ({len(last_exec_summary)} chars).",
-                                    file=sys.stderr, flush=True,
-                                )
-                            brief = _build_execution_brief(prompt, result.final_answer)
-                            exec_answer = executor_orch.run(brief)
-                            if exec_answer and exec_answer.strip():
-                                response = exec_answer
-                                # Save a short summary for the next request.
-                                last_exec_summary = exec_answer[:2000]
-                            else:
-                                last_exec_summary = ""
-                        except Exception as ex_exec:  # noqa: BLE001
-                            print(
-                                f"[orch_multi] Executor stage failed: {ex_exec}; "
-                                f"returning planner answer.",
-                                file=sys.stderr, flush=True,
-                            )
-                            last_exec_summary = ""
-            except Exception as ex:
                 response = f"Error: {ex}"
 
             # Serialize as a single JSON string so embedded newlines survive.
-            print(json.dumps({"response": response}))
+            # `request_id` is echoed untouched so the Flutter side can discard
+            # an envelope belonging to a turn it already aborted.
+            print(json.dumps({"response": response, "request_id": request_id}))
             print(RESPONSE_SENTINEL)
             sys.stdout.flush()
 
@@ -590,22 +481,29 @@ def _run_interactive_loop(args, path_filter=None, db_connections=None) -> None:
         print("[orch_multi] Shutdown requested.", file=sys.stderr)
 
 
-def _run_oneshot(args) -> None:
+def _run_oneshot(args, path_filter=None, db_connections=None) -> None:
     """One-shot mode: read prompt from stdin, answer once, exit."""
-    orchestrator = _create_orchestrator(args)
     prompt = sys.stdin.read().strip()
-    if prompt:
-        result = orchestrator.run(prompt)
-        if result.success:
-            print(result.final_answer or "")
-        else:
-            print(result.error or "Task failed.")
-        print(RESPONSE_SENTINEL)
+    if not prompt:
+        return
+    try:
+        orchestrator = _create_orchestrator(args, path_filter, db_connections)
+        response = orchestrator.run(prompt)
+    except Exception as ex:  # noqa: BLE001 - report, never traceback to stdout
+        response = f"Error: {ex}"
+    print(response)
+    print(RESPONSE_SENTINEL)
 
 
-def main():
+def _build_arg_parser() -> argparse.ArgumentParser:
+    """Build the CLI parser.
+
+    Extracted from :func:`main` so the flag contract — in particular
+    ``--max-agent-rounds``, forwarded by the Flutter launcher — can be asserted
+    without patching ``sys.argv``.
+    """
     parser = argparse.ArgumentParser(
-        description="Multi-agent Orchestrator — multi_mode-based workflow",
+        description="Multi-slot Orchestrator — Workflow Agents (Assistant / User)",
     )
 
     # Reasoner model
@@ -632,8 +530,10 @@ def main():
     parser.add_argument(
         "--reasoner-context-window",
         type=int,
-        default=128000,
-        help="Context window size for the reasoner model.",
+        default=None,
+        help="Context window size for the reasoner model. Omit to use the "
+             "backend default (recommended for Ollama: a large num_ctx "
+             "explodes KV-cache RAM).",
     )
     parser.add_argument(
         "--reasoning-level",
@@ -643,33 +543,103 @@ def main():
              "Maps to OpenAI reasoning_effort, Anthropic thinking.budget_tokens, "
              "Gemini thinkingConfig.thinkingBudget. Default: max.",
     )
-
-    # Summarizer model (optional)
     parser.add_argument(
-        "--summarizer-provider",
-        default="",
-        help="Provider for the summarizer model (openai, anthropic, gemini, ollama, openrouter, groq, huggingface, github, etc.). If empty, summarization is disabled.",
+        "--thinking",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Extended thinking ON/OFF for the reasoner model (the Workflow "
+             "Agents 'Assistant' slot). Seeded at launch because the chat-view "
+             "toggle is hidden while MaM is enabled. Default: off.",
     )
     parser.add_argument(
-        "--summarizer-model",
-        default="",
-        help="Model ID for the summarizer.",
-    )
-    parser.add_argument(
-        "--summarizer-api-key",
-        default="",
-        help="API key for the summarizer provider.",
-    )
-    parser.add_argument(
-        "--summarizer-base-url",
-        default="",
-        help="Base URL for the summarizer provider.",
-    )
-    parser.add_argument(
-        "--summarizer-context-window",
+        "--reasoner-tpm-limit",
         type=int,
-        default=128000,
-        help="Context window size for the summarizer model.",
+        default=0,
+        help="Tokens-per-minute cap for the reasoner backend. 0 = unlimited "
+             "(default). When > 0 the backend is wrapped in RateLimitedBackend.",
+    )
+
+    # AUTO INPUT "User" agent (second Workflow Agents slot). Optional: when
+    # omitted, AUTO INPUT fails safe with one answer plus a UI notice instead
+    # of letting the assistant judge its own work.
+    parser.add_argument(
+        "--user-provider",
+        default="",
+        help="Provider for the AUTO INPUT 'User' agent (second Workflow Agents slot). Empty disables the User agent.",
+    )
+    parser.add_argument(
+        "--user-model",
+        default="",
+        help="Model ID for the AUTO INPUT 'User' agent.",
+    )
+    parser.add_argument(
+        "--user-api-key",
+        default="",
+        help="API key for the User agent provider.",
+    )
+    parser.add_argument(
+        "--user-base-url",
+        default="",
+        help="Base URL override for the User agent (Ollama / OpenRouter).",
+    )
+    parser.add_argument(
+        "--user-num-ctx",
+        type=int,
+        default=0,
+        help="Legacy alias of --user-context-window. Kept so older launchers "
+             "keep working. 0 = backend default.",
+    )
+    parser.add_argument(
+        "--user-context-window",
+        type=int,
+        default=0,
+        help="Context window override for the User agent. Applied to Ollama "
+             "(num_ctx) and OpenRouter (context_limit); ignored by providers "
+             "that manage it internally. Takes precedence over --user-num-ctx.",
+    )
+    parser.add_argument(
+        "--user-temperature",
+        type=float,
+        default=None,
+        help="Sampling temperature for the User agent's AUTO INPUT evaluation. "
+             "Omit to keep the low deterministic default.",
+    )
+    parser.add_argument(
+        "--user-max-tokens",
+        type=int,
+        default=0,
+        help="Max output tokens for the User agent's AUTO INPUT evaluation. "
+             "0 = the built-in 1024 default.",
+    )
+    parser.add_argument(
+        "--user-reasoning-level",
+        default=None,
+        choices=["minimal", "low", "medium", "high", "max"],
+        help="Reasoning effort level for the User agent.",
+    )
+    # Two explicit flags on one dest. ``BooleanOptionalAction`` would only
+    # generate ``--no-user-thinking``, while the Flutter client emits
+    # ``--user-no-thinking`` when the switch is OFF — which argparse then
+    # rejects as an unrecognized argument.
+    parser.add_argument(
+        "--user-thinking",
+        dest="user_thinking",
+        action="store_true",
+        default=False,
+        help="Extended thinking ON for the User agent.",
+    )
+    parser.add_argument(
+        "--user-no-thinking",
+        dest="user_thinking",
+        action="store_false",
+        help="Extended thinking OFF for the User agent (default).",
+    )
+    parser.add_argument(
+        "--user-tpm-limit",
+        type=int,
+        default=0,
+        help="Tokens-per-minute cap for the User agent backend. 0 = unlimited "
+             "(default).",
     )
 
     # General settings
@@ -690,19 +660,24 @@ def main():
     parser.add_argument(
         "--max-iterations",
         type=int,
-        default=50,
-        help="Maximum number of reasoner-executor iterations.",
+        default=100,
+        help="Maximum number of model/tool iterations per request.",
     )
     parser.add_argument(
-        "--tool-timeout",
+        "--max-agent-rounds",
+        dest="max_agent_rounds",
         type=int,
-        default=30,
-        help="Timeout in seconds for each tool call.",
+        default=_DEFAULT_MAX_AUTO_ROUNDS,
+        help="Maximum AUTO INPUT rounds (Assistant <-> User exchanges) per "
+             "request. Clamped to 1-200 by the run loop. Default: 20. "
+             "Settings -> Workflow Agents MaM -> Maximum Auto Round Actions.",
     )
     parser.add_argument(
-        "--no-parallel-tools",
-        action="store_true",
-        help="Disable parallel tool execution.",
+        "--task-mode",
+        default="open",
+        choices=["open", "user_input", "auto_input"],
+        help="Default input mode. The Flutter UI can override it per request "
+             "by including a 'task_mode' field in the JSON envelope.",
     )
 
     # Modes
@@ -760,7 +735,11 @@ def main():
         help="Relative path (from --base-path) of the chat file used in debug mode. Example: /chats/modifiche.txt",
     )
 
-    args = parser.parse_args()
+    return parser
+
+
+def main():
+    args = _build_arg_parser().parse_args()
 
     if args.install_deps:
         _install_dependencies()
@@ -774,7 +753,7 @@ def main():
 
     print("[orch_multi] Starting...", file=sys.stderr, flush=True)
 
-    # Load optional filters and DB connections (passed to the executor stage).
+    # Load optional filters and DB connections (handed to the tool registry).
     path_filter = None
     db_connections = None
     try:
@@ -798,14 +777,14 @@ def main():
     if args.interactive:
         _run_interactive_loop(args, path_filter, db_connections)
     else:
-        _run_oneshot(args)
+        _run_oneshot(args, path_filter, db_connections)
 
 
 if __name__ == "__main__":
     # noinspection PyBroadException
     try:
         main()
-    except Exception as e:
+    except Exception:
         import traceback
 
         traceback.print_exc(file=sys.stderr)

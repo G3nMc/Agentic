@@ -1,22 +1,24 @@
 import 'dart:async';
-import 'dart:io';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import '../../core/theme/app_theme.dart';
 import '../../data/repositories/agent_role_settings_repository.dart';
 import '../../data/repositories/backend_settings_repository.dart';
 import '../../data/repositories/settings_repository.dart';
+import '../../services/github_models_service.dart';
+import '../../services/groq_service.dart';
 import '../../services/ollama_service.dart';
 import '../../services/openrouter_service.dart';
-import 'team_board_viewer.dart';
-import 'token_count_picker.dart';
+import 'generation_params_form.dart';
+import 'thinking_control.dart';
 
-/// Settings panel for the multi-agent workflow.
+/// Settings panel for the Workflow Agents MaM (Model against Model).
 ///
 /// Architecture:
-///   * Holds a [WorkflowAgents] aggregate (the ORM-ish bag of all four role
-///     configs) and binds every form widget to it.
+///   * Holds a [WorkflowAgents] aggregate (the ORM-ish bag of every per-role
+///     config) and binds every form widget to it.
 ///   * Persists on every change via a 400ms debounce + on focus loss, so the
 ///     user never has to remember to press Enter.
 ///   * Per-row "Refresh models" button calls the backend's live `listModels`
@@ -33,18 +35,20 @@ class AgentWorkflowSettings extends StatefulWidget {
 class _AgentWorkflowSettingsState extends State<AgentWorkflowSettings> {
   bool _loading = true;
   bool _enabled = false;
-  bool _teamMode = false;
   List<WorkflowGroup> _groups = [];
   String _activeGroupId = '';
 
-  // The two core roles plus the optional 'leader' role used by Team Mode.
-  // The leader's controllers/state share the same maps as the other roles
-  // — only the rendering is gated on [_teamMode].
-  static const _kAllRolesIncludingLeader = <String>[
-    'reasoner',
-    'summarizer',
-    AgentRoleSettingsRepository.leaderRole,
-  ];
+  // Workflow-level AUTO INPUT round cap (see the "Maximum Auto Round
+  // Actions" panel). Mirrors the persisted `agent.workflow.maxAutoRounds`
+  // value and is forwarded to the orchestrator as `--max-agent-rounds`.
+  int _maxAutoRounds = AgentRoleSettingsRepository.defaultMaxAutoRounds;
+  final TextEditingController _maxAutoRoundsCtrl = TextEditingController();
+  Timer? _maxAutoRoundsSaveTimer;
+
+  // Mirrors [AgentRoleSettingsRepository.roles] (Assistant, User).
+  // Every role rendered by [_roleCard] must have its controllers initialised
+  // here, otherwise the card hits a null controller while building.
+  static const List<String> _kRoles = AgentRoleSettingsRepository.roles;
 
   // The aggregate — single source of truth for the form.
   WorkflowAgents _agents = WorkflowAgents({});
@@ -52,11 +56,11 @@ class _AgentWorkflowSettingsState extends State<AgentWorkflowSettings> {
   // Per-role text controllers (kept in sync with [_agents]).
   final Map<String, TextEditingController> _modelCtrls = {};
   final Map<String, TextEditingController> _maxTokensCtrls = {};
-  final Map<String, TextEditingController> _tpmCtrls = {};
-  final Map<String, TextEditingController> _ollamaUrlCtrls = {};
-  final Map<String, TextEditingController> _ollamaCtxCtrls = {};
+  final Map<String, TextEditingController> _baseUrlCtrls = {};
+  final Map<String, TextEditingController> _contextCtrls = {};
 
-  // Per-role reasoning level (no controller needed — dropdown tracks it).
+  // Per-role reasoning level (no controller needed — the ThinkingControl
+  // dropdown tracks it).
   final Map<String, String> _reasoningLevels = {};
 
   // Per-role debounce timers — coalesce rapid edits into a single save.
@@ -75,12 +79,11 @@ class _AgentWorkflowSettingsState extends State<AgentWorkflowSettings> {
   @override
   void initState() {
     super.initState();
-    for (final r in _kAllRolesIncludingLeader) {
+    for (final r in _kRoles) {
       _modelCtrls[r] = TextEditingController();
       _maxTokensCtrls[r] = TextEditingController();
-      _tpmCtrls[r] = TextEditingController();
-      _ollamaUrlCtrls[r] = TextEditingController();
-      _ollamaCtxCtrls[r] = TextEditingController();
+      _baseUrlCtrls[r] = TextEditingController();
+      _contextCtrls[r] = TextEditingController();
     }
     _load();
     AgentRoleSettingsRepository.instance.activeGroupNotifier
@@ -89,6 +92,8 @@ class _AgentWorkflowSettingsState extends State<AgentWorkflowSettings> {
 
   @override
   void dispose() {
+    _maxAutoRoundsSaveTimer?.cancel();
+    _maxAutoRoundsCtrl.dispose();
     for (final t in _saveTimers.values) {
       t.cancel();
     }
@@ -98,13 +103,10 @@ class _AgentWorkflowSettingsState extends State<AgentWorkflowSettings> {
     for (final c in _maxTokensCtrls.values) {
       c.dispose();
     }
-    for (final c in _tpmCtrls.values) {
+    for (final c in _baseUrlCtrls.values) {
       c.dispose();
     }
-    for (final c in _ollamaUrlCtrls.values) {
-      c.dispose();
-    }
-    for (final c in _ollamaCtxCtrls.values) {
+    for (final c in _contextCtrls.values) {
       c.dispose();
     }
     super.dispose();
@@ -113,18 +115,12 @@ class _AgentWorkflowSettingsState extends State<AgentWorkflowSettings> {
   // ─── Load / save plumbing ────────────────────────────────────────────────
   Future<void> _load() async {
     final enabled = await AgentRoleSettingsRepository.instance.isEnabled();
-    final teamMode =
-        await AgentRoleSettingsRepository.instance.isTeamModeEnabled();
     final groups = await AgentRoleSettingsRepository.instance.listGroups();
     final activeGroupId =
         await AgentRoleSettingsRepository.instance.getActiveGroupId();
     final agents = await WorkflowAgents.loadGroup(activeGroupId);
-    // Load the leader role separately — it isn't in WorkflowAgents.byRole
-    // by default, but its controllers need a value either way so the UI
-    // doesn't flicker when the toggle flips on.
-    final leaderCfg =
-        await AgentRoleSettingsRepository.instance.getLeader(activeGroupId);
-    agents.put(AgentRoleSettingsRepository.leaderRole, leaderCfg);
+    final maxAutoRounds =
+        await AgentRoleSettingsRepository.instance.getMaxAutoRounds();
     // Gemini is the only backend with a *user-editable* saved list (in the
     // Gemini Settings panel the user can add e.g. gemma4). Read it here so
     // the role's model dropdown shows the same options the dedicated panel
@@ -134,19 +130,20 @@ class _AgentWorkflowSettingsState extends State<AgentWorkflowSettings> {
     if (!mounted) return;
     setState(() {
       _enabled = enabled;
-      _teamMode = teamMode;
+      _maxAutoRounds = maxAutoRounds;
+      _maxAutoRoundsCtrl.text = maxAutoRounds.toString();
       _groups = groups;
       _activeGroupId = activeGroupId;
       _agents = agents;
       if (geminiSaved.isNotEmpty) _modelsCache['gemini'] = geminiSaved;
-      for (final r in _kAllRolesIncludingLeader) {
+      for (final r in _kRoles) {
         final cfg = agents.get(r);
         _modelCtrls[r]!.text = cfg.model;
         _maxTokensCtrls[r]!.text = cfg.maxTokens.toString();
-        _tpmCtrls[r]!.text = cfg.tpmLimit.toString();
-        _ollamaUrlCtrls[r]!.text = cfg.ollamaBaseUrl ?? '';
-        _ollamaCtxCtrls[r]!.text = cfg.ollamaNumCtx?.toString() ?? '';
-        _reasoningLevels[r] = cfg.reasoningLevel.isNotEmpty ? cfg.reasoningLevel : 'max';
+        _baseUrlCtrls[r]!.text = cfg.ollamaBaseUrl ?? '';
+        _contextCtrls[r]!.text = cfg.contextWindow?.toString() ?? '';
+        _reasoningLevels[r] =
+            cfg.reasoningLevel.isNotEmpty ? cfg.reasoningLevel : 'max';
       }
       _loading = false;
     });
@@ -190,6 +187,9 @@ class _AgentWorkflowSettingsState extends State<AgentWorkflowSettings> {
 
   Future<void> _reset() async {
     await AgentRoleSettingsRepository.instance.resetToDefaults();
+    await AgentRoleSettingsRepository.instance.setMaxAutoRounds(
+      AgentRoleSettingsRepository.defaultMaxAutoRounds,
+    );
     await _load();
     if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
@@ -346,17 +346,27 @@ class _AgentWorkflowSettingsState extends State<AgentWorkflowSettings> {
     }
   }
 
+  /// Live model catalogue for [backend]. Every provider that
+  /// `build_backend` can construct is covered; the ones without a public list
+  /// endpoint (Hugging Face needs a token-scoped call) fall back to the static
+  /// suggestions so the contract "refresh never leaves an empty list" holds.
   Future<List<String>> _fetchLiveModels(String backend, String role) async {
     final settings = BackendSettingsRepository.instance;
     switch (backend) {
-      case 'openai':
-        return AgentRoleModelSuggestions.forBackend('openai');
-      case 'anthropic':
-        return AgentRoleModelSuggestions.forBackend('anthropic');
       case 'openrouter':
         final key = await settings.getOpenRouterApiKey() ?? '';
         if (key.isEmpty) throw 'OpenRouter API key not set.';
         return OpenRouterService.instance.listModels(key);
+      case 'groq':
+        final key = await settings.getGroqApiKey() ?? '';
+        if (key.isEmpty) throw 'Groq API key not set.';
+        return GroqService.instance.listModels(key);
+      case 'github':
+        final key = await settings.getGithubApiKey() ?? '';
+        if (key.isEmpty) {
+          return AgentRoleModelSuggestions.forBackend('github');
+        }
+        return GithubModelsService.instance.listModels(key);
       case 'ollama':
         final cfg = _agents.get(role);
         final url = (cfg.ollamaBaseUrl?.isNotEmpty ?? false)
@@ -373,8 +383,12 @@ class _AgentWorkflowSettingsState extends State<AgentWorkflowSettings> {
         return saved.isEmpty
             ? BackendSettingsRepository.defaultGeminiModels
             : saved;
+      case 'huggingface':
+        // The HF router has no unauthenticated catalogue endpoint; the curated
+        // suggestions are the documented fallback for this provider.
+        return AgentRoleModelSuggestions.forBackend('huggingface');
       default:
-        return const [];
+        return AgentRoleModelSuggestions.forBackend(backend);
     }
   }
 
@@ -393,17 +407,13 @@ class _AgentWorkflowSettingsState extends State<AgentWorkflowSettings> {
               _header(),
               const SizedBox(height: 16),
               _enableSwitch(),
-              const SizedBox(height: 12),
-              _teamModeSwitch(),
+              const SizedBox(height: 16),
+              _maxAutoRoundsPanel(),
               const SizedBox(height: 16),
               _groupManagementControls(),
               const SizedBox(height: 24),
-              for (final role in AgentRoleSettingsRepository.roles) ...[
+              for (final role in _kRoles) ...[
                 _roleCard(role),
-                const SizedBox(height: 12),
-              ],
-              if (_teamMode) ...[
-                _roleCard(AgentRoleSettingsRepository.leaderRole),
                 const SizedBox(height: 12),
               ],
               const SizedBox(height: 8),
@@ -429,20 +439,32 @@ class _AgentWorkflowSettingsState extends State<AgentWorkflowSettings> {
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         const Text(
-          'Workflow Agents',
+          'Workflow Agents MaM',
           style: TextStyle(
             fontSize: 18,
             fontWeight: FontWeight.w600,
             color: AppTheme.textPrimary,
           ),
         ),
+        const SizedBox(height: 2),
+        const Text(
+          'MaM — Model against Model',
+          style: TextStyle(
+            fontSize: 12,
+            fontWeight: FontWeight.w600,
+            color: AppTheme.accent,
+            letterSpacing: 0.3,
+          ),
+        ),
         const SizedBox(height: 4),
         const Text(
-          'Pick which model handles each role in the agent workflow. '
-          'The Reasoner is the strong model that plans and decides; the '
-          'Summarizer is a cheaper model that compacts context when needed. '
-          'API keys come from the Model Settings tab. Click ↻ to '
-          'fetch the live model list from each provider.',
+          'Two models face each other inside the same chat. The Assistant '
+          'answers you, plans and drives the tools. The User reviews the '
+          'Assistant\'s work and writes the next prompt, so the Assistant never '
+          'judges its own output. This is exactly what AUTO INPUT runs on: with '
+          'no User model configured the loop cannot continue and stops after a '
+          'single answer. API keys come from the Model Settings tab. Click ↻ '
+          'to fetch the live model list from each provider.',
           style: TextStyle(fontSize: 12.5, color: AppTheme.textMuted),
         ),
         const SizedBox(height: 12),
@@ -515,7 +537,7 @@ class _AgentWorkflowSettingsState extends State<AgentWorkflowSettings> {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(
-                  'Enable multi-agent workflow',
+                  'Enable Workflow Agents MaM',
                   style: TextStyle(
                     fontSize: 14,
                     fontWeight: FontWeight.w600,
@@ -524,9 +546,11 @@ class _AgentWorkflowSettingsState extends State<AgentWorkflowSettings> {
                 ),
                 SizedBox(height: 2),
                 Text(
-                  'When OFF the orchestrator runs in the original single-agent '
-                  'loop. When ON the next start launches the router → shaper → '
-                  'reasoner → executor pipeline.',
+                  'When OFF only the Assistant model chosen in Model Settings '
+                  'runs. When ON the models configured below drive the chat and '
+                  'the task mode in the chat input switches to AUTO INPUT: the '
+                  'Assistant answers, the User reviews it and writes the next '
+                  'prompt. Turning this back OFF returns the chat to USER INPUT.',
                   style: TextStyle(fontSize: 12, color: AppTheme.textMuted),
                 ),
               ],
@@ -545,80 +569,120 @@ class _AgentWorkflowSettingsState extends State<AgentWorkflowSettings> {
     );
   }
 
-  Widget _teamModeSwitch() {
+  Widget _maxAutoRoundsPanel() {
     return Container(
       decoration: BoxDecoration(
         border: Border.all(color: AppTheme.border),
         borderRadius: BorderRadius.circular(10),
       ),
-      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-      child: Row(
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          const Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  'Enable Team Mode',
+          Row(
+            children: [
+              const Icon(Icons.repeat, size: 18, color: AppTheme.accent),
+              const SizedBox(width: 8),
+              const Expanded(
+                child: Text(
+                  'Maximum Auto Round Actions',
                   style: TextStyle(
                     fontSize: 14,
                     fontWeight: FontWeight.w600,
                     color: AppTheme.textPrimary,
                   ),
                 ),
-                SizedBox(height: 2),
-                Text(
-                  'Splits heavy tasks across specialized workers. A team-leader '
-                  'model assigns work; each worker has its own context window '
-                  'and won\'t hit token limits on long jobs. Requires '
-                  'multi-agent mode (above) to be on.',
-                  style: TextStyle(fontSize: 12, color: AppTheme.textMuted),
-                ),
-              ],
-            ),
-          ),
-          Column(
-            crossAxisAlignment: CrossAxisAlignment.end,
-            children: [
-              Switch(
-                value: _teamMode,
-                onChanged: (v) async {
-                  await AgentRoleSettingsRepository.instance
-                      .setTeamModeEnabled(v);
-                  // Team Mode requires multi-agent — flip it on automatically
-                  // so the user doesn't get a silent no-op when only Team
-                  // Mode is set.
-                  if (v && !_enabled) {
-                    await AgentRoleSettingsRepository.instance.setEnabled(true);
-                  }
-                  if (!mounted) return;
-                  setState(() {
-                    _teamMode = v;
-                    if (v) _enabled = true;
-                  });
-                },
               ),
-              if (_teamMode) ...[
-                const SizedBox(height: 4),
-                TextButton.icon(
-                  icon: const Icon(Icons.dashboard_outlined, size: 14),
-                  label: const Text('View Team Board',
-                      style: TextStyle(fontSize: 12)),
-                  onPressed: () {
-                    final basePath = Directory.current.path;
-                    Navigator.of(context).push(
-                      MaterialPageRoute(
-                        builder: (_) => TeamBoardViewer(basePath: basePath),
-                      ),
-                    );
-                  },
+              SizedBox(
+                width: 96,
+                child: TextField(
+                  controller: _maxAutoRoundsCtrl,
+                  keyboardType: TextInputType.number,
+                  textAlign: TextAlign.center,
+                  inputFormatters: [
+                    FilteringTextInputFormatter.digitsOnly,
+                  ],
+                  decoration: const InputDecoration(
+                    border: OutlineInputBorder(),
+                    isDense: true,
+                    contentPadding:
+                        EdgeInsets.symmetric(horizontal: 8, vertical: 10),
+                  ),
+                  onChanged: _onMaxAutoRoundsChanged,
+                  onSubmitted: _onMaxAutoRoundsSubmitted,
                 ),
-              ],
+              ),
             ],
+          ),
+          const SizedBox(height: 8),
+          const Text(
+            'How many rounds the Assistant \u2194 User exchange may run while '
+            'AUTO INPUT is active before the loop stops and hands back the '
+            'last answer. One round is a full Assistant pass (chat reply or '
+            'tool loop) plus the User agent\u2019s review of it. Each round is '
+            'a complete request pass against two models, so a higher value '
+            'costs more time and tokens. The value is read when the '
+            'orchestrator starts, so it applies to the next session.',
+            style: TextStyle(fontSize: 12, color: AppTheme.textMuted),
+          ),
+          const SizedBox(height: 4),
+          const Text(
+            'Allowed range: '
+            '${AgentRoleSettingsRepository.minMaxAutoRounds}\u2013'
+            '${AgentRoleSettingsRepository.maxMaxAutoRounds} '
+            '(default ${AgentRoleSettingsRepository.defaultMaxAutoRounds}). '
+            'With 1 the Assistant answers once and the User agent does not '
+            'review at all.',
+            style: TextStyle(fontSize: 11.5, color: AppTheme.textMuted),
           ),
         ],
       ),
     );
+  }
+
+  /// Parses, clamps and persists the AUTO INPUT round cap. The field is
+  /// rewritten to the clamped value so the number on screen can never
+  /// disagree with the one the orchestrator receives.
+  void _onMaxAutoRoundsChanged(String raw) {
+    final parsed = int.tryParse(raw.trim());
+    // Mid-typing / emptied field: leave the text alone and write nothing.
+    if (parsed == null) return;
+    final clamped = AgentRoleSettingsRepository.clampMaxAutoRounds(parsed);
+    final text = clamped.toString();
+    if (_maxAutoRoundsCtrl.text != text) {
+      _maxAutoRoundsCtrl.value = TextEditingValue(
+        text: text,
+        selection: TextSelection.collapsed(offset: text.length),
+      );
+    }
+    if (_maxAutoRounds == clamped) return;
+    setState(() => _maxAutoRounds = clamped);
+    _maxAutoRoundsSaveTimer?.cancel();
+    _maxAutoRoundsSaveTimer = Timer(const Duration(milliseconds: 400), () async {
+      try {
+        await AgentRoleSettingsRepository.instance.setMaxAutoRounds(clamped);
+      } catch (e) {
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Failed to save maximum auto rounds: $e')),
+        );
+      }
+    });
+  }
+
+  /// Commit handler for Enter / blur. A field left empty or holding junk is
+  /// restored to the last accepted value instead of persisting a hole: the
+  /// run loop must always have a bound to read.
+  void _onMaxAutoRoundsSubmitted(String raw) {
+    if (int.tryParse(raw.trim()) == null) {
+      final text = _maxAutoRounds.toString();
+      _maxAutoRoundsCtrl.value = TextEditingValue(
+        text: text,
+        selection: TextSelection.collapsed(offset: text.length),
+      );
+      return;
+    }
+    _onMaxAutoRoundsChanged(raw);
   }
 
   Widget _groupManagementControls() {
@@ -761,23 +825,57 @@ class _AgentWorkflowSettingsState extends State<AgentWorkflowSettings> {
               Expanded(flex: 3, child: _modelDropdown(role, cfg)),
             ],
           ),
-          if (cfg.backend == 'ollama') ...[
+          if (AgentRoleSettingsRepository.baseUrlBackends
+              .contains(cfg.backend)) ...[
             const SizedBox(height: 10),
-            _ollamaUrlField(role),
-            const SizedBox(height: 10),
-            _ollamaCtxField(role),
+            _baseUrlField(role, cfg),
           ],
-          const SizedBox(height: 10),
-          Row(
-            children: [
-              Expanded(child: _temperatureSlider(role, cfg)),
-              const SizedBox(width: 10),
-              Expanded(child: _maxTokensField(role)),
-              const SizedBox(width: 10),
-              Expanded(child: _tpmField(role)),
-              const SizedBox(width: 10),
-              Expanded(child: _reasoningLevelDropdown(role)),
-            ],
+          const SizedBox(height: 14),
+          // Identical block on BOTH cards. The generation parameters mirror the
+          // Ollama section of Model Settings, and every value reaches the
+          // orchestrator: the Assistant through --temperature / --max-tokens /
+          // --reasoning-level / --thinking, the User through the --user-* twins.
+          GenerationParamsForm(
+            temperature: cfg.temperature,
+            onTemperatureChanged: (v) {
+              setState(() => _agents.put(role, cfg.copyWith(temperature: v)));
+              _scheduleSave(role);
+            },
+            maxTokensController: _maxTokensCtrls[role]!,
+            onMaxTokensChanged: (v) {
+              final parsed = int.tryParse(v.trim());
+              if (parsed == null) return;
+              setState(() => _agents.put(role, cfg.copyWith(maxTokens: parsed)));
+              _scheduleSave(role);
+            },
+            contextWindowController: _contextCtrls[role]!,
+            onContextWindowChanged: (v) {
+              final parsed = int.tryParse(v.trim());
+              setState(
+                () => _agents.put(role, cfg.copyWith(contextWindow: parsed)),
+              );
+              if (parsed != null) _scheduleSave(role);
+            },
+            contextEnabled: AgentRoleSettingsRepository.contextWindowBackends
+                .contains(cfg.backend),
+            providerLabel: cfg.backend,
+            compactHelper: true,
+          ),
+          const SizedBox(height: 14),
+          ThinkingControl(
+            thinking: cfg.thinking,
+            onThinkingChanged: (v) {
+              setState(() => _agents.put(role, cfg.copyWith(thinking: v)));
+              _persistImmediately(role);
+            },
+            effort: _reasoningLevels[role] ?? cfg.reasoningLevel,
+            onEffortChanged: (v) {
+              setState(() {
+                _reasoningLevels[role] = v;
+                _agents.put(role, cfg.copyWith(reasoningLevel: v));
+              });
+              _persistImmediately(role);
+            },
           ),
         ],
       ),
@@ -892,178 +990,48 @@ class _AgentWorkflowSettingsState extends State<AgentWorkflowSettings> {
     );
   }
 
-  Widget _ollamaUrlField(String role) {
-    return Focus(
-      onFocusChange: (has) {
-        if (!has) _persistImmediately(role);
-      },
-      child: TextField(
-        controller: _ollamaUrlCtrls[role],
-        decoration: const InputDecoration(
-          labelText:
-              'Ollama base URL (e.g. http://localhost:11434 or https://ollama.com)',
-          border: OutlineInputBorder(),
-          isDense: true,
-        ),
-        onChanged: (v) {
-          final cfg = _agents.get(role);
-          setState(() => _agents.put(role,
-              cfg.copyWith(ollamaBaseUrl: v.trim().isEmpty ? null : v.trim())));
-          _scheduleSave(role);
-        },
-      ),
-    );
-  }
-
-  Widget _ollamaCtxField(String role) {
-    return Focus(
-      onFocusChange: (has) {
-        if (!has) _persistImmediately(role);
-      },
-      child: TokenCountPicker(
-        controller: _ollamaCtxCtrls[role]!,
-        presets: TokenCountPicker.numCtxPresets,
-        outlined: true,
-        isDense: true,
-        labelText: 'Context window (num_ctx)',
-        hintText: 'e.g. 32768',
-        helperText:
-            'Total budget — prompt + history + reply. Must comfortably exceed Max tokens. Default 4096; raise for long documents.',
-        onChanged: (v) {
-          final parsed = int.tryParse(v.trim());
-          final cfg = _agents.get(role);
-          setState(() => _agents.put(role, cfg.copyWith(ollamaNumCtx: parsed)));
-          _scheduleSave(role);
-        },
-      ),
-    );
-  }
-
-  Widget _temperatureSlider(String role, AgentRoleConfig cfg) {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Text(
-          'Temp ${cfg.temperature.toStringAsFixed(2)}',
-          style: const TextStyle(fontSize: 12, color: AppTheme.textSecondary),
-        ),
-        Slider(
-          value: cfg.temperature.clamp(0.0, 2.0),
-          min: 0.0,
-          max: 2.0,
-          divisions: 40,
-          label: cfg.temperature.toStringAsFixed(2),
-          onChanged: (v) {
-            setState(() => _agents.put(role, cfg.copyWith(temperature: v)));
-          },
-          onChangeEnd: (_) => _persistImmediately(role),
-        ),
-      ],
-    );
-  }
-
-  Widget _maxTokensField(String role) {
-    return Focus(
-      onFocusChange: (has) {
-        if (!has) _persistImmediately(role);
-      },
-      child: TokenCountPicker(
-        controller: _maxTokensCtrls[role]!,
-        presets: TokenCountPicker.maxTokensPresets,
-        outlined: true,
-        isDense: true,
-        labelText: 'Max tokens (reply cap)',
-        helperText:
-            'Caps the reply only. Cloud APIs bill per emitted token, so raising this just allows longer answers.',
-        onChanged: (v) {
-          final parsed = int.tryParse(v.trim());
-          if (parsed == null) return;
-          final cfg = _agents.get(role);
-          setState(() => _agents.put(role, cfg.copyWith(maxTokens: parsed)));
-          _scheduleSave(role);
-        },
-      ),
-    );
-  }
-
-  Widget _tpmField(String role) {
-    return Focus(
-      onFocusChange: (has) {
-        if (!has) _persistImmediately(role);
-      },
-      child: TextField(
-        controller: _tpmCtrls[role],
-        keyboardType: TextInputType.number,
-        decoration: const InputDecoration(
-          labelText: 'TPM (0=∞)',
-          border: OutlineInputBorder(),
-          isDense: true,
-        ),
-        onChanged: (v) {
-          final parsed = int.tryParse(v.trim());
-          if (parsed == null) return;
-          final cfg = _agents.get(role);
-          setState(() => _agents.put(role, cfg.copyWith(tpmLimit: parsed)));
-          _scheduleSave(role);
-        },
-      ),
-    );
-  }
-
-  Widget _reasoningLevelDropdown(String role) {
-    final cfg = _agents.get(role);
-    final current = _reasoningLevels[role] ?? cfg.reasoningLevel;
-    const levels = ['minimal', 'low', 'medium', 'high', 'max'];
-    const labels = {
-      'minimal': 'Minimal',
-      'low': 'Low',
-      'medium': 'Medium',
-      'high': 'High',
-      'max': 'Max',
+  /// Endpoint override for the providers that accept one (Ollama, OpenRouter,
+  /// Gemini). Blank means "use the provider default", which the launcher then
+  /// resolves from the global Model Settings value.
+  Widget _baseUrlField(String role, AgentRoleConfig cfg) {
+    final label = switch (cfg.backend) {
+      'ollama' => 'Ollama base URL (http://localhost:11434 or https://ollama.com)',
+      'openrouter' => 'OpenRouter base URL (blank = https://openrouter.ai/api/v1)',
+      'gemini' => 'Gemini base URL (blank = the Google endpoint)',
+      _ => 'Base URL',
     };
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        const Text(
-          'Reasoning',
-          style: TextStyle(fontSize: 12, color: AppTheme.textSecondary),
+    return Focus(
+      onFocusChange: (has) {
+        if (!has) _persistImmediately(role);
+      },
+      child: TextField(
+        controller: _baseUrlCtrls[role],
+        decoration: InputDecoration(
+          labelText: label,
+          border: const OutlineInputBorder(),
+          isDense: true,
         ),
-        const SizedBox(height: 4),
-        DropdownButtonFormField<String>(
-          initialValue: current,
-          decoration: const InputDecoration(
-            border: OutlineInputBorder(),
-            isDense: true,
-            contentPadding: EdgeInsets.symmetric(horizontal: 10, vertical: 8),
-          ),
-          items: [
-            for (final l in levels)
-              DropdownMenuItem(
-                value: l,
-                child: Text(labels[l] ?? l, style: const TextStyle(fontSize: 13)),
-              ),
-          ],
-          onChanged: (v) {
-            if (v == null) return;
-            setState(() {
-              _reasoningLevels[role] = v;
-              _agents.put(role, cfg.copyWith(reasoningLevel: v));
-            });
-            _persistImmediately(role);
-          },
-        ),
-      ],
+        onChanged: (v) {
+          final current = _agents.get(role);
+          final trimmed = v.trim();
+          setState(() => _agents.put(
+                role,
+                current.copyWith(
+                  ollamaBaseUrl: trimmed.isEmpty ? null : trimmed,
+                ),
+              ));
+          _scheduleSave(role);
+        },
+      ),
     );
   }
 
   String _titleForRole(String role) {
     switch (role) {
       case 'reasoner':
-        return 'Reasoner';
-      case 'summarizer':
-        return 'Summarizer';
-      case AgentRoleSettingsRepository.leaderRole:
-        return 'Team Leader';
+        return 'Assistant';
+      case 'user':
+        return 'User';
     }
     return role;
   }
@@ -1071,11 +1039,10 @@ class _AgentWorkflowSettingsState extends State<AgentWorkflowSettings> {
   String _hintForRole(String role) {
     switch (role) {
       case 'reasoner':
-        return '— strong model, plans + decides';
-      case 'summarizer':
-        return '— cheap model, compacts context';
-      case AgentRoleSettingsRepository.leaderRole:
-        return '— decomposes heavy tasks into worker groups';
+        return '— answers the user, plans and drives the tools';
+      case 'user':
+        return '— reviews the Assistant and writes the next prompt '
+            '(required for AUTO INPUT)';
     }
     return '';
   }
@@ -1084,10 +1051,8 @@ class _AgentWorkflowSettingsState extends State<AgentWorkflowSettings> {
     switch (role) {
       case 'reasoner':
         return Icons.psychology_outlined;
-      case 'summarizer':
-        return Icons.summarize_outlined;
-      case AgentRoleSettingsRepository.leaderRole:
-        return Icons.groups_2_outlined;
+      case 'user':
+        return Icons.person_outline;
     }
     return Icons.smart_toy_outlined;
   }
